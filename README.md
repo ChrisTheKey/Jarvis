@@ -29,6 +29,32 @@ two says something Jarvis would say. The dashboard **shows** the first and
 **speaks** the second, so you get the detail on screen without him reading a
 list of numbers aloud.
 
+
+## Sofort benutzbar: die eigenständige Version
+
+`standalone/jarvis.html` ist die ganze App in einer einzigen Datei — kein Server,
+kein `npm install`, kein API-Key nötig. Herunterladen, doppelklicken, fertig.
+
+- **Kostenlose Stimme.** Sie spricht mit den Stimmen, die dein Betriebssystem
+  ohnehin mitbringt (`speechSynthesis`). Unter „Stimme & KI“ sind sie danach
+  sortiert, wie nah sie an JARVIS' Register liegen; Tempo und Tonhöhe sind
+  einstellbar, die JARVIS-Voreinstellung setzt beides auf einen tiefen, ruhigen
+  Ton. Kein Konto, keine Kosten, kein Limit.
+- **Spracheingabe** über die Web Speech API — Mikrofon-Knopf drücken, sprechen.
+  Funktioniert in Chrome und Edge.
+- **Deutsch und Englisch**, umschaltbar oben rechts. Das betrifft Oberfläche,
+  Erkennung, Sprachausgabe und die Befehle selbst.
+- **Lokaler Modus.** Ohne Key versteht JARVIS direkte Befehle und führt sie aus:
+  „Termin mit Pepper morgen um 15 Uhr“, „Ich habe 42,50 für Mittagessen
+  ausgegeben“, „Was steht diese Woche an?“, „Telefonnummer von Rhodey“,
+  „Schreib eine Mail an Happy betreff Werkstatt“, „Notiere: …“, „15% von 200“.
+- **KI-Modus.** Trägst du unter „Stimme & KI“ einen Anthropic-Key ein, denkt er
+  mit und kombiniert mehrere Schritte. Der Key bleibt im Browser und geht nur an
+  Anthropic. Das funktioniert nur in der lokalen Datei — die gehostete Fassung
+  darf keine fremden Server aufrufen.
+
+Alles wird in `localStorage` gespeichert, ist also beim nächsten Öffnen noch da.
+
 ## Running it
 
 ```bash
