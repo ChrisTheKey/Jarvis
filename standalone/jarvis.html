@@ -1,3 +1,11 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#05080d" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="JARVIS" />
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' fill='%2305080d'/%3E%3Ccircle cx='90' cy='90' r='62' fill='none' stroke='%2364e6ff' stroke-width='9'/%3E%3Ccircle cx='90' cy='90' r='26' fill='%2364e6ff'/%3E%3C/svg%3E" />
 <title>JARVIS 2.0</title>
 <style>
 :root {
@@ -450,8 +458,12 @@ dialog::backdrop { background: rgba(2, 6, 10, 0.72); }
     <div class="divider"></div>
 
     <div class="field">
-      <p class="note" id="downloadNote">Diese Seite läuft komplett in deinem Browser. Lade sie herunter, um sie offline zu benutzen — und um den KI-Modus freizuschalten, den die gehostete Version blockiert.</p>
-      <div><button class="ghost" type="button" id="downloadPage">Seite als Datei speichern</button></div>
+      <p class="note" id="installNote"></p>
+      <div class="row" style="display:flex;gap:10px;flex-wrap:wrap">
+        <button type="button" id="installBtn">Als App installieren</button>
+        <button class="ghost" type="button" id="downloadPage">Seite als Datei speichern</button>
+      </div>
+      <p class="note" id="downloadNote">Die gespeicherte Datei läuft offline und schaltet den KI-Modus frei — dort gibt Android allerdings kein Mikrofon frei. Für Sprache die installierte App benutzen.</p>
     </div>
   </div>
 </dialog>
@@ -492,6 +504,15 @@ const I18N = {
     modeLocal: 'lokal', modeAi: 'KI aktiv',
     noSpeech: 'Dieser Browser kennt keine Spracherkennung. Nimm Chrome oder Edge — oder tipp einfach.',
     micError: 'Mikrofon-Fehler: ',
+    micInsecure: 'So wie JARVIS gerade geöffnet ist, gibt das Gerät das Mikrofon nicht frei — es erlaubt Sprache nur über eine sichere https-Verbindung. Öffne JARVIS über den Link und installiere ihn mit „Als App installieren“ auf dem Startbildschirm; dann läuft er ohne Browser-Leiste und das Mikrofon funktioniert. Tippen geht hier natürlich weiter.',
+    micDenied: 'Mikrofon-Zugriff wurde abgelehnt. Erlaube ihn über das Symbol links in der Adresszeile → Berechtigungen → Mikrofon, und tippe dann erneut auf den Knopf.',
+    micMissing: 'Ich finde kein Mikrofon an diesem Gerät.',
+    micNetwork: 'Die Spracherkennung kommt gerade nicht ans Netz. Prüf die Verbindung — oder tipp so lange.',
+    install: 'Als App installieren',
+    installed: 'JARVIS läuft bereits als App. ',
+    installHowAndroid: 'Öffne das Browser-Menü (⋮) und wähle „App installieren“ oder „Zum Startbildschirm hinzufügen“.',
+    installHowIos: 'Tippe auf „Teilen“ und dann auf „Zum Home-Bildschirm“.',
+    installHowDesktop: 'Klicke rechts in der Adresszeile auf das Installieren-Symbol.',
     help: 'Ich kann Termine anlegen und vorlesen, Mails entwerfen, Kontakte suchen, Ausgaben buchen und auswerten, Notizen führen und rechnen. Sag es einfach in einem Satz — zum Beispiel „Termin mit Rhodey am Freitag um 10 Uhr“.',
   },
   en: {
@@ -512,6 +533,15 @@ const I18N = {
     modeLocal: 'local', modeAi: 'AI active',
     noSpeech: 'This browser has no speech recognition. Use Chrome or Edge — or just type.',
     micError: 'Microphone error: ',
+    micInsecure: 'Opened this way, the device will not release the microphone — it only allows speech over a secure https connection. Open JARVIS from the link and install it to your home screen with “Install as app”; it then runs without browser chrome and the microphone works. Typing works here regardless.',
+    micDenied: 'Microphone access was denied. Allow it from the icon at the left of the address bar → Permissions → Microphone, then tap the button again.',
+    micMissing: 'I cannot find a microphone on this device.',
+    micNetwork: 'Speech recognition cannot reach the network right now. Check the connection — or type in the meantime.',
+    install: 'Install as app',
+    installed: 'JARVIS is already running as an app. ',
+    installHowAndroid: 'Open the browser menu (⋮) and choose “Install app” or “Add to Home screen”.',
+    installHowIos: 'Tap “Share”, then “Add to Home Screen”.',
+    installHowDesktop: 'Click the install icon at the right of the address bar.',
     help: 'I can schedule and read back your calendar, draft email, find contacts, log and total expenses, keep notes and do arithmetic. Just say it in one sentence — for instance “meeting with Rhodey on Friday at 10”.',
   },
 };
@@ -1158,7 +1188,7 @@ const els = {
   stats: document.querySelectorAll('.stat'), hint: $('#hint'), modeChip: $('#modeChip'),
   settings: $('#settings'), voiceSelect: $('#voiceSelect'), voiceNote: $('#voiceNote'),
   rate: $('#rate'), pitch: $('#pitch'), rateVal: $('#rateVal'), pitchVal: $('#pitchVal'),
-  apiKey: $('#apiKey'), keyNote: $('#keyNote'),
+  apiKey: $('#apiKey'), keyNote: $('#keyNote'), installNote: $('#installNote'),
 };
 
 const voicePrefs = {
@@ -1229,12 +1259,38 @@ function setListening(on) {
   els.hint.textContent = on ? t().listening : t().hint;
 }
 
-function startListening() {
+/**
+ * A page opened straight from storage (file:// on Android is served as
+ * content://) is not a secure origin, and the platform then refuses the
+ * microphone outright — reported as "not-allowed", which reads like a denied
+ * permission but cannot be granted. Say what it actually is, and point at the
+ * installed app, which does run on a secure origin.
+ */
+const micBlockedByOrigin = () => !window.isSecureContext && location.protocol !== 'file:';
+
+async function startListening() {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (micBlockedByOrigin()) {
+    addBubble('error', t().micInsecure);
+    return;
+  }
   if (!Recognition) {
     addBubble('error', t().noSpeech);
     return;
   }
+
+  // Asking through getUserMedia first is what makes Android raise the
+  // permission sheet; recognition alone often fails silently instead.
+  if (navigator.mediaDevices?.getUserMedia) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch (error) {
+      addBubble('error', error?.name === 'NotFoundError' ? t().micMissing : t().micDenied);
+      return;
+    }
+  }
+
   speechSynthesis?.cancel();
   recognition = new Recognition();
   recognition.lang = t().speechLang;
@@ -1242,11 +1298,60 @@ function startListening() {
   recognition.onresult = (event) => send(event.results[0][0].transcript);
   recognition.onerror = (event) => {
     setListening(false);
-    if (event.error !== 'aborted' && event.error !== 'no-speech') addBubble('error', t().micError + event.error);
+    const message = {
+      'not-allowed': micBlockedByOrigin() ? t().micInsecure : t().micDenied,
+      'service-not-allowed': micBlockedByOrigin() ? t().micInsecure : t().micDenied,
+      'audio-capture': t().micMissing,
+      network: t().micNetwork,
+    }[event.error];
+    if (message) addBubble('error', message);
+    else if (event.error !== 'aborted' && event.error !== 'no-speech') addBubble('error', t().micError + event.error);
   };
   recognition.onend = () => setListening(false);
   recognition.start();
   setListening(true);
+}
+
+/* ------------------------------------------------------------- installing */
+
+// A manifest makes the page installable, so it launches from the home screen
+// without browser chrome — and, importantly, on a secure origin.
+const MANIFEST = {
+  name: 'JARVIS 2.0',
+  short_name: 'JARVIS',
+  display: 'standalone',
+  background_color: '#05080d',
+  theme_color: '#05080d',
+  orientation: 'any',
+  icons: [{
+    src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%2305080d'/%3E%3Ccircle cx='256' cy='256' r='176' fill='none' stroke='%2364e6ff' stroke-width='26'/%3E%3Ccircle cx='256' cy='256' r='74' fill='%2364e6ff'/%3E%3C/svg%3E",
+    sizes: '512x512',
+    type: 'image/svg+xml',
+    purpose: 'any',
+  }],
+};
+
+try {
+  const link = document.createElement('link');
+  link.rel = 'manifest';
+  link.href = `data:application/manifest+json,${encodeURIComponent(JSON.stringify(MANIFEST))}`;
+  document.head.append(link);
+} catch { /* a host that refuses the manifest still leaves the app usable */ }
+
+let installPrompt = null;
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  installPrompt = event;
+  $('#installBtn').hidden = false;
+});
+
+function installHelp() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/i.test(ua)) return t().installHowIos;
+  if (/Android/i.test(ua)) return t().installHowAndroid;
+  return t().installHowDesktop;
 }
 
 /* ==================================================================== UI */
@@ -1401,6 +1506,8 @@ function applyLang() {
   els.feed.dataset.empty = s.emptyFeed;
   els.recordsBody.dataset.empty = s.emptyRecords;
   els.count.textContent = dispatched ? `${dispatched} ${s.dispatched}` : s.ready;
+  $('#installBtn').textContent = s.install;
+  els.installNote.textContent = standalone() ? s.installed : installHelp();
   els.modeChip.textContent = apiKey ? s.modeAi : s.modeLocal;
   els.modeChip.className = `chip ${apiKey ? 'on' : 'warn'}`;
   els.roster.innerHTML = AGENT_ORDER.map((name) => `<li data-agent="${name}">${escapeHtml(s.labels[name])}</li>`).join('');
@@ -1418,7 +1525,7 @@ els.form.addEventListener('submit', (event) => {
 
 els.micBtn.addEventListener('click', () => {
   if (listening) recognition?.stop();
-  else startListening();
+  else startListening().catch((error) => addBubble('error', t().micError + (error?.message || error)));
 });
 
 els.resetBtn.addEventListener('click', () => {
@@ -1526,15 +1633,38 @@ $('#clearKey').addEventListener('click', () => {
   applyLang();
 });
 
+$('#installBtn').addEventListener('click', async () => {
+  if (installPrompt) {
+    installPrompt.prompt();
+    const choice = await installPrompt.userChoice.catch(() => null);
+    if (choice?.outcome === 'accepted') installPrompt = null;
+    return;
+  }
+  els.installNote.textContent = (standalone() ? t().installed : '') + installHelp();
+});
+
 $('#downloadPage').addEventListener('click', async () => {
-  const data = `<!doctype html>\n${document.documentElement.outerHTML}`;
+  // Without an explicit charset the saved file is read as Latin-1 by some
+  // local viewers, which mangles every umlaut and quotation mark.
+  const root = document.documentElement.cloneNode(true);
+  let head = root.querySelector('head');
+  if (!head) {
+    head = document.createElement('head');
+    root.prepend(head);
+  }
+  if (!head.querySelector('meta[charset]')) {
+    const meta = document.createElement('meta');
+    meta.setAttribute('charset', 'utf-8');
+    head.prepend(meta);
+  }
+  const data = `<!doctype html>\n${root.outerHTML}`;
   if (window.claude?.downloads?.save) {
     try {
       await window.claude.downloads.save({ filename: 'jarvis.html', data });
       return;
     } catch { /* the viewer declined — fall through to the browser download */ }
   }
-  const url = URL.createObjectURL(new Blob([data], { type: 'text/html' }));
+  const url = URL.createObjectURL(new Blob([data], { type: 'text/html;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
   link.download = 'jarvis.html';

@@ -41,7 +41,13 @@ kein `npm install`, kein API-Key nötig. Herunterladen, doppelklicken, fertig.
   einstellbar, die JARVIS-Voreinstellung setzt beides auf einen tiefen, ruhigen
   Ton. Kein Konto, keine Kosten, kein Limit.
 - **Spracheingabe** über die Web Speech API — Mikrofon-Knopf drücken, sprechen.
-  Funktioniert in Chrome und Edge.
+  Funktioniert in Chrome und Edge. Wichtig auf dem Handy: Sprache gibt das
+  Betriebssystem nur über eine sichere https-Verbindung frei. Eine Datei, die
+  direkt aus dem Speicher geöffnet wird (Android: `content://`), bekommt kein
+  Mikrofon — dort meldet JARVIS das im Klartext statt mit „not-allowed“.
+- **Als App installierbar.** Über den gehosteten Link → „Als App installieren“
+  landet JARVIS auf dem Startbildschirm und startet ohne Browser-Leiste. Damit
+  läuft er auf einem sicheren Ursprung, und das Mikrofon funktioniert.
 - **Deutsch und Englisch**, umschaltbar oben rechts. Das betrifft Oberfläche,
   Erkennung, Sprachausgabe und die Befehle selbst.
 - **Lokaler Modus.** Ohne Key versteht JARVIS direkte Befehle und führt sie aus:
