@@ -524,6 +524,7 @@ const I18N = {
     serverBrain: 'Dieser Server denkt bereits mit — du brauchst keinen eigenen Key.',
     recording: 'Ich nehme auf … klick erneut, wenn du fertig bist.',
     codeSaved: 'Code gespeichert.',
+    codeNeeded: 'Dieser Server verlangt einen Zugangscode. Trag ihn oben rechts unter „Stimme & KI“ ein — danach läuft alles wie gewohnt.',
     help: 'Ich kann Termine anlegen und vorlesen, Mails entwerfen, Kontakte suchen, Ausgaben buchen und auswerten, Notizen führen und rechnen. Sag es einfach in einem Satz — zum Beispiel „Termin mit Rhodey am Freitag um 10 Uhr“.',
   },
   en: {
@@ -557,6 +558,7 @@ const I18N = {
     serverBrain: 'This server already does the reasoning — you do not need your own key.',
     recording: 'Recording … click again when you have finished.',
     codeSaved: 'Code saved.',
+    codeNeeded: 'This server requires an access code. Enter it under “Voice & AI” at the top right, and everything works from there.',
     help: 'I can schedule and read back your calendar, draft email, find contacts, log and total expenses, keep notes and do arithmetic. Just say it in one sentence — for instance “meeting with Rhodey on Friday at 10”.',
   },
 };
@@ -1554,7 +1556,8 @@ async function send(text) {
     renderRecords();
   } catch (error) {
     pending.remove();
-    addBubble('error', String(error.message || error));
+    const message = /access code/i.test(String(error.message)) ? t().codeNeeded : String(error.message || error);
+    addBubble('error', message);
   } finally {
     busy = false;
     els.sendBtn.disabled = false;
