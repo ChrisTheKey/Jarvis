@@ -445,7 +445,14 @@ dialog::backdrop { background: rgba(2, 6, 10, 0.72); }
 
     <div class="divider"></div>
 
-    <div class="field">
+    <div class="field" id="codeField" hidden>
+      <label for="accessCode">Zugangscode</label>
+      <input type="password" id="accessCode" autocomplete="off" placeholder="…" />
+      <div><button type="button" id="saveCode">Code speichern</button></div>
+      <p class="note">Dieser Server ist mit einem Code geschützt, damit niemand Fremdes auf deine Rechnung Anfragen stellt.</p>
+    </div>
+
+    <div class="field" id="keyField">
       <label for="apiKey">Anthropic API-Key — optional, für echtes Verstehen</label>
       <input type="password" id="apiKey" placeholder="sk-ant-…" autocomplete="off" />
       <div class="row" style="display:flex;gap:10px;flex-wrap:wrap">
@@ -513,6 +520,10 @@ const I18N = {
     installHowAndroid: 'Öffne das Browser-Menü (⋮) und wähle „App installieren“ oder „Zum Startbildschirm hinzufügen“.',
     installHowIos: 'Tippe auf „Teilen“ und dann auf „Zum Home-Bildschirm“.',
     installHowDesktop: 'Klicke rechts in der Adresszeile auf das Installieren-Symbol.',
+    modeServer: 'KI · Server',
+    serverBrain: 'Dieser Server denkt bereits mit — du brauchst keinen eigenen Key.',
+    recording: 'Ich nehme auf … klick erneut, wenn du fertig bist.',
+    codeSaved: 'Code gespeichert.',
     help: 'Ich kann Termine anlegen und vorlesen, Mails entwerfen, Kontakte suchen, Ausgaben buchen und auswerten, Notizen führen und rechnen. Sag es einfach in einem Satz — zum Beispiel „Termin mit Rhodey am Freitag um 10 Uhr“.',
   },
   en: {
@@ -542,6 +553,10 @@ const I18N = {
     installHowAndroid: 'Open the browser menu (⋮) and choose “Install app” or “Add to Home screen”.',
     installHowIos: 'Tap “Share”, then “Add to Home Screen”.',
     installHowDesktop: 'Click the install icon at the right of the address bar.',
+    modeServer: 'AI · server',
+    serverBrain: 'This server already does the reasoning — you do not need your own key.',
+    recording: 'Recording … click again when you have finished.',
+    codeSaved: 'Code saved.',
     help: 'I can schedule and read back your calendar, draft email, find contacts, log and total expenses, keep notes and do arithmetic. Just say it in one sentence — for instance “meeting with Rhodey on Friday at 10”.',
   },
 };
@@ -1092,6 +1107,26 @@ function understand(text) {
 
 let apiKey = mem.get('jarvis.key') || '';
 
+/**
+ * When the page is served by a deployment that carries the keys (Netlify, or
+ * any host running the functions in netlify/functions), the brain, the real
+ * voice and Whisper all come from there and the visitor configures nothing.
+ */
+const backend = { chat: false, voice: false, transcribe: false, requiresCode: false, model: '' };
+let accessCode = mem.get('jarvis.code') || '';
+const codeHeader = () => (accessCode ? { 'x-jarvis-code': accessCode } : {});
+const brainReady = () => backend.chat || Boolean(apiKey);
+
+async function probeBackend() {
+  try {
+    const response = await fetch('/api/status', { cache: 'no-store' });
+    if (!response.ok) return;
+    const status = await response.json();
+    if (typeof status?.chat !== 'boolean') return;   // a host that answers with its own HTML
+    Object.assign(backend, status);
+  } catch { /* no backend — the local brain stands in */ }
+}
+
 const TOOL_SCHEMAS = [
   { name: 'calendarAgent', description: 'Create, list or cancel calendar events. Pass absolute ISO 8601 datetimes.', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['create', 'list', 'cancel'] }, title: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' }, attendees: { type: 'array', items: { type: 'string' } }, location: { type: 'string' }, id: { type: 'string' }, query: { type: 'string' } }, required: ['action'] } },
   { name: 'emailAgent', description: 'Draft, queue, list or delete email. Resolve a person to an address with contactAgent first.', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['draft', 'send', 'list', 'delete'] }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, id: { type: 'string' }, query: { type: 'string' } }, required: ['action'] } },
@@ -1117,6 +1152,19 @@ For casual conversation, just answer naturally with charm.
 One or two sentences. Output only the spoken line — no quotation marks, no stage directions.`;
 
 async function anthropic(body) {
+  if (backend.chat) {
+    const proxied = await fetch('/api/claude', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...codeHeader() },
+      body: JSON.stringify(body),
+    });
+    if (!proxied.ok) {
+      const detail = await proxied.json().catch(() => ({}));
+      throw new Error(detail.error || `API ${proxied.status}`);
+    }
+    return proxied.json();
+  }
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -1165,7 +1213,7 @@ async function askAi(text, onTool) {
 }
 
 async function personality(reply, kind) {
-  if (!apiKey) return quip(kind);
+  if (!brainReady()) return quip(kind);
   try {
     const response = await anthropic({
       max_tokens: 200, temperature: 0.85,
@@ -1235,7 +1283,29 @@ function loadVoices() {
     : `Best match on this device: ${best.name}. For a deeper register, ease the rate down and keep the pitch below 0.9.`;
 }
 
-function speak(text) {
+async function speak(text) {
+  // The deployment's own voice wins when there is one; the browser voice is the
+  // fallback, and also the net when synthesis fails mid-request.
+  if (backend.voice) {
+    try {
+      const response = await fetch('/api/speak', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...codeHeader() },
+        body: JSON.stringify({ text }),
+      });
+      if (response.ok) {
+        const url = URL.createObjectURL(await response.blob());
+        const audio = new Audio(url);
+        els.micBtn.classList.add('speaking');
+        const done = () => { els.micBtn.classList.remove('speaking'); URL.revokeObjectURL(url); };
+        audio.onended = done;
+        audio.onerror = done;
+        await audio.play();
+        return;
+      }
+    } catch { /* fall through to the browser voice */ }
+  }
+
   if (!window.speechSynthesis) return;
   speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
@@ -1275,6 +1345,9 @@ async function startListening() {
     return;
   }
   if (!Recognition) {
+    // Safari and Firefox have no recognition of their own; if the deployment
+    // carries Whisper, record and send the audio there instead.
+    if (backend.transcribe) return startRecording();
     addBubble('error', t().noSpeech);
     return;
   }
@@ -1310,6 +1383,44 @@ async function startListening() {
   recognition.onend = () => setListening(false);
   recognition.start();
   setListening(true);
+}
+
+let mediaRecorder = null;
+
+/** Records a clip and has the deployment's Whisper turn it into text. */
+async function startRecording() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    addBubble('error', error?.name === 'NotFoundError' ? t().micMissing : t().micDenied);
+    return;
+  }
+
+  const chunks = [];
+  mediaRecorder = new MediaRecorder(stream);
+  mediaRecorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
+  mediaRecorder.onstop = async () => {
+    stream.getTracks().forEach((track) => track.stop());
+    mediaRecorder = null;
+    setListening(false);
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    if (blob.size < 1200) return;
+    const form = new FormData();
+    form.append('audio', blob, 'speech.webm');
+    form.append('language', lang);
+    try {
+      const response = await fetch('/api/transcribe', { method: 'POST', headers: codeHeader(), body: form });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || `HTTP ${response.status}`);
+      if (json.text) send(json.text);
+    } catch (error) {
+      addBubble('error', String(error.message || error));
+    }
+  };
+  mediaRecorder.start();
+  setListening(true);
+  els.hint.textContent = t().recording;
 }
 
 /* ------------------------------------------------------------- installing */
@@ -1426,7 +1537,7 @@ async function send(text) {
   try {
     let reply;
     let kind = 'done';
-    if (apiKey) {
+    if (brainReady()) {
       const result = await askAi(text, logAgent);
       reply = result.reply;
       kind = result.toolCalls.length ? 'info' : 'chat';
@@ -1506,10 +1617,16 @@ function applyLang() {
   els.feed.dataset.empty = s.emptyFeed;
   els.recordsBody.dataset.empty = s.emptyRecords;
   els.count.textContent = dispatched ? `${dispatched} ${s.dispatched}` : s.ready;
+  $('#codeField').hidden = !backend.requiresCode;
+  $('#keyField').hidden = backend.chat;
+  if (backend.chat) {
+    els.keyNote.className = 'note';
+    els.keyNote.textContent = s.serverBrain;
+  }
   $('#installBtn').textContent = s.install;
   els.installNote.textContent = standalone() ? s.installed : installHelp();
-  els.modeChip.textContent = apiKey ? s.modeAi : s.modeLocal;
-  els.modeChip.className = `chip ${apiKey ? 'on' : 'warn'}`;
+  els.modeChip.textContent = backend.chat ? s.modeServer : (apiKey ? s.modeAi : s.modeLocal);
+  els.modeChip.className = `chip ${brainReady() ? 'on' : 'warn'}`;
   els.roster.innerHTML = AGENT_ORDER.map((name) => `<li data-agent="${name}">${escapeHtml(s.labels[name])}</li>`).join('');
   for (const button of els.tabs.querySelectorAll('button')) button.textContent = s.tabs[button.dataset.tab];
   loadVoices();
@@ -1524,8 +1641,12 @@ els.form.addEventListener('submit', (event) => {
 });
 
 els.micBtn.addEventListener('click', () => {
-  if (listening) recognition?.stop();
-  else startListening().catch((error) => addBubble('error', t().micError + (error?.message || error)));
+  if (listening) {
+    if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
+    else recognition?.stop();
+    return;
+  }
+  startListening().catch((error) => addBubble('error', t().micError + (error?.message || error)));
 });
 
 els.resetBtn.addEventListener('click', () => {
@@ -1624,6 +1745,15 @@ $('#connectKey').addEventListener('click', async () => {
   }
 });
 
+$('#saveCode').addEventListener('click', async () => {
+  accessCode = $('#accessCode').value.trim();
+  mem.set('jarvis.code', accessCode);
+  await probeBackend();
+  applyLang();
+  els.keyNote.className = 'note';
+  els.keyNote.textContent = t().codeSaved;
+});
+
 $('#clearKey').addEventListener('click', () => {
   apiKey = '';
   els.apiKey.value = '';
@@ -1684,7 +1814,14 @@ if (window.speechSynthesis) {
 }
 if (apiKey) els.apiKey.value = apiKey;
 
-applyLang();
-greet();
-els.input.focus();
+if (accessCode) $('#accessCode').value = accessCode;
+
+// A classic script has no top-level await, and the probe has to finish before
+// the first paint decides between server mode and local mode.
+(async () => {
+  await probeBackend();
+  applyLang();
+  greet();
+  els.input.focus();
+})();
 </script>

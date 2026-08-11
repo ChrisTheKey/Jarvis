@@ -61,6 +61,14 @@ kein `npm install`, kein API-Key nötig. Herunterladen, doppelklicken, fertig.
 
 Alles wird in `localStorage` gespeichert, ist also beim nächsten Öffnen noch da.
 
+### Auf Netlify deployen
+
+`netlify.toml` und `netlify/functions/` sind dabei — siehe **[DEPLOY.md](DEPLOY.md)**.
+Das ist die einzige Variante, in der Mikrofon *und* KI-Modus zusammen laufen:
+https-Adresse für das eine, serverseitige Keys für das andere. Die Seite erkennt
+beim Start selbst, was der Server kann, und blendet das Key-Feld dann aus.
+Optional sprechen die Antworten dort mit der echten ElevenLabs-Stimme.
+
 ## Running it
 
 ```bash

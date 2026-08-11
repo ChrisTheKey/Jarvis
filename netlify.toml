@@ -1,0 +1,23 @@
+# The site is the single-file app, copied in as index.html so there is only ever
+# one copy of it in the repository.
+[build]
+  command = "mkdir -p site && cp standalone/jarvis.html site/index.html"
+  publish = "site"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# The browser talks to /api/*; Netlify routes that to the functions.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    # The page needs the microphone; everything else stays off.
+    Permissions-Policy = "microphone=(self), camera=(), geolocation=()"
