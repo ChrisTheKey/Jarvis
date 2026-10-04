@@ -26,11 +26,7 @@ Sprachgesteuerter Jarvis im Iron-Man-Stil. Du sprichst, Jarvis antwortet mit Sti
 Netlify zeigt die Jarvis-Oberfläche unter einer festen Adresse, auch auf dem Handy. Die Befehle führt weiterhin der Jarvis auf deinem Computer aus, denn Netlify kann nichts auf deinem PC tun.
 
 1. Auf https://app.netlify.com **Add new site → Import an existing project → GitHub** wählen und dieses Repository verbinden. Netlify liest `netlify.toml` und braucht keine weiteren Build-Einstellungen.
-2. Die Adresse der Seite (z. B. `https://mein-jarvis.netlify.app`) in die `.env` auf deinem Computer eintragen:
-   ```
-   JARVIS_WEB_ORIGIN=https://mein-jarvis.netlify.app
-   ```
-   Nur diese Seite darf den Jarvis auf deinem Rechner steuern.
+2. Freigegeben ist bereits `https://chrisjarvis.netlify.app`: Nur diese Seite darf den Jarvis auf deinem Rechner steuern. Bei einer anderen Adresse diese in die `.env` eintragen: `JARVIS_WEB_ORIGIN=https://andere-adresse.netlify.app`
 3. Jarvis auf dem Computer starten (`start.bat` / `start.command`), dann die Netlify-Adresse in Chrome oder Edge öffnen. Fragt Chrome nach Zugriff auf Geräte im lokalen Netzwerk: **Zulassen**.
 
 **Cloud-Modus (optional):** Ist der Computer aus, kann Jarvis über Netlify trotzdem sprechen und planen, aber nichts ausführen. Dafür in Netlify unter **Site configuration → Environment variables** anlegen:

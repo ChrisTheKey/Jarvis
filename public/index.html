@@ -682,7 +682,8 @@ async function boot() {
   await line("> Kern ................................. " + coreLabel);
   if (mode === "offline") {
     $("bootHint").textContent = HOSTED
-      ? `Jarvis läuft nicht auf diesem Computer.\n1. Jarvis auf dem PC starten (start.bat oder start.command).\n2. In der Datei .env muss stehen:\n   JARVIS_WEB_ORIGIN=${location.origin}\n3. Fragt Chrome nach Zugriff auf Geräte im lokalen Netzwerk: Zulassen.`
+      ? `Jarvis läuft nicht auf diesem Computer.\n1. Jarvis auf dem PC starten (start.bat oder start.command) und das Fenster offen lassen.\n2. Hier auf „Erneut verbinden“ klicken.\n3. Fragt Chrome nach Zugriff auf Geräte im lokalen Netzwerk: Zulassen.` +
+        (location.origin === "https://chrisjarvis.netlify.app" ? "" : `\n\nDiese Adresse muss in der .env freigegeben sein:\nJARVIS_WEB_ORIGIN=${location.origin}`)
       : "Der Jarvis-Server antwortet nicht. Läuft das Terminal-Fenster noch?";
     $("bootHint").hidden = false;
     $("bootBtn").textContent = "Erneut verbinden"; $("bootBtn").hidden = false;

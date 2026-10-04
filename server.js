@@ -20,8 +20,8 @@ const PERSONA = path.join(ROOT, "persona.md");
 const SESSION_FILE = path.join(ROOT, ".session");
 const WIN = process.platform === "win32";
 const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
-// Die eigene Netlify-Seite darf den Kern auf diesem Rechner steuern (kommagetrennt, z. B. https://mein-jarvis.netlify.app)
-const WEB_ORIGINS = new Set((process.env.JARVIS_WEB_ORIGIN || "").split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean));
+// Die eigene Netlify-Seite darf den Kern auf diesem Rechner steuern (kommagetrennt mehrere möglich)
+const WEB_ORIGINS = new Set((process.env.JARVIS_WEB_ORIGIN || "https://chrisjarvis.netlify.app").split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean));
 const LOCAL_ORIGINS = new Set([...ALLOWED_HOSTS].map((h) => `http://${h}`));
 const originAllowed = (o) => LOCAL_ORIGINS.has(o) || WEB_ORIGINS.has(o);
 
