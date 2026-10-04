@@ -1,9 +1,1 @@
-node_modules/
-.env
-data/*.json
-!data/.gitkeep
-*.log
-.DS_Store
-site/
-.netlify/
-dist/
+memory.json
