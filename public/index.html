@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J.A.R.V.I.S.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600&family=Share+Tech+Mono&display=swap">
+<style>
+/* Layout: Iron-Man-HUD – Reaktor-Kern als Vollbild-Canvas, links Uhr und Systemwerte, rechts Protokoll, unten Untertitel und Eingabe. Bewusst nur dunkel. */
+:root {
+  --bg: #02070d; --bg2: #061423; --cyan: #3fd8ff; --cyan-2: #9ff1ff; --line: rgba(63, 216, 255, .28);
+  --glass: rgba(6, 26, 44, .55); --text: #d3f3ff; --muted: #6c97ad; --amber: #ffb547; --red: #ff5d6c; --green: #5cffb0;
+  --display: "Orbitron", "Segoe UI", system-ui, sans-serif;
+  --ui: "Rajdhani", "Segoe UI", system-ui, sans-serif;
+  --mono: "Share Tech Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: radial-gradient(ellipse at 50% 42%, var(--bg2) 0%, var(--bg) 62%); color: var(--text); font: 500 16px/1.4 var(--ui); overflow: hidden; }
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none;
+  background-image: linear-gradient(rgba(63,216,255,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(63,216,255,.04) 1px, transparent 1px);
+  background-size: 44px 44px; mask-image: radial-gradient(ellipse at center, #000 30%, transparent 80%); }
+body::after { content: ""; position: fixed; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px); opacity: .35; }
+[hidden] { display: none !important; }
+canvas#core { position: fixed; inset: 0; width: 100%; height: 100%; }
+
+.hud { position: fixed; inset: 0; display: grid; grid-template-columns: 300px 1fr 340px; grid-template-rows: auto 1fr auto; gap: 18px; padding: 22px 24px; pointer-events: none; }
+.hud > * { pointer-events: auto; }
+header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
+.logo { font: 900 22px var(--display); letter-spacing: .32em; color: var(--cyan-2); text-shadow: 0 0 14px rgba(63,216,255,.7); }
+.tag { font: 12px var(--mono); color: var(--muted); letter-spacing: .14em; text-transform: uppercase; }
+.pill { margin-left: auto; font: 13px var(--mono); letter-spacing: .12em; padding: 5px 12px; border: 1px solid var(--line); color: var(--cyan); text-transform: uppercase; }
+.pill.warn { color: var(--amber); border-color: rgba(255,181,71,.4); }
+.pill.err { color: var(--red); border-color: rgba(255,93,108,.5); }
+
+.panel { position: relative; background: var(--glass); border: 1px solid var(--line); padding: 16px 18px; backdrop-filter: blur(3px); align-self: start;
+  clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px)); }
+.panel h2 { margin: 0 0 12px; font: 600 11px var(--mono); letter-spacing: .24em; color: var(--muted); text-transform: uppercase; display: flex; justify-content: space-between; }
+.left { display: flex; flex-direction: column; gap: 18px; }
+.left .panel { align-self: stretch; }
+.clock { font: 700 44px/1 var(--display); color: var(--cyan-2); letter-spacing: .06em; text-shadow: 0 0 18px rgba(63,216,255,.55); font-variant-numeric: tabular-nums; }
+.date { font: 500 15px var(--ui); color: var(--muted); letter-spacing: .14em; text-transform: uppercase; margin-top: 8px; }
+.stat { display: grid; grid-template-columns: 64px 1fr 48px; align-items: center; gap: 10px; font: 13px var(--mono); margin-bottom: 10px; }
+.stat:last-child { margin-bottom: 0; }
+.stat .k { color: var(--muted); letter-spacing: .1em; }
+.stat .v { text-align: right; color: var(--cyan-2); font-variant-numeric: tabular-nums; }
+.bar { height: 8px; background: repeating-linear-gradient(90deg, rgba(63,216,255,.14) 0 6px, transparent 6px 8px); position: relative; }
+.bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: repeating-linear-gradient(90deg, var(--cyan) 0 6px, transparent 6px 8px); box-shadow: 0 0 8px rgba(63,216,255,.7); transition: width .6s; }
+.bar i.hot { background: repeating-linear-gradient(90deg, var(--amber) 0 6px, transparent 6px 8px); }
+.kv { font: 13px var(--mono); color: var(--muted); display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.kv b { color: var(--text); font-weight: 400; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.right { max-height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.right .panel { display: flex; flex-direction: column; min-height: 0; max-height: 100%; }
+.log { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 9px; font: 13px/1.35 var(--mono); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.log li { display: grid; grid-template-columns: 58px 1fr; gap: 8px; animation: slide .25s ease-out; }
+.log time { color: var(--muted); }
+.log .t { color: var(--cyan); letter-spacing: .08em; margin-right: 6px; }
+.log .t.amber { color: var(--amber); } .log .t.red { color: var(--red); } .log .t.green { color: var(--green); }
+.log span { overflow-wrap: anywhere; color: var(--text); opacity: .88; }
+.log .empty { display: block; color: var(--muted); }
+
+.bottom { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.subs { width: min(860px, 100%); text-align: center; min-height: 84px; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; }
+.subs .you { font: 500 15px var(--mono); color: var(--muted); letter-spacing: .04em; }
+.subs .you::before { content: "SIE ▸ "; color: var(--cyan); opacity: .7; }
+.subs .jarvis { font: 500 21px/1.35 var(--ui); color: var(--text); text-shadow: 0 0 12px rgba(0,0,0,.9); max-height: 5.4em; overflow-y: auto; scrollbar-width: none; }
+.bar-in { width: min(860px, 100%); display: flex; gap: 10px; align-items: center; }
+.mic { width: 54px; height: 54px; border-radius: 50%; border: 1px solid var(--cyan); background: rgba(63,216,255,.08); color: var(--cyan-2); cursor: pointer; display: grid; place-items: center; flex: none; transition: background .2s, box-shadow .2s; }
+.mic svg { width: 22px; height: 22px; }
+.mic.on { background: rgba(63,216,255,.28); box-shadow: 0 0 22px rgba(63,216,255,.7); }
+form.cmd { flex: 1; min-width: 0; display: flex; border: 1px solid var(--line); background: var(--glass); }
+form.cmd input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: 500 17px var(--ui); padding: 14px 16px; letter-spacing: .02em; }
+form.cmd input::placeholder { color: var(--muted); }
+form.cmd button { background: transparent; color: var(--cyan); border: 0; border-left: 1px solid var(--line); font: 700 12px var(--display); letter-spacing: .2em; padding: 0 18px; cursor: pointer; }
+form.cmd button.stop { color: var(--red); }
+.opts { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; font: 12px var(--mono); color: var(--muted); letter-spacing: .08em; }
+.opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.opts input { accent-color: var(--cyan); }
+.opts select { background: var(--bg); color: var(--text); border: 1px solid var(--line); font: 12px var(--mono); padding: 3px 6px; max-width: 220px; }
+.opts button { background: none; border: 1px solid var(--line); color: var(--muted); font: 12px var(--mono); letter-spacing: .08em; padding: 3px 10px; cursor: pointer; }
+.opts button:hover { color: var(--cyan); border-color: var(--cyan); }
+:focus-visible { outline: 1px solid var(--cyan-2); outline-offset: 3px; }
+
+/* Startbildschirm */
+.boot { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; background: rgba(1,5,10,.92); }
+.boot-in { display: flex; flex-direction: column; align-items: center; gap: 22px; text-align: center; padding-inline: 16px; }
+.boot h1 { margin: 0; font: 900 clamp(34px, 7vw, 64px) var(--display); letter-spacing: .3em; color: var(--cyan-2); text-shadow: 0 0 30px rgba(63,216,255,.8); padding-left: .3em; }
+.boot p { margin: 0; font: 13px var(--mono); color: var(--muted); letter-spacing: .3em; text-transform: uppercase; }
+.boot button { font: 700 14px var(--display); letter-spacing: .3em; color: var(--bg); background: var(--cyan); border: 0; padding: 16px 30px; cursor: pointer; box-shadow: 0 0 30px rgba(63,216,255,.55); }
+.boot .hint { margin: 0; max-width: min(520px, 90vw); font: 13px/1.6 var(--mono); color: var(--amber); letter-spacing: .02em; text-transform: none; white-space: pre-wrap; user-select: text; }
+.boot .pw { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; font: 12px var(--mono); color: var(--muted); letter-spacing: .1em; }
+.boot .pw input { background: var(--bg); border: 1px solid var(--line); color: var(--text); font: 15px var(--ui); padding: 10px 12px; }
+.boot .pw button { padding: 11px 18px; font-size: 12px; }
+.boot pre { margin: 0; min-height: 9em; width: min(440px, 90vw); text-align: left; font: 13px/1.6 var(--mono); color: var(--cyan); white-space: pre-wrap; }
+
+@keyframes slide { from { opacity: 0; transform: translateX(8px); } }
+@media (prefers-reduced-motion: reduce) { .log li { animation: none; } }
+@media (max-width: 1100px) { .hud { grid-template-columns: 250px 1fr 280px; } }
+@media (max-width: 860px) {
+  .hud { grid-template-columns: 1fr; padding: 14px 16px; }
+  .left, .right { display: none; }
+  .clock { font-size: 30px; }
+}
+</style>
+</head>
+<body>
+<canvas id="core" aria-hidden="true"></canvas>
+
+<div class="hud">
+  <header>
+    <div class="logo">J.A.R.V.I.S.</div>
+    <div class="tag">Just A Rather Very Intelligent System</div>
+    <div class="pill" id="state">Bereit</div>
+  </header>
+
+  <div class="left">
+    <section class="panel">
+      <div class="clock" id="clock">--:--:--</div>
+      <div class="date" id="date"></div>
+    </section>
+    <section class="panel">
+      <h2>Systeme <span id="host"></span></h2>
+      <div class="stat"><span class="k">CPU</span><div class="bar"><i id="cpuBar"></i></div><span class="v" id="cpu">–</span></div>
+      <div class="stat"><span class="k">RAM</span><div class="bar"><i id="memBar"></i></div><span class="v" id="mem">–</span></div>
+      <div class="stat"><span class="k">AUDIO</span><div class="bar"><i id="audioBar"></i></div><span class="v" id="audio">–</span></div>
+    </section>
+    <section class="panel">
+      <h2>Status</h2>
+      <div class="kv">
+        <span>Kern</span><b id="kCore">–</b>
+        <span>Modell</span><b id="kModel">–</b>
+        <span>Zugriff</span><b id="kAccess">–</b>
+        <span>Stimme</span><b id="kVoice">–</b>
+        <span>Laufzeit</span><b id="kUptime">–</b>
+      </div>
+    </section>
+  </div>
+
+  <div></div>
+
+  <div class="right">
+    <section class="panel">
+      <h2>Protokoll <span id="count"></span></h2>
+      <ul class="log" id="log"><li class="empty">Noch keine Aktivität. Sagen Sie „Jarvis“ und Ihren Befehl.</li></ul>
+    </section>
+  </div>
+
+  <div class="bottom">
+    <div class="subs">
+      <div class="you" id="you" hidden></div>
+      <div class="jarvis" id="say"></div>
+    </div>
+    <div class="bar-in">
+      <button class="mic" id="mic" type="button" aria-label="Sprechen (Leertaste)" title="Sprechen (Leertaste)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <form class="cmd" id="cmd">
+        <label for="cmdInput" hidden>Befehl</label>
+        <input id="cmdInput" autocomplete="off" placeholder="Befehl eingeben oder „Jarvis …“ sagen">
+        <button type="submit" id="send">SENDEN</button>
+      </form>
+    </div>
+    <div class="opts">
+      <label for="wake"><input type="checkbox" id="wake" checked> Wake-Word „Jarvis“</label>
+      <label for="voiceSel">Stimme <select id="voiceSel"></select></label>
+      <button type="button" id="reset">Neues Gespräch</button>
+    </div>
+  </div>
+</div>
+
+<div class="boot" id="boot">
+  <div class="boot-in">
+    <h1>J.A.R.V.I.S.</h1>
+    <p>Just A Rather Very Intelligent System</p>
+    <pre id="bootLog"></pre>
+    <p class="hint" id="bootHint" hidden></p>
+    <form class="pw" id="pwForm" hidden>
+      <label for="pw">Cloud-Passwort</label>
+      <input id="pw" type="password" autocomplete="current-password" required>
+      <button type="submit">Entsperren</button>
+    </form>
+    <button type="button" id="bootBtn">System starten</button>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("jarvis." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("jarvis." + k, JSON.stringify(v)); } catch {} },
+};
+// Auf Netlify gehostet: Die Oberfläche spricht mit dem Jarvis-Kern auf diesem Computer (localhost) oder mit dem Cloud-Modus.
+const HOSTED = !/^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+const qCore = new URLSearchParams(location.search).get("core");
+if (qCore) store.set("core", qCore);
+const CORE = HOSTED ? String(store.get("core", "http://localhost:3000")).replace(/\/+$/, "") : "";
+let mode = "local"; // local | cloud | offline
+let cloudKey = store.get("cloudKey", "");
+let cloudTurns = store.get("cloudTurns", []);
+const api = (p, body) => fetch(CORE + p, { method: "POST", headers: { "content-type": "application/json", "x-jarvis": "1" }, body: JSON.stringify(body || {}) });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------- Zustand ----------
+const STATES = {
+  idle:      { label: "Bereit",       color: [63, 216, 255] },
+  listening: { label: "Höre zu",      color: [120, 240, 255] },
+  thinking:  { label: "Verarbeite",   color: [255, 181, 71] },
+  speaking:  { label: "Spreche",      color: [170, 245, 255] },
+};
+let state = "idle", status = {}, busy = false, ctl = null;
+function setState(s) {
+  state = s;
+  const p = $("state");
+  p.textContent = STATES[s].label;
+  p.className = "pill" + (s === "thinking" ? " warn" : "");
+}
+
+// ---------- Protokoll ----------
+let logCount = 0;
+function log(tag, text, tone = "") {
+  const ul = $("log");
+  ul.querySelector(".empty")?.remove();
+  const li = document.createElement("li");
+  const t = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  li.innerHTML = `<time>${t}</time><span><span class="t ${tone}"></span></span>`;
+  li.querySelector(".t").textContent = tag;
+  li.lastElementChild.append(document.createTextNode(text));
+  ul.prepend(li);
+  while (ul.children.length > 60) ul.lastElementChild.remove();
+  $("count").textContent = String(++logCount).padStart(3, "0");
+}
+
+// ---------- Uhr und Systemwerte ----------
+function tick() {
+  const d = new Date();
+  $("clock").textContent = d.toLocaleTimeString("de-DE");
+  $("date").textContent = d.toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+}
+setInterval(tick, 1000); tick();
+async function poll() {
+  if (mode !== "local") return;
+  try {
+    const s = await (await fetch(CORE + "/api/system")).json();
+    $("cpu").textContent = s.cpu + "%"; $("cpuBar").style.width = s.cpu + "%"; $("cpuBar").classList.toggle("hot", s.cpu > 80);
+    $("mem").textContent = s.mem + "%"; $("memBar").style.width = s.mem + "%"; $("memBar").classList.toggle("hot", s.mem > 85);
+    $("host").textContent = s.host.slice(0, 18);
+    const h = Math.floor(s.uptime / 3600), m = Math.floor((s.uptime % 3600) / 60);
+    $("kUptime").textContent = `${h} h ${String(m).padStart(2, "0")} min`;
+  } catch {}
+}
+setInterval(poll, 2000); poll();
+
+// ---------- Audio-Pegel für den Kern ----------
+let actx = null, micAn = null, outAn = null, level = 0, fakeSpeak = 0;
+const freq = new Uint8Array(64);
+async function initAudio() {
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  outAn = actx.createAnalyser(); outAn.fftSize = 128; outAn.connect(actx.destination);
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    micAn = actx.createAnalyser(); micAn.fftSize = 128;
+    actx.createMediaStreamSource(stream).connect(micAn);
+    return true;
+  } catch { return false; }
+}
+function readLevel() {
+  let target = 0;
+  const an = state === "speaking" && outAn && elevenPlaying ? outAn : (state === "listening" || state === "idle") ? micAn : null;
+  if (an) {
+    an.getByteFrequencyData(freq);
+    let sum = 0; for (let i = 0; i < freq.length; i++) sum += freq[i];
+    target = Math.min(1, (sum / freq.length / 255) * (an === micAn ? 2.6 : 2));
+    if (an === micAn && state === "idle") target *= 0.5;
+  } else {
+    const t = performance.now() / 1000;
+    if (state === "speaking") {
+      target = 0.35 + 0.3 * Math.abs(Math.sin(t * 11)) * (0.6 + 0.4 * Math.sin(t * 3.3)) + fakeSpeak;
+      for (let i = 0; i < freq.length; i++) freq[i] = 255 * Math.max(0, Math.min(1, target * (0.5 + 0.5 * Math.sin(i * 0.7 + t * 9))));
+    } else if (state === "thinking") {
+      target = 0.18 + 0.08 * Math.sin(t * 4);
+      for (let i = 0; i < freq.length; i++) freq[i] = 70 + 60 * Math.sin(i * 0.5 - t * 6);
+    } else {
+      target = 0.05; freq.fill(12);
+    }
+    fakeSpeak *= 0.9;
+  }
+  level += (target - level) * 0.18;
+  const pct = Math.round(level * 100);
+  $("audio").textContent = pct + "%"; $("audioBar").style.width = pct + "%";
+}
+
+// ---------- Reaktor-Kern ----------
+const cv = $("core"), ctx = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+function resize() { DPR = Math.min(2, devicePixelRatio || 1); W = cv.width = innerWidth * DPR; H = cv.height = innerHeight * DPR; }
+addEventListener("resize", resize); resize();
+const particles = Array.from({ length: 90 }, () => ({ a: Math.random() * Math.PI * 2, r: 1.15 + Math.random() * 1.2, s: (Math.random() - 0.5) * 0.004, z: Math.random() }));
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let rot = 0, col = [63, 216, 255];
+
+function draw() {
+  readLevel();
+  const tc = STATES[state].color;
+  col = col.map((c, i) => c + (tc[i] - c) * 0.08);
+  const rgba = (a) => `rgba(${col[0] | 0},${col[1] | 0},${col[2] | 0},${a})`;
+  const cx = W / 2, cy = H * (innerWidth < 860 ? 0.38 : 0.43);
+  const R = Math.min(W, H) * 0.13;
+  const speed = state === "thinking" ? 3.2 : state === "speaking" ? 1.6 : 1;
+  rot += reduce ? 0 : 0.004 * speed;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.globalCompositeOperation = "lighter";
+
+  // Glühen hinter dem Kern
+  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, R * 3.2);
+  glow.addColorStop(0, rgba(0.22 + level * 0.35)); glow.addColorStop(0.35, rgba(0.06 + level * 0.08)); glow.addColorStop(1, rgba(0));
+  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, R * 3.2, 0, Math.PI * 2); ctx.fill();
+
+  // Äußerer Skalenring
+  ctx.save(); ctx.rotate(rot * 0.4);
+  for (let i = 0; i < 180; i++) {
+    const a = (i / 180) * Math.PI * 2, long = i % 15 === 0, mid = i % 5 === 0;
+    const r1 = R * 2.32, r2 = r1 + (long ? R * 0.14 : mid ? R * 0.07 : R * 0.035);
+    ctx.strokeStyle = rgba(long ? 0.85 : 0.35); ctx.lineWidth = (long ? 2 : 1) * DPR;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2); ctx.stroke();
+  }
+  ctx.restore();
+
+  // Segmentbögen
+  const arcs = [
+    { r: 2.05, w: 3, segs: [[0, 0.9], [1.3, 2.1], [2.6, 4.4], [5.0, 5.7]], dir: 1, sp: 0.9 },
+    { r: 1.82, w: 1.2, segs: [[0, 6.28]], dir: 1, sp: 0, a: 0.35 },
+    { r: 1.66, w: 6, segs: [[0.2, 0.7], [2.3, 2.6], [3.9, 4.6]], dir: -1, sp: 1.5 },
+    { r: 1.45, w: 1.5, dash: [4, 7], segs: [[0, 6.28]], dir: 1, sp: 0.6, a: 0.55 },
+  ];
+  for (const k of arcs) {
+    ctx.save(); ctx.rotate(rot * k.sp * k.dir * (state === "thinking" ? 2 : 1));
+    ctx.strokeStyle = rgba(k.a ?? 0.8); ctx.lineWidth = k.w * DPR; ctx.setLineDash(k.dash ? k.dash.map((d) => d * DPR) : []);
+    ctx.shadowColor = rgba(0.9); ctx.shadowBlur = 12 * DPR;
+    for (const [s, e] of k.segs) { ctx.beginPath(); ctx.arc(0, 0, R * k.r, s, e); ctx.stroke(); }
+    ctx.restore();
+  }
+  ctx.setLineDash([]);
+
+  // Frequenzstrahlen
+  const n = 96;
+  for (let i = 0; i < n; i++) {
+    const v = freq[(i < n / 2 ? i : n - 1 - i) % freq.length] / 255;
+    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+    const r1 = R * 1.08, r2 = r1 + R * (0.04 + v * 0.38 * (0.6 + level));
+    ctx.strokeStyle = rgba(0.35 + v * 0.6); ctx.lineWidth = 2 * DPR;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2); ctx.stroke();
+  }
+
+  // Denk-Indikator: kreisende Punkte
+  if (state === "thinking") {
+    for (let i = 0; i < 3; i++) {
+      const a = rot * 6 + (i * Math.PI * 2) / 3;
+      ctx.fillStyle = rgba(0.95); ctx.shadowColor = rgba(1); ctx.shadowBlur = 16 * DPR;
+      ctx.beginPath(); ctx.arc(Math.cos(a) * R * 1.66, Math.sin(a) * R * 1.66, 4 * DPR, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+  }
+
+  // Partikel
+  for (const p of particles) {
+    p.a += reduce ? 0 : p.s * speed;
+    const rr = R * p.r * (1 + level * 0.12);
+    ctx.fillStyle = rgba(0.15 + p.z * 0.5);
+    ctx.fillRect(Math.cos(p.a) * rr, Math.sin(p.a) * rr, (1 + p.z * 1.5) * DPR, (1 + p.z * 1.5) * DPR);
+  }
+
+  // Reaktor: Innenring mit Spulen
+  ctx.save(); ctx.rotate(-rot * 0.8);
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    ctx.fillStyle = rgba(0.22 + level * 0.3); ctx.strokeStyle = rgba(0.7); ctx.lineWidth = 1 * DPR;
+    ctx.beginPath(); ctx.arc(0, 0, R * 0.98, a, a + 0.42); ctx.arc(0, 0, R * 0.72, a + 0.42, a, true); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+
+  // Kern
+  const cr = R * (0.5 + level * 0.16);
+  const core = ctx.createRadialGradient(0, 0, 0, 0, 0, cr);
+  core.addColorStop(0, "rgba(255,255,255,0.95)"); core.addColorStop(0.35, rgba(0.9)); core.addColorStop(1, rgba(0.05));
+  ctx.fillStyle = core; ctx.shadowColor = rgba(1); ctx.shadowBlur = (30 + level * 50) * DPR;
+  ctx.beginPath(); ctx.arc(0, 0, cr, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = rgba(0.9); ctx.lineWidth = 1.5 * DPR;
+  ctx.beginPath(); ctx.arc(0, 0, R * 0.62, 0, Math.PI * 2); ctx.stroke();
+
+  ctx.restore();
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+// ---------- Sprachausgabe ----------
+let lastSpoken = "", lastSpokeEnd = 0;
+let voices = [], elevenPlaying = false, speakQueue = [], speaking = false, audioEl = null, mediaSrc = null;
+function cleanForSpeech(t) {
+  return t.replace(/```[\s\S]*?```/g, " Details stehen auf dem Bildschirm. ").replace(/`([^`]*)`/g, "$1")
+    .replace(/https?:\/\/\S+/g, "Link").replace(/[*_#>|]/g, "").replace(/^\s*[-•]\s+/gm, "").replace(/\s+/g, " ").trim();
+}
+function chunks(t) {
+  const parts = t.match(/[^.!?]+[.!?]*/g) || [t], out = [];
+  let cur = "";
+  for (const p of parts) { if ((cur + p).length > 220 && cur) { out.push(cur.trim()); cur = ""; } cur += p; }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+function loadVoices() {
+  if (!("speechSynthesis" in window)) return;
+  voices = speechSynthesis.getVoices().filter((v) => /^(de|en-GB)/i.test(v.lang));
+  const sel = $("voiceSel"), saved = store.get("voice", "");
+  sel.innerHTML = "";
+  if (status.tts === "elevenlabs") sel.append(new Option("ElevenLabs (Film-Stimme)", "eleven"));
+  const prefer = voices.find((v) => /Conrad|Killian|Stefan|Markus|Yannick|Viktor/i.test(v.name) && /^de/i.test(v.lang)) || voices.find((v) => /^de/i.test(v.lang));
+  for (const v of voices) sel.append(new Option(`${v.name} (${v.lang})`, v.name));
+  sel.value = saved && [...sel.options].some((o) => o.value === saved) ? saved : status.tts === "elevenlabs" ? "eleven" : prefer?.name || "";
+  $("kVoice").textContent = sel.value === "eleven" ? "ElevenLabs" : (sel.value || "Standard").replace(/^Microsoft |Online \(Natural\).*$/g, "");
+}
+if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged = loadVoices;
+$("voiceSel").addEventListener("change", () => { store.set("voice", $("voiceSel").value); loadVoices(); });
+
+function speakBrowser(text) {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) return resolve();
+    const u = new SpeechSynthesisUtterance(text);
+    const v = voices.find((x) => x.name === $("voiceSel").value);
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = "de-DE";
+    u.rate = 1.02; u.pitch = 0.85;
+    u.onboundary = () => (fakeSpeak = 0.25);
+    u.onend = u.onerror = () => resolve();
+    speechSynthesis.speak(u);
+  });
+}
+async function speakEleven(text) {
+  const r = await api("/api/tts", { text });
+  if (!r.ok) throw new Error("tts");
+  const url = URL.createObjectURL(await r.blob());
+  if (!audioEl) { audioEl = new Audio(); mediaSrc = actx?.createMediaElementSource(audioEl); mediaSrc?.connect(outAn); }
+  audioEl.src = url;
+  elevenPlaying = true;
+  await new Promise((res) => { audioEl.onended = audioEl.onerror = audioEl.onpause = res; audioEl.play().catch(res); });
+  elevenPlaying = false;
+  URL.revokeObjectURL(url);
+}
+function speak(text) {
+  const clean = cleanForSpeech(text);
+  if (!clean) return;
+  lastSpoken = (lastSpoken + " " + clean).slice(-1500);
+  if ($("voiceSel").value === "eleven") speakQueue.push(clean); else speakQueue.push(...chunks(clean));
+  if (!speaking) drainSpeech();
+}
+async function drainSpeech() {
+  speaking = true;
+  while (speakQueue.length) {
+    const t = speakQueue.shift();
+    setState("speaking");
+    try { if ($("voiceSel").value === "eleven") await speakEleven(t); else await speakBrowser(t); }
+    catch { await speakBrowser(t); }
+  }
+  speaking = false;
+  lastSpokeEnd = Date.now();
+  afterTurn();
+}
+function stopSpeaking() {
+  speakQueue = [];
+  try { speechSynthesis.cancel(); } catch {}
+  if (audioEl) audioEl.pause();
+}
+function afterTurn() {
+  if (busy || speaking) return;
+  setState("idle");
+  // Kurzes Fenster für Rückfragen ohne Wake-Word
+  if (wakeMode()) { awakeUntil = Date.now() + 6000; }
+  else stopRec();
+}
+
+// ---------- Spracherkennung ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const WAKE = /\b(jarvis|javis|jervis|jarwis|jawis|dschavis|dschawis|tschawis|charvis|jarvi)\b[\s,.!?:]*/i;
+const STOP = /\b(stopp?|halt|ruhe|abbrechen|sei still)\b/i;
+let rec = null, recOn = false, wantRec = false, awakeUntil = 0, ptt = false;
+const wakeMode = () => $("wake").checked;
+$("wake").checked = store.get("wake", true);
+
+function startRec() {
+  wantRec = true;
+  if (!rec || recOn) return;
+  try { rec.start(); recOn = true; } catch {}
+}
+function stopRec() { wantRec = false; try { rec?.stop(); } catch {} }
+if (SR) {
+  rec = new SR();
+  rec.lang = "de-DE"; rec.continuous = true; rec.interimResults = true;
+  rec.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i], t = r[0].transcript.trim();
+      if (!t) continue;
+      const awake = ptt || Date.now() < awakeUntil;
+      if (!r.isFinal) {
+        if (!busy && !speaking && (awake || WAKE.test(t))) { $("you").hidden = false; $("you").textContent = t.replace(WAKE, ""); if (state !== "listening") setState("listening"); }
+        continue;
+      }
+      handleHeard(t, awake);
+    }
+  };
+  rec.onend = () => { recOn = false; if (wantRec) setTimeout(() => { if (wantRec && !recOn) { try { rec.start(); recOn = true; } catch {} } }, 300); };
+  rec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      wantRec = false; log("MIKRO", "Zugriff verweigert. Erlaube das Mikrofon in der Adressleiste.", "red");
+    }
+  };
+}
+// Hört das Mikrofon Jarvis' eigene Stimme aus den Lautsprechern, wird das nicht als Befehl gewertet.
+function isEcho(t) {
+  if (Date.now() - lastSpokeEnd < 1200) return true;
+  const norm = (x) => x.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").split(/\s+/).filter(Boolean);
+  const heard = norm(t), spoken = new Set(norm(lastSpoken));
+  if (heard.length < 3) return false;
+  return heard.filter((w) => spoken.has(w)).length / heard.length > 0.8;
+}
+function handleHeard(t, awake) {
+  const m = t.match(WAKE);
+  if (busy || speaking) {
+    if (m && STOP.test(t)) stopAll();
+    return;
+  }
+  if (isEcho(t)) return;
+  if (m) {
+    const cmd = t.slice(m.index + m[0].length).trim();
+    if (cmd.length > 1) return run(cmd);
+    awakeUntil = Date.now() + 8000; chime(); setState("listening");
+    $("you").hidden = false; $("you").textContent = "…";
+    return;
+  }
+  if (awake) { ptt = false; awakeUntil = 0; return run(t); }
+  if (state === "listening") setState("idle");
+}
+function chime() {
+  if (!actx) return;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.frequency.setValueAtTime(880, actx.currentTime); o.frequency.exponentialRampToValueAtTime(1320, actx.currentTime + 0.12);
+  g.gain.setValueAtTime(0.0001, actx.currentTime); g.gain.exponentialRampToValueAtTime(0.12, actx.currentTime + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.25);
+  o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.26);
+}
+function pushToTalk() {
+  if (!SR) { log("MIKRO", "Spracherkennung fehlt. Bitte Chrome oder Edge verwenden.", "red"); return; }
+  if (busy || speaking) { stopAll(); }
+  ptt = true; awakeUntil = Date.now() + 10000; chime(); setState("listening");
+  $("you").hidden = false; $("you").textContent = "…";
+  startRec();
+}
+$("mic").addEventListener("click", pushToTalk);
+$("wake").addEventListener("change", () => { store.set("wake", wakeMode()); wakeMode() ? startRec() : stopRec(); log("SYSTEM", wakeMode() ? "Wake-Word aktiv" : "Wake-Word aus – Mikrofon-Taste oder Leertaste nutzen"); });
+addEventListener("keydown", (e) => {
+  if (e.target.closest("input, select, textarea, button")) return;
+  if (e.code === "Space") { e.preventDefault(); pushToTalk(); }
+  if (e.key === "Escape") stopAll();
+});
+setInterval(() => { $("mic").classList.toggle("on", state === "listening" || (ptt && recOn)); }, 150);
+
+// ---------- Befehl an Claude Code ----------
+const TOOL_NAMES = { Bash: "BEFEHL", Read: "LESEN", Write: "SCHREIBEN", Edit: "ÄNDERN", WebSearch: "SUCHE", WebFetch: "WEB", Glob: "DATEIEN", Grep: "SUCHE", Task: "AGENT", TodoWrite: "PLAN" };
+async function run(text) {
+  if (busy) return;
+  stopSpeaking();
+  busy = true; ptt = false; awakeUntil = 0;
+  $("you").hidden = false; $("you").textContent = text;
+  $("say").textContent = "";
+  setState("thinking");
+  log("SIE", text);
+  $("send").textContent = "STOPP"; $("send").classList.add("stop");
+  ctl = new AbortController();
+  let said = "";
+  try {
+    if (mode === "offline") throw new Error("Der Jarvis-Kern auf dem Computer ist nicht erreichbar.");
+    const res = mode === "cloud"
+      ? await fetch("/api/cloud", { method: "POST", headers: { "content-type": "application/json", "x-jarvis-key": cloudKey }, body: JSON.stringify({ messages: [...cloudTurns, { role: "user", content: text }] }) })
+      : await api("/api/ask", { text });
+    if (mode === "cloud" && res.status === 401) { cloudKey = ""; store.set("cloudKey", ""); $("boot").hidden = false; boot(); throw new Error("Falsches Cloud-Passwort."); }
+    if (!res.ok || !res.body) throw new Error((await res.json().catch(() => ({}))).error || "Server antwortet nicht.");
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    ctl.signal.addEventListener("abort", () => reader.cancel());
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const raw = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!raw.startsWith("data:")) continue;
+        const ev = JSON.parse(raw.slice(5));
+        if (ev.type === "text") {
+          said += (said ? " " : "") + ev.text.trim();
+          $("say").textContent = cleanForSpeech(said);
+          $("say").scrollTop = $("say").scrollHeight;
+          log("JARVIS", cleanForSpeech(ev.text), "green");
+          speak(ev.text);
+        } else if (ev.type === "tool") {
+          log(TOOL_NAMES[ev.name] || ev.name.toUpperCase(), ev.detail, "amber");
+        } else if (ev.type === "tool_error") {
+          log("BLOCKIERT", ev.detail, "red");
+        } else if (ev.type === "error") {
+          log("FEHLER", ev.message, "red");
+          $("say").textContent = ev.message;
+          speak("Verzeihung, Sir. Es gab ein Problem. Details stehen auf dem Bildschirm.");
+        } else if (ev.type === "done" && ev.error && !said) {
+          log("FEHLER", ev.error, "red");
+        }
+      }
+    }
+    if (mode === "cloud" && said) {
+      cloudTurns = [...cloudTurns, { role: "user", content: text }, { role: "assistant", content: said }].slice(-20);
+      store.set("cloudTurns", cloudTurns);
+    }
+  } catch (e) {
+    if (!ctl.signal.aborted) { log("FEHLER", e.message || "Verbindung verloren.", "red"); $("say").textContent = "Keine Verbindung zum Jarvis-Server. Läuft das Terminal-Fenster noch?"; }
+  } finally {
+    busy = false; ctl = null;
+    $("send").textContent = "SENDEN"; $("send").classList.remove("stop");
+    if (!speaking) afterTurn();
+  }
+}
+function stopAll() {
+  if (ctl) { ctl.abort(); if (mode === "local") api("/api/stop"); log("SYSTEM", "Abgebrochen", "amber"); }
+  stopSpeaking();
+  busy = false; setState("idle");
+}
+$("cmd").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (busy) return stopAll();
+  const t = $("cmdInput").value.trim();
+  if (t) { $("cmdInput").value = ""; run(t); }
+});
+$("reset").addEventListener("click", async () => {
+  stopAll();
+  if (mode === "cloud") { cloudTurns = []; store.set("cloudTurns", []); }
+  else if (mode === "local") await api("/api/reset");
+  $("say").textContent = ""; $("you").hidden = true;
+  log("SYSTEM", "Neues Gespräch gestartet. Das Gedächtnis in memory/sir.md bleibt erhalten.");
+});
+
+// ---------- Start ----------
+async function loadStatus() {
+  status = {};
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 2500);
+    status = await (await fetch(CORE + "/api/status", { signal: ac.signal })).json();
+    clearTimeout(timer);
+    mode = "local";
+  } catch {
+    mode = "offline";
+    if (HOSTED) { try { if ((await (await fetch("/api/cloud")).json()).configured) mode = "cloud"; } catch {} }
+  }
+  $("kCore").textContent = mode === "local" ? (status.claude ? "Claude Code " + status.claude.split(" ")[0] : "Claude Code fehlt") : mode === "cloud" ? "Cloud" : "offline";
+  $("kModel").textContent = status.model || (mode === "cloud" ? "Cloud" : "–");
+  $("kAccess").textContent = mode === "local" ? (status.fullAccess ? "VOLL" : "Standard") : "kein PC-Zugriff";
+  if (mode !== "local") { for (const k of ["cpu", "mem"]) { $(k).textContent = "–"; $(k + "Bar").style.width = "0"; } $("host").textContent = mode === "cloud" ? "CLOUD" : ""; }
+  loadVoices();
+}
+loadStatus();
+
+let micReady = null;
+async function boot() {
+  $("bootBtn").hidden = true; $("bootHint").hidden = true; $("pwForm").hidden = true;
+  const out = $("bootLog");
+  out.textContent = "";
+  const line = async (t, ms = 240) => { out.textContent += t + "\n"; await sleep(ms); };
+  await line("> Initialisiere Kernsysteme ............ OK");
+  if (micReady === null) micReady = await initAudio();
+  await loadStatus();
+  const coreLabel = mode === "local" ? (status.claude ? "CLAUDE CODE" : "CLAUDE CODE FEHLT") : mode === "cloud" ? "CLOUD (OHNE PC-ZUGRIFF)" : "NICHT ERREICHBAR";
+  await line("> Kern ................................. " + coreLabel);
+  if (mode === "offline") {
+    $("bootHint").textContent = HOSTED
+      ? `Jarvis läuft nicht auf diesem Computer.\n1. Jarvis auf dem PC starten (start.bat oder start.command).\n2. In der Datei .env muss stehen:\n   JARVIS_WEB_ORIGIN=${location.origin}\n3. Fragt Chrome nach Zugriff auf Geräte im lokalen Netzwerk: Zulassen.`
+      : "Der Jarvis-Server antwortet nicht. Läuft das Terminal-Fenster noch?";
+    $("bootHint").hidden = false;
+    $("bootBtn").textContent = "Erneut verbinden"; $("bootBtn").hidden = false;
+    return;
+  }
+  if (mode === "cloud" && !cloudKey) {
+    $("bootHint").textContent = "Jarvis auf dem PC ist nicht erreichbar. Im Cloud-Modus kann er sprechen und planen, aber keine Befehle auf dem Computer ausführen.";
+    $("bootHint").hidden = false; $("pwForm").hidden = false; $("pw").focus();
+    $("bootBtn").textContent = "PC erneut suchen"; $("bootBtn").hidden = false;
+    return;
+  }
+  await line("> Audio-Sensorik ....................... " + (micReady ? "OK" : "KEIN MIKROFON"));
+  await line("> Spracherkennung ...................... " + (SR ? "OK" : "NICHT VERFÜGBAR"));
+  await line("> Stimme ............................... " + (status.tts === "elevenlabs" ? "ELEVENLABS" : "BROWSER"));
+  await line("> Zugriffsebene ........................ " + (mode === "cloud" ? "NUR GESPRÄCH" : status.fullAccess ? "VOLLZUGRIFF" : "STANDARD"));
+  await line("> Alle Systeme online.", 500);
+  $("boot").hidden = true;
+  if (mode === "local") poll();
+  if (SR && wakeMode()) startRec();
+  const h = new Date().getHours();
+  const greet = h < 5 ? "Noch wach, Sir?" : h < 11 ? "Guten Morgen, Sir." : h < 18 ? "Guten Tag, Sir." : "Guten Abend, Sir.";
+  const call = wakeMode() && SR ? "Sagen Sie einfach Jarvis, wenn Sie mich brauchen." : "Ich bin bereit.";
+  const msg = mode === "cloud"
+    ? `${greet} Ich bin im Cloud-Modus. Ich höre zu, kann aber nichts auf Ihrem Computer ausführen. ${call}`
+    : status.claude
+      ? `${greet} Alle Systeme sind online. ${call}`
+      : `${greet} Ich kann Claude Code nicht finden. Bitte installieren Sie es und melden Sie sich einmal im Terminal an.`;
+  $("say").textContent = msg;
+  log("SYSTEM", mode === "cloud" ? "Cloud-Modus: Gespräch ohne PC-Zugriff." : "Online. " + (SR ? "Sprachsteuerung bereit." : "Keine Spracherkennung – bitte Chrome oder Edge nutzen."), mode === "local" && !status.claude ? "red" : "green");
+  speak(msg);
+}
+$("bootBtn").addEventListener("click", boot);
+$("pwForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  cloudKey = $("pw").value; store.set("cloudKey", cloudKey); $("pw").value = "";
+  boot();
+});
+</script>
+</body>
+</html>

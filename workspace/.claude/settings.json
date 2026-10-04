@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "WebSearch",
+      "WebFetch",
+      "Bash(open:*)",
+      "Bash(start:*)",
+      "Bash(xdg-open:*)",
+      "Bash(explorer:*)",
+      "Bash(date:*)",
+      "Bash(ls:*)",
+      "Bash(pwd)",
+      "Bash(mkdir:*)"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "jarvis-claude-code",
+  "version": "1.0.0",
+  "description": "Sprachgesteuerter Jarvis auf Basis von Claude Code",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=18" },
+  "scripts": { "start": "node server.js" }
+}

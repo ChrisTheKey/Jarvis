@@ -1,0 +1,14 @@
+# Netlify hostet die Jarvis-Oberfläche. Der Kern (Claude Code) läuft auf deinem Computer.
+[build]
+  publish = "public"
+
+[[edge_functions]]
+  path = "/api/cloud"
+  function = "cloud"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Permissions-Policy = "microphone=(self)"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "no-referrer"
