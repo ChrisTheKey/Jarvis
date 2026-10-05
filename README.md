@@ -33,6 +33,8 @@ Netlify zeigt die Jarvis-Oberfläche unter einer festen Adresse, auch auf dem Ha
 - `ANTHROPIC_API_KEY` – API-Schlüssel von https://console.anthropic.com (kostet pro Nutzung, getrennt vom Claude-Abo)
 - `JARVIS_PASSWORD` – ein langes Passwort, damit niemand sonst dein Guthaben verbraucht
 
+**Ohne Passwort-Abfrage öffnen:** Öffne auf jedem Gerät einmal `https://DEINE-SEITE.netlify.app/?key=DEIN-JARVIS_PASSWORD`. Das Gerät merkt sich das Passwort, danach reicht die normale Adresse. Den Link nicht teilen.
+
 Wichtig: Einfaches Drag-and-drop der ZIP bei Netlify lädt nur die Seite hoch, nicht den Cloud-Modus. Über GitHub verbunden funktioniert alles.
 
 ## Bedienung

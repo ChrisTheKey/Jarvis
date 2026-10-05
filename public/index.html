@@ -182,7 +182,7 @@ form.cmd button.stop { color: var(--red); }
       <input id="pw" type="password" autocomplete="current-password" required>
       <button type="submit">Entsperren</button>
     </form>
-    <button type="button" id="bootBtn">System starten</button>
+    <button type="button" id="bootBtn">Jarvis starten</button>
   </div>
 </div>
 
@@ -198,6 +198,9 @@ const qCore = new URLSearchParams(location.search).get("core");
 if (qCore) store.set("core", qCore);
 const CORE = HOSTED ? String(store.get("core", "http://localhost:3000")).replace(/\/+$/, "") : "";
 let mode = "local"; // local | cloud | offline
+// Einmal-Link https://…/?key=PASSWORT speichert das Passwort auf diesem Gerät; danach öffnet sich Jarvis ohne Abfrage.
+const qKey = new URLSearchParams(location.search).get("key");
+if (qKey) { store.set("cloudKey", qKey); history.replaceState(null, "", location.pathname); }
 let cloudKey = store.get("cloudKey", "");
 let cloudTurns = store.get("cloudTurns", []);
 const api = (p, body) => fetch(CORE + p, { method: "POST", headers: { "content-type": "application/json", "x-jarvis": "1" }, body: JSON.stringify(body || {}) });
@@ -488,7 +491,8 @@ const WAKE = /\b(jarvis|javis|jervis|jarwis|jawis|dschavis|dschawis|tschawis|cha
 const STOP = /\b(stopp?|halt|ruhe|abbrechen|sei still)\b/i;
 let rec = null, recOn = false, wantRec = false, awakeUntil = 0, ptt = false;
 const wakeMode = () => $("wake").checked;
-$("wake").checked = store.get("wake", true);
+// Auf Handys ist Dauerzuhören in Chrome unzuverlässig: dort standardmäßig Mikrofon-Taste statt Wake-Word.
+$("wake").checked = store.get("wake", !matchMedia("(pointer: coarse)").matches);
 
 function startRec() {
   wantRec = true;
@@ -707,7 +711,7 @@ async function boot() {
   const greet = h < 5 ? "Noch wach, Sir?" : h < 11 ? "Guten Morgen, Sir." : h < 18 ? "Guten Tag, Sir." : "Guten Abend, Sir.";
   const call = wakeMode() && SR ? "Sagen Sie einfach Jarvis, wenn Sie mich brauchen." : "Ich bin bereit.";
   const msg = mode === "cloud"
-    ? `${greet} Ich bin im Cloud-Modus. Ich höre zu, kann aber nichts auf Ihrem Computer ausführen. ${call}`
+    ? `${greet} Wie kann ich helfen?`
     : status.claude
       ? `${greet} Alle Systeme sind online. ${call}`
       : `${greet} Ich kann Claude Code nicht finden. Bitte installieren Sie es und melden Sie sich einmal im Terminal an.`;
