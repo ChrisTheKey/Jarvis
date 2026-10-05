@@ -3,3 +3,7 @@ node_modules/
 .session
 workspace/ergebnisse/*
 !workspace/ergebnisse/.gitkeep
+
+.secrets/
+token.json
+*_token.json

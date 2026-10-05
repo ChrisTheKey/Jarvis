@@ -14,7 +14,11 @@
       "Bash(date:*)",
       "Bash(ls:*)",
       "Bash(pwd)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(node ../gmail.js draft:*)",
+      "Bash(node ../gmail.js update:*)",
+      "Bash(node ../gmail.js send:*)",
+      "Bash(node ../gmail.js list:*)"
     ]
   }
 }

@@ -63,6 +63,20 @@ Vollzugriff heißt: Ein falsch verstandener Satz kann echte Dateien löschen. Sc
 - **Film-Stimme:** ElevenLabs-Schlüssel in `.env` eintragen; die Browser-Stimme ist kostenlos, klingt aber roboterhafter. In Edge klingen „Conrad“ und „Killian“ am besten.
 - **Tempo:** `JARVIS_MODEL=haiku` antwortet am schnellsten, `opus` am klügsten. Standard ist `sonnet`.
 
+## Gmail
+
+Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschließlich seine eigenen**. Jeder von Jarvis erzeugte Entwurf bekommt das Gmail-Label `JARVIS` und wird mit Message-ID und Thread-ID in `.secrets/gmail_jarvis.json` registriert. Vor jedem Bearbeiten oder Senden prüft `gmail.js` Register, Label und Thread-ID; fremde Nachrichten und Entwürfe werden abgelehnt.
+
+1. OAuth-Client (Typ „Desktop-App“) als `.secrets/gmail_credentials.json` ablegen.
+2. Einmal anmelden: `node gmail.js auth` (das Token landet in `.secrets/gmail_token.json`).
+3. Verwenden:
+   - `node gmail.js draft --to a@b.de --subject "Betreff" --body "Text"`
+   - `node gmail.js update <draftId> --body "Neuer Text"`
+   - `node gmail.js send <draftId>`
+   - `node gmail.js list`
+
+`.secrets/` ist per `.gitignore` von Git ausgeschlossen – Zugangsdaten und Tokens nie committen. Tests: `npm test`.
+
 ## Sicherheit
 
 Der Server ist nur auf deinem eigenen Rechner erreichbar (localhost) und lehnt Anfragen fremder Webseiten ab. Stelle ihn nicht ins Internet.

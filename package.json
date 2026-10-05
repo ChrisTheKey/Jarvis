@@ -4,6 +4,12 @@
   "description": "Sprachgesteuerter Jarvis auf Basis von Claude Code",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=18" },
-  "scripts": { "start": "node server.js" }
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "gmail": "node gmail.js"
+  }
 }
