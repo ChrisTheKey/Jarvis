@@ -8,6 +8,8 @@
 //   node gmail.js update <draftId> [--to ..] [--subject ..] [--body ..]
 //   node gmail.js send <draftId>
 //   node gmail.js list
+//   node gmail.js thread <threadId>                     eigenen, bereits gesendeten Thread lesen
+//   node gmail.js reply <threadId> --body Y              Antwort-Entwurf im eigenen Thread (sendet nie)
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -149,11 +151,13 @@ export async function assertOwnedDraft(draftId, reg = loadRegistry()) {
 // ---------- Nachrichten ----------
 
 const encodeHeader = (s) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s).toString("base64")}?=`);
-function rawMessage({ to, subject = "", body = "" }) {
+function rawMessage({ to, subject = "", body = "", inReplyTo = "", references = "" }) {
   if (!to) throw new Error("Empfänger (--to) fehlt.");
-  if (/[\r\n]/.test(to + subject)) throw new Error("Zeilenumbrüche in Empfänger oder Betreff sind nicht erlaubt.");
+  if (/[\r\n]/.test(to + subject + inReplyTo + references)) throw new Error("Zeilenumbrüche in Empfänger oder Betreff sind nicht erlaubt.");
   const mime = [
-    `To: ${to}`, `Subject: ${encodeHeader(subject)}`, "MIME-Version: 1.0",
+    `To: ${to}`, `Subject: ${encodeHeader(subject)}`,
+    ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${references || inReplyTo}`] : []),
+    "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "",
     Buffer.from(body).toString("base64").replace(/.{76}/g, "$&\r\n"),
   ].join("\r\n");
@@ -167,12 +171,23 @@ async function labelAndDescribe(messageId, lid) {
   return { messageId, rfcMessageId: header?.value || null, threadId: msg.threadId, labelIds: msg.labelIds || [] };
 }
 
+// Landet ein Antwort-Entwurf nicht im Ziel-Thread, wird er nie registriert: der gerade selbst
+// angelegte Entwurf wird wieder gelöscht und die Aktion bricht ab.
+async function discardMismatch(draftId, threadId) {
+  const removed = await gmail("DELETE", `/drafts/${encodeURIComponent(draftId)}`).then(() => true, () => false);
+  throw new Error(`Antwort-Entwurf landete nicht im Thread ${threadId} – nicht registriert, Abbruch.` +
+    (removed ? " Der Entwurf wurde verworfen." : ` Bitte Entwurf ${draftId} in Gmail von Hand löschen, nicht senden.`));
+}
+
 export async function createDraft(fields) {
   const reg = loadRegistry();
   const lid = await labelId(reg);
-  const draft = await gmail("POST", "/drafts", { message: { raw: rawMessage(fields) } });
+  const draft = await gmail("POST", "/drafts", { message: { raw: rawMessage(fields), ...(fields.threadId && { threadId: fields.threadId }) } });
+  if (fields.threadId && draft.message?.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
   const info = await labelAndDescribe(draft.message.id, lid);
-  reg.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", createdAt: new Date().toISOString() };
+  if (fields.threadId && info.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
+  const reply = fields.inReplyTo ? { inReplyTo: fields.inReplyTo, references: fields.references } : {};
+  reg.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, createdAt: new Date().toISOString() };
   saveRegistry(reg);
   return { draftId: draft.id, ...info };
 }
@@ -180,7 +195,7 @@ export async function createDraft(fields) {
 export async function updateDraft(draftId, fields) {
   const reg = loadRegistry();
   const { entry } = await assertOwnedDraft(draftId, reg);
-  const merged = { to: fields.to ?? entry.to, subject: fields.subject ?? entry.subject, body: fields.body ?? "" };
+  const merged = { to: fields.to ?? entry.to, subject: fields.subject ?? entry.subject, body: fields.body ?? "", inReplyTo: entry.inReplyTo, references: entry.references };
   const draft = await gmail("PUT", `/drafts/${encodeURIComponent(draftId)}`, { message: { raw: rawMessage(merged), threadId: entry.threadId } });
   const info = await labelAndDescribe(draft.message.id, reg.labelId);
   reg.drafts[draftId] = { ...entry, ...info, to: merged.to, subject: merged.subject, updatedAt: new Date().toISOString() };
@@ -200,6 +215,71 @@ export async function sendDraft(draftId) {
 }
 
 export const listOwned = () => loadRegistry();
+
+// ---------- Laufende Gespräche (nur eigene, bereits gesendete Threads) ----------
+
+// Ein Thread gilt nur als Jarvis-eigen, wenn seine Thread-ID im Gesendet-Register steht.
+// Diese Prüfung läuft lokal, BEVOR Gmail gefragt wird – fremde Threads werden nie geöffnet.
+function assertOwnedThread(threadId, reg) {
+  const own = Object.values(reg.sent).filter((s) => s.threadId === threadId);
+  if (!threadId || !own.length) throw new Error(`Thread ${threadId} wurde nicht von Jarvis begonnen – Zugriff verweigert.`);
+  return own;
+}
+
+const decode = (data) => Buffer.from(data, "base64url").toString("utf8");
+const findPart = (p, type) => (!p ? null : p.mimeType === type && p.body?.data ? p : (p.parts || []).reduce((f, c) => f || findPart(c, type), null));
+function bodyText(payload) {
+  const plain = findPart(payload, "text/plain");
+  if (plain) return decode(plain.body.data);
+  const html = findPart(payload, "text/html");
+  return html ? decode(html.body.data).replace(/<br\s*\/?>|<\/p>/gi, "\n").replace(/<[^>]+>/g, "").trim() : "";
+}
+
+function describeMessage(m) {
+  const h = Object.fromEntries((m.payload?.headers || []).map((x) => [x.name.toLowerCase(), x.value]));
+  const labels = m.labelIds || [];
+  return {
+    messageId: m.id, rfcMessageId: h["message-id"] || null, references: h.references || "",
+    from: h.from || "", replyTo: h["reply-to"] || "", to: h.to || "", cc: h.cc || "",
+    date: h.date || "", subject: h.subject || "", body: bodyText(m.payload),
+    sent: labels.includes("SENT"), draft: labels.includes("DRAFT"), internalDate: Number(m.internalDate || 0),
+  };
+}
+
+// Liest einen eigenen Thread. Zusätzlich muss mindestens eine registrierte gesendete Nachricht
+// wirklich in diesem Gmail-Thread liegen – sonst ist die Zuordnung nicht eindeutig.
+async function fetchOwnedThread(threadId, reg) {
+  const own = assertOwnedThread(threadId, reg);
+  const thread = await gmail("GET", `/threads/${encodeURIComponent(threadId)}?format=full`);
+  const msgs = thread.messages || [];
+  const ids = new Set(msgs.map((m) => m.id));
+  if (thread.id !== threadId || msgs.some((m) => m.threadId !== threadId) || !own.some((s) => ids.has(s.messageId)))
+    throw new Error(`Thread ${threadId}: Zuordnung zum Gesendet-Register nicht eindeutig – Zugriff verweigert.`);
+  return { own, messages: msgs.map(describeMessage).sort((a, b) => a.internalDate - b.internalDate) };
+}
+
+export async function readThread(threadId) {
+  const { messages } = await fetchOwnedThread(threadId, loadRegistry());
+  return { threadId, messages };
+}
+
+// Legt nur einen Antwort-ENTWURF im selben Thread an – gesendet wird ausschließlich über sendDraft.
+export async function replyToThread(threadId, { body } = {}) {
+  if (!body) throw new Error("Antworttext (--body) fehlt.");
+  const { own, messages } = await fetchOwnedThread(threadId, loadRegistry());
+  const mails = messages.filter((m) => !m.draft);
+  const last = mails.at(-1);
+  const external = mails.filter((m) => !m.sent).at(-1);
+  // Empfänger: Absender der letzten externen Nachricht; ohne Antwort bisher (Follow-up) der zuletzt
+  // von Jarvis in diesem Thread angeschriebene Empfänger.
+  const to = external ? external.replyTo || external.from : own.at(-1).to;
+  const subject = last?.subject || own.at(-1).subject || "";
+  const draft = await createDraft({
+    to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId,
+    inReplyTo: last?.rfcMessageId || "", references: [last?.references, last?.rfcMessageId].filter(Boolean).join(" "),
+  });
+  return { ...draft, to };
+}
 
 // ---------- Kommandozeile ----------
 
@@ -221,9 +301,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     update: () => updateDraft(f._[0], { to: f.to, subject: f.subject, body: f.body }),
     send: () => sendDraft(f._[0]),
     list: listOwned,
+    thread: () => readThread(f._[0]),
+    reply: () => replyToThread(f._[0], { body: f.body }),
   }[cmd];
   if (!run) {
-    console.log("Befehle: auth | draft --to --subject --body | update <draftId> [...] | send <draftId> | list");
+    console.log("Befehle: auth | draft --to --subject --body | update <draftId> [...] | send <draftId> | list | thread <threadId> | reply <threadId> --body");
     process.exit(1);
   }
   Promise.resolve(run()).then(

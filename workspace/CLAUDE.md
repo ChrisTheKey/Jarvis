@@ -14,6 +14,8 @@ Jarvis besitzt eine Gmail-Integration: `../gmail.js` (vom Arbeitsordner aus). Be
 - `node ../gmail.js update <draftId> [--to ..] [--subject ..] [--body ..]` bearbeitet einen eigenen Entwurf.
 - `node ../gmail.js send <draftId>` sendet einen eigenen Entwurf.
 - `node ../gmail.js list` zeigt das Register der eigenen Entwürfe und gesendeten Mails.
+- `node ../gmail.js thread <threadId>` liest ausschließlich einen registrierten, von Jarvis begonnenen Thread (Thread-IDs stehen unter `sent` in `list`).
+- `node ../gmail.js reply <threadId> --body "<text>"` erstellt ausschließlich einen Antwort-Entwurf im selben registrierten Thread und sendet ihn nicht. Ohne bisherige Antwort wird es ein Follow-up an den zuletzt angeschriebenen Empfänger, sonst eine Antwort an den Absender der letzten externen Nachricht.
 
 Regeln:
 - Du bearbeitest oder sendest ausschließlich E-Mails, die du selbst erstellt hast und die im internen Register stehen. Fremde Gmail-Mails und fremde Entwürfe werden niemals bearbeitet oder gesendet.

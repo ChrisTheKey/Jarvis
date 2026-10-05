@@ -18,7 +18,9 @@
       "Bash(node ../gmail.js draft:*)",
       "Bash(node ../gmail.js update:*)",
       "Bash(node ../gmail.js send:*)",
-      "Bash(node ../gmail.js list:*)"
+      "Bash(node ../gmail.js list:*)",
+      "Bash(node ../gmail.js thread:*)",
+      "Bash(node ../gmail.js reply:*)"
     ]
   }
 }
