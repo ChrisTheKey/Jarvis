@@ -7,3 +7,4 @@ workspace/ergebnisse/*
 .secrets/
 token.json
 *_token.json
+.playwright-mcp/

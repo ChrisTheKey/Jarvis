@@ -26,7 +26,7 @@ body::after { content: ""; position: fixed; inset: 0; pointer-events: none; back
 [hidden] { display: none !important; }
 canvas#core { position: fixed; inset: 0; width: 100%; height: 100%; }
 
-.hud { position: fixed; inset: 0; display: grid; grid-template-columns: 300px 1fr 340px; grid-template-rows: auto minmax(0, 1fr) auto; gap: 18px; padding: 22px 24px; pointer-events: none; }
+.hud { position: fixed; inset: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr) 340px; grid-template-rows: auto minmax(0, 1fr) auto; gap: 18px; padding: 22px 24px max(22px, env(safe-area-inset-bottom)); pointer-events: none; }
 .hud > * { pointer-events: auto; }
 header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
 .logo { font: 900 22px var(--display); letter-spacing: .32em; color: var(--cyan-2); text-shadow: 0 0 14px rgba(63,216,255,.7); }
@@ -38,7 +38,7 @@ header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
 .panel { position: relative; background: var(--glass); border: 1px solid var(--line); padding: 16px 18px; backdrop-filter: blur(3px); align-self: start;
   clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px)); }
 .panel h2 { margin: 0 0 12px; font: 600 11px var(--mono); letter-spacing: .24em; color: var(--muted); text-transform: uppercase; display: flex; justify-content: space-between; }
-.left { display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.left { display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow-y: auto; scrollbar-width: none; }
 .left .panel { align-self: stretch; }
 .clock { font: 700 44px/1 var(--display); color: var(--cyan-2); letter-spacing: .06em; text-shadow: 0 0 18px rgba(63,216,255,.55); font-variant-numeric: tabular-nums; }
 .date { font: 500 15px var(--ui); color: var(--muted); letter-spacing: .14em; text-transform: uppercase; margin-top: 8px; }
@@ -52,7 +52,7 @@ header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
 .kv { font: 13px var(--mono); color: var(--muted); display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
 .kv b { color: var(--text); font-weight: 400; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.right { max-height: 100%; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.right { max-height: 100%; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .right .panel { display: flex; flex-direction: column; min-height: 0; max-height: 100%; }
 .log { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 9px; font: 13px/1.35 var(--mono); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .log li { display: grid; grid-template-columns: 58px 1fr; gap: 8px; animation: slide .25s ease-out; }
@@ -62,18 +62,21 @@ header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
 .log span { white-space: pre-wrap; user-select: text; overflow-wrap: anywhere; color: var(--text); opacity: .88; }
 .log .empty { display: block; color: var(--muted); }
 
-.bottom { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+/* Eingabe immer sichtbar und bedienbar: eigene Ebene über Canvas und Seitenpanels, nie breiter als der Viewport */
+.bottom { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; gap: 14px; position: relative; z-index: 5; min-width: 0; }
 .subs { width: min(860px, 100%); text-align: center; min-height: 84px; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; }
 .subs .you { font: 500 15px var(--mono); color: var(--muted); letter-spacing: .04em; }
-.subs .you::before { content: "SIE ▸ "; color: var(--cyan); opacity: .7; }
+.subs .you::before { content: "CHRIS ▸ "; color: var(--cyan); opacity: .7; }
 .subs .jarvis { white-space: pre-wrap; user-select: text; font: 500 21px/1.35 var(--ui); color: var(--text); text-shadow: 0 0 12px rgba(0,0,0,.9); max-height: 5.4em; overflow-y: auto; scrollbar-width: none; }
 .bar-in { width: min(860px, 100%); display: flex; gap: 10px; align-items: center; }
 .mic { width: 54px; height: 54px; border-radius: 50%; border: 1px solid var(--cyan); background: rgba(63,216,255,.08); color: var(--cyan-2); cursor: pointer; display: grid; place-items: center; flex: none; transition: background .2s, box-shadow .2s; }
 .mic svg { width: 22px; height: 22px; }
 .mic.on { background: rgba(63,216,255,.28); box-shadow: 0 0 22px rgba(63,216,255,.7); }
-form.cmd { flex: 1; min-width: 0; display: flex; border: 1px solid var(--line); background: var(--glass); }
-form.cmd input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: 500 17px var(--ui); padding: 14px 16px; letter-spacing: .02em; }
-form.cmd input::placeholder { color: var(--muted); }
+form.cmd { flex: 1; min-width: 0; display: flex; border: 1px solid var(--line); background: var(--glass); backdrop-filter: blur(3px); }
+form.cmd textarea { flex: 1; min-width: 0; display: block; resize: none; overflow-y: auto; height: auto; max-height: 9em; background: transparent; border: 0; color: var(--text); font: 500 17px/1.35 var(--ui); padding: 14px 16px; letter-spacing: .02em; scrollbar-width: thin; }
+form.cmd textarea::placeholder { color: var(--muted); }
+form.cmd textarea:focus { outline: none; }
+form.cmd:focus-within { border-color: var(--cyan); box-shadow: 0 0 12px rgba(63,216,255,.25); }
 form.cmd button { background: transparent; color: var(--cyan); border: 0; border-left: 1px solid var(--line); font: 700 12px var(--display); letter-spacing: .2em; padding: 0 18px; cursor: pointer; }
 form.cmd button.stop { color: var(--red); }
 .opts { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; font: 12px var(--mono); color: var(--muted); letter-spacing: .08em; }
@@ -140,9 +143,14 @@ form.cmd button.stop { color: var(--red); }
 @media (max-width: 860px) { .leads-box { grid-template-columns: 1fr; overflow-y: auto; } }
 @keyframes slide { from { opacity: 0; transform: translateX(8px); } }
 @media (prefers-reduced-motion: reduce) { .log li { animation: none; } }
-@media (max-width: 1100px) { .hud { grid-template-columns: 250px 1fr 280px; } }
+@media (max-width: 1100px) { .hud { grid-template-columns: 250px minmax(0, 1fr) 280px; } }
+@media (max-height: 700px) { .subs { min-height: 0; } .subs .jarvis { font-size: 18px; max-height: 2.8em; } .hud { gap: 10px; } }
 @media (max-width: 860px) {
-  .hud { grid-template-columns: 1fr; padding: 14px 16px; }
+  .hud { grid-template-columns: minmax(0, 1fr); padding: 14px 16px max(14px, env(safe-area-inset-bottom)); }
+  header { flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+  .tag { display: none; }
+  .mic { width: 46px; height: 46px; }
+  form.cmd button { padding: 0 12px; }
   .left, .right { display: none; }
   .clock { font-size: 30px; }
 }
@@ -182,6 +190,8 @@ form.cmd button.stop { color: var(--red); }
         <span>Laufzeit</span><b id="kUptime">–</b>
         <span>Worker</span><b id="kWorker">–</b>
         <span>Mail heute</span><b id="kMail">–</b>
+        <span>Morgenfenster</span><b id="kMorning" title="Versandlauf 09:30 (Europe/Zurich)">–</b>
+        <span>Nachmittagsfenster</span><b id="kAfternoon" title="Versandlauf 14:30 (Europe/Zurich)">–</b>
         <span>Discovery</span><b id="kDiscovery">–</b>
         <span>Alerts</span><b id="kAlerts">–</b>
         <span>Sync</span><b id="kSync">–</b>
@@ -225,7 +235,7 @@ form.cmd button.stop { color: var(--red); }
       </button>
       <form class="cmd" id="cmd">
         <label for="cmdInput" hidden>Befehl</label>
-        <input id="cmdInput" autocomplete="off" placeholder="Befehl eingeben oder „Jarvis …“ sagen">
+        <textarea id="cmdInput" rows="1" autocomplete="off" enterkeyhint="send" aria-label="Befehl an Jarvis (Enter sendet, Shift+Enter neue Zeile)" placeholder="Befehl eingeben oder „Jarvis …“ sagen"></textarea>
         <button type="submit" id="send">SENDEN</button>
       </form>
     </div>
@@ -263,6 +273,7 @@ form.cmd button.stop { color: var(--red); }
 </div>
 
 <script src="mode-detect.js"></script>
+<script src="composer.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -283,6 +294,7 @@ let cloudKey = store.get("cloudKey", "");
 let cloudTurns = store.get("cloudTurns", []);
 const api = (p, body) => fetch(CORE + p, { method: "POST", headers: { "content-type": "application/json", "x-jarvis": "1" }, body: JSON.stringify(body || {}) });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const USER_NAME = "Chris"; // user_preferred_name – identisch zu persona.md (Local und Cloud)
 
 // ---------- Zustand ----------
 const STATES = {
@@ -650,14 +662,16 @@ setInterval(() => { $("mic").classList.toggle("on", state === "listening" || (pt
 
 // ---------- Befehl an Claude Code ----------
 const TOOL_NAMES = { Bash: "BEFEHL", Read: "LESEN", Write: "SCHREIBEN", Edit: "ÄNDERN", WebSearch: "SUCHE", WebFetch: "WEB", Glob: "DATEIEN", Grep: "SUCHE", Task: "AGENT", TodoWrite: "PLAN" };
-async function run(text) {
+let fromComposer = false;
+async function run(text, { typed = false } = {}) {
   if (busy) return;
+  fromComposer = typed;
   stopSpeaking();
   busy = true; ptt = false; awakeUntil = 0;
   $("you").hidden = false; $("you").textContent = text;
   $("say").textContent = "";
   setState("thinking");
-  log("SIE", text);
+  log("CHRIS", text);
   $("send").textContent = "STOPP"; $("send").classList.add("stop");
   ctl = new AbortController();
   let said = "";
@@ -694,6 +708,16 @@ async function run(text) {
           log("FEHLER", ev.message, "red");
           $("say").textContent = ev.message;
           speak("Verzeihung, Chris. Es gab ein Problem. Details stehen auf dem Bildschirm.");
+        } else if (ev.type === "mail_request") {
+          // Cloud-Mailauftrag: nur in die Warteschlange gelegt – der lokale Worker prüft und sendet im Versandfenster.
+          const msg = ev.ok
+            ? `Mailauftrag an ${ev.request.recipient} übergeben${ev.duplicate ? " (bereits vorhanden)" : ""}. Der lokale Worker prüft ihn und sendet nur im nächsten Versandfenster.`
+            : `Mailauftrag abgelehnt: ${ev.error}`;
+          log("MAIL", msg, ev.ok ? "amber" : "red");
+          said += (said ? "\n\n" : "") + msg;
+          $("say").textContent = said;
+          speak(msg);
+          if (ev.ok) mailSeen[ev.request.request_id] = ev.request.status;
         } else if (ev.type === "done" && ev.error && !said) {
           log("FEHLER", ev.error, "red");
         }
@@ -709,6 +733,9 @@ async function run(text) {
   } finally {
     busy = false; ctl = null;
     $("send").textContent = "SENDEN"; $("send").classList.remove("stop");
+    // Composer bleibt nach jeder Antwort bedienbar; nach getippten Befehlen direkt weiterschreiben.
+    $("cmdInput").disabled = false;
+    if (fromComposer) $("cmdInput").focus();
     if (!speaking) afterTurn();
   }
 }
@@ -717,18 +744,19 @@ function stopAll() {
   stopSpeaking();
   busy = false; setState("idle");
 }
+const composer = JarvisComposer.attach({ form: $("cmd"), input: $("cmdInput") });
 $("cmd").addEventListener("submit", (e) => {
   e.preventDefault();
   if (busy) return stopAll();
   const t = $("cmdInput").value.trim();
-  if (t) { $("cmdInput").value = ""; run(t); }
+  if (t) { composer.clear(); run(t, { typed: true }); }
 });
 $("reset").addEventListener("click", async () => {
   stopAll();
   if (mode === "cloud") { cloudTurns = []; store.set("cloudTurns", []); pushCloudTurns([], true); }
   else if (mode === "local") await api("/api/reset");
   $("say").textContent = ""; $("you").hidden = true;
-  log("SYSTEM", "Neues Gespräch gestartet. Meldungen und das Gedächtnis in memory/sir.md bleiben erhalten.");
+  log("SYSTEM", "Neues Gespräch gestartet. Meldungen und das Gedächtnis in memory/chris.md bleiben erhalten.");
 });
 
 // ---------- Gemeinsamer Zustand: Meldungen, Worker-Status, Gesprächskontext ----------
@@ -746,6 +774,7 @@ async function loadShared() {
       if (!r.ok) throw new Error("HTTP " + r.status);
       const s = await r.json();
       shared = { ...s, sync: { ok: true, lastSuccessAt: s.sync?.lastLocalPushAt, cloud: true } };
+      loadMailRequests();
     } else return;
     renderShared();
   } catch { $("kSync").textContent = "FEHLER"; $("kSync").className = "on-bad"; }
@@ -755,6 +784,10 @@ function renderShared() {
   const online = w?.lastCycle && Date.now() - Date.parse(w.lastCycle) < 15 * 60_000;
   $("kWorker").textContent = w ? (online ? "ONLINE" : "OFFLINE") : "–";
   $("kMail").textContent = w ? `${w.todaySent} / ${w.limit}` : "–";
+  for (const [id, el] of [["morning", "kMorning"], ["afternoon", "kAfternoon"]]) {
+    const x = w?.windows?.[id];
+    $(el).textContent = x ? `${x.count} / ${x.limit}${x.executed ? " · gelaufen" : ""}` : w ? "0 / 50" : "–";
+  }
   $("kDiscovery").textContent = d?.lastRunAt ? fmtTime(d.lastRunAt) : "–";
   $("kSync").textContent = sync.cloud ? `OK · PC zuletzt ${fmtTime(sync.lastSuccessAt)}` : sync.ok ? `OK ${fmtTime(sync.lastSuccessAt)}` : sync.error ? `FEHLER ${fmtTime(sync.lastErrorAt)}` : "–";
   $("kSync").className = sync.ok ? "on-ok" : sync.error ? "on-bad" : "";
@@ -783,7 +816,7 @@ function renderShared() {
     const done = el("button", "", "Erledigt"); done.type = "button"; done.title = "Meldung entfernen – kommt auch nach dem Abgleich nicht zurück";
     done.onclick = () => dismiss(n.id);
     const talk = el("button", "", "Mit Jarvis besprechen"); talk.type = "button";
-    talk.onclick = () => { $("cmdInput").value = `Zur Meldung: ${n.summary} Wie gehe ich am besten vor?`; $("cmdInput").focus(); };
+    talk.onclick = () => { $("cmdInput").value = `Zur Meldung: ${n.summary} Wie gehe ich am besten vor?`; composer.fit(); $("cmdInput").focus(); };
     if (n.status === "unread") acts.append(read);
     acts.append(done, talk); li.append(acts);
     return li;
@@ -798,6 +831,21 @@ function renderShared() {
     }
     store.set("notified", [...done].slice(-200));
   }
+}
+// Cloud: Ergebnis der Mailaufträge vom lokalen Worker (accepted_local / blocked / sent / failed / expired) melden.
+const mailSeen = store.get("mailSeen", {});
+const MAIL_STATUS = { pending: "wartet auf lokalen Worker", accepted_local: "lokal geprüft, wartet auf Versandfenster", blocked: "blockiert", sent: "gesendet", failed: "fehlgeschlagen", expired: "abgelaufen" };
+async function loadMailRequests() {
+  try {
+    const r = await fetch("/api/mail-requests", { headers: { "x-jarvis-key": cloudKey }, cache: "no-store" });
+    if (!r.ok) return;
+    for (const q of (await r.json()).requests || []) {
+      if (mailSeen[q.request_id] === q.status) continue;
+      if (mailSeen[q.request_id] !== undefined || q.status !== "pending") log("MAIL", `${q.recipient}: ${MAIL_STATUS[q.status] || q.status}${q.reason ? " – " + q.reason : ""}`, q.status === "sent" ? "green" : q.status === "blocked" || q.status === "failed" ? "red" : "amber");
+      mailSeen[q.request_id] = q.status;
+    }
+    store.set("mailSeen", Object.fromEntries(Object.entries(mailSeen).slice(-100)));
+  } catch {}
 }
 async function markRead(id) {
   try { mode === "local" ? await api("/api/notifications/read", { id }) : await cloudState({ op: "read", id }); } catch {}
@@ -873,7 +921,7 @@ function showLead(i) {
 $("leadsBtn").addEventListener("click", openLeads);
 $("leadsClose").addEventListener("click", () => { $("leads").hidden = true; });
 addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("leads").hidden) { e.stopPropagation(); $("leads").hidden = true; } }, true);
-// Cloud: gemeinsamen Gesprächsverlauf übernehmen bzw. fortschreiben (begrenzt, nur Sir/Jarvis-Sätze)
+// Cloud: gemeinsamen Gesprächsverlauf übernehmen bzw. fortschreiben (begrenzt, nur Chris/Jarvis-Sätze)
 async function loadCloudConversation() {
   try {
     const r = await cloudState();
@@ -972,7 +1020,7 @@ async function boot() {
   if (mode === "local") poll();
   if (SR && wakeMode()) startRec();
   const h = new Date().getHours();
-  const greet = h < 5 ? "Noch wach, Chris?" : h < 11 ? "Guten Morgen, Chris." : h < 18 ? "Guten Tag, Chris." : "Guten Abend, Chris.";
+  const greet = h < 5 ? `Noch wach, ${USER_NAME}?` : h < 11 ? `Guten Morgen, ${USER_NAME}.` : h < 18 ? `Guten Tag, ${USER_NAME}.` : `Guten Abend, ${USER_NAME}.`;
   const call = wakeMode() && SR ? "Sagen Sie einfach Jarvis, wenn Sie mich brauchen." : "Ich bin bereit.";
   const msg = mode === "cloud"
     ? `${greet} Wie kann ich helfen?`

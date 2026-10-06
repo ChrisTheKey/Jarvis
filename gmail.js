@@ -115,7 +115,7 @@ async function accessToken() {
 
 async function gmail(method, route, body) {
   const r = await fetch(API + route, {
-    method,
+    method, signal: AbortSignal.timeout(60_000),
     headers: { authorization: `Bearer ${await accessToken()}`, ...(body && { "content-type": "application/json" }) },
     body: body && JSON.stringify(body),
   });
@@ -127,14 +127,34 @@ async function gmail(method, route, body) {
 
 // ---------- Register & Label ----------
 
-const loadRegistry = () => readJson(REGISTRY_FILE, { labelId: null, drafts: {}, sent: {} });
-const saveRegistry = (reg) => writeSecret(REGISTRY_FILE, reg);
+const loadRegistry = () => ({ labelId: null, drafts: {}, sent: {}, sending: {}, ...readJson(REGISTRY_FILE, {}) });
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Register immer frisch lesen, ändern und atomar schreiben – unter kurzer Sperre. So überschreibt kein Prozess
+// (Worker, Sprach-Jarvis, CLI) die Einträge eines anderen; insbesondere geht nie ein gesendeter Eintrag verloren.
+function updateRegistry(fn) {
+  const lock = REGISTRY_FILE + ".lock";
+  fs.mkdirSync(SECRETS, { recursive: true });
+  for (let i = 0; ; i++) {
+    try { fs.writeFileSync(lock, String(process.pid), { flag: "wx" }); break; } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > 10_000) { fs.rmSync(lock, { force: true }); continue; } } catch { continue; }
+      if (i > 250) throw new Error("Register gesperrt – bitte gleich erneut versuchen.");
+      sleepSync(20);
+    }
+  }
+  try {
+    const reg = loadRegistry();
+    fn(reg);
+    writeSecret(REGISTRY_FILE, reg);
+    return reg;
+  } finally { fs.rmSync(lock, { force: true }); }
+}
 
 async function labelId(reg) {
   const { labels = [] } = await gmail("GET", "/labels");
   let label = labels.find((l) => l.name === LABEL);
   if (!label) label = await gmail("POST", "/labels", { name: LABEL, labelListVisibility: "labelShow", messageListVisibility: "show" });
-  reg.labelId = label.id;
+  if (reg.labelId !== label.id) { reg.labelId = label.id; updateRegistry((r) => { r.labelId = label.id; }); }
   return label.id;
 }
 
@@ -190,8 +210,7 @@ export async function createDraft(fields) {
   const info = await labelAndDescribe(draft.message.id, lid);
   if (fields.threadId && info.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
   const reply = fields.inReplyTo ? { inReplyTo: fields.inReplyTo, references: fields.references } : {};
-  reg.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, createdAt: new Date().toISOString() };
-  saveRegistry(reg);
+  updateRegistry((r) => { r.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, createdAt: new Date().toISOString() }; });
   return { draftId: draft.id, ...info };
 }
 
@@ -201,18 +220,23 @@ export async function updateDraft(draftId, fields) {
   const merged = { to: fields.to ?? entry.to, subject: fields.subject ?? entry.subject, body: fields.body ?? "", inReplyTo: entry.inReplyTo, references: entry.references };
   const draft = await gmail("PUT", `/drafts/${encodeURIComponent(draftId)}`, { message: { raw: rawMessage(merged), threadId: entry.threadId } });
   const info = await labelAndDescribe(draft.message.id, reg.labelId);
-  reg.drafts[draftId] = { ...entry, ...info, to: merged.to, subject: merged.subject, updatedAt: new Date().toISOString() };
-  saveRegistry(reg);
+  updateRegistry((r) => { r.drafts[draftId] = { ...entry, ...info, to: merged.to, subject: merged.subject, updatedAt: new Date().toISOString() }; });
   return { draftId, ...info };
 }
 
-// Hartes Tageslimit für tatsächlich gesendete Jarvis-Mails je Kalendertag (Europe/Zurich), gezählt aus dem Register.
-export const DAILY_SEND_LIMIT = 50;
+// Harte Limits für tatsächlich gesendete Jarvis-Mails (Europe/Zurich), gezählt aus dem Register:
+// höchstens 100 je Kalendertag und höchstens 50 je Versandfenster (morning 09:30 / afternoon 14:30).
+export const DAILY_SEND_LIMIT = 100;
+export const WINDOW_SEND_LIMIT = 50;
+export const SEND_WINDOW_IDS = ["morning", "afternoon"];
 const zurichDay = (d) => new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Zurich" }).format(d);
-export const sentToday = (reg = loadRegistry(), now = new Date()) =>
-  Object.values(reg.sent || {}).filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === zurichDay(now)).length;
+// Unklare Sendungen (Absturz zwischen Gmail und Register) zählen vorsichtig mit; fehlgeschlagene nicht.
+const todays = (reg, now) => [...Object.values(reg.sent || {}), ...Object.values(reg.sending || {})].filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === zurichDay(now));
+export const sentToday = (reg = loadRegistry(), now = new Date()) => todays(reg, now).length;
+export const sentInWindow = (window, reg = loadRegistry(), now = new Date()) => todays(reg, now).filter((s) => s.window === window).length;
 
-// Zählen, Senden und Registrieren laufen unter einer Sperrdatei – zwei gleichzeitige Sendungen können das Limit nicht überholen.
+// Zählen, Senden und Registrieren laufen unter einer Sperrdatei – auch parallele Prozesse können die Limits nicht überholen.
+// Der Halter erneuert die Sperre laufend; als verwaist gilt sie nur, wenn sie zwei Minuten lang nicht erneuert wurde.
 async function withSendLock(fn) {
   const lock = path.join(SECRETS, "gmail_send.lock");
   fs.mkdirSync(SECRETS, { recursive: true });
@@ -220,28 +244,39 @@ async function withSendLock(fn) {
     try { fs.writeFileSync(lock, String(process.pid), { flag: "wx" }); break; } catch (e) {
       if (e.code !== "EEXIST") throw e;
       try { if (Date.now() - fs.statSync(lock).mtimeMs > 120_000) { fs.rmSync(lock, { force: true }); continue; } } catch { continue; }
-      if (i >= 120) throw new Error("Eine andere Sendung läuft noch – bitte gleich erneut versuchen.");
-      await new Promise((r) => setTimeout(r, 500));
+      if (i >= 240) throw new Error("Eine andere Sendung läuft noch – bitte gleich erneut versuchen.");
+      await new Promise((r) => setTimeout(r, 250));
     }
   }
-  try { return await fn(); } finally { fs.rmSync(lock, { force: true }); }
+  const beat = setInterval(() => { try { const t = new Date(); fs.utimesSync(lock, t, t); } catch {} }, 10_000);
+  try { return await fn(); } finally { clearInterval(beat); fs.rmSync(lock, { force: true }); }
 }
 
-export const sendDraft = (draftId) => withSendLock(async () => {
+// window: "morning" | "afternoon" für automatische Läufe des Mail-Workers; ohne Fenster (z. B. manuell) gilt nur das Tageslimit.
+export const sendDraft = (draftId, { window = null } = {}) => withSendLock(async () => {
+  if (window !== null && !SEND_WINDOW_IDS.includes(window)) throw new Error(`Unbekanntes Versandfenster ${window} – nicht gesendet.`);
   const reg = loadRegistry();
   const { entry } = await assertOwnedDraft(draftId, reg);
-  if (sentToday(reg) >= DAILY_SEND_LIMIT) throw new Error(`Tageslimit von ${DAILY_SEND_LIMIT} Jarvis-Mails (Europe/Zurich) erreicht – nicht gesendet.`);
-  const sent = await gmail("POST", "/drafts/send", { id: draftId });
-  const info = await labelAndDescribe(sent.id, reg.labelId);
-  delete reg.drafts[draftId];
-  reg.sent[sent.id] = { ...info, to: entry.to, subject: entry.subject, fromDraft: draftId, sentAt: new Date().toISOString() };
-  saveRegistry(reg);
+  const now = new Date();
+  if (sentToday(loadRegistry(), now) >= DAILY_SEND_LIMIT) throw new Error(`Tageslimit von ${DAILY_SEND_LIMIT} Jarvis-Mails (Europe/Zurich) erreicht – nicht gesendet.`);
+  if (window && sentInWindow(window, loadRegistry(), now) >= WINDOW_SEND_LIMIT) throw new Error(`Fensterlimit von ${WINDOW_SEND_LIMIT} Jarvis-Mails (${window}) erreicht – nicht gesendet.`);
+  // Vor dem eigentlichen Senden vormerken: stürzt der Prozess danach ab, zählt die Sendung trotzdem.
+  updateRegistry((r) => { r.sending[draftId] = { to: entry.to, window, sentAt: now.toISOString() }; });
+  let sent;
+  try { sent = await gmail("POST", "/drafts/send", { id: draftId }); }
+  catch (e) { updateRegistry((r) => { delete r.sending[draftId]; }); throw e; } // fehlgeschlagen → zählt nicht
+  const info = await labelAndDescribe(sent.id, reg.labelId).catch(() => ({ messageId: sent.id, rfcMessageId: null, threadId: sent.threadId, labelIds: sent.labelIds || [] }));
+  updateRegistry((r) => {
+    delete r.drafts[draftId];
+    delete r.sending[draftId];
+    r.sent[sent.id] = { ...info, to: entry.to, subject: entry.subject, fromDraft: draftId, ...(window && { window }), sentAt: new Date().toISOString() };
+  });
   return info;
 });
 
 export const listOwned = () => loadRegistry();
 
-// Markiert einen EIGENEN Entwurf zusätzlich mit REVIEW_LABEL, damit Sir ihn vor dem Senden prüft.
+// Markiert einen EIGENEN Entwurf zusätzlich mit REVIEW_LABEL, damit Chris ihn vor dem Senden prüft.
 export const REVIEW_LABEL = "JARVIS-PRUEFEN";
 export async function markDraftForReview(draftId) {
   const reg = loadRegistry();
@@ -250,7 +285,6 @@ export async function markDraftForReview(draftId) {
   const label = labels.find((l) => l.name === REVIEW_LABEL)
     || (await gmail("POST", "/labels", { name: REVIEW_LABEL, labelListVisibility: "labelShow", messageListVisibility: "show" }));
   await gmail("POST", `/messages/${draft.message.id}/modify`, { addLabelIds: [label.id] });
-  saveRegistry(reg);
 }
 
 // ---------- Laufende Gespräche (nur eigene, bereits gesendete Threads) ----------

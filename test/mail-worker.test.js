@@ -41,15 +41,17 @@ function fakeGmail() {
       return { draftId: id, messageId: "m" + id, threadId: "new" + id };
     },
     async markDraftForReview(id) { f.calls.push("review " + id); },
-    // wie gmail.js: hartes Tageslimit, Register erst nach Erfolg
-    async sendDraft(id) {
+    // wie gmail.js: hartes Tages- und Fensterlimit, Register erst nach Erfolg
+    async sendDraft(id, { window = null } = {}) {
       f.calls.push("SEND " + id);
       const d = f.reg.drafts[id];
       if (!d) throw new Error(`Entwurf ${id} wurde nicht von Jarvis erstellt – Zugriff verweigert.`);
-      if (Object.values(f.reg.sent).filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === zurichDay(clock)).length >= 50) throw new Error("Tageslimit");
+      const today = Object.values(f.reg.sent).filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === zurichDay(clock));
+      if (today.length >= 100) throw new Error("Tageslimit");
+      if (window && today.filter((s) => s.window === window).length >= 50) throw new Error("Fensterlimit");
       if (f.failSend) throw new Error(f.failSend);
       delete f.reg.drafts[id];
-      f.reg.sent["sent-" + id] = { messageId: "sent-" + id, threadId: d.threadId, to: d.to, subject: d.subject, body: d.body, fromDraft: id, sentAt: clock.toISOString() };
+      f.reg.sent["sent-" + id] = { messageId: "sent-" + id, threadId: d.threadId, to: d.to, subject: d.subject, body: d.body, fromDraft: id, window, sentAt: clock.toISOString() };
       (f.threads[d.threadId] ||= []).push({ messageId: "sent-" + id, from: "Chris <chris@x.ch>", to: d.to, subject: d.subject || "", body: d.body, sent: true, draft: false, internalDate: +clock });
       return { messageId: "sent-" + id, threadId: d.threadId };
     },
@@ -135,16 +137,16 @@ test("Follow-up 2 frühestens 5 Tage nach Follow-up 1, danach Schluss", async ()
   clock = new Date(+T0 + DAY + 3600e3);
   const r = await worker().tick();
   assert.deepEqual(r.plan.map((p) => p.kind), ["follow-up 2"]);
-  addOwnFollowUp("t1", +clock); // Sir hat Follow-up 2 gesendet
+  addOwnFollowUp("t1", +clock); // Chris hat Follow-up 2 gesendet
   delete g.reg.drafts.dr1;
   clock = new Date(+T0 + 30 * DAY);
   await worker().tick();
   assert.equal(g.calls.filter((c) => c === "reply t1").length, 1, "kein drittes Follow-up");
 });
 
-test("Tageslimit: bei 49 genau noch ein Entwurf, bei 50 keiner mehr", async () => {
-  for (let i = 0; i < 49; i++) g.reg.sent["old" + i] = { threadId: "alt" + i, to: "a@b.ch", sentAt: new Date(+T0 - 3600e3).toISOString() };
-  for (let i = 0; i < 49; i++) g.threads["alt" + i] = []; // ohne Antworten, Follow-ups noch nicht fällig
+test("Tageslimit: bei 99 genau noch ein Entwurf, bei 100 keiner mehr", async () => {
+  for (let i = 0; i < 99; i++) g.reg.sent["old" + i] = { threadId: "alt" + i, to: "a@b.ch", sentAt: new Date(+T0 - 3600e3).toISOString() };
+  for (let i = 0; i < 99; i++) g.threads["alt" + i] = []; // ohne Antworten, Follow-ups noch nicht fällig
   ownThread("t1", { replies: ["Frage 1"] });
   ownThread("t2", { replies: ["Frage 2"] });
   // t1/t2 wurden gestern gesendet → zählen nicht für heute
@@ -158,9 +160,9 @@ test("Tageslimit: bei 49 genau noch ein Entwurf, bei 50 keiner mehr", async () =
   assert.equal(g.calls.filter((c) => c.startsWith("reply")).length, 1);
 });
 
-test("Tageslimit lässt sich per config nicht über 50 anheben", async () => {
+test("Tageslimit lässt sich per config nicht über 100 anheben", async () => {
   live({ dailyLimit: 500 });
-  assert.equal(worker().config().limit, 50);
+  assert.equal(worker().config().limit, 100);
 });
 
 test("Neustart erhält den Zähler (persistenter Zustand)", async () => {
@@ -275,7 +277,7 @@ test("Dry-Run-Bericht: Antworten, Opt-outs, Follow-ups, Leads, Tageszähler und 
   assert.deepEqual(r.optouts.map((o) => o.address), ["b@firma.ch"]);
   assert.deepEqual(r.ownThreads.map((x) => [x.threadId, x.newReplies]), [["t1", 1], ["t2", 1], ["t3", 0], ["t4", 0]]);
   assert.ok(r.ownThreads.find((x) => x.threadId === "t4").followUpDue, "nächstes Follow-up-Datum sichtbar");
-  assert.deepEqual([r.sentToday, r.used, r.free], [1, 4, 46]);
+  assert.deepEqual([r.sentToday, r.used, r.free], [1, 4, 96]);
   assert.ok(!g.calls.some((c) => /^(reply|create|update|review)/.test(c)), "keine Gmail-Änderung");
 });
 
@@ -300,7 +302,7 @@ test("Worker läuft eigenständig ohne server.js", () => {
   const r = runWorker(secrets, "--plan");
   assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(r.stdout);
-  assert.deepEqual([out.dryRun, out.limit, out.sentToday, out.free], [true, 50, 0, 50]);
+  assert.deepEqual([out.dryRun, out.limit, out.sentToday, out.free], [true, 100, 0, 100]);
 });
 
 // ---------- Echtversand nur mit Versandgrundlage (sendMode compliant_auto) ----------
@@ -392,21 +394,21 @@ test("Suppression wird direkt vor dem Send geprüft", async () => {
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8")).actions["outreach:anna@laden.ch"].status, "suppressed");
 });
 
-test("Tageslimit bleibt hart: bei 49 genau ein Send, bei 50 keiner", async () => {
+test("Tageslimit bleibt hart: bei 99 genau ein Send, bei 100 keiner", async () => {
   auto();
-  for (let i = 0; i < 48; i++) g.reg.sent["old" + i] = { threadId: "alt" + i, to: "x@y.ch", sentAt: new Date(+T0 - 3600e3).toISOString() };
-  for (let i = 0; i < 48; i++) g.threads["alt" + i] = [];
+  for (let i = 0; i < 98; i++) g.reg.sent["old" + i] = { threadId: "alt" + i, to: "x@y.ch", sentAt: new Date(+T0 - 3600e3).toISOString() };
+  for (let i = 0; i < 98; i++) g.threads["alt" + i] = [];
   ownThread("t1", { to: "a@firma.ch", replies: ["Frage 1"], sentAt: new Date(+T0 - 2 * 3600e3) });
   ownThread("t2", { to: "b@firma.ch", replies: ["Frage 2"], sentAt: new Date(+T0 - DAY) });
   ownThread("t3", { to: "c@firma.ch", replies: ["Frage 3"], sentAt: new Date(+T0 - DAY) });
   write("state.json", { compliantThreads: { t1: { basis: "opt_in" }, t2: { basis: "opt_in" }, t3: { basis: "opt_in" } } });
-  // 49 heute gesendet (48 + t1) → genau eine weitere Mail
+  // 99 heute gesendet (98 + t1) → genau eine weitere Mail
   const r = await worker().tick();
   assert.equal(sends().length, 1);
   assert.equal(r.free, 0);
-  clock = new Date(+T0 + 3600e3);
+  clock = new Date("2026-10-06T12:35:00Z"); // 14:35 Zürich: Nachmittagsfenster
   await worker().tick();
-  assert.equal(sends().length, 1, "bei 50 keine weitere");
+  assert.equal(sends().length, 1, "bei 100 keine weitere – auch nicht im zweiten Fenster");
 });
 
 test("Doppelversand: zweiter Durchlauf und Absturz während des Sendens senden nie erneut", async () => {
@@ -440,18 +442,18 @@ test("fehlgeschlagener Send zählt nicht und wird nicht automatisch wiederholt",
   assert.equal(sends().length, 1, "kein automatischer zweiter Versuch");
 });
 
-test("Versand verteilt: höchstens ein Erstkontakt je Abstand, nur im Zeitfenster", async () => {
+test("Versand nur im Versandfenster: vorbereitete Mails warten auf 14:30, nachts kein Versand", async () => {
   auto();
-  write("leads.json", ["a", "b", "c"].map((x) => ({ email: x + "@laden.ch", ...OPTIN })));
+  clock = new Date("2026-10-06T10:30:00Z"); // 12:30 Zürich: zwischen den Fenstern
+  write("leads.json", ["a", "b"].map((x) => ({ email: x + "@laden.ch", ...OPTIN })));
+  const r = await worker().tick();
+  assert.equal(sends().length, 0, "zwischen den Fenstern kein Versand");
+  assert.equal(r.plan.length, 2, "Entwürfe werden trotzdem vorbereitet");
+  clock = new Date("2026-10-06T12:30:00Z"); // 14:30 Zürich
   await worker().tick();
-  assert.equal(sends().length, 1);
-  clock = new Date(+T0 + 5 * 60_000);
-  await worker().tick();
-  assert.equal(sends().length, 1, "nach 5 Minuten noch nicht");
-  clock = new Date(+T0 + 13 * 60_000);
-  await worker().tick();
-  assert.equal(sends().length, 2);
+  assert.equal(sends().length, 2, "alle vorbereiteten Erstkontakte im Nachmittagsfenster");
   clock = new Date("2026-10-06T20:00:00Z"); // 22:00 Zürich
+  write("leads.json", [{ email: "d@laden.ch", ...OPTIN }]);
   await worker().tick();
   assert.equal(sends().length, 2, "nachts kein Versand");
 });

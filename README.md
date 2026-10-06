@@ -57,8 +57,8 @@ Vollzugriff heißt: Ein falsch verstandener Satz kann echte Dateien löschen. Sc
 
 ## Anpassen
 
-- **Persönlichkeit:** `persona.md` (Ton, Anrede „Sir“, Mission)
-- **Gedächtnis:** `workspace/memory/sir.md` – Jarvis schreibt selbst hinein, du kannst es auch.
+- **Persönlichkeit:** `persona.md` (Ton, Anrede „Chris“, Mission)
+- **Gedächtnis:** `workspace/memory/chris.md` – Jarvis schreibt selbst hinein, du kannst es auch.
 - **Ergebnisse:** Längere Texte, Pläne und Recherchen legt Jarvis in `workspace/ergebnisse/` ab.
 - **Film-Stimme:** ElevenLabs-Schlüssel in `.env` eintragen; die Browser-Stimme ist kostenlos, klingt aber roboterhafter. In Edge klingen „Conrad“ und „Killian“ am besten.
 - **Tempo:** `JARVIS_MODEL=haiku` antwortet am schnellsten, `opus` am klügsten. Standard ist `sonnet`.
@@ -79,7 +79,7 @@ Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschlie
 
 ### Mail-Worker (Hintergrund)
 
-`mail-worker.js` prüft alle 5 Minuten die registrierten Jarvis-Threads auf Antworten, Opt-outs und fällige Follow-ups (nach 3 und weiteren 5 Tagen, danach Schluss) und bearbeitet freigegebene Leads. Fremde Mails und Threads werden nie gelesen oder verändert. Höchstens 50 Mails pro Tag (Europe/Zurich); Follow-ups und Erstkontakte nur 08:30–18:30 und verteilt (mindestens 12 Minuten Abstand).
+`mail-worker.js` prüft alle 5 Minuten die registrierten Jarvis-Threads auf Antworten, Opt-outs und fällige Follow-ups (nach 3 und weiteren 5 Tagen, danach Schluss) und bearbeitet freigegebene Leads. Fremde Mails und Threads werden nie gelesen oder verändert. Entwürfe für Follow-ups und Erstkontakte entstehen 08:30–18:30; automatisch gesendet wird nur in zwei Versandläufen um 09:30 und 14:30 (Europe/Zurich, je höchstens 50, zusammen höchstens 100 erfolgreiche Sends pro Tag). Jeder Lauf wird vor dem ersten Send gespeichert und auch nach einem Neustart nicht wiederholt.
 
 - Einstellungen: `.secrets/mail_worker/config.json`
   - `dryRun: true` – nur anzeigen. `sendMode: "drafts"` – nur Entwürfe. `sendMode: "compliant_auto"` + `dryRun: false` – versandberechtigte Mails werden selbst gesendet.
@@ -96,7 +96,8 @@ Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschlie
 - Opt-outs: `.secrets/mail_worker/suppression.json` (dauerhaft), Log: `.secrets/mail_worker/worker.log`.
 - Dry-Run ansehen: `npm run mail-plan` (`node mail-worker.js --dry-run`, ändert nie etwas). Einmal prüfen: `npm run mail-once`.
 - Autostart einrichten: `powershell -ExecutionPolicy Bypass -File install-mail-worker.ps1` – fragt per UAC nach Administratorrechten, legt die Aufgabe „Jarvis Mail Worker“ an (Start bei Anmeldung, Neustart nach Fehler), ersetzt einen alten Worker-Prozess und prüft die Einrichtung. Entfernen mit `-Uninstall`.
-- `node gmail.js send` verweigert ab 50 heute gesendeten Jarvis-Mails (Europe/Zurich).
+- `node gmail.js send` verweigert ab 100 heute gesendeten Jarvis-Mails (Europe/Zurich).
+- Cloud-Mailaufträge: Der Cloud-Jarvis legt nur strukturierte Aufträge in `/api/mail-requests` ab (Netlify Blobs, ohne Gmail-Zugang). Der lokale Mail-Worker holt sie ab, prüft sie nach denselben Regeln (Versandgrundlage, Suppression, Duplikate, Limits) und sendet nur im nächsten Versandfenster; das Ergebnis (`accepted_local`, `blocked`, `sent`, `failed`, `expired`) geht zurück in die Cloud.
 - Der Worker läuft nur, solange der Rechner an, wach und online ist.
 
 ### Lead-Finder und Website-Audit (Hintergrund)
@@ -118,7 +119,7 @@ Der Server ist nur auf deinem eigenen Rechner erreichbar (localhost) und lehnt A
 ### Kundenalarm und gemeinsamer Zustand Lokal ↔ Cloud
 
 - Schreibt ein Kunde in einem eigenen Jarvis-Thread, dass er telefonieren, einen Termin oder persönlich sprechen möchte (`human-contact.js`, satzweise mit Kontext), entsteht sofort eine persistente Meldung `human_contact_requested` (Priorität hoch, je Gmail-Nachricht nur einmal), ein Windows-Toast „Jarvis – Kunde möchte persönlichen Kontakt“ und ein Hinweis im HUD. Die Antwort wird nur als Entwurf zur Prüfung vorbereitet – keine erfundenen Termine, Nummern oder Zusagen.
-- `shared-state.js` definiert den sicheren gemeinsamen Zustand (Persona-Version, Notizen aus `memory/sir.md`, begrenzter Gesprächsverlauf, Meldungen, Worker-/Discovery-Zahlen). Alles wird per Whitelist neu aufgebaut; Tokens, Gmail-IDs, Leads, Suppression-Liste, Mailinhalte und lokale Pfade gelangen nie in die Cloud.
+- `shared-state.js` definiert den sicheren gemeinsamen Zustand (Persona-Version, Notizen aus `memory/chris.md`, begrenzter Gesprächsverlauf, Meldungen, Worker-/Discovery-Zahlen). Alles wird per Whitelist neu aufgebaut; Tokens, Gmail-IDs, Leads, Suppression-Liste, Mailinhalte und lokale Pfade gelangen nie in die Cloud.
 - Lokal liegt der Spiegel in `.secrets/shared_state.json`; der Worker und `server.js` gleichen ihn mit `/api/state` (Netlify Function + Netlify Blobs) ab. „Gelesen“ wird in beide Richtungen übernommen und nie wieder auf „ungelesen“ gesetzt. Gmail-Aktionen bleiben ausschliesslich lokal.
 - Persona: `persona.md` ist die einzige Quelle. Die Cloud-Fassung erzeugt `npm run build:persona` (läuft auch beim Netlify-Build); Abschnitte zwischen `<!-- nur-lokal -->`-Markierungen gelten nur auf dem PC.
 - Einrichtung: `npm run setup-sync` legt einen Sync-Token in `.secrets/jarvis_sync.json` an und zeigt ihn an. In Netlify als `JARVIS_SYNC_TOKEN` eintragen (neben `JARVIS_PASSWORD` und `ANTHROPIC_API_KEY`) und neu deployen.

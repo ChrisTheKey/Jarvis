@@ -110,13 +110,16 @@ export function sanitizeSales(x) {
   return out;
 }
 
+// Versandlimits (wie mail-worker.js/gmail.js): 100 erfolgreiche Sends pro Tag, je 50 im Morgen- und Nachmittagsfenster.
+const DAILY_LIMIT = 100, WINDOW_LIMIT = 50, WINDOW_IDS = ["morning", "afternoon"];
 function sanitizeBusiness(b) {
   if (!b || typeof b !== "object") return null;
   const w = b.worker || {}, d = b.discovery || {};
   return {
     updatedAt: iso(b.updatedAt),
-    worker: { online: w.online === true, lastCycle: iso(w.lastCycle), todaySent: num(w.todaySent, 50), limit: num(w.limit, 50), capacity: num(w.capacity, 50),
-      autoSend: w.autoSend === true, eligibleLeads: num(w.eligibleLeads), optOuts: num(w.optOuts) },
+    worker: { online: w.online === true, lastCycle: iso(w.lastCycle), todaySent: num(w.todaySent, DAILY_LIMIT), limit: num(w.limit, DAILY_LIMIT), capacity: num(w.capacity, DAILY_LIMIT),
+      autoSend: w.autoSend === true, eligibleLeads: num(w.eligibleLeads), optOuts: num(w.optOuts),
+      windows: Object.fromEntries(WINDOW_IDS.map((id) => [id, { count: num(w.windows?.[id]?.count, WINDOW_LIMIT), limit: num(w.windows?.[id]?.limit, WINDOW_LIMIT), executed: w.windows?.[id]?.executed === true }])) },
     discovery: { lastRunAt: iso(d.lastRunAt), websitesFoundToday: num(d.websitesFoundToday), websitesWithIssuesToday: num(d.websitesWithIssuesToday),
       qualifiedLeads: num(d.qualifiedLeads), leadsWithoutLegalBasis: num(d.leadsWithoutLegalBasis), errorsToday: num(d.errorsToday) },
   };
@@ -229,7 +232,7 @@ export function memoryStore(initial = null) {
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 // Zwei Berechtigungen: x-jarvis-sync (JARVIS_SYNC_TOKEN, nur der lokale Kern) darf alles Erlaubte schreiben;
-// x-jarvis-key (JARVIS_PASSWORD, Sir im Browser) darf nur lesen, als gelesen/erledigt markieren, Gesprächsverlauf und Modus setzen.
+// x-jarvis-key (JARVIS_PASSWORD, Chris im Browser) darf nur lesen, als gelesen/erledigt markieren, Gesprächsverlauf und Modus setzen.
 export function createStateHandler({ getStore, env, now = () => new Date() }) {
   return async (req) => {
     const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD");

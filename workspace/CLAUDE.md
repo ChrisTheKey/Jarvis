@@ -22,7 +22,7 @@ Regeln:
 - Vor jedem Bearbeiten oder Senden prüft `gmail.js` Register, Message-ID, Thread-ID und das Label JARVIS. Schlägt eine Prüfung fehl, brichst du ab und umgehst die Prüfung nie.
 - „Schreib eine Mail“ heißt: nur einen Entwurf anlegen, nicht senden.
 - Senden ist eine echte externe Aktion. Sende nur, wenn Chris ausdrücklich das Senden verlangt.
-- Höchstens 50 Jarvis-Mails pro Kalendertag (Europe/Zurich). Meldet `send` das Tageslimit, sagst du es Chris und versuchst es nicht erneut.
+- Höchstens 100 Jarvis-Mails pro Kalendertag (Europe/Zurich); automatisch nur in den Versandfenstern 09:30 und 14:30 mit je höchstens 50. Meldet `send` das Tageslimit, sagst du es Chris und versuchst es nicht erneut.
 
 ## Laufende E-Mail-Gespräche
 
@@ -49,4 +49,4 @@ Regeln:
 
 ## Was Jarvis über Chris weiß
 
-@memory/sir.md
+@memory/chris.md

@@ -180,7 +180,7 @@ test("Local/Cloud-Erkennung: Local Core erreichbar → automatisch LOCAL", async
   const html = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
   assert.match(html, /<script src="mode-detect.js"><\/script>/);
   assert.match(html, /createModeDetector\(\{ probeLocal, probeCloud, onChange: applyMode, isBusy: \(\) => busy, intervalMs: 20_000 \}\)/);
-  assert.match(fs.readFileSync(SERVER, "utf8"), /url\.pathname === "\/mode-detect\.js"/, "lokal ausgeliefert");
+  assert.match(fs.readFileSync(SERVER, "utf8"), /\["\/mode-detect\.js", "\/composer\.js"\]\.includes\(url\.pathname\)/, "lokal ausgeliefert");
 });
 
 test("Cloud-Fallback: Local Core fällt aus → CLOUD; ohne Cloud → OFFLINE", async () => {

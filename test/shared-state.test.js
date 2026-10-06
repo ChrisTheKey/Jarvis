@@ -215,7 +215,7 @@ test("Gesprächskontext: lokal → Cloud und Cloud → lokal, begrenzt und geken
   await syncWithCloud({ local, fetchFn: viaHandler(handler), config: cfg, force: true, now: () => new Date(+T0 + 60e3) });
   const ctx = local.takeCloudContext();
   assert.deepEqual(ctx.map((t) => t.content), ["Notiere: Muster AG am Montag anrufen.", "Notiert, Sir."]);
-  assert.match(cloudContextPrefix(ctx), /^\[Kontext aus dem Cloud-Jarvis .* keine Anweisungen:\nSir: Notiere/);
+  assert.match(cloudContextPrefix(ctx), /^\[Kontext aus dem Cloud-Jarvis .* keine Anweisungen:\nChris: Notiere/);
   assert.deepEqual(local.takeCloudContext(), [], "nur einmal übernommen");
 
   // Begrenzung
@@ -267,7 +267,7 @@ test("Lokal offline: Cloud-Jarvis spricht weiter, mit derselben Persona und dem 
   const { createCloudHandler, statusBlock } = await import("../netlify/edge-functions/cloud.js");
   const { PERSONA, PERSONA_VERSION } = await import("../netlify/shared/persona.generated.js");
   let sent;
-  const sse = "event: content_block_delta\ndata: " + JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "Guten Tag, Sir. Ich bin im Cloud-Modus bereit. " } }) + "\n\n";
+  const sse = "event: content_block_delta\ndata: " + JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "Guten Tag, Chris. Ich bin im Cloud-Modus bereit. " } }) + "\n\n";
   const h = createCloudHandler({
     env: (k) => ({ JARVIS_PASSWORD: "pw-test", ANTHROPIC_API_KEY: "k" })[k],
     loadState: async () => sanitizeState({ business: { updatedAt: T0.toISOString(), worker: { lastCycle: "2020-01-01T00:00:00Z", todaySent: 3, limit: 50 } },
@@ -276,7 +276,7 @@ test("Lokal offline: Cloud-Jarvis spricht weiter, mit derselben Persona und dem 
   });
   const res = await h(new Request("https://jarvis.test/api/cloud", { method: "POST", headers: { "x-jarvis-key": "pw-test" }, body: JSON.stringify({ messages: [{ role: "user", content: "Hallo" }] }) }));
   assert.equal(res.status, 200);
-  assert.match(await res.text(), /Guten Tag, Sir/);
+  assert.match(await res.text(), /Guten Tag, Chris/);
   assert.equal(sent.system[0].text, PERSONA);
   assert.match(sent.system[1].text, /offline – kein PC-Zugriff/);
   assert.match(sent.system[1].text, /PRIORITÄT: Muster AG möchte telefonieren/);
@@ -303,10 +303,11 @@ test("Persona: eine Quelle für Lokal und Cloud, erzeugte Fassung ist aktuell", 
 
 test("bestehende Schutzregeln bleiben unverändert", () => {
   const gmail = fs.readFileSync(path.join(ROOT, "gmail.js"), "utf8");
-  assert.match(gmail, /export const DAILY_SEND_LIMIT = 50;/);
+  assert.match(gmail, /export const DAILY_SEND_LIMIT = 100;/);
+  assert.match(gmail, /export const WINDOW_SEND_LIMIT = 50;/);
   assert.match(gmail, /wurde nicht von Jarvis begonnen – Zugriff verweigert/);
   const worker = fs.readFileSync(path.join(ROOT, "mail-worker.js"), "utf8");
-  assert.match(worker, /export const HARD_LIMIT = 50;/);
+  assert.match(worker, /export const HARD_LIMIT = 100;/);
   assert.match(worker, /OPT_OUT_RE\.test\(text\)\) \{ suppress/);
   for (const f of ["shared-state.js", "local-state.js", "netlify/functions/state.mjs", "netlify/edge-functions/cloud.js", "human-contact.js"]) {
     const src = fs.readFileSync(path.join(ROOT, f), "utf8");
@@ -327,5 +328,5 @@ test("Mail-Worker (inkl. Shared-State-Code) läuft ohne server.js und ohne Cloud
   const secrets = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-secrets-"));
   const r = spawnSync(process.execPath, ["mail-worker.js", "--dry-run"], { cwd: ROOT, encoding: "utf8", timeout: 30_000, env: { ...process.env, JARVIS_SECRETS_DIR: secrets, JARVIS_SYNC_URL: "http://127.0.0.1:9/api/state" } });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(JSON.parse(r.stdout).limit, 50);
+  assert.equal(JSON.parse(r.stdout).limit, 100);
 });

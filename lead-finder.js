@@ -28,7 +28,7 @@ export const DEFAULT_DISCOVERY = {
     { key: "amenity", value: "restaurant" }, { key: "amenity", value: "dentist" }, { key: "healthcare", value: "physiotherapist" },
     { key: "tourism", value: "hotel" }, { key: "office", value: "accountant" }, { key: "shop", value: "hairdresser" },
   ],
-  excludeDomains: [], // z. B. bekannte Grosskonzerne oder Sirs eigene Kunden
+  excludeDomains: [], // z. B. bekannte Grosskonzerne oder Chris’ eigene Kunden
   overpassUrl: "https://overpass-api.de/api/interpreter",
 };
 
@@ -134,7 +134,7 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
     try { candidates = await search(pair); }
     catch (e) { stats.errors++; out.errors.push({ stage: "search", error: e.message }); log("error", "discovery_search_failed", { query: out.query, error: e.message }); save(); return out; }
 
-    // Bekanntes: gefundene Leads, Sirs Lead-Liste, eigene Jarvis-Threads, Suppression (hat immer Vorrang)
+    // Bekanntes: gefundene Leads, Chris’ Lead-Liste, eigene Jarvis-Threads, Suppression (hat immer Vorrang)
     const leadsFile = store.read("leads.json", []);
     const reg = gmail?.listOwned?.() || { sent: {}, drafts: {} };
     const supp = store.read("suppression.json", {});
@@ -191,10 +191,10 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
         else if (!meaningful || score < cfg.minScore) lead.status = "low_score";
         else if (!lead.email) lead.status = "no_contact";
         else if (existing && legalBasis(existing, t)) {
-          // Nur wenn Sir die Versandgrundlage bereits dokumentiert hat: Befunde an seinen Lead hängen.
+          // Nur wenn Chris die Versandgrundlage bereits dokumentiert hat: Befunde an seinen Lead hängen.
           lead.status = "matched_existing_lead";
           enrichExisting(store, existing, a.issues, score);
-        } else if (existing) lead.status = "already_in_lead_list"; // steht schon in Sirs Liste – dort entscheidet die Versandgrundlage
+        } else if (existing) lead.status = "already_in_lead_list"; // steht schon in Chris’ Liste – dort entscheidet die Versandgrundlage
         else lead.status = "blocked_no_legal_basis";
         if (["blocked_no_legal_basis", "matched_existing_lead"].includes(lead.status)) stats.qualified++;
         log("info", "lead_discovered", { domain, status: lead.status, score, issues: a.issues.length });
@@ -217,7 +217,7 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
   }
 }
 
-// Befunde an einen vorhandenen, von Sir freigegebenen Lead hängen – frisch gelesen, nur diese Felder.
+// Befunde an einen vorhandenen, von Chris freigegebenen Lead hängen – frisch gelesen, nur diese Felder.
 function enrichExisting(store, existing, issues, score) {
   const leads = store.read("leads.json", []);
   const key = normEmail(existing.email);

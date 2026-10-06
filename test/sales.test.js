@@ -136,11 +136,12 @@ test("Suppression bleibt aktiv: do_not_contact hat Vorrang vor allem", () => {
   assert.equal(computeMetrics(leads, T0).eligible_to_contact, 0);
 });
 
-test("Tageslimit bleibt 50", () => {
-  assert.equal(HARD_LIMIT, 50);
-  assert.equal(DAILY_SEND_LIMIT, 50);
-  assert.equal(DEFAULT_CONFIG.dailyLimit, 50);
-  assert.equal(sanitizeState({ business: { worker: { todaySent: 80, limit: 999 } } }).business.worker.limit, 50);
+test("Tageslimit 100 (je Fenster 50) überall gleich", () => {
+  assert.equal(HARD_LIMIT, 100);
+  assert.equal(DAILY_SEND_LIMIT, 100);
+  assert.equal(DEFAULT_CONFIG.dailyLimit, 100);
+  assert.equal(sanitizeState({ business: { worker: { todaySent: 180, limit: 999 } } }).business.worker.limit, 100);
+  assert.equal(sanitizeState({ business: { worker: { windows: { morning: { count: 70, limit: 99 } } } } }).business.worker.windows.morning.limit, 50);
 });
 
 test("fremde Gmail-Entwürfe bleiben geschützt", async () => {

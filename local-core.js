@@ -46,22 +46,30 @@ export function probeCore(port, { timeoutMs = 2500 } = {}) {
 }
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
-export function acquireSupervisorLock(dir = CORE_DIR, pid = process.pid) {
+// Lock mit Herzschlag: Nach einem Neustart kann Windows die alte PID an einen fremden Prozess vergeben – ein Lock gilt
+// deshalb nur, solange sein Besitzer lebt UND sich in den letzten zwei Minuten gemeldet hat. Sonst wird übernommen.
+export const LOCK_STALE_MS = 120_000;
+export function acquireSupervisorLock(dir = CORE_DIR, pid = process.pid, now = Date.now()) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "core.lock");
   for (let i = 0; i < 2; i++) {
-    try { fs.writeFileSync(file, String(pid), { flag: "wx" }); return true; } catch (e) {
+    try { fs.writeFileSync(file, JSON.stringify({ pid, beat: now }), { flag: "wx" }); return true; } catch (e) {
       if (e.code !== "EEXIST") throw e;
-      const other = Number(fs.readFileSync(file, "utf8")) || 0;
-      if (other && other !== pid && alive(other)) return false;
+      let lock = {};
+      try { lock = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+      if (typeof lock !== "object" || !lock) lock = {}; // altes Format (nur PID, ohne Herzschlag) gilt als verwaist
+      if (lock.pid && lock.pid !== pid && alive(lock.pid) && now - (lock.beat || 0) < LOCK_STALE_MS) return false;
       fs.rmSync(file, { force: true }); // verwaist
     }
   }
   return false;
 }
+export function supervisorHeartbeat(dir = CORE_DIR, pid = process.pid) {
+  try { fs.writeFileSync(path.join(dir, "core.lock"), JSON.stringify({ pid, beat: Date.now() })); } catch {}
+}
 export function releaseSupervisorLock(dir = CORE_DIR, pid = process.pid) {
   const file = path.join(dir, "core.lock");
-  try { if (Number(fs.readFileSync(file, "utf8")) === pid) fs.rmSync(file, { force: true }); } catch {}
+  try { if (JSON.parse(fs.readFileSync(file, "utf8")).pid === pid) fs.rmSync(file, { force: true }); } catch {}
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -73,6 +81,7 @@ export async function supervise({ dir = CORE_DIR, server = path.join(ROOT, "serv
   process.on("exit", release);
   for (const sig of ["SIGINT", "SIGTERM", "SIGBREAK"]) process.on(sig, () => process.exit(0));
   log("info", "supervisor_started", { pid: process.pid });
+  setInterval(() => supervisorHeartbeat(dir), 30_000).unref();
   // Endet der startende Prozess (beim Task: conhost, z. B. durch „Aufgabe beenden“), endet der Local Core mit.
   let child = null;
   const parent = process.ppid;

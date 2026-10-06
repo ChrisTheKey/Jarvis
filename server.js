@@ -103,7 +103,7 @@ function ask(text, res, retried = false) {
   const send = (ev) => { if (ev.type === "text") said += (said ? "\n" : "") + ev.text; if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`); };
   let buf = "", stderr = "", gotOutput = false, finished = false;
 
-  // Was Sir inzwischen im Cloud-Jarvis besprochen hat, kommt einmalig als gekennzeichneter Kontext mit.
+  // Was Chris inzwischen im Cloud-Jarvis besprochen hat, kommt einmalig als gekennzeichneter Kontext mit.
   let context = "";
   if (!retried) { try { context = cloudContextPrefix(local.takeCloudContext()); } catch {} }
   child.stdin.end(context + text);
@@ -221,9 +221,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/health") {
       return json(res, 200, { ok: true, service: SERVICE, mode: "local", pid: process.pid, startedAt: STARTED_AT, supervised: process.env.JARVIS_CORE_SUPERVISED === "1" });
     }
-    if (req.method === "GET" && url.pathname === "/mode-detect.js") {
+    // Klassische HUD-Skripte (gleich wie auf Netlify): Local/Cloud-Erkennung und Texteingabe.
+    if (req.method === "GET" && ["/mode-detect.js", "/composer.js"].includes(url.pathname)) {
       res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
-      return fs.createReadStream(path.join(ROOT, "public", "mode-detect.js")).pipe(res);
+      return fs.createReadStream(path.join(ROOT, "public", url.pathname.slice(1))).pipe(res);
     }
     if (req.method === "GET" && url.pathname === "/api/status") {
       return json(res, 200, { claude: claudeVersion, model: MODEL, fullAccess: FULL_ACCESS, tts: ELEVEN_KEY ? "elevenlabs" : "browser", session: Boolean(sessionId) });

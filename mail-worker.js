@@ -1,15 +1,18 @@
 // Jarvis Mail-Worker – läuft unabhängig von server.js im Hintergrund.
 // sendMode "drafts": bereitet nur Entwürfe vor. sendMode "compliant_auto": sendet zusätzlich selbst, aber ausschließlich
 // an Leads mit dokumentierter Versandgrundlage (opt_in oder Bestandskunde mit ähnlicher Leistung) und in deren Threads.
-// Heikle Fälle bleiben immer Entwürfe für Sir.
+// Heikle Fälle bleiben immer Entwürfe für Chris.
 //
-// Alle 5 Minuten: neue Antworten in registrierten Jarvis-Threads, Opt-outs, fällige Follow-ups und
-// freigegebene Leads prüfen. Zustand, Leads und Suppression-Liste liegen in .secrets/mail_worker/.
+// Alle 5 Minuten: neue Antworten in registrierten Jarvis-Threads, Opt-outs, fällige Follow-ups, freigegebene Leads
+// und Cloud-Mailaufträge prüfen und Entwürfe vorbereiten. Gesendet wird automatisch NUR in zwei Versandläufen pro Tag
+// (09:30 und 14:30 Europe/Zurich, je höchstens 50, zusammen höchstens 100). Jeder Lauf wird vor dem ersten Send
+// persistiert und nie wiederholt. Zustand, Leads und Suppression-Liste liegen in .secrets/mail_worker/.
 //
 //   node mail-worker.js              Worker-Schleife (Lock gegen Doppelstart)
 //   node mail-worker.js --supervise  wie oben, startet den Worker nach einem Absturz neu (für den Autostart)
 //   node mail-worker.js --once       genau eine Prüfung
 //   node mail-worker.js --plan       Dry-Run: zeigt, was heute vorbereitet/gesendet würde – ändert nichts (Alias --dry-run)
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,7 +26,13 @@ export const WORKER_DIR = path.join(SECRETS, "mail_worker");
 const WRITER_PROMPT = path.join(ROOT, "mail-writer.md");
 const WIN = process.platform === "win32";
 
-export const HARD_LIMIT = 50;
+export const HARD_LIMIT = 100; // erfolgreiche Sends je Kalendertag (Europe/Zurich)
+export const WINDOW_LIMIT = 50; // erfolgreiche Sends je Versandfenster
+// Versandläufe: Start und spätester Nachholzeitpunkt (z. B. PC war um 09:30 aus).
+export const SEND_WINDOWS = [
+  { id: "morning", start: "09:30", until: "12:00", limit: WINDOW_LIMIT },
+  { id: "afternoon", start: "14:30", until: "18:00", limit: WINDOW_LIMIT },
+];
 const DAY_MS = 86_400_000;
 export const DEFAULT_CONFIG = {
   dryRun: true, // Standard: nur anzeigen, was vorbereitet würde
@@ -31,13 +40,13 @@ export const DEFAULT_CONFIG = {
   dailyLimit: HARD_LIMIT, // wird nie über HARD_LIMIT hinaus beachtet
   replyReserve: 5, // so viele Plätze bleiben täglich für Antworten in laufenden Gesprächen frei
   pollMinutes: 5,
-  window: ["08:30", "18:30"], // Follow-ups und Erstkontakte nur in diesem Zeitfenster (Europe/Zurich)
-  maxPacedPerTick: 2, // keine Bursts: höchstens so viele Follow-ups/Erstkontakte pro Durchlauf
+  window: ["08:30", "18:30"], // Follow-ups und Erstkontakte werden nur in diesem Zeitfenster VORBEREITET (Europe/Zurich)
+  maxPacedPerTick: 2, // höchstens so viele Follow-ups/Erstkontakte werden pro Durchlauf geschrieben
   followUpDays: [3, 5],
   activeDays: 60, // ältere Threads werden nicht mehr abgefragt
-  excludeAddresses: [], // z. B. Sirs eigene Adressen: dafür nie Entwürfe vorbereiten
-  sender: { name: "", company: "", email: "", signature: "" }, // echte Identität von Sir – ohne name kein Erstkontakt/Versand
-  offer: "", // Sirs Angebot in eigenen Worten – ohne Angebot keine Erstkontakte
+  excludeAddresses: [], // z. B. eigene Adressen von Chris: dafür nie Entwürfe vorbereiten
+  sender: { name: "", company: "", email: "", signature: "" }, // echte Identität von Chris – ohne name kein Erstkontakt/Versand
+  offer: "", // Angebot von Chris in eigenen Worten – ohne Angebot keine Erstkontakte
   model: "sonnet",
 };
 
@@ -47,6 +56,9 @@ const zurich = (d, opts) => new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe
 export const zurichDay = (d) => zurich(d, { year: "numeric", month: "2-digit", day: "2-digit" });
 const zurichMinutes = (d) => { const [h, m] = zurich(d, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).split(":"); return +h * 60 + +m; };
 const hm = (s) => { const [h, m] = s.split(":"); return +h * 60 + +m; };
+// Aktuelles Versandfenster (Europe/Zurich, sommerzeitfest über Intl) oder null.
+export const sendWindowAt = (d) => SEND_WINDOWS.find((w) => zurichMinutes(d) >= hm(w.start) && zurichMinutes(d) < hm(w.until)) || null;
+const threadRef = (threadId) => crypto.createHash("sha256").update(String(threadId)).digest("hex").slice(0, 12);
 
 export const normEmail = (s = "") => (s.match(/<([^>]+)>/)?.[1] || s).trim().toLowerCase();
 const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i;
@@ -156,11 +168,13 @@ export function releaseLock(dir, pid = process.pid, name = "worker.lock") {
 
 // ---------- Worker ----------
 
-const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, compliantThreads: {}, lastPacedAt: 0, lastSendAt: 0, failures: 0, backoffUntil: 0 };
+const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, compliantThreads: {}, windows: {}, lastPacedAt: 0, lastSendAt: 0, failures: 0, backoffUntil: 0 };
+// Cloud-Mailaufträge (lokale Ablage): request_id -> { request, status, reason, synced }
+export const CLOUD_INBOX = "cloud_requests.json";
 
 export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {} }) {
   const store = createStore(dir);
-  // Firma zu einer Absenderadresse – nur aus Sirs Lead-Liste bzw. den gefundenen Leads, nie geraten.
+  // Firma zu einer Absenderadresse – nur aus der Lead-Liste von Chris bzw. den gefundenen Leads, nie geraten.
   const companyFor = (email) => {
     const e = normEmail(email), domain = e.split("@")[1] || "";
     const leads = store.read("leads.json", []);
@@ -195,7 +209,6 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const wantAuto = cfg.sendMode === "compliant_auto" && !dry;
     const auto = wantAuto && !!cfg.sender?.name;
     if (wantAuto && !auto) notes.push("Echtversand inaktiv: in config.json fehlt sender.name – es entstehen nur Entwürfe.");
-    const gapMs = Math.ceil((hm(cfg.window[1]) - hm(cfg.window[0])) / cfg.limit) * 60_000; // Versand über den Arbeitstag verteilen
     let used = usedToday(reg, state, day);
     const sentToday = Object.values(reg.sent || {}).filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === day).length;
     const free = () => cfg.limit - used;
@@ -297,7 +310,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
 
         if (toAnswer) {
           const { m, sender, text, hc } = toAnswer;
-          // Kunde will telefonieren/persönlich sprechen: sofort Sir benachrichtigen (je Message-ID nur einmal) –
+          // Kunde will telefonieren/persönlich sprechen: sofort Chris benachrichtigen (je Message-ID nur einmal) –
           // auch im Dry-Run und bei erreichtem Tageslimit. Ein Fehler hier stoppt den Worker nie.
           if (hc) {
             humanContacts.push({ threadId, kind: hc.kind });
@@ -333,11 +346,12 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       }
     }
 
-    // 2) Follow-ups und Erstkontakte: nur im Zeitfenster, wenige pro Durchlauf, Reserve für Antworten bleibt frei.
+    // 2) Follow-ups und Erstkontakte vorbereiten: nur im Zeitfenster, wenige pro Durchlauf, Reserve für Antworten bleibt frei.
+    // Gesendet wird erst im nächsten Versandfenster (Schritt 4).
     const inWindow = zurichMinutes(t) >= hm(cfg.window[0]) && zurichMinutes(t) < hm(cfg.window[1]);
     let paced = 0;
-    const pacedFree = () => free() > cfg.replyReserve && paced < (dry ? Infinity : cfg.maxPacedPerTick) && (!auto || +t - (state.lastPacedAt || 0) >= gapMs);
-    if (!inWindow) notes.push(`Follow-ups und Erstkontakte nur ${cfg.window[0]}–${cfg.window[1]} (Europe/Zurich).`);
+    const pacedFree = () => free() > cfg.replyReserve && paced < (dry ? Infinity : cfg.maxPacedPerTick);
+    if (!inWindow) notes.push(`Follow-ups und Erstkontakte werden nur ${cfg.window[0]}–${cfg.window[1]} vorbereitet (Europe/Zurich).`);
     for (const f of followUps) {
       if (!(inWindow || dry) || !pacedFree()) break;
       try {
@@ -355,7 +369,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       }
     }
 
-    // Erstkontakte ausschließlich aus der von Sir freigegebenen Lead-Liste.
+    // Erstkontakte ausschließlich aus der von Chris freigegebenen Lead-Liste.
     // Erstkontakte nur mit gültiger Versandgrundlage – eine öffentliche Adresse oder approved allein genügt nicht.
     const leads = store.read("leads.json", []);
     const canWrite = !!(cfg.offer && cfg.sender.name);
@@ -389,7 +403,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       }
     }
     if (eligibleLeads.length && !canWrite) notes.push("Erstkontakte deaktiviert: in config.json fehlen offer und/oder sender.name.");
-    // Nur den Status nachtragen – frisch gelesen, damit Sirs gleichzeitige Änderungen an der Liste erhalten bleiben.
+    // Nur den Status nachtragen – frisch gelesen, damit gleichzeitige Änderungen von Chris an der Liste erhalten bleiben.
     if (leadsChanged && !readOnly) {
       const status = new Map(leads.filter((l) => l && l.email).map((l) => [normEmail(l.email), l.status]));
       const current = store.read("leads.json", []);
@@ -401,45 +415,139 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       store.write("leads.json", current);
     }
 
-    // 3) Versand: nur freigegebene Entwürfe, Antworten zuerst, im Zeitfenster, verteilt, Suppression direkt vor jedem Send.
-    if (auto) {
-      const fresh = gmail.listOwned();
-      const isToday = (x) => x.sentAt && zurichDay(new Date(x.sentAt)) === day;
-      let sentNow = Object.values(fresh.sent || {}).filter(isToday).length;
-      const queue = Object.entries(state.actions).filter(([, a]) => a.status === "prepared" && a.autoSend)
-        .sort(([, a], [, b]) => (a.paced - b.paced) || a.at.localeCompare(b.at));
-      for (const [key, a] of queue) {
-        if (!fresh.drafts?.[a.draftId]) {
-          a.status = Object.values(fresh.sent || {}).some((x) => x.fromDraft === a.draftId) ? "sent_by_sir" : "draft_gone";
-          continue;
+    // 3) Cloud-Mailaufträge: ein Cloud-Auftrag ist keine Freigabe. Es gelten exakt dieselben Regeln wie für Erstkontakte
+    // bzw. Antworten im eigenen Thread; gesendet wird nur im nächsten Versandfenster.
+    const inbox = store.read(CLOUD_INBOX, {});
+    const cloudResults = [];
+    const cloudSet = (id, status, reason = null) => {
+      const e = inbox[id];
+      if (!e || (e.status === status && e.reason === reason)) return;
+      Object.assign(e, { status, reason, updatedAt: t.toISOString(), synced: false });
+      cloudResults.push({ request_id: id, status, reason });
+      log("info", "cloud_request_" + status, { request_id: id, reason });
+    };
+    const saveInbox = () => { if (!readOnly && cloudResults.length) store.write(CLOUD_INBOX, { ...store.read(CLOUD_INBOX, {}), ...inbox }); };
+    for (const [id, e] of Object.entries(inbox)) {
+      if (e.status !== "pending" || dry) continue;
+      const rq = e.request || {};
+      const to = normEmail(rq.recipient);
+      const text = `${rq.subject || ""} ${rq.body || ""}`;
+      try {
+        if (!rq.expires_at || Date.parse(rq.expires_at) <= +t) { cloudSet(id, "expired", "Abgelaufen, bevor der lokale Worker ihn prüfen konnte."); continue; }
+        if (!EMAIL_RE.test(to) || !rq.subject || !rq.body) { cloudSet(id, "blocked", "Empfänger, Betreff oder Text ungültig."); continue; }
+        if (supp[to] || exclude.has(to)) { cloudSet(id, "blocked", "Empfänger ist gesperrt (Abmeldung/Suppression)."); continue; }
+        if (!auto) { cloudSet(id, "blocked", "Automatischer Versand ist lokal nicht aktiv (sendMode/dryRun/sender)."); continue; }
+        if (text.length > 6000 || ESCALATE_RE.test(text) || AI_RE.test(text)) {
+          cloudSet(id, "blocked", "Inhalt braucht persönliche Prüfung (Vertrag, Zahlung, Preis, KI-Hinweis o. ä.) – bitte lokal schreiben."); continue;
         }
-        if (!inWindow) break;
-        if (a.paced && +t - (state.lastSendAt || 0) < gapMs) continue;
-        const suppNow = { ...store.read("suppression.json", {}), ...supp };
-        const to = normEmail(fresh.drafts[a.draftId].to);
-        if (suppNow[to] || suppNow[a.to] || exclude.has(to)) { a.status = "suppressed"; log("warn", "send_blocked_suppressed", { key, to }); continue; }
-        if (sentNow >= cfg.limit) { notes.push("Tageslimit erreicht – weiterer Versand erst morgen."); break; }
-        a.status = "sending";
-        save();
-        try {
-          await gmail.sendDraft(a.draftId);
-          Object.assign(a, { status: "sent", sentAt: t.toISOString() });
-          sentNow++;
-          if (a.paced) state.lastSendAt = +t;
-          sends.push({ kind: a.kind, to, threadId: a.threadId });
-          log("info", "sent", { key, kind: a.kind, to, draftId: a.draftId, threadId: a.threadId });
-        } catch (e) {
-          Object.assign(a, { status: "send_failed", error: e.message }); // nie automatisch wiederholen; Entwurf bleibt für Sir
-          log("error", "send_failed", { key, to, error: e.message });
-          save();
-          if (TRANSIENT_RE.test(e.message)) throw e;
+        let threadId = null, basis = null, lang = "de";
+        if (rq.optional_thread_reference) {
+          threadId = [...new Set(Object.values(reg.sent || {}).map((x) => x.threadId))].find((tid) => threadRef(tid) === rq.optional_thread_reference) || null;
+          if (!threadId) { cloudSet(id, "blocked", "Thread unbekannt oder nicht von Jarvis begonnen."); continue; }
+          basis = state.compliantThreads[threadId]?.basis || null;
+          lang = state.compliantThreads[threadId]?.lang || "de";
+          if (!basis) { cloudSet(id, "blocked", "Keine Versandgrundlage für diesen Thread (blocked_no_legal_basis)."); continue; }
+          if (isPending(state.threadDrafts[threadId])) { cloudSet(id, "blocked", "In diesem Thread liegt schon ein offener Entwurf."); continue; }
+        } else {
+          const lead = (Array.isArray(leads) ? leads : []).find((l) => normEmail(l?.email) === to);
+          basis = legalBasis(lead, t);
+          lang = lead?.language || "de";
+          // Eine öffentlich gefundene Adresse allein ist keine Versandgrundlage.
+          if (!basis) { cloudSet(id, "blocked", "Keine Versandgrundlage (opt_in oder Bestandskunde nötig) – blocked_no_legal_basis."); continue; }
+          if (contacted.has(to) || state.actions["outreach:" + to]) { cloudSet(id, "blocked", "Duplikat: Empfänger wurde bereits angeschrieben – bitte im bestehenden Thread antworten."); continue; }
         }
+        if (free() <= 0) { notes.push("Tageslimit erreicht – Cloud-Auftrag wird morgen geprüft."); continue; }
+        const key = "cloud:" + id;
+        if (state.actions[key]) continue;
+        state.actions[key] = { status: "creating", at: t.toISOString(), kind: "cloud-auftrag", threadId, to };
         save();
+        const body = finalizeCommercial(rq.body, cfg.sender, lang);
+        const d = threadId ? await gmail.replyToThread(threadId, { body }) : await gmail.createDraft({ to, subject: rq.subject, body });
+        state.actions[key] = { status: "prepared", at: t.toISOString(), kind: "cloud-auftrag", threadId: d.threadId, draftId: d.draftId, review: false, to, autoSend: true, paced: true,
+          cloudRequest: id, ...(threadId ? {} : { basisFrom: "lead" }) };
+        state.compliantThreads[d.threadId] ||= { to, basis, lang, at: t.toISOString() };
+        state.prepared[d.draftId] = { key, at: t.toISOString(), kind: "cloud-auftrag" };
+        if (d.threadId) state.threadDrafts[d.threadId] = d.draftId;
+        used++;
+        contacted.add(to);
+        cloudSet(id, "accepted_local", "Geprüft – wird im nächsten Versandfenster (09:30 oder 14:30) gesendet.");
+        save();
+      } catch (err) {
+        if (TRANSIENT_RE.test(err.message)) { saveInbox(); throw err; }
+        log("error", "cloud_request_failed", { request_id: id, error: err.message });
+        cloudSet(id, "failed", "Entwurf konnte lokal nicht angelegt werden.");
       }
     }
 
+    // 4) Versand: ausschliesslich in den zwei Versandfenstern, je Fenster genau ein Lauf (persistiert vor dem ersten Send).
+    // Antworten zuerst; direkt vor jedem Send erneut Suppression, Empfänger, Versandgrundlage und Kapazität prüfen.
+    const win = sendWindowAt(t);
+    state.windows = Object.fromEntries(Object.entries(state.windows || {}).filter(([d]) => d === day)); // nur heute
+    const todayWin = (state.windows[day] ||= {});
+    if (auto && !win) notes.push("Automatischer Versand nur in den Fenstern 09:30 und 14:30 (Europe/Zurich).");
+    if (auto && win && todayWin[win.id]) notes.push(`Versandfenster ${win.id} heute bereits ausgeführt.`);
+    if (auto && win && !todayWin[win.id]) {
+      todayWin[win.id] = { executedAt: t.toISOString(), status: "running", sent: 0 };
+      save(); // ab hier gilt das Fenster als ausgeführt – auch nach Absturz oder Neustart
+      const fresh = gmail.listOwned();
+      const isToday = (x) => x.sentAt && zurichDay(new Date(x.sentAt)) === day;
+      const todays = [...Object.values(fresh.sent || {}), ...Object.values(fresh.sending || {})].filter(isToday);
+      let sentNow = todays.length, inWin = todays.filter((x) => x.window === win.id).length;
+      const freshLeads = store.read("leads.json", []);
+      const queue = Object.entries(state.actions).filter(([, a]) => a.status === "prepared" && a.autoSend)
+        .sort(([, a], [, b]) => (a.paced - b.paced) || a.at.localeCompare(b.at));
+      const blockAt = (key, a, status, reason) => {
+        Object.assign(a, { status, reason });
+        log("warn", "send_blocked", { key, status, reason });
+        if (a.cloudRequest) cloudSet(a.cloudRequest, "blocked", reason);
+      };
+      for (const [key, a] of queue) {
+        if (!fresh.drafts?.[a.draftId]) {
+          a.status = Object.values(fresh.sent || {}).some((x) => x.fromDraft === a.draftId) ? "sent_by_sir" : "draft_gone";
+          if (a.cloudRequest) cloudSet(a.cloudRequest, "failed", "Entwurf wurde in Gmail entfernt oder von Hand gesendet.");
+          continue;
+        }
+        if (sentNow >= cfg.limit) { notes.push(`Tageslimit von ${cfg.limit} erreicht – weiterer Versand erst morgen.`); break; }
+        if (inWin >= win.limit) { notes.push(`Fensterlimit von ${win.limit} erreicht – Rest folgt im nächsten Versandfenster.`); break; }
+        const suppNow = { ...store.read("suppression.json", {}), ...supp };
+        const to = normEmail(fresh.drafts[a.draftId].to);
+        if (suppNow[to] || suppNow[a.to] || exclude.has(to)) { blockAt(key, a, "suppressed", "Empfänger ist gesperrt (Abmeldung/Suppression)."); continue; }
+        if (!EMAIL_RE.test(to)) { blockAt(key, a, "blocked", "Empfänger ungültig."); continue; }
+        if (!state.compliantThreads[a.threadId]) { blockAt(key, a, "blocked_no_legal_basis", "Keine Versandgrundlage für diesen Thread."); continue; }
+        if (a.basisFrom === "lead" || a.kind === "erstkontakt") {
+          const lead = (Array.isArray(freshLeads) ? freshLeads : []).find((l) => normEmail(l?.email) === to);
+          if (!legalBasis(lead, t)) { blockAt(key, a, "blocked_no_legal_basis", "Versandgrundlage nicht mehr gültig (blocked_no_legal_basis)."); continue; }
+        }
+        a.status = "sending";
+        save();
+        try {
+          await gmail.sendDraft(a.draftId, { window: win.id });
+          Object.assign(a, { status: "sent", sentAt: t.toISOString(), window: win.id });
+          sentNow++; inWin++; todayWin[win.id].sent++;
+          state.lastSendAt = +t;
+          sends.push({ kind: a.kind, to, threadId: a.threadId, window: win.id });
+          if (a.cloudRequest) cloudSet(a.cloudRequest, "sent", `Gesendet im Fenster ${win.id}.`);
+          log("info", "sent", { key, kind: a.kind, to, draftId: a.draftId, threadId: a.threadId, window: win.id });
+        } catch (err) {
+          Object.assign(a, { status: "send_failed", error: err.message }); // nie automatisch wiederholen; Entwurf bleibt für Chris
+          if (a.cloudRequest) cloudSet(a.cloudRequest, "failed", "Gmail hat den Versand abgelehnt.");
+          log("error", "send_failed", { key, to, error: err.message });
+          save();
+          if (TRANSIENT_RE.test(err.message)) { saveInbox(); throw err; }
+        }
+        save();
+      }
+      todayWin[win.id].status = "done";
+    }
+    saveInbox();
+
+    // Fensterzähler aus dem Register (zählt nur erfolgreiche bzw. unklare Sends).
+    const regEnd = gmail.listOwned();
+    const sentEnd = [...Object.values(regEnd.sent || {}), ...Object.values(regEnd.sending || {})].filter((x) => x.sentAt && zurichDay(new Date(x.sentAt)) === day);
+    const windows = Object.fromEntries(SEND_WINDOWS.map((w) => [w.id, { sent: sentEnd.filter((x) => x.window === w.id).length, limit: w.limit, executed: !!todayWin[w.id], start: w.start }]));
+
     save();
-    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, ownThreads, plan, sends, optouts, humanContacts,
+    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, window: win?.id || null, windows, cloudResults, ownThreads, plan, sends, optouts, humanContacts,
       suppressedTotal: Object.keys(supp).length, eligibleLeads: eligibleLeads.length, blockedLeads: blockedLeads.length, notes };
   }
 
@@ -517,16 +625,43 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export function businessSnapshot(r, d = {}, t = new Date().toISOString()) {
   return {
     updatedAt: t,
-    worker: { online: true, lastCycle: t, todaySent: r.report.sentToday, limit: r.limit, capacity: r.report.freeToday, autoSend: !!r.autoSendActive, eligibleLeads: r.eligibleLeads, optOuts: r.suppressedTotal },
+    worker: { online: true, lastCycle: t, todaySent: r.report.sentToday, limit: r.limit, capacity: r.report.freeToday, autoSend: !!r.autoSendActive, eligibleLeads: r.eligibleLeads, optOuts: r.suppressedTotal,
+      // Feldname „count“ statt „sent“: „sent“ ist im Shared State als Gmail-Register-Feld gesperrt.
+      windows: Object.fromEntries(Object.entries(r.windows || {}).map(([id, w]) => [id, { count: w.sent, limit: w.limit, executed: !!w.executed }])) },
     discovery: { lastRunAt: d.lastRunAt || null, websitesFoundToday: d.websitesFoundToday || 0, websitesWithIssuesToday: d.websitesWithIssuesToday || 0,
       qualifiedLeads: d.qualifiedLeads || 0, leadsWithoutLegalBasis: d.leadsWithoutLegalBasis || 0, errorsToday: d.errorsToday || 0 },
   };
 }
-// Langfristige, von Sir gewollte Notizen (workspace/memory/sir.md) für den Cloud-Jarvis.
+// Langfristige, von Chris gewollte Notizen (workspace/memory/chris.md) für den Cloud-Jarvis.
 function profileNotes() {
-  const file = path.join(ROOT, "workspace", "memory", "sir.md");
+  const file = path.join(ROOT, "workspace", "memory", "chris.md");
   try { return { notes: fs.readFileSync(file, "utf8").slice(0, 2000), updatedAt: fs.statSync(file).mtime.toISOString() }; }
   catch { return { notes: "", updatedAt: null }; }
+}
+// Neue Cloud-Aufträge in die lokale Ablage übernehmen – bekannte request_ids nie überschreiben (Idempotenz).
+export function inboxAdd(store, requests = [], now = new Date()) {
+  const inbox = store.read(CLOUD_INBOX, {});
+  let added = 0;
+  for (const rq of requests) if (rq?.request_id && !inbox[rq.request_id]) { inbox[rq.request_id] = { request: rq, status: "pending", reason: null, synced: true, receivedAt: now.toISOString() }; added++; }
+  // Begrenzen: gemeldete, abgeschlossene Einträge älter als 14 Tage entfallen.
+  const horizon = +now - 14 * DAY_MS;
+  for (const [id, e] of Object.entries(inbox)) if (e.synced && !["pending", "accepted_local"].includes(e.status) && Date.parse(e.updatedAt || e.receivedAt || 0) < horizon) { delete inbox[id]; added++; }
+  if (added) store.write(CLOUD_INBOX, inbox);
+  return added;
+}
+// Noch nicht gemeldete Ergebnisse an die Cloud melden.
+export async function pushInbox(store, push) {
+  const inbox = store.read(CLOUD_INBOX, {});
+  const done = [];
+  for (const [id, e] of Object.entries(inbox)) {
+    if (e.synced || e.status === "pending") continue;
+    if ((await push({ request_id: id, status: e.status, reason: e.reason })).ok) done.push([id, e.status]);
+  }
+  if (!done.length) return 0;
+  const cur = store.read(CLOUD_INBOX, {});
+  for (const [id, status] of done) if (cur[id]?.status === status) cur[id].synced = true;
+  store.write(CLOUD_INBOX, cur);
+  return done.length;
 }
 const BUSY = 3; // Exit-Code „Lock belegt“ – z. B. während eines manuellen --once
 
@@ -547,9 +682,15 @@ async function loop() {
   setInterval(() => heartbeat(WORKER_DIR), 60_000);
   const finder = await import("./lead-finder.js");
   await shared.syncWithCloud({ local, log, force: true }); // beim Start: neuesten Cloud-Stand übernehmen
+  const mailRequests = await import("./mail-requests.js");
   for (;;) {
     heartbeat(WORKER_DIR);
+    // Offene Cloud-Mailaufträge abholen (nur strukturierte Daten; geprüft und gesendet wird ausschliesslich hier lokal).
+    try { inboxAdd(createStore(WORKER_DIR), (await mailRequests.pullMailRequests({ config: shared.syncConfig() })).requests); }
+    catch (e) { log("error", "cloud_requests_pull_failed", { error: e.message }); }
     const r = await worker.tick();
+    try { await pushInbox(createStore(WORKER_DIR), (x) => mailRequests.pushMailResult({ config: shared.syncConfig(), ...x })); }
+    catch (e) { log("error", "cloud_requests_push_failed", { error: e.message }); }
     // Danach (Antworten haben Vorrang): neue Websites suchen und prüfen, wenn fällig. Sendet nie.
     try {
       const d = await finder.runDiscovery({ gmail, log });

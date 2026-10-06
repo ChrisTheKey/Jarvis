@@ -57,7 +57,7 @@ function fakeGmail() {
     async sendDraft(id) {
       f.calls.push("SEND " + id);
       const d = f.reg.drafts[id];
-      if (Object.values(f.reg.sent).filter((s) => zurichDay(new Date(s.sentAt)) === zurichDay(T0)).length >= 50) throw new Error("Tageslimit");
+      if (Object.values(f.reg.sent).filter((s) => zurichDay(new Date(s.sentAt)) === zurichDay(T0)).length >= 100) throw new Error("Tageslimit");
       delete f.reg.drafts[id];
       f.reg.sent["s" + id] = { ...d, fromDraft: id, sentAt: T0.toISOString() };
       sent.push(f.reg.sent["s" + id]);
@@ -280,8 +280,8 @@ test("Mail ohne dokumentierte Befunde darf keine Website-Probleme behaupten", as
   assert.ok(g.calls.some((c) => c.startsWith("review")), "nur Entwurf zur Prüfung");
 });
 
-test("Tageslimit 50 bleibt bestehen", async () => {
-  for (let i = 0; i < 50; i++) g.reg.sent["o" + i] = { to: `x${i}@y.ch`, threadId: "alt" + i, sentAt: T0.toISOString() };
+test("Tageslimit 100 bleibt bestehen", async () => {
+  for (let i = 0; i < 100; i++) g.reg.sent["o" + i] = { to: `x${i}@y.ch`, threadId: "alt" + i, sentAt: T0.toISOString() };
   write("leads.json", [{ email: "info@neu.ch", ...OPTIN }]);
   const r = await worker().tick();
   assert.equal(sent.length, 0);
