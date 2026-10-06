@@ -26,7 +26,7 @@ body::after { content: ""; position: fixed; inset: 0; pointer-events: none; back
 [hidden] { display: none !important; }
 canvas#core { position: fixed; inset: 0; width: 100%; height: 100%; }
 
-.hud { position: fixed; inset: 0; display: grid; grid-template-columns: 300px 1fr 340px; grid-template-rows: auto 1fr auto; gap: 18px; padding: 22px 24px; pointer-events: none; }
+.hud { position: fixed; inset: 0; display: grid; grid-template-columns: 300px 1fr 340px; grid-template-rows: auto minmax(0, 1fr) auto; gap: 18px; padding: 22px 24px; pointer-events: none; }
 .hud > * { pointer-events: auto; }
 header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
 .logo { font: 900 22px var(--display); letter-spacing: .32em; color: var(--cyan-2); text-shadow: 0 0 14px rgba(63,216,255,.7); }
@@ -38,7 +38,7 @@ header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
 .panel { position: relative; background: var(--glass); border: 1px solid var(--line); padding: 16px 18px; backdrop-filter: blur(3px); align-self: start;
   clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px)); }
 .panel h2 { margin: 0 0 12px; font: 600 11px var(--mono); letter-spacing: .24em; color: var(--muted); text-transform: uppercase; display: flex; justify-content: space-between; }
-.left { display: flex; flex-direction: column; gap: 18px; }
+.left { display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .left .panel { align-self: stretch; }
 .clock { font: 700 44px/1 var(--display); color: var(--cyan-2); letter-spacing: .06em; text-shadow: 0 0 18px rgba(63,216,255,.55); font-variant-numeric: tabular-nums; }
 .date { font: 500 15px var(--ui); color: var(--muted); letter-spacing: .14em; text-transform: uppercase; margin-top: 8px; }
@@ -52,7 +52,7 @@ header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
 .kv { font: 13px var(--mono); color: var(--muted); display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
 .kv b { color: var(--text); font-weight: 400; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.right { max-height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.right { max-height: 100%; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .right .panel { display: flex; flex-direction: column; min-height: 0; max-height: 100%; }
 .log { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 9px; font: 13px/1.35 var(--mono); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .log li { display: grid; grid-template-columns: 58px 1fr; gap: 8px; animation: slide .25s ease-out; }
@@ -693,7 +693,7 @@ async function run(text) {
         } else if (ev.type === "error") {
           log("FEHLER", ev.message, "red");
           $("say").textContent = ev.message;
-          speak("Verzeihung, Sir. Es gab ein Problem. Details stehen auf dem Bildschirm.");
+          speak("Verzeihung, Chris. Es gab ein Problem. Details stehen auf dem Bildschirm.");
         } else if (ev.type === "done" && ev.error && !said) {
           log("FEHLER", ev.error, "red");
         }
@@ -972,7 +972,7 @@ async function boot() {
   if (mode === "local") poll();
   if (SR && wakeMode()) startRec();
   const h = new Date().getHours();
-  const greet = h < 5 ? "Noch wach, Sir?" : h < 11 ? "Guten Morgen, Sir." : h < 18 ? "Guten Tag, Sir." : "Guten Abend, Sir.";
+  const greet = h < 5 ? "Noch wach, Chris?" : h < 11 ? "Guten Morgen, Chris." : h < 18 ? "Guten Tag, Chris." : "Guten Abend, Chris.";
   const call = wakeMode() && SR ? "Sagen Sie einfach Jarvis, wenn Sie mich brauchen." : "Ich bin bereit.";
   const msg = mode === "cloud"
     ? `${greet} Wie kann ich helfen?`
