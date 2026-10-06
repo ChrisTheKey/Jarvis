@@ -1,5 +1,7 @@
-// Jarvis Mail-Worker – läuft unabhängig von server.js im Hintergrund und bereitet AUSSCHLIESSLICH
-// Entwürfe vor. Er sendet nie: die Sendefunktion aus gmail.js kommt hier bewusst nicht vor. Gesendet wird nur von Sir.
+// Jarvis Mail-Worker – läuft unabhängig von server.js im Hintergrund.
+// sendMode "drafts": bereitet nur Entwürfe vor. sendMode "compliant_auto": sendet zusätzlich selbst, aber ausschließlich
+// an Leads mit dokumentierter Versandgrundlage (opt_in oder Bestandskunde mit ähnlicher Leistung) und in deren Threads.
+// Heikle Fälle bleiben immer Entwürfe für Sir.
 //
 // Alle 5 Minuten: neue Antworten in registrierten Jarvis-Threads, Opt-outs, fällige Follow-ups und
 // freigegebene Leads prüfen. Zustand, Leads und Suppression-Liste liegen in .secrets/mail_worker/.
@@ -7,7 +9,7 @@
 //   node mail-worker.js              Worker-Schleife (Lock gegen Doppelstart)
 //   node mail-worker.js --supervise  wie oben, startet den Worker nach einem Absturz neu (für den Autostart)
 //   node mail-worker.js --once       genau eine Prüfung
-//   node mail-worker.js --plan       zeigt, was heute vorbereitet würde – ändert nichts
+//   node mail-worker.js --plan       Dry-Run: zeigt, was heute vorbereitet/gesendet würde – ändert nichts (Alias --dry-run)
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +26,7 @@ export const HARD_LIMIT = 50;
 const DAY_MS = 86_400_000;
 export const DEFAULT_CONFIG = {
   dryRun: true, // Standard: nur anzeigen, was vorbereitet würde
+  sendMode: "drafts", // "drafts" = nur Entwürfe, "compliant_auto" = versandberechtigte Mails selbst senden
   dailyLimit: HARD_LIMIT, // wird nie über HARD_LIMIT hinaus beachtet
   replyReserve: 5, // so viele Plätze bleiben täglich für Antworten in laufenden Gesprächen frei
   pollMinutes: 5,
@@ -32,7 +35,7 @@ export const DEFAULT_CONFIG = {
   followUpDays: [3, 5],
   activeDays: 60, // ältere Threads werden nicht mehr abgefragt
   excludeAddresses: [], // z. B. Sirs eigene Adressen: dafür nie Entwürfe vorbereiten
-  sender: { name: "", signature: "" },
+  sender: { name: "", company: "", email: "", signature: "" }, // echte Identität von Sir – ohne name kein Erstkontakt/Versand
   offer: "", // Sirs Angebot in eigenen Worten – ohne Angebot keine Erstkontakte
   model: "sonnet",
 };
@@ -62,6 +65,34 @@ export const ESCALATE_RE = /(vertrag|vertr[aä]ge|contract|agb|haftung|anwalt|la
 const AUTO_SUBJECT_RE = /(automatische antwort|abwesenheit|out of office|automatic reply|auto-?reply|réponse automatique|risposta automatica)/i;
 const BOUNCE_RE = /mailer-daemon|postmaster/i;
 const AI_RE = /\b(KI|AI|Claude|Jarvis|ChatGPT|künstliche Intelligenz|language model|Sprachmodell)\b/;
+const UNSUB_RE = /abmelden|unsubscribe|désinscri|disiscriv/i;
+
+// Versandgrundlage eines Leads. approved allein genügt nie; nichts wird angenommen oder ergänzt.
+export function legalBasis(lead = {}, now = new Date()) {
+  if (lead.approved !== true) return null;
+  if (lead.consentBasis === "opt_in") {
+    const at = Date.parse(lead.consentAt);
+    const source = typeof lead.consentSource === "string" && lead.consentSource.trim();
+    return Number.isFinite(at) && at <= +now && source ? "opt_in" : null;
+  }
+  if (lead.consentBasis === "existing_customer") return lead.existingCustomer === true && lead.similarService === true ? "existing_customer" : null;
+  return null;
+}
+
+// Jede werbliche Mail endet mit klarer Absenderidentität und einer kostenlosen Abmeldemöglichkeit per Antwort.
+export const UNSUB_LINE = {
+  de: "Falls Sie keine weiteren Nachrichten von mir wünschen, antworten Sie einfach mit «Abmelden».",
+  en: "If you'd prefer not to hear from me again, simply reply with \"unsubscribe\".",
+  fr: "Si vous ne souhaitez plus recevoir de messages de ma part, répondez simplement « désinscrire ».",
+  it: "Se non desidera ricevere altri messaggi da parte mia, risponda semplicemente «disiscrivi».",
+};
+export function finalizeCommercial(body, sender = {}, lang = "de") {
+  let out = String(body || "").trim();
+  const signature = sender.signature?.trim() || [sender.name, sender.company, sender.email].filter(Boolean).join("\n");
+  if (sender.name && !out.includes(sender.name)) out += "\n\n" + signature;
+  if (!UNSUB_RE.test(out)) out += "\n\n" + (UNSUB_LINE[String(lang || "de").slice(0, 2).toLowerCase()] || UNSUB_LINE.de);
+  return out;
+}
 const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i;
 
 // Atomare JSON-Ablage: Temp-Datei + Umbenennen, ein Absturz hinterlässt nie halbe Dateien.
@@ -122,7 +153,7 @@ export function releaseLock(dir, pid = process.pid) {
 
 // ---------- Worker ----------
 
-const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, failures: 0, backoffUntil: 0 };
+const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, compliantThreads: {}, lastPacedAt: 0, lastSendAt: 0, failures: 0, backoffUntil: 0 };
 
 export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir) }) {
   const store = createStore(dir);
@@ -148,11 +179,17 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const supp = store.read("suppression.json", {});
     const exclude = new Set(cfg.excludeAddresses.map(normEmail));
     const reg = gmail.listOwned();
-    const plan = [], notes = [], optouts = [], ownThreads = [];
+    const plan = [], notes = [], optouts = [], ownThreads = [], sends = [], blockedLeads = [], eligibleLeads = [];
+    // Echtversand nur im ausdrücklich gesetzten Modus, nie im Dry-Run und nie ohne echte Absenderidentität.
+    const wantAuto = cfg.sendMode === "compliant_auto" && !dry;
+    const auto = wantAuto && !!cfg.sender?.name;
+    if (wantAuto && !auto) notes.push("Echtversand inaktiv: in config.json fehlt sender.name – es entstehen nur Entwürfe.");
+    const gapMs = Math.ceil((hm(cfg.window[1]) - hm(cfg.window[0])) / cfg.limit) * 60_000; // Versand über den Arbeitstag verteilen
     let used = usedToday(reg, state, day);
     const sentToday = Object.values(reg.sent || {}).filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === day).length;
     const free = () => cfg.limit - used;
-    const save = () => { if (!readOnly) { store.write("state.json", state); store.write("suppression.json", supp); } };
+    // Suppression nur ergänzen, nie überschreiben: was inzwischen von außen eingetragen wurde, bleibt erhalten.
+    const save = () => { if (!readOnly) { store.write("state.json", state); Object.assign(supp, { ...store.read("suppression.json", {}), ...supp }); store.write("suppression.json", supp); } };
     const suppress = (addrs, reason, threadId) => {
       for (const a of addrs.map(normEmail).filter(Boolean)) if (!supp[a]) {
         supp[a] = { reason, threadId, at: t.toISOString() };
@@ -161,6 +198,14 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       }
     };
     const isPending = (draftId) => !!(draftId && reg.drafts?.[draftId]);
+
+    // Absturz während des Sendens: nie automatisch erneut senden – entweder im Register belegt oder unklar.
+    for (const [key, a] of Object.entries(state.actions)) {
+      if (a.status !== "sending") continue;
+      const done = Object.values(reg.sent || {}).some((x) => x.fromDraft === a.draftId);
+      state.actions[key] = { ...a, status: done ? "sent" : "send_unknown" };
+      if (!done) log("warn", "send_unknown", { key, draftId: a.draftId });
+    }
 
     // Abgebrochene Vorbereitungen (Absturz zwischen Anlegen und Speichern) einem vorhandenen Entwurf zuordnen.
     for (const [key, a] of Object.entries(state.actions)) {
@@ -172,8 +217,9 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
 
     async function prepare(key, info, make) {
       if (state.actions[key]) return; // schon erledigt oder in Arbeit → keine Doppelentwürfe
-      if (dry) { plan.push(info); used++; return; }
+      if (dry) { plan.push({ ...info, autoSend: !!info.autoSend && cfg.sendMode === "compliant_auto" && !info.escalate }); used++; return; }
       const result = await compose(info.task);
+      if (info.commercial && result.body) result.body = finalizeCommercial(result.body, cfg.sender, info.lang);
       if (result.decision === "optout") { suppress([info.to], "opt-out (erkannt beim Schreiben)", info.threadId); return "optout"; }
       if (result.decision === "ignore") { state.actions[key] = { status: "ignored", at: t.toISOString(), reason: result.reason }; return "ignore"; }
       let review = result.decision !== "draft";
@@ -183,13 +229,16 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       state.actions[key] = { status: "creating", at: t.toISOString(), kind: info.kind, threadId: info.threadId, to: normEmail(info.to) };
       save();
       const d = await make(result);
-      state.actions[key] = { status: "prepared", at: t.toISOString(), kind: info.kind, threadId: d.threadId, draftId: d.draftId, review };
+      state.actions[key] = { status: "prepared", at: t.toISOString(), kind: info.kind, threadId: d.threadId, draftId: d.draftId, review,
+        to: normEmail(info.to), autoSend: !!info.autoSend && !review, paced: !!info.paced };
+      if (info.basis && d.threadId) state.compliantThreads[d.threadId] = { to: normEmail(info.to), basis: info.basis, lang: info.lang || "de", at: t.toISOString() };
+      if (info.paced) state.lastPacedAt = +t;
       if (d.isNew !== false) { state.prepared[d.draftId] = { key, at: t.toISOString(), kind: info.kind }; used++; }
       if (d.threadId) state.threadDrafts[d.threadId] = d.draftId;
       save();
       if (review) await gmail.markDraftForReview(d.draftId);
       log("info", "draft_prepared", { kind: info.kind, draftId: d.draftId, threadId: d.threadId, to: info.to, review, reason: result.reason });
-      plan.push({ ...info, task: undefined, draftId: d.draftId, review });
+      plan.push({ ...info, task: undefined, draftId: d.draftId, review, autoSend: state.actions[key].autoSend });
     }
 
     // 1) Laufende Gespräche: ausschließlich Threads aus dem Gesendet-Register.
@@ -240,6 +289,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           const key = "reply:" + m.messageId;
           const res = await prepare(key, {
             kind: "antwort", threadId, to: sender, subject: m.subject, escalate: ESCALATE_RE.test(text),
+            autoSend: !!state.compliantThreads[threadId] && !ESCALATE_RE.test(text),
             task: { kind: "reply", sender: cfg.sender, offer: cfg.offer, thread: mails.map((x) => ({ from: x.from, date: x.date, subject: x.subject, body: (x.sent ? x.body : newText(x.body) || x.body).slice(0, 4000) })) },
           }, async (r) => {
             // Ein noch offener eigener Entwurf in diesem Thread wird aktualisiert statt verdoppelt.
@@ -266,14 +316,16 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     // 2) Follow-ups und Erstkontakte: nur im Zeitfenster, wenige pro Durchlauf, Reserve für Antworten bleibt frei.
     const inWindow = zurichMinutes(t) >= hm(cfg.window[0]) && zurichMinutes(t) < hm(cfg.window[1]);
     let paced = 0;
-    const pacedFree = () => free() > cfg.replyReserve && paced < (dry ? Infinity : cfg.maxPacedPerTick);
+    const pacedFree = () => free() > cfg.replyReserve && paced < (dry ? Infinity : cfg.maxPacedPerTick) && (!auto || +t - (state.lastPacedAt || 0) >= gapMs);
     if (!inWindow) notes.push(`Follow-ups und Erstkontakte nur ${cfg.window[0]}–${cfg.window[1]} (Europe/Zurich).`);
     for (const f of followUps) {
       if (!(inWindow || dry) || !pacedFree()) break;
       try {
         const key = `followup:${f.threadId}:${f.n}`;
         await prepare(key, {
-          kind: `follow-up ${f.n}`, threadId: f.threadId, to: f.to, subject: f.own[0].subject,
+          kind: `follow-up ${f.n}`, threadId: f.threadId, to: f.to, subject: f.own[0].subject, commercial: true, paced: true,
+          // Selbst gesendet nur in Threads, die mit gültiger Versandgrundlage begonnen wurden – sonst Entwurf.
+          autoSend: !!state.compliantThreads[f.threadId], lang: state.compliantThreads[f.threadId]?.lang,
           task: { kind: "followup", followupNumber: f.n, sender: cfg.sender, offer: cfg.offer, thread: f.own.map((x) => ({ from: x.from, date: x.date, subject: x.subject, body: x.body.slice(0, 4000) })) },
         }, (r) => gmail.replyToThread(f.threadId, { body: r.body }));
         paced++;
@@ -284,32 +336,91 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     }
 
     // Erstkontakte ausschließlich aus der von Sir freigegebenen Lead-Liste.
+    // Erstkontakte nur mit gültiger Versandgrundlage – eine öffentliche Adresse oder approved allein genügt nicht.
     const leads = store.read("leads.json", []);
-    if (leads.length && !(cfg.offer && cfg.sender.name)) notes.push("Erstkontakte deaktiviert: in config.json fehlen offer und/oder sender.name.");
-    else {
-      const contacted = new Set(Object.values(reg.sent || {}).concat(Object.values(reg.drafts || {})).map((s) => normEmail(s.to)));
-      const seen = new Set();
-      for (const lead of Array.isArray(leads) ? leads : []) {
-        const to = normEmail(lead.email);
-        if (lead.approved !== true || !EMAIL_RE.test(to) || seen.has(to)) continue;
-        seen.add(to);
-        if (contacted.has(to) || supp[to] || exclude.has(to) || state.actions["outreach:" + to]) continue;
-        if (!(inWindow || dry) || !pacedFree()) break;
-        try {
-          await prepare("outreach:" + to, {
-            kind: "erstkontakt", to, subject: lead.company || lead.name || to,
-            task: { kind: "outreach", sender: cfg.sender, offer: cfg.offer, lead },
-          }, (r) => gmail.createDraft({ to: lead.name ? `${lead.name.replace(/[<>"\r\n]/g, "")} <${to}>` : to, subject: r.subject || "Kurze Frage", body: r.body }));
-          paced++;
-        } catch (e) {
-          if (TRANSIENT_RE.test(e.message)) throw e;
-          log("error", "outreach_failed", { to, error: e.message });
+    const canWrite = !!(cfg.offer && cfg.sender.name);
+    let leadsChanged = false;
+    const contacted = new Set(Object.values(reg.sent || {}).concat(Object.values(reg.drafts || {})).map((x) => normEmail(x.to)));
+    const seenLeads = new Set();
+    for (const lead of Array.isArray(leads) ? leads : []) {
+      const to = normEmail(lead.email);
+      if (lead.approved !== true || !EMAIL_RE.test(to) || seenLeads.has(to)) continue;
+      seenLeads.add(to);
+      const basis = legalBasis(lead, t);
+      if (!basis) {
+        blockedLeads.push(to);
+        if (lead.status !== "blocked_no_legal_basis") { lead.status = "blocked_no_legal_basis"; leadsChanged = true; }
+        continue;
+      }
+      if (lead.status === "blocked_no_legal_basis") { delete lead.status; leadsChanged = true; } // Grundlage wurde nachgetragen
+      if (contacted.has(to) || supp[to] || exclude.has(to) || state.actions["outreach:" + to]) continue;
+      eligibleLeads.push(to);
+      if (!canWrite || !(inWindow || dry) || !pacedFree()) continue;
+      try {
+        const { name, company, website, language, notes: leadNotes, websiteIssues } = lead;
+        await prepare("outreach:" + to, {
+          kind: "erstkontakt", to, subject: company || name || to, basis, lang: language, commercial: true, paced: true, autoSend: true,
+          task: { kind: "outreach", sender: cfg.sender, offer: cfg.offer, lead: { name, company, website, language, notes: leadNotes, websiteIssues: websiteIssues || [] } },
+        }, (r) => gmail.createDraft({ to: name ? `${name.replace(/[<>"\r\n]/g, "")} <${to}>` : to, subject: r.subject || "Kurze Frage", body: r.body }));
+        paced++;
+      } catch (e) {
+        if (TRANSIENT_RE.test(e.message)) throw e;
+        log("error", "outreach_failed", { to, error: e.message });
+      }
+    }
+    if (eligibleLeads.length && !canWrite) notes.push("Erstkontakte deaktiviert: in config.json fehlen offer und/oder sender.name.");
+    // Nur den Status nachtragen – frisch gelesen, damit Sirs gleichzeitige Änderungen an der Liste erhalten bleiben.
+    if (leadsChanged && !readOnly) {
+      const status = new Map(leads.filter((l) => l && l.email).map((l) => [normEmail(l.email), l.status]));
+      const current = store.read("leads.json", []);
+      for (const l of Array.isArray(current) ? current : []) {
+        const k = normEmail(l?.email);
+        if (!status.has(k) || l.approved !== true) continue;
+        if (legalBasis(l, t)) delete l.status; else if (status.get(k) === "blocked_no_legal_basis") l.status = "blocked_no_legal_basis";
+      }
+      store.write("leads.json", current);
+    }
+
+    // 3) Versand: nur freigegebene Entwürfe, Antworten zuerst, im Zeitfenster, verteilt, Suppression direkt vor jedem Send.
+    if (auto) {
+      const fresh = gmail.listOwned();
+      const isToday = (x) => x.sentAt && zurichDay(new Date(x.sentAt)) === day;
+      let sentNow = Object.values(fresh.sent || {}).filter(isToday).length;
+      const queue = Object.entries(state.actions).filter(([, a]) => a.status === "prepared" && a.autoSend)
+        .sort(([, a], [, b]) => (a.paced - b.paced) || a.at.localeCompare(b.at));
+      for (const [key, a] of queue) {
+        if (!fresh.drafts?.[a.draftId]) {
+          a.status = Object.values(fresh.sent || {}).some((x) => x.fromDraft === a.draftId) ? "sent_by_sir" : "draft_gone";
+          continue;
         }
+        if (!inWindow) break;
+        if (a.paced && +t - (state.lastSendAt || 0) < gapMs) continue;
+        const suppNow = { ...store.read("suppression.json", {}), ...supp };
+        const to = normEmail(fresh.drafts[a.draftId].to);
+        if (suppNow[to] || suppNow[a.to] || exclude.has(to)) { a.status = "suppressed"; log("warn", "send_blocked_suppressed", { key, to }); continue; }
+        if (sentNow >= cfg.limit) { notes.push("Tageslimit erreicht – weiterer Versand erst morgen."); break; }
+        a.status = "sending";
+        save();
+        try {
+          await gmail.sendDraft(a.draftId);
+          Object.assign(a, { status: "sent", sentAt: t.toISOString() });
+          sentNow++;
+          if (a.paced) state.lastSendAt = +t;
+          sends.push({ kind: a.kind, to, threadId: a.threadId });
+          log("info", "sent", { key, kind: a.kind, to, draftId: a.draftId, threadId: a.threadId });
+        } catch (e) {
+          Object.assign(a, { status: "send_failed", error: e.message }); // nie automatisch wiederholen; Entwurf bleibt für Sir
+          log("error", "send_failed", { key, to, error: e.message });
+          save();
+          if (TRANSIENT_RE.test(e.message)) throw e;
+        }
+        save();
       }
     }
 
     save();
-    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, ownThreads, plan, optouts, suppressedTotal: Object.keys(supp).length, notes };
+    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, ownThreads, plan, sends, optouts,
+      suppressedTotal: Object.keys(supp).length, eligibleLeads: eligibleLeads.length, blockedLeads: blockedLeads.length, notes };
   }
 
   return {
@@ -323,7 +434,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         const r = await cycle({ dry });
         const s = store.read("state.json", STATE);
         if (s.failures) store.write("state.json", { ...s, failures: 0, backoffUntil: 0 });
-        log("info", "tick", { dryRun: dry, sentToday: r.sentToday, used: r.used, free: r.free, threads: r.ownThreads.length, plan: r.plan.map(({ task, ...p }) => p), optouts: r.optouts, notes: r.notes });
+        log("info", "tick", { dryRun: dry, sentToday: r.sentToday, used: r.used, free: r.free, threads: r.ownThreads.length, autoSend: r.autoSendActive, sends: r.sends, eligibleLeads: r.eligibleLeads, blockedLeads: r.blockedLeads, plan: r.plan.map(({ task, ...p }) => p), optouts: r.optouts, notes: r.notes });
         return r;
       } catch (e) {
         const s = { ...STATE, ...store.read("state.json", STATE) };
@@ -406,13 +517,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const arg = process.argv[2];
   process.on("uncaughtException", (e) => { createLogger(WORKER_DIR)("error", "crash", { error: e.stack || e.message }); process.exit(1); });
   process.on("unhandledRejection", (e) => { createLogger(WORKER_DIR)("error", "crash", { error: String(e?.stack || e) }); process.exit(1); });
+  // Dry-Run: immer nur lesen, unabhängig von dryRun/sendMode in config.json.
+  const dryRun = async () => {
+    const r = await createWorker({ gmail: await import("./gmail.js"), compose: null }).plan();
+    console.log(JSON.stringify({ ...r, plan: r.plan.map(({ task, ...p }) => p) }, null, 2));
+    return 0;
+  };
   const run = {
     "--supervise": supervise,
-    "--plan": async () => {
-      const r = await createWorker({ gmail: await import("./gmail.js"), compose: null }).plan();
-      console.log(JSON.stringify({ ...r, plan: r.plan.map(({ task, ...p }) => p) }, null, 2));
-      return 0;
-    },
+    "--plan": dryRun,
+    "--dry-run": dryRun,
     "--once": async () => {
       const gmail = await import("./gmail.js");
       if (!acquireLock(WORKER_DIR)) { console.log("Mail-Worker läuft bereits."); return 0; }

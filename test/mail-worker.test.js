@@ -1,4 +1,4 @@
-// Mail-Worker: bereitet nur Entwürfe vor, nur in eigenen Threads, mit Opt-out, Follow-up-Regeln und Tageslimit.
+// Mail-Worker: nur eigene Threads, Opt-out, Follow-up-Regeln, Tageslimit und Versand nur mit gültiger Versandgrundlage.
 // Läuft ohne Netzwerk – Gmail und der Textgenerator sind Attrappen.
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createWorker, acquireLock, releaseLock, heartbeat, zurichDay, HARD_LIMIT } from "../mail-worker.js";
+import { createWorker, acquireLock, releaseLock, heartbeat, zurichDay, HARD_LIMIT, legalBasis } from "../mail-worker.js";
 
 const DAY = 86_400_000;
 const T0 = new Date("2026-10-06T08:00:00Z"); // 10:00 in Zürich, im Zeitfenster
@@ -28,7 +28,9 @@ function fakeGmail() {
       f.calls.push("reply " + threadId);
       if (!Object.values(f.reg.sent).some((s) => s.threadId === threadId)) throw new Error("nicht von Jarvis begonnen");
       const id = "dr" + ++f.n;
-      f.reg.drafts[id] = { threadId, to: "x", body, createdAt: clock.toISOString() };
+      const ext = (f.threads[threadId] || []).filter((m) => !m.sent).at(-1);
+      const to = ext ? ext.from : Object.values(f.reg.sent).find((s) => s.threadId === threadId).to;
+      f.reg.drafts[id] = { threadId, to, body, createdAt: clock.toISOString() };
       return { draftId: id, messageId: "m" + id, threadId };
     },
     async updateDraft(id, { body }) { f.calls.push("update " + id); f.reg.drafts[id].body = body; return { draftId: id, threadId: f.reg.drafts[id].threadId }; },
@@ -39,7 +41,18 @@ function fakeGmail() {
       return { draftId: id, messageId: "m" + id, threadId: "new" + id };
     },
     async markDraftForReview(id) { f.calls.push("review " + id); },
-    async sendDraft() { f.calls.push("SEND"); throw new Error("darf nie aufgerufen werden"); },
+    // wie gmail.js: hartes Tageslimit, Register erst nach Erfolg
+    async sendDraft(id) {
+      f.calls.push("SEND " + id);
+      const d = f.reg.drafts[id];
+      if (!d) throw new Error(`Entwurf ${id} wurde nicht von Jarvis erstellt – Zugriff verweigert.`);
+      if (Object.values(f.reg.sent).filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === zurichDay(clock)).length >= 50) throw new Error("Tageslimit");
+      if (f.failSend) throw new Error(f.failSend);
+      delete f.reg.drafts[id];
+      f.reg.sent["sent-" + id] = { messageId: "sent-" + id, threadId: d.threadId, to: d.to, subject: d.subject, body: d.body, fromDraft: id, sentAt: clock.toISOString() };
+      (f.threads[d.threadId] ||= []).push({ messageId: "sent-" + id, from: "Chris <chris@x.ch>", to: d.to, subject: d.subject || "", body: d.body, sent: true, draft: false, internalDate: +clock });
+      return { messageId: "sent-" + id, threadId: d.threadId };
+    },
   };
   return f;
 }
@@ -59,6 +72,9 @@ function addOwnFollowUp(tid, at) {
 
 const write = (name, data) => fs.writeFileSync(path.join(dir, name), JSON.stringify(data));
 const worker = () => createWorker({ dir, gmail: g, now: () => clock, log: () => {}, compose: async (task) => { composed.push(task); return composeResult(task); } });
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch" };
+const auto = (extra = {}) => live({ sendMode: "compliant_auto", sender: { name: "Chris Muster", company: "Muster Web", email: "chris@x.ch" }, ...extra });
+const sends = () => g.calls.filter((c) => c.startsWith("SEND"));
 const live = (extra = {}) => write("config.json", { dryRun: false, offer: "Ich prüfe Websites.", sender: { name: "Chris", signature: "Chris" }, ...extra });
 
 beforeEach(() => {
@@ -92,7 +108,7 @@ test("fremde Mail/fremder Thread: wird nie gelesen oder angefasst", async () => 
 
 test("Opt-out: dauerhaft gesperrt, keine Antwort, kein Follow-up, kein Erstkontakt", async () => {
   ownThread("t1", { replies: ["Bitte keine weiteren Mails."] });
-  write("leads.json", [{ email: "kunde@firma.ch", approved: true }]);
+  write("leads.json", [{ email: "kunde@firma.ch", ...OPTIN }]);
   await worker().tick();
   const supp = JSON.parse(fs.readFileSync(path.join(dir, "suppression.json"), "utf8"));
   assert.ok(supp["kunde@firma.ch"]);
@@ -169,8 +185,8 @@ test("doppelter Worker: zweiter Start wird blockiert, abgestandenes Lock wird ü
 
 test("gleicher Lead mehrfach in der Liste: nur ein Erstkontakt", async () => {
   write("leads.json", [
-    { email: "info@laden.ch", name: "Laden", approved: true },
-    { email: "INFO@laden.ch", approved: true },
+    { email: "info@laden.ch", name: "Laden", ...OPTIN },
+    { email: "INFO@laden.ch", ...OPTIN },
     { email: "ohne-freigabe@x.ch" },
     { email: "kaputt", approved: true },
   ]);
@@ -204,9 +220,14 @@ test("Dry-Run (Standard): zeigt den Plan, legt nichts an", async () => {
   assert.equal(composed.length, 0);
 });
 
-test("Worker kennt sendDraft nicht", () => {
+test("ohne sendMode compliant_auto wird nie gesendet – auch nicht bei gültiger Versandgrundlage", async () => {
+  ownThread("t1", { replies: ["Wann passt es Ihnen?"] });
+  write("state.json", { compliantThreads: { t1: { to: "kunde@firma.ch", basis: "opt_in" } } });
+  write("leads.json", [{ email: "neu@laden.ch", ...OPTIN }]);
+  await worker().tick();
+  assert.deepEqual(sends(), []);
   const src = fs.readFileSync(new URL("../mail-worker.js", import.meta.url), "utf8");
-  assert.ok(!/sendDraft|drafts\/send/.test(src));
+  assert.ok(!/drafts\/send|messages\/send/.test(src), "gesendet wird nur über gmail.sendDraft mit allen Schutzprüfungen");
 });
 
 test("Secrets und Worker-Zustand sind von Git ausgeschlossen", () => {
@@ -232,7 +253,7 @@ test("Suppression überlebt Neustart und sperrt Leads, Antworten und Follow-ups"
   await worker().tick();
   // "Neustart": neue Instanz, neue Mail desselben Kontakts, derselbe Kontakt als freigegebener Lead
   g.threads.t1.push({ messageId: "in-neu", from: "Anna <kunde@firma.ch>", to: "chris@x.ch", subject: "Re", body: "Doch noch eine Frage?", sent: false, draft: false, internalDate: +T0 + 5 * 3600e3 });
-  write("leads.json", [{ email: "Kunde@Firma.ch", approved: true }]);
+  write("leads.json", [{ email: "Kunde@Firma.ch", ...OPTIN }]);
   clock = new Date(+T0 + 10 * DAY);
   const r = await worker().tick();
   assert.equal(r.plan.length, 0);
@@ -247,7 +268,7 @@ test("Dry-Run-Bericht: Antworten, Opt-outs, Follow-ups, Leads, Tageszähler und 
   ownThread("t2", { to: "b@firma.ch", replies: ["Stop."], sentAt: new Date(+T0 - DAY) });
   ownThread("t3", { to: "c@firma.ch", sentAt: new Date(+T0 - 4 * DAY) });
   ownThread("t4", { to: "d@firma.ch", sentAt: new Date(+T0 - 3600e3) }); // heute gesendet
-  write("leads.json", [{ email: "neu@laden.ch", approved: true }]);
+  write("leads.json", [{ email: "neu@laden.ch", ...OPTIN }]);
   const r = await worker().tick();
   assert.equal(r.dryRun, true);
   assert.deepEqual(r.plan.map((p) => [p.kind, p.to]), [["antwort", "a@firma.ch"], ["follow-up 1", "c@firma.ch"], ["erstkontakt", "neu@laden.ch"]]);
@@ -280,4 +301,238 @@ test("Worker läuft eigenständig ohne server.js", () => {
   assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(r.stdout);
   assert.deepEqual([out.dryRun, out.limit, out.sentToday, out.free], [true, 50, 0, 50]);
+});
+
+// ---------- Echtversand nur mit Versandgrundlage (sendMode compliant_auto) ----------
+
+test("Versandgrundlage: opt_in und Bestandskunde mit ähnlicher Leistung erlaubt, alles andere nicht", () => {
+  assert.equal(legalBasis({ ...OPTIN }, T0), "opt_in");
+  assert.equal(legalBasis({ approved: true }, T0), null, "approved ohne consentBasis");
+  assert.equal(legalBasis({ ...OPTIN, consentAt: undefined }, T0), null, "ohne consentAt");
+  assert.equal(legalBasis({ ...OPTIN, consentSource: " " }, T0), null, "ohne consentSource");
+  assert.equal(legalBasis({ ...OPTIN, consentAt: "2027-01-01" }, T0), null, "Einwilligung in der Zukunft");
+  assert.equal(legalBasis({ ...OPTIN, approved: false }, T0), null);
+  assert.equal(legalBasis({ approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true }, T0), "existing_customer");
+  assert.equal(legalBasis({ approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: false }, T0), null);
+  assert.equal(legalBasis({ approved: true, consentBasis: "existing_customer", existingCustomer: false, similarService: true }, T0), null);
+  assert.equal(legalBasis({ approved: true, consentBasis: "public_address" }, T0), null);
+});
+
+test("opt_in-Lead: Erstkontakt wird gesendet, mit Absenderidentität und Abmeldehinweis", async () => {
+  auto();
+  write("leads.json", [{ email: "anna@laden.ch", name: "Anna Muster", company: "Laden AG", ...OPTIN }]);
+  const r = await worker().tick();
+  assert.deepEqual(sends(), ["SEND dr1"]);
+  assert.deepEqual(r.sends.map((x) => [x.kind, x.to]), [["erstkontakt", "anna@laden.ch"]]);
+  const mail = g.reg.sent["sent-dr1"];
+  assert.match(mail.body, /Chris Muster/, "Absendername");
+  assert.match(mail.body, /Muster Web/, "Unternehmen");
+  assert.match(mail.body, /chris@x\.ch/, "reale Absenderadresse");
+  assert.match(mail.body, /antworten Sie einfach mit «Abmelden»/, "Abmeldehinweis");
+  assert.equal(composed[0].kind, "outreach");
+  assert.equal(composed[0].lead.consentSource, undefined, "Consent-Daten gehen nicht an den Textgenerator");
+});
+
+test("Abmeldehinweis in der Sprache des Empfängers und nie doppelt", async () => {
+  auto();
+  composeResult = () => ({ decision: "draft", subject: "Hi", body: "Hello Anna, ...\n\nChris Muster" });
+  write("leads.json", [{ email: "anna@shop.com", language: "en", ...OPTIN }]);
+  await worker().tick();
+  const body = g.reg.sent["sent-dr1"].body;
+  assert.match(body, /reply with "unsubscribe"/);
+  assert.equal(body.match(/unsubscribe/gi).length, 1);
+});
+
+test("approved ohne Versandgrundlage und öffentliche info@-Adresse: blockiert und markiert", async () => {
+  auto();
+  write("leads.json", [
+    { email: "info@firma.ch", company: "Firma AG", website: "https://firma.ch", approved: true },
+    { email: "chef@firma.ch", approved: true, consentBasis: "opt_in" },
+    { email: "alt@kunde.ch", approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: false },
+  ]);
+  const r = await worker().tick();
+  assert.deepEqual(sends(), []);
+  assert.ok(!g.calls.some((c) => c.startsWith("create")), "nicht einmal ein Entwurf");
+  assert.equal(r.blockedLeads, 3);
+  const leads = JSON.parse(fs.readFileSync(path.join(dir, "leads.json"), "utf8"));
+  assert.deepEqual(leads.map((l) => l.status), ["blocked_no_legal_basis", "blocked_no_legal_basis", "blocked_no_legal_basis"]);
+  assert.equal(leads[0].consentBasis, undefined, "keine Grundlage erfunden");
+});
+
+test("Bestandskunde mit ähnlicher Leistung: Versand erlaubt", async () => {
+  auto();
+  write("leads.json", [{ email: "kunde@alt.ch", approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true }]);
+  await worker().tick();
+  assert.deepEqual(sends(), ["SEND dr1"]);
+});
+
+test("Opt-out nach Erstkontakt: dauerhaft gesperrt, kein Follow-up, keine Antwort, kein neuer Erstkontakt", async () => {
+  auto();
+  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  await worker().tick();
+  const tid = g.reg.sent["sent-dr1"].threadId;
+  g.threads[tid].push({ messageId: "in-1", from: "Anna <anna@laden.ch>", to: "chris@x.ch", subject: "Re", body: "Abmelden", sent: false, draft: false, internalDate: +T0 + 3600e3 });
+  clock = new Date(+T0 + 2 * 3600e3);
+  await worker().tick();
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dir, "suppression.json"), "utf8"))["anna@laden.ch"]);
+  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }, { email: "ANNA@laden.ch", ...OPTIN }]);
+  for (const d of [4, 10, 20]) { clock = new Date(+T0 + d * DAY); await worker().tick(); }
+  assert.deepEqual(sends(), ["SEND dr1"], "nur der ursprüngliche Erstkontakt");
+  assert.ok(!g.calls.some((c) => /^(reply|create)/.test(c) && c !== "create anna@laden.ch"));
+});
+
+test("Suppression wird direkt vor dem Send geprüft", async () => {
+  auto();
+  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  const w = worker();
+  const orig = g.createDraft;
+  g.createDraft = async (x) => { const d = await orig(x); write("suppression.json", { "anna@laden.ch": { reason: "opt-out" } }); return d; };
+  await w.tick();
+  assert.deepEqual(sends(), []);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8")).actions["outreach:anna@laden.ch"].status, "suppressed");
+});
+
+test("Tageslimit bleibt hart: bei 49 genau ein Send, bei 50 keiner", async () => {
+  auto();
+  for (let i = 0; i < 48; i++) g.reg.sent["old" + i] = { threadId: "alt" + i, to: "x@y.ch", sentAt: new Date(+T0 - 3600e3).toISOString() };
+  for (let i = 0; i < 48; i++) g.threads["alt" + i] = [];
+  ownThread("t1", { to: "a@firma.ch", replies: ["Frage 1"], sentAt: new Date(+T0 - 2 * 3600e3) });
+  ownThread("t2", { to: "b@firma.ch", replies: ["Frage 2"], sentAt: new Date(+T0 - DAY) });
+  ownThread("t3", { to: "c@firma.ch", replies: ["Frage 3"], sentAt: new Date(+T0 - DAY) });
+  write("state.json", { compliantThreads: { t1: { basis: "opt_in" }, t2: { basis: "opt_in" }, t3: { basis: "opt_in" } } });
+  // 49 heute gesendet (48 + t1) → genau eine weitere Mail
+  const r = await worker().tick();
+  assert.equal(sends().length, 1);
+  assert.equal(r.free, 0);
+  clock = new Date(+T0 + 3600e3);
+  await worker().tick();
+  assert.equal(sends().length, 1, "bei 50 keine weitere");
+});
+
+test("Doppelversand: zweiter Durchlauf und Absturz während des Sendens senden nie erneut", async () => {
+  auto();
+  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  await worker().tick();
+  clock = new Date(+T0 + 30 * 60_000);
+  await worker().tick();
+  assert.deepEqual(sends(), ["SEND dr1"]);
+  // Absturz mitten im Senden simulieren: Status "sending", Entwurf existiert noch
+  const st = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"));
+  g.reg.drafts.dr9 = { threadId: "t9", to: "bob@x.ch", createdAt: clock.toISOString() };
+  st.actions["outreach:bob@x.ch"] = { status: "sending", draftId: "dr9", autoSend: true, to: "bob@x.ch", at: clock.toISOString() };
+  write("state.json", st);
+  clock = new Date(+T0 + 60 * 60_000);
+  await worker().tick();
+  assert.ok(!sends().includes("SEND dr9"));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8")).actions["outreach:bob@x.ch"].status, "send_unknown");
+});
+
+test("fehlgeschlagener Send zählt nicht und wird nicht automatisch wiederholt", async () => {
+  auto();
+  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  g.failSend = "Gmail POST /drafts/send: invalid recipient";
+  const r = await worker().tick();
+  assert.equal(r.sends.length, 0);
+  assert.equal(Object.keys(g.reg.sent).length, 0, "nichts im Gesendet-Register");
+  g.failSend = null;
+  clock = new Date(+T0 + 30 * 60_000);
+  await worker().tick();
+  assert.equal(sends().length, 1, "kein automatischer zweiter Versuch");
+});
+
+test("Versand verteilt: höchstens ein Erstkontakt je Abstand, nur im Zeitfenster", async () => {
+  auto();
+  write("leads.json", ["a", "b", "c"].map((x) => ({ email: x + "@laden.ch", ...OPTIN })));
+  await worker().tick();
+  assert.equal(sends().length, 1);
+  clock = new Date(+T0 + 5 * 60_000);
+  await worker().tick();
+  assert.equal(sends().length, 1, "nach 5 Minuten noch nicht");
+  clock = new Date(+T0 + 13 * 60_000);
+  await worker().tick();
+  assert.equal(sends().length, 2);
+  clock = new Date("2026-10-06T20:00:00Z"); // 22:00 Zürich
+  await worker().tick();
+  assert.equal(sends().length, 2, "nachts kein Versand");
+});
+
+test("fremde Gmail-Mail bleibt im Echtversand unangetastet", async () => {
+  auto();
+  ownThread("t1");
+  g.threads.tFremd = [{ messageId: "x", from: "boss@firma.ch", body: "Abmelden? Bitte Vertrag schicken", sent: false, draft: false, internalDate: +T0 }];
+  write("leads.json", [{ email: "neu@laden.ch", ...OPTIN }]);
+  await worker().tick();
+  assert.ok(!g.calls.some((c) => c.includes("tFremd")));
+  assert.ok(!sends().some((c) => c.includes("tFremd")));
+  assert.ok(!JSON.parse(fs.readFileSync(path.join(dir, "suppression.json"), "utf8"))["boss@firma.ch"]);
+});
+
+test("Follow-ups werden nur in ursprünglich zulässigen Threads gesendet, sonst nur Entwurf", async () => {
+  auto();
+  ownThread("tOk", { to: "ok@firma.ch", sentAt: new Date(+T0 - 4 * DAY) });
+  ownThread("tSir", { to: "sir-kontakt@firma.ch", sentAt: new Date(+T0 - 4 * DAY) });
+  write("state.json", { compliantThreads: { tOk: { to: "ok@firma.ch", basis: "opt_in", lang: "de" } } });
+  await worker().tick();
+  clock = new Date(+T0 + 13 * 60_000);
+  await worker().tick();
+  const st = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"));
+  assert.equal(st.actions["followup:tOk:1"].status, "sent");
+  assert.equal(st.actions["followup:tSir:1"].status, "prepared");
+  assert.equal(st.actions["followup:tSir:1"].autoSend, false);
+  assert.equal(sends().length, 1);
+  assert.match(g.reg.sent["sent-" + st.actions["followup:tOk:1"].draftId].body, /«Abmelden»/, "werbliches Follow-up mit Abmeldehinweis");
+});
+
+test("Eskalationsfall im zulässigen Thread: nur Entwurf zur Prüfung, kein Versand", async () => {
+  auto();
+  ownThread("t1", { replies: ["Können Sie mir 20 % Rabatt geben? Dann schicke ich die IBAN."], sentAt: new Date(+T0 - DAY) });
+  write("state.json", { compliantThreads: { t1: { basis: "opt_in" } } });
+  const r = await worker().tick();
+  assert.equal(r.plan[0].review, true);
+  assert.ok(g.calls.includes("review dr1"));
+  assert.deepEqual(sends(), []);
+});
+
+test("unklare Antwort (Textgenerator eskaliert): kein Versand", async () => {
+  auto();
+  composeResult = () => ({ decision: "escalate", reason: "unklar", body: "Guten Tag ..." });
+  ownThread("t1", { replies: ["Und was ist mit dem anderen Thema von letzter Woche?"], sentAt: new Date(+T0 - DAY) });
+  write("state.json", { compliantThreads: { t1: { basis: "opt_in" } } });
+  await worker().tick();
+  assert.deepEqual(sends(), []);
+});
+
+test("Antwort im zulässigen Thread wird gesendet und hat Vorrang", async () => {
+  auto();
+  ownThread("t1", { replies: ["Klingt gut, was wäre der nächste Schritt?"], sentAt: new Date(+T0 - DAY) });
+  write("state.json", { compliantThreads: { t1: { basis: "opt_in" } }, lastSendAt: +T0 - 60_000 });
+  write("leads.json", [{ email: "neu@laden.ch", ...OPTIN }]);
+  const r = await worker().tick();
+  assert.equal(r.sends[0].kind, "antwort", "Antwort trotz Versandabstand sofort");
+});
+
+test("Echtversand ohne sender.name: nur Entwürfe", async () => {
+  auto({ sender: { name: "" } });
+  ownThread("t1", { replies: ["Wann passt es?"], sentAt: new Date(+T0 - DAY) });
+  write("state.json", { compliantThreads: { t1: { basis: "opt_in" } } });
+  const r = await worker().tick();
+  assert.deepEqual(sends(), []);
+  assert.equal(r.autoSendActive, false);
+});
+
+test("Dry-Run bleibt per CLI: --dry-run sendet nie", () => {
+  const secrets = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-secrets-"));
+  fs.mkdirSync(path.join(secrets, "mail_worker"));
+  fs.writeFileSync(path.join(secrets, "mail_worker", "config.json"), JSON.stringify({ dryRun: false, sendMode: "compliant_auto", sender: { name: "X" } }));
+  const r = runWorker(secrets, "--dry-run");
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual([out.dryRun, out.autoSendActive, out.sends.length], [true, false, 0]);
+});
+
+test("keine Lead- oder Consent-Daten im Git", () => {
+  const root = fileURLToPathSafe(new URL("..", import.meta.url));
+  execFileSync("git", ["check-ignore", "-q", ".secrets/mail_worker/leads.json"], { cwd: root });
+  const tracked = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n");
+  assert.deepEqual(tracked.filter((f) => /lead|consent|suppression|state\.json|\.secrets/i.test(f)), []);
 });

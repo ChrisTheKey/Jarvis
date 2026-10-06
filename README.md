@@ -77,14 +77,24 @@ Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschlie
 
 `.secrets/` ist per `.gitignore` von Git ausgeschlossen – Zugangsdaten und Tokens nie committen. Tests: `npm test`.
 
-### Mail-Worker (Hintergrund, nur Entwürfe)
+### Mail-Worker (Hintergrund)
 
-`mail-worker.js` prüft alle 5 Minuten die registrierten Jarvis-Threads auf Antworten, Opt-outs und fällige Follow-ups (nach 3 und weiteren 5 Tagen, danach Schluss) und bereitet Erstkontakte aus der freigegebenen Lead-Liste vor – **ausschließlich als Entwürfe, er sendet nie**. Heikle Fälle (Verträge, Zahlungen, Rabatte, Passwörter, Unklares) bekommen zusätzlich das Label `JARVIS-PRUEFEN`. Höchstens 50 Mails pro Tag (Europe/Zurich), Follow-ups und Erstkontakte nur 08:30–18:30.
+`mail-worker.js` prüft alle 5 Minuten die registrierten Jarvis-Threads auf Antworten, Opt-outs und fällige Follow-ups (nach 3 und weiteren 5 Tagen, danach Schluss) und bearbeitet freigegebene Leads. Fremde Mails und Threads werden nie gelesen oder verändert. Höchstens 50 Mails pro Tag (Europe/Zurich); Follow-ups und Erstkontakte nur 08:30–18:30 und verteilt (mindestens 12 Minuten Abstand).
 
-- Einstellungen: `.secrets/mail_worker/config.json` – `dryRun` ist anfangs `true` (nur anzeigen). Für Erstkontakte `offer` und `sender` ausfüllen.
-- Leads: `.secrets/mail_worker/leads.json`, z. B. `[{"email": "info@firma.ch", "name": "Anna Muster", "company": "Firma AG", "notes": "…", "approved": true}]` – nur Einträge mit `"approved": true` werden verwendet.
+- Einstellungen: `.secrets/mail_worker/config.json`
+  - `dryRun: true` – nur anzeigen. `sendMode: "drafts"` – nur Entwürfe. `sendMode: "compliant_auto"` + `dryRun: false` – versandberechtigte Mails werden selbst gesendet.
+  - `offer` und `sender` (`name`, `company`, `email`, optional `signature`) müssen echt ausgefüllt sein; ohne `sender.name` wird nie gesendet und es gibt keine Erstkontakte.
+- Selbst gesendet wird nur: Erstkontakte an Leads mit Versandgrundlage, Follow-ups und Antworten in genau diesen Threads. Alles andere bleibt Entwurf. Heikle Fälle (Verträge, Zahlungen, Rabatte, Passwörter, rechtliche Beschwerden, Unklares) sind immer Entwürfe mit Label `JARVIS-PRUEFEN`.
+- Leads: `.secrets/mail_worker/leads.json` (nie ins Git):
+  ```json
+  [{ "email": "anna@firma.ch", "name": "Anna Muster", "company": "Firma AG", "website": "https://firma.ch", "language": "de",
+     "approved": true, "consentBasis": "opt_in", "consentAt": "2026-09-01T10:00:00Z", "consentSource": "Kontaktformular",
+     "existingCustomer": false, "similarService": false, "websiteIssues": ["Kontaktformular sendet nicht ab"] }]
+  ```
+  Versandgrundlage: `approved: true` und entweder `consentBasis: "opt_in"` mit `consentAt` und `consentSource`, oder `consentBasis: "existing_customer"` mit `existingCustomer: true` und `similarService: true`. Fehlt sie, setzt der Worker `"status": "blocked_no_legal_basis"` und schreibt den Lead nicht an. Eine öffentliche Adresse (z. B. info@) ist keine Grundlage.
+- Jede werbliche Mail endet mit Absenderidentität und dem Satz „Falls Sie keine weiteren Nachrichten von mir wünschen, antworten Sie einfach mit «Abmelden».“ Ein `List-Unsubscribe`-Header wird bewusst nicht gesetzt: es gibt keinen HTTPS-Abmeldeendpunkt, und eine mailto-Abmeldung käme als neuer, fremder Thread an, den der Worker nicht lesen darf. Abmeldung per Antwort im Thread funktioniert dagegen sicher.
 - Opt-outs: `.secrets/mail_worker/suppression.json` (dauerhaft), Log: `.secrets/mail_worker/worker.log`.
-- Plan ansehen: `npm run mail-plan` (ein vollständiger Prüfzyklus, nur lesend). Einmal prüfen: `npm run mail-once`.
+- Dry-Run ansehen: `npm run mail-plan` (`node mail-worker.js --dry-run`, ändert nie etwas). Einmal prüfen: `npm run mail-once`.
 - Autostart einrichten: `powershell -ExecutionPolicy Bypass -File install-mail-worker.ps1` – fragt per UAC nach Administratorrechten, legt die Aufgabe „Jarvis Mail Worker“ an (Start bei Anmeldung, Neustart nach Fehler), ersetzt einen alten Worker-Prozess und prüft die Einrichtung. Entfernen mit `-Uninstall`.
 - `node gmail.js send` verweigert ab 50 heute gesendeten Jarvis-Mails (Europe/Zurich).
 - Der Worker läuft nur, solange der Rechner an, wach und online ist.
