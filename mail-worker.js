@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { detectHumanContact } from "./human-contact.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -157,8 +158,16 @@ export function releaseLock(dir, pid = process.pid, name = "worker.lock") {
 
 const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, compliantThreads: {}, lastPacedAt: 0, lastSendAt: 0, failures: 0, backoffUntil: 0 };
 
-export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir) }) {
+export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {} }) {
   const store = createStore(dir);
+  // Firma zu einer Absenderadresse – nur aus Sirs Lead-Liste bzw. den gefundenen Leads, nie geraten.
+  const companyFor = (email) => {
+    const e = normEmail(email), domain = e.split("@")[1] || "";
+    const leads = store.read("leads.json", []);
+    const hit = (Array.isArray(leads) ? leads : []).find((l) => normEmail(l?.email) === e) || (Array.isArray(leads) ? leads : []).find((l) => l?.email && normEmail(l.email).split("@")[1] === domain);
+    return hit?.company || store.read("discovered.json", { leads: {} }).leads?.[domain.replace(/^www\./, "")]?.company || "";
+  };
+  const displayName = (from = "") => from.match(/^\s*"?([^"<]+?)"?\s*</)?.[1]?.trim() || "";
   const config = () => {
     const c = { ...DEFAULT_CONFIG, ...store.read("config.json", {}) };
     c.limit = Math.min(Number(c.dailyLimit) || HARD_LIMIT, HARD_LIMIT);
@@ -181,7 +190,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const supp = store.read("suppression.json", {});
     const exclude = new Set(cfg.excludeAddresses.map(normEmail));
     const reg = gmail.listOwned();
-    const plan = [], notes = [], optouts = [], ownThreads = [], sends = [], blockedLeads = [], eligibleLeads = [];
+    const plan = [], notes = [], optouts = [], ownThreads = [], sends = [], blockedLeads = [], eligibleLeads = [], humanContacts = [];
     // Echtversand nur im ausdrücklich gesetzten Modus, nie im Dry-Run und nie ohne echte Absenderidentität.
     const wantAuto = cfg.sendMode === "compliant_auto" && !dry;
     const auto = wantAuto && !!cfg.sender?.name;
@@ -272,7 +281,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           else if (OPT_OUT_RE.test(text)) { suppress([sender, ...recips], "opt-out", threadId); state.handled[m.messageId] = "optout"; }
           else if (AUTO_SUBJECT_RE.test(m.subject)) state.handled[m.messageId] = "auto";
           else if (m.internalDate < lastOwnAt) state.handled[m.messageId] = "already-answered";
-          else toAnswer = { m, sender, text };
+          else toAnswer = { m, sender, text, hc: detectHumanContact(text) };
         }
         const blocked = recips.some((r) => supp[r]) || (toAnswer && supp[toAnswer.sender]);
         const pendingDraft = state.threadDrafts[threadId];
@@ -287,13 +296,21 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         }
 
         if (toAnswer) {
+          const { m, sender, text, hc } = toAnswer;
+          // Kunde will telefonieren/persönlich sprechen: sofort Sir benachrichtigen (je Message-ID nur einmal) –
+          // auch im Dry-Run und bei erreichtem Tageslimit. Ein Fehler hier stoppt den Worker nie.
+          if (hc) {
+            humanContacts.push({ threadId, kind: hc.kind });
+            try { await notify({ messageId: m.messageId, threadId, company: companyFor(sender), contactName: displayName(m.from), kind: hc.kind, sentence: hc.sentence }); }
+            catch (e) { log("error", "notify_failed", { threadId, error: e.message }); }
+          }
           if (free() <= 0) { notes.push(`Tageslimit erreicht – Antwort in ${threadId} folgt morgen.`); continue; }
-          const { m, sender, text } = toAnswer;
           const key = "reply:" + m.messageId;
           const res = await prepare(key, {
-            kind: "antwort", threadId, to: sender, subject: m.subject, escalate: ESCALATE_RE.test(text),
-            autoSend: !!state.compliantThreads[threadId] && !ESCALATE_RE.test(text),
-            task: { kind: "reply", sender: cfg.sender, offer: cfg.offer, thread: mails.map((x) => ({ from: x.from, date: x.date, subject: x.subject, body: (x.sent ? x.body : newText(x.body) || x.body).slice(0, 4000) })) },
+            // Wunsch nach Telefonat/Termin ist immer ein Eskalationsfall: nur Entwurf, nie automatisch senden.
+            kind: "antwort", threadId, to: sender, subject: m.subject, escalate: ESCALATE_RE.test(text) || !!hc,
+            autoSend: !!state.compliantThreads[threadId] && !ESCALATE_RE.test(text) && !hc,
+            task: { kind: "reply", humanContact: hc?.kind || null, sender: cfg.sender, offer: cfg.offer, thread: mails.map((x) => ({ from: x.from, date: x.date, subject: x.subject, body: (x.sent ? x.body : newText(x.body) || x.body).slice(0, 4000) })) },
           }, async (r) => {
             // Ein noch offener eigener Entwurf in diesem Thread wird aktualisiert statt verdoppelt.
             if (isPending(pendingDraft)) return { ...(await gmail.updateDraft(pendingDraft, { body: r.body })), draftId: pendingDraft, isNew: false };
@@ -422,7 +439,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     }
 
     save();
-    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, ownThreads, plan, sends, optouts,
+    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, ownThreads, plan, sends, optouts, humanContacts,
       suppressedTotal: Object.keys(supp).length, eligibleLeads: eligibleLeads.length, blockedLeads: blockedLeads.length, notes };
   }
 
@@ -495,6 +512,22 @@ export function claudeCompose({ model = "sonnet" } = {}) {
 // ---------- Kommandozeile ----------
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Nur Zahlen und Zeitpunkte – keine Adressen, IDs oder Inhalte.
+export function businessSnapshot(r, d = {}, t = new Date().toISOString()) {
+  return {
+    updatedAt: t,
+    worker: { online: true, lastCycle: t, todaySent: r.report.sentToday, limit: r.limit, capacity: r.report.freeToday, autoSend: !!r.autoSendActive, eligibleLeads: r.eligibleLeads, optOuts: r.suppressedTotal },
+    discovery: { lastRunAt: d.lastRunAt || null, websitesFoundToday: d.websitesFoundToday || 0, websitesWithIssuesToday: d.websitesWithIssuesToday || 0,
+      qualifiedLeads: d.qualifiedLeads || 0, leadsWithoutLegalBasis: d.leadsWithoutLegalBasis || 0, errorsToday: d.errorsToday || 0 },
+  };
+}
+// Langfristige, von Sir gewollte Notizen (workspace/memory/sir.md) für den Cloud-Jarvis.
+function profileNotes() {
+  const file = path.join(ROOT, "workspace", "memory", "sir.md");
+  try { return { notes: fs.readFileSync(file, "utf8").slice(0, 2000), updatedAt: fs.statSync(file).mtime.toISOString() }; }
+  catch { return { notes: "", updatedAt: null }; }
+}
 const BUSY = 3; // Exit-Code „Lock belegt“ – z. B. während eines manuellen --once
 
 async function loop() {
@@ -504,19 +537,29 @@ async function loop() {
   const release = () => releaseLock(WORKER_DIR);
   process.on("exit", release);
   for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0));
-  const worker = createWorker({ gmail, compose: (task) => claudeCompose({ model: worker.config().model })(task), log });
+  // Gemeinsamer Zustand (lokaler Spiegel + Cloud-Abgleich) und Sofort-Alarm bei Telefonwunsch.
+  const shared = await import("./local-state.js");
+  const local = shared.createLocalState();
+  const notify = shared.createHumanContactNotifier({ local, log });
+  const worker = createWorker({ gmail, compose: (task) => claudeCompose({ model: worker.config().model })(task), log, notify });
   log("info", "worker_started", { pid: process.pid, dryRun: worker.config().dryRun !== false });
   // Herzschlag auch während langer Durchläufe, damit kein zweiter Worker das Lock für verwaist hält.
   setInterval(() => heartbeat(WORKER_DIR), 60_000);
   const finder = await import("./lead-finder.js");
+  await shared.syncWithCloud({ local, log, force: true }); // beim Start: neuesten Cloud-Stand übernehmen
   for (;;) {
     heartbeat(WORKER_DIR);
-    await worker.tick();
+    const r = await worker.tick();
     // Danach (Antworten haben Vorrang): neue Websites suchen und prüfen, wenn fällig. Sendet nie.
     try {
       const d = await finder.runDiscovery({ gmail, log });
       if (d.busy) log("info", "discovery_busy");
     } catch (e) { log("error", "discovery_failed", { error: e.message }); }
+    // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.
+    try {
+      if (r?.report) local.setBusiness(businessSnapshot(r, finder.discoveryReport()), { personaVersion: (await import("./persona-version.js")).personaVersion(), profile: profileNotes() });
+      await shared.syncWithCloud({ local, log });
+    } catch (e) { log("error", "shared_state_failed", { error: e.message }); }
     await sleep(worker.config().pollMinutes * 60_000);
   }
 }

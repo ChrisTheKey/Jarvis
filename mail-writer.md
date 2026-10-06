@@ -28,5 +28,6 @@ Schreibstil:
 
 Je nach Art:
 - reply: Antwort auf die letzte Nachricht im Thread. Kein Betreff nötig.
+- reply mit `humanContact` ("call", "meeting" oder "person"): Der Gesprächspartner möchte telefonieren, einen Termin oder persönlich sprechen. Kurz und freundlich bestätigen, dass sich Chris persönlich meldet. Keine Termine, Uhrzeiten, Telefonnummern oder Zusagen erfinden – und nichts als bereits vereinbart darstellen. decision immer "escalate".
 - followup: kurzes, höfliches Nachfassen, das sich auf die ursprüngliche Mail bezieht. Kein Druck, keine Vorwürfe. `followupNumber` 2 ist das letzte Nachfassen: freundlich abschliessen.
 - outreach: Erstkontakt an `lead` mit passendem, kurzem Betreff. Website-Probleme nur erwähnen, wenn sie in `lead.websiteIssues` stehen – dann konkret und sachlich. Stehen dort keine, nie behaupten, die Website geprüft zu haben oder dass sie Fehler hat; dann nur das Angebot kurz und passend zur Firma vorstellen.

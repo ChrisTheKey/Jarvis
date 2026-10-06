@@ -114,3 +114,11 @@ Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschlie
 ## Sicherheit
 
 Der Server ist nur auf deinem eigenen Rechner erreichbar (localhost) und lehnt Anfragen fremder Webseiten ab. Stelle ihn nicht ins Internet.
+
+### Kundenalarm und gemeinsamer Zustand Lokal ↔ Cloud
+
+- Schreibt ein Kunde in einem eigenen Jarvis-Thread, dass er telefonieren, einen Termin oder persönlich sprechen möchte (`human-contact.js`, satzweise mit Kontext), entsteht sofort eine persistente Meldung `human_contact_requested` (Priorität hoch, je Gmail-Nachricht nur einmal), ein Windows-Toast „Jarvis – Kunde möchte persönlichen Kontakt“ und ein Hinweis im HUD. Die Antwort wird nur als Entwurf zur Prüfung vorbereitet – keine erfundenen Termine, Nummern oder Zusagen.
+- `shared-state.js` definiert den sicheren gemeinsamen Zustand (Persona-Version, Notizen aus `memory/sir.md`, begrenzter Gesprächsverlauf, Meldungen, Worker-/Discovery-Zahlen). Alles wird per Whitelist neu aufgebaut; Tokens, Gmail-IDs, Leads, Suppression-Liste, Mailinhalte und lokale Pfade gelangen nie in die Cloud.
+- Lokal liegt der Spiegel in `.secrets/shared_state.json`; der Worker und `server.js` gleichen ihn mit `/api/state` (Netlify Function + Netlify Blobs) ab. „Gelesen“ wird in beide Richtungen übernommen und nie wieder auf „ungelesen“ gesetzt. Gmail-Aktionen bleiben ausschliesslich lokal.
+- Persona: `persona.md` ist die einzige Quelle. Die Cloud-Fassung erzeugt `npm run build:persona` (läuft auch beim Netlify-Build); Abschnitte zwischen `<!-- nur-lokal -->`-Markierungen gelten nur auf dem PC.
+- Einrichtung: `npm run setup-sync` legt einen Sync-Token in `.secrets/jarvis_sync.json` an und zeigt ihn an. In Netlify als `JARVIS_SYNC_TOKEN` eintragen (neben `JARVIS_PASSWORD` und `ANTHROPIC_API_KEY`) und neu deployen.

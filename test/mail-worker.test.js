@@ -534,5 +534,6 @@ test("keine Lead- oder Consent-Daten im Git", () => {
   const root = fileURLToPathSafe(new URL("..", import.meta.url));
   execFileSync("git", ["check-ignore", "-q", ".secrets/mail_worker/leads.json"], { cwd: root });
   const tracked = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n");
-  assert.deepEqual(tracked.filter((f) => /lead|consent|suppression|state\.json|\.secrets/i.test(f)), []);
+  // Datendateien (nicht Quellcode wie lead-finder.js) dürfen nie im Repository liegen.
+  assert.deepEqual(tracked.filter((f) => /(^|\/)(leads?|discovered|suppression|state|shared_state|jarvis_sync|consent\w*)\.json$|(^|\/)\.secrets\//i.test(f)), []);
 });

@@ -9,6 +9,11 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 loadEnv(path.join(ROOT, ".env"));
+// Gemeinsamer Jarvis-Zustand (nach loadEnv, damit JARVIS_SYNC_TOKEN aus .env gilt)
+const { createLocalState, syncWithCloud, cloudContextPrefix } = await import("./local-state.js");
+const { personaVersion } = await import("./persona-version.js");
+const local = createLocalState();
+const syncSoon = () => { syncWithCloud({ local, force: true }).catch(() => {}); };
 
 const PORT = Number(process.env.PORT || 3000);
 const MODEL = process.env.JARVIS_MODEL || "sonnet";
@@ -83,10 +88,18 @@ function ask(text, res, retried = false) {
 
   const child = runClaude(args);
   current = child;
-  const send = (ev) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`); };
+  let said = "";
+  const send = (ev) => { if (ev.type === "text") said += (said ? "\n" : "") + ev.text; if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`); };
   let buf = "", stderr = "", gotOutput = false, finished = false;
 
-  child.stdin.end(text);
+  // Was Sir inzwischen im Cloud-Jarvis besprochen hat, kommt einmalig als gekennzeichneter Kontext mit.
+  let context = "";
+  if (!retried) { try { context = cloudContextPrefix(local.takeCloudContext()); } catch {} }
+  child.stdin.end(context + text);
+  child.on("close", () => {
+    if (!said.trim()) return;
+    try { local.appendTurns([{ role: "user", content: text }, { role: "assistant", content: said }], "local"); syncSoon(); } catch {}
+  });
   child.stdout.on("data", (chunk) => {
     buf += chunk;
     let i;
@@ -216,6 +229,23 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/reset") {
       stopChild(current);
       saveSession(null);
+      // Nur der aktive Gesprächsverlauf – Benachrichtigungen und Notizen bleiben.
+      try { local.resetConversation("local"); syncSoon(); } catch {}
+      return json(res, 200, { ok: true });
+    }
+    // Gemeinsamer Zustand für das HUD: Benachrichtigungen, Worker-/Discovery-Status, Sync. Keine Thread-IDs oder Auszüge.
+    if (req.method === "GET" && url.pathname === "/api/shared") {
+      const s = local.read();
+      return json(res, 200, {
+        notifications: s.notifications.map(({ threadId, excerpt, ...n }) => n), business: s.business,
+        sync: s.syncStatus || {}, personaVersion: personaVersion(), mode: "local",
+      });
+    }
+    if (req.method === "POST" && url.pathname === "/api/notifications/read") {
+      const { id } = JSON.parse(await readBody(req, 2000));
+      if (typeof id !== "string" || !/^[a-z0-9-]{4,64}$/.test(id)) return json(res, 400, { error: "Ungültige ID." });
+      local.markRead(id);
+      syncSoon();
       return json(res, 200, { ok: true });
     }
     if (req.method === "POST" && url.pathname === "/api/tts") {
@@ -238,6 +268,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 checkClaude();
+// Beim Start und alle 2 Minuten den Cloud-Stand übernehmen (gelesen-Status, Cloud-Gespräch). Fehler sind unkritisch.
+syncSoon();
+setInterval(() => syncWithCloud({ local }).catch(() => {}), 120_000).unref();
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`\n  J.A.R.V.I.S. ist online:  http://localhost:${PORT}\n`);
   console.log(`  Modell: ${MODEL} · Zugriff: ${FULL_ACCESS ? "VOLLZUGRIFF" : "Standard"} · Stimme: ${ELEVEN_KEY ? "ElevenLabs" : "Browser"}`);

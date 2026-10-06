@@ -14,6 +14,11 @@
     "mail-worker": "node mail-worker.js",
     "mail-plan": "node mail-worker.js --plan",
     "mail-once": "node mail-worker.js --once",
-    "lead-finder": "node lead-finder.js --once"
+    "lead-finder": "node lead-finder.js --once",
+    "build:persona": "node scripts/build-persona.mjs",
+    "setup-sync": "node scripts/setup-sync.mjs"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^11.1.3"
   }
 }

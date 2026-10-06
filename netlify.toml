@@ -1,6 +1,11 @@
 # Netlify hostet die Jarvis-Oberfläche. Der Kern (Claude Code) läuft auf deinem Computer.
 [build]
   publish = "public"
+  # Cloud-Persona aus persona.md erzeugen (einzige Persona-Quelle für Lokal und Cloud)
+  command = "node scripts/build-persona.mjs"
+
+[build.environment]
+  NODE_VERSION = "22"
 
 [[edge_functions]]
   path = "/api/cloud"
