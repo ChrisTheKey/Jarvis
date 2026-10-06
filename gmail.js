@@ -29,7 +29,10 @@ export const LABEL = "JARVIS";
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } };
 function writeSecret(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
+  // Atomar: erst in eine Temp-Datei schreiben, dann umbenennen – ein Absturz hinterlässt nie ein halbes Register.
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, file);
 }
 
 function loadClient() {
@@ -203,18 +206,52 @@ export async function updateDraft(draftId, fields) {
   return { draftId, ...info };
 }
 
-export async function sendDraft(draftId) {
+// Hartes Tageslimit für tatsächlich gesendete Jarvis-Mails je Kalendertag (Europe/Zurich), gezählt aus dem Register.
+export const DAILY_SEND_LIMIT = 50;
+const zurichDay = (d) => new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Zurich" }).format(d);
+export const sentToday = (reg = loadRegistry(), now = new Date()) =>
+  Object.values(reg.sent || {}).filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === zurichDay(now)).length;
+
+// Zählen, Senden und Registrieren laufen unter einer Sperrdatei – zwei gleichzeitige Sendungen können das Limit nicht überholen.
+async function withSendLock(fn) {
+  const lock = path.join(SECRETS, "gmail_send.lock");
+  fs.mkdirSync(SECRETS, { recursive: true });
+  for (let i = 0; ; i++) {
+    try { fs.writeFileSync(lock, String(process.pid), { flag: "wx" }); break; } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > 120_000) { fs.rmSync(lock, { force: true }); continue; } } catch { continue; }
+      if (i >= 120) throw new Error("Eine andere Sendung läuft noch – bitte gleich erneut versuchen.");
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  try { return await fn(); } finally { fs.rmSync(lock, { force: true }); }
+}
+
+export const sendDraft = (draftId) => withSendLock(async () => {
   const reg = loadRegistry();
   const { entry } = await assertOwnedDraft(draftId, reg);
+  if (sentToday(reg) >= DAILY_SEND_LIMIT) throw new Error(`Tageslimit von ${DAILY_SEND_LIMIT} Jarvis-Mails (Europe/Zurich) erreicht – nicht gesendet.`);
   const sent = await gmail("POST", "/drafts/send", { id: draftId });
   const info = await labelAndDescribe(sent.id, reg.labelId);
   delete reg.drafts[draftId];
   reg.sent[sent.id] = { ...info, to: entry.to, subject: entry.subject, fromDraft: draftId, sentAt: new Date().toISOString() };
   saveRegistry(reg);
   return info;
-}
+});
 
 export const listOwned = () => loadRegistry();
+
+// Markiert einen EIGENEN Entwurf zusätzlich mit REVIEW_LABEL, damit Sir ihn vor dem Senden prüft.
+export const REVIEW_LABEL = "JARVIS-PRUEFEN";
+export async function markDraftForReview(draftId) {
+  const reg = loadRegistry();
+  const { draft } = await assertOwnedDraft(draftId, reg);
+  const { labels = [] } = await gmail("GET", "/labels");
+  const label = labels.find((l) => l.name === REVIEW_LABEL)
+    || (await gmail("POST", "/labels", { name: REVIEW_LABEL, labelListVisibility: "labelShow", messageListVisibility: "show" }));
+  await gmail("POST", `/messages/${draft.message.id}/modify`, { addLabelIds: [label.id] });
+  saveRegistry(reg);
+}
 
 // ---------- Laufende Gespräche (nur eigene, bereits gesendete Threads) ----------
 

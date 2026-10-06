@@ -77,6 +77,18 @@ Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschlie
 
 `.secrets/` ist per `.gitignore` von Git ausgeschlossen – Zugangsdaten und Tokens nie committen. Tests: `npm test`.
 
+### Mail-Worker (Hintergrund, nur Entwürfe)
+
+`mail-worker.js` prüft alle 5 Minuten die registrierten Jarvis-Threads auf Antworten, Opt-outs und fällige Follow-ups (nach 3 und weiteren 5 Tagen, danach Schluss) und bereitet Erstkontakte aus der freigegebenen Lead-Liste vor – **ausschließlich als Entwürfe, er sendet nie**. Heikle Fälle (Verträge, Zahlungen, Rabatte, Passwörter, Unklares) bekommen zusätzlich das Label `JARVIS-PRUEFEN`. Höchstens 50 Mails pro Tag (Europe/Zurich), Follow-ups und Erstkontakte nur 08:30–18:30.
+
+- Einstellungen: `.secrets/mail_worker/config.json` – `dryRun` ist anfangs `true` (nur anzeigen). Für Erstkontakte `offer` und `sender` ausfüllen.
+- Leads: `.secrets/mail_worker/leads.json`, z. B. `[{"email": "info@firma.ch", "name": "Anna Muster", "company": "Firma AG", "notes": "…", "approved": true}]` – nur Einträge mit `"approved": true` werden verwendet.
+- Opt-outs: `.secrets/mail_worker/suppression.json` (dauerhaft), Log: `.secrets/mail_worker/worker.log`.
+- Plan ansehen: `npm run mail-plan` (ein vollständiger Prüfzyklus, nur lesend). Einmal prüfen: `npm run mail-once`.
+- Autostart einrichten: `powershell -ExecutionPolicy Bypass -File install-mail-worker.ps1` – fragt per UAC nach Administratorrechten, legt die Aufgabe „Jarvis Mail Worker“ an (Start bei Anmeldung, Neustart nach Fehler), ersetzt einen alten Worker-Prozess und prüft die Einrichtung. Entfernen mit `-Uninstall`.
+- `node gmail.js send` verweigert ab 50 heute gesendeten Jarvis-Mails (Europe/Zurich).
+- Der Worker läuft nur, solange der Rechner an, wach und online ist.
+
 ## Sicherheit
 
 Der Server ist nur auf deinem eigenen Rechner erreichbar (localhost) und lehnt Anfragen fremder Webseiten ab. Stelle ihn nicht ins Internet.

@@ -22,6 +22,7 @@ Regeln:
 - Vor jedem Bearbeiten oder Senden prüft `gmail.js` Register, Message-ID, Thread-ID und das Label JARVIS. Schlägt eine Prüfung fehl, brichst du ab und umgehst die Prüfung nie.
 - „Schreib eine Mail“ heißt: nur einen Entwurf anlegen, nicht senden.
 - Senden ist eine echte externe Aktion. Sende nur, wenn Sir ausdrücklich das Senden verlangt.
+- Höchstens 50 Jarvis-Mails pro Kalendertag (Europe/Zurich). Meldet `send` das Tageslimit, sagst du es Sir und versuchst es nicht erneut.
 
 ## Laufende E-Mail-Gespräche
 

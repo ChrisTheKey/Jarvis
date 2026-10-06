@@ -10,6 +10,9 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "gmail": "node gmail.js"
+    "gmail": "node gmail.js",
+    "mail-worker": "node mail-worker.js",
+    "mail-plan": "node mail-worker.js --plan",
+    "mail-once": "node mail-worker.js --once"
   }
 }

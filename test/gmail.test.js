@@ -227,3 +227,21 @@ test("Sprach-Jarvis: thread/reply eng freigegeben, kein allgemeiner node-Zugriff
   assert.match(md, /node \.\.\/gmail\.js thread <threadId>/);
   assert.match(md, /node \.\.\/gmail\.js reply <threadId> --body/);
 });
+
+test("Tageslimit: bei 50 heute gesendeten Jarvis-Mails wird nicht mehr gesendet", async () => {
+  await gmail.createDraft({ to: "a@b.de", subject: "x", body: "y" });
+  const file = path.join(dir, "gmail_jarvis.json");
+  const reg = JSON.parse(fs.readFileSync(file, "utf8"));
+  const now = new Date().toISOString();
+  for (let i = 0; i < 49; i++) reg.sent["h" + i] = { threadId: "th" + i, to: "x@y.ch", sentAt: now };
+  reg.sent.alt = { threadId: "alt", to: "x@y.ch", sentAt: "2020-01-01T10:00:00Z" }; // anderer Tag zählt nicht
+  fs.writeFileSync(file, JSON.stringify(reg));
+  assert.equal(gmail.sentToday(), 49);
+  await gmail.sendDraft("d1"); // Nr. 50 ist erlaubt
+  assert.equal(gmail.sentToday(), 50);
+  await gmail.createDraft({ to: "a@b.de", subject: "x", body: "y" });
+  calls.length = 0;
+  await assert.rejects(gmail.sendDraft("d2"), /Tageslimit/);
+  assert.ok(!calls.some((c) => c.includes("/drafts/send")), "nicht gesendet");
+  assert.ok(gmail.listOwned().drafts.d2, "Entwurf bleibt erhalten");
+});
