@@ -66,6 +66,8 @@ const AUTO_SUBJECT_RE = /(automatische antwort|abwesenheit|out of office|automat
 const BOUNCE_RE = /mailer-daemon|postmaster/i;
 const AI_RE = /\b(KI|AI|Claude|Jarvis|ChatGPT|künstliche Intelligenz|language model|Sprachmodell)\b/;
 const UNSUB_RE = /abmelden|unsubscribe|désinscri|disiscriv/i;
+// Behauptete Website-Mängel – ohne dokumentierte websiteIssues darf eine Erstmail so etwas nicht enthalten.
+export const CLAIM_RE = /(fehler|defekt|kaputt|funktioniert nicht|nicht erreichbar|nicht mehr erreichbar|404|zertifikat|veraltet|langsam|unsicher|broken|not working|outdated|slow|certificate|erreur|cass[ée]|errore|non funziona)/i;
 
 // Versandgrundlage eines Leads. approved allein genügt nie; nichts wird angenommen oder ergänzt.
 export function legalBasis(lead = {}, now = new Date()) {
@@ -125,9 +127,9 @@ export function createLogger(dir) {
 // ---------- Lock gegen Doppelstart ----------
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
-export function acquireLock(dir, { pid = process.pid, now = Date.now(), staleMs = 15 * 60_000 } = {}) {
+export function acquireLock(dir, { pid = process.pid, now = Date.now(), staleMs = 15 * 60_000, name = "worker.lock" } = {}) {
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, "worker.lock");
+  const file = path.join(dir, name);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       fs.writeFileSync(file, JSON.stringify({ pid, beat: now }), { flag: "wx" });
@@ -145,9 +147,9 @@ export function acquireLock(dir, { pid = process.pid, now = Date.now(), staleMs 
   }
   return false;
 }
-export const heartbeat = (dir, pid = process.pid) => fs.writeFileSync(path.join(dir, "worker.lock"), JSON.stringify({ pid, beat: Date.now() }));
-export function releaseLock(dir, pid = process.pid) {
-  const file = path.join(dir, "worker.lock");
+export const heartbeat = (dir, pid = process.pid, name = "worker.lock") => fs.writeFileSync(path.join(dir, name), JSON.stringify({ pid, beat: Date.now() }));
+export function releaseLock(dir, pid = process.pid, name = "worker.lock") {
+  const file = path.join(dir, name);
   try { if (JSON.parse(fs.readFileSync(file, "utf8")).pid === pid) fs.rmSync(file); } catch {}
 }
 
@@ -223,6 +225,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       if (result.decision === "optout") { suppress([info.to], "opt-out (erkannt beim Schreiben)", info.threadId); return "optout"; }
       if (result.decision === "ignore") { state.actions[key] = { status: "ignored", at: t.toISOString(), reason: result.reason }; return "ignore"; }
       let review = result.decision !== "draft";
+      if (info.noIssues && CLAIM_RE.test(`${result.subject || ""} ${result.body || ""}`)) review = true; // keine erfundenen Website-Probleme
       if (info.escalate) review = true;
       if (!result.body || result.body.length > 6000 || AI_RE.test(result.body + (result.subject || ""))) review = true;
       if (!result.body) result.body = "(Bitte selbst formulieren – der Entwurf konnte nicht automatisch geschrieben werden.)";
@@ -359,7 +362,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       try {
         const { name, company, website, language, notes: leadNotes, websiteIssues } = lead;
         await prepare("outreach:" + to, {
-          kind: "erstkontakt", to, subject: company || name || to, basis, lang: language, commercial: true, paced: true, autoSend: true,
+          kind: "erstkontakt", to, subject: company || name || to, basis, lang: language, commercial: true, paced: true, autoSend: true, noIssues: !websiteIssues?.length,
           task: { kind: "outreach", sender: cfg.sender, offer: cfg.offer, lead: { name, company, website, language, notes: leadNotes, websiteIssues: websiteIssues || [] } },
         }, (r) => gmail.createDraft({ to: name ? `${name.replace(/[<>"\r\n]/g, "")} <${to}>` : to, subject: r.subject || "Kurze Frage", body: r.body }));
         paced++;
@@ -423,18 +426,32 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       suppressedTotal: Object.keys(supp).length, eligibleLeads: eligibleLeads.length, blockedLeads: blockedLeads.length, notes };
   }
 
+  // Gesamtbericht inkl. Website-Discovery (lead-finder.js).
+  async function report(r) {
+    const { discoveryReport } = await import("./lead-finder.js");
+    const d = discoveryReport(dir, now());
+    return {
+      websitesFoundToday: d.websitesFoundToday, websitesAuditedToday: d.websitesAuditedToday, websitesWithIssuesToday: d.websitesWithIssuesToday,
+      qualifiedLeads: d.qualifiedLeads, leadsWithoutContact: d.leadsWithoutContact,
+      leadsWithoutLegalBasis: d.leadsWithoutLegalBasis + r.blockedLeads, eligibleLeads: r.eligibleLeads,
+      sentToday: r.sentToday + r.sends.length, freeToday: Math.max(0, r.limit - r.sentToday - r.sends.length),
+      optOutsTotal: r.suppressedTotal, optOutsThisCycle: r.optouts.length, discoveryErrorsToday: d.errorsToday, lastDiscoveryAt: d.lastRunAt,
+    };
+  }
+
   return {
     config,
-    plan: () => cycle({ dry: true, readOnly: true }),
+    plan: async () => { const r = await cycle({ dry: true, readOnly: true }); r.report = await report(r); return r; },
     async tick() {
       const state = { ...STATE, ...store.read("state.json", STATE) };
       if (Date.now() < state.backoffUntil) return { skipped: "backoff" };
       const dry = config().dryRun !== false;
       try {
         const r = await cycle({ dry });
+        r.report = await report(r);
         const s = store.read("state.json", STATE);
         if (s.failures) store.write("state.json", { ...s, failures: 0, backoffUntil: 0 });
-        log("info", "tick", { dryRun: dry, sentToday: r.sentToday, used: r.used, free: r.free, threads: r.ownThreads.length, autoSend: r.autoSendActive, sends: r.sends, eligibleLeads: r.eligibleLeads, blockedLeads: r.blockedLeads, plan: r.plan.map(({ task, ...p }) => p), optouts: r.optouts, notes: r.notes });
+        log("info", "tick", { report: r.report, dryRun: dry, sentToday: r.sentToday, used: r.used, free: r.free, threads: r.ownThreads.length, autoSend: r.autoSendActive, sends: r.sends, eligibleLeads: r.eligibleLeads, blockedLeads: r.blockedLeads, plan: r.plan.map(({ task, ...p }) => p), optouts: r.optouts, notes: r.notes });
         return r;
       } catch (e) {
         const s = { ...STATE, ...store.read("state.json", STATE) };
@@ -491,9 +508,15 @@ async function loop() {
   log("info", "worker_started", { pid: process.pid, dryRun: worker.config().dryRun !== false });
   // Herzschlag auch während langer Durchläufe, damit kein zweiter Worker das Lock für verwaist hält.
   setInterval(() => heartbeat(WORKER_DIR), 60_000);
+  const finder = await import("./lead-finder.js");
   for (;;) {
     heartbeat(WORKER_DIR);
     await worker.tick();
+    // Danach (Antworten haben Vorrang): neue Websites suchen und prüfen, wenn fällig. Sendet nie.
+    try {
+      const d = await finder.runDiscovery({ gmail, log });
+      if (d.busy) log("info", "discovery_busy");
+    } catch (e) { log("error", "discovery_failed", { error: e.message }); }
     await sleep(worker.config().pollMinutes * 60_000);
   }
 }

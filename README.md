@@ -99,6 +99,18 @@ Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschlie
 - `node gmail.js send` verweigert ab 50 heute gesendeten Jarvis-Mails (Europe/Zurich).
 - Der Worker läuft nur, solange der Rechner an, wach und online ist.
 
+### Lead-Finder und Website-Audit (Hintergrund)
+
+`lead-finder.js` sucht stündlich öffentliche Firmeneinträge mit Website aus OpenStreetMap (Overpass API; Gebiete und Branchen in `config.json` unter `discovery`, Ketten mit OSM-`brand` werden übersprungen) und prüft höchstens 3 Websites pro Lauf und 40 pro Tag mit `site-auditor.js`.
+
+- Audit nur über normale Seitenaufrufe (robots.txt wird beachtet, 1,5 s Abstand je Anfrage): Erreichbarkeit, HTTP-Fehler, Zertifikat/HTTPS, Weiterleitungsschleifen, kaputte interne Links/Bilder (nur 404/410/5xx), Kontaktseite, Titel, Meta Description, viewport, lang, alt-Texte, Mixed Content, veraltete Technik, Ladezeit. Keine Formulare, keine Logins, keine Sicherheitstests. Layout-Darstellung wird ohne Browser nicht beurteilt.
+- Jeder Befund hat `type`, `url`, `evidence`, `severity`, `detectedAt`. Ohne Befund kein Mangel.
+- Ergebnisse: `.secrets/mail_worker/discovered.json` (nie ins Git). Gefundene Leads starten immer mit `approved: false`, `consentBasis: null`; mit Problemen und Kontaktadresse bekommen sie `status: "blocked_no_legal_basis"`. Sie werden **nie** automatisch angeschrieben – eine öffentliche Adresse ist keine Einwilligung.
+- Steht dieselbe Firma bereits mit gültiger Versandgrundlage in `leads.json`, hängt der Finder nur die belegten `websiteIssues` dort an; die Mail nennt dann ausschliesslich diese Befunde.
+- Kontakt nur aus Impressum/Kontaktseite/Startseite der Firma (Adresse auf der eigenen Domain). Inhaber nur, wenn das Impressum ihn ausdrücklich nennt.
+- Score (`auditScore`, `scoreDetails`): Befunde (hoch 3, mittel 2, niedrig 1, max. 10) + Firmenname 2 + UID 2 + Impressum 1 + eigene Geschäftsadresse 2 − 3 bei unerreichbarer Website. Qualifiziert ab `minScore` (6) mit mindestens einem mittleren/hohen Befund.
+- Von Hand: `node lead-finder.js --once` (ein Lauf), `node lead-finder.js --report`.
+
 ## Sicherheit
 
 Der Server ist nur auf deinem eigenen Rechner erreichbar (localhost) und lehnt Anfragen fremder Webseiten ab. Stelle ihn nicht ins Internet.
