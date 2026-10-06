@@ -113,6 +113,31 @@ form.cmd button.stop { color: var(--red); }
 .alerts button { background: none; border: 1px solid var(--line); color: var(--cyan); font: 11px var(--mono); letter-spacing: .08em; padding: 3px 9px; cursor: pointer; }
 .alerts button:hover { border-color: var(--cyan); }
 #kAlerts.hot { color: var(--red); }
+.alerts li.seen { opacity: .65; }
+.on-ok { color: var(--green) !important; } .on-bad { color: var(--red) !important; }
+/* Vertrieb: zwei Angebote (CHF 150 / CHF 500), kompakt zweispaltig */
+.sales { flex: none !important; }
+.kv.two { grid-template-columns: auto 1fr auto 1fr; font-size: 12px; }
+.panel h2 button, .leads-box button { background: none; border: 1px solid var(--line); color: var(--cyan); font: 11px var(--mono); letter-spacing: .08em; padding: 2px 8px; cursor: pointer; }
+.panel h2 button:disabled { color: var(--muted); cursor: not-allowed; }
+.leads { position: fixed; inset: 0; z-index: 9; display: grid; place-items: center; background: rgba(1,5,10,.86); padding: 16px; }
+.leads-box { width: min(1100px, 100%); max-height: 90vh; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px; overflow: hidden; }
+.leads-box .panel { max-height: 86vh; overflow-y: auto; align-self: stretch; }
+.leads-box h2 { align-items: center; }
+.lead-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font: 13px var(--mono); }
+.lead-list li { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 8px; border-left: 2px solid var(--line); cursor: pointer; }
+.lead-list li:hover, .lead-list li.sel { border-left-color: var(--cyan); background: rgba(63,216,255,.06); }
+.lead-list .o { color: var(--amber); } .lead-list .o.none { color: var(--muted); }
+.lead-detail { font: 13px/1.5 var(--mono); }
+.lead-detail h3 { margin: 0 0 8px; font: 600 18px var(--ui); color: var(--cyan-2); overflow-wrap: anywhere; }
+.lead-detail .kv { margin-bottom: 12px; }
+.lead-detail .kv b { white-space: normal; overflow-wrap: anywhere; }
+.lead-detail .block { color: var(--red); border: 1px solid rgba(255,93,108,.5); padding: 6px 10px; margin: 8px 0 12px; letter-spacing: .12em; }
+.lead-detail .ok { color: var(--green); }
+.lead-detail ul { margin: 4px 0 12px; padding-left: 18px; }
+.lead-detail li { margin-bottom: 6px; overflow-wrap: anywhere; }
+.lead-detail .sev { color: var(--amber); }
+@media (max-width: 860px) { .leads-box { grid-template-columns: 1fr; overflow-y: auto; } }
 @keyframes slide { from { opacity: 0; transform: translateX(8px); } }
 @media (prefers-reduced-motion: reduce) { .log li { animation: none; } }
 @media (max-width: 1100px) { .hud { grid-template-columns: 250px 1fr 280px; } }
@@ -148,6 +173,8 @@ form.cmd button.stop { color: var(--red); }
     <section class="panel">
       <h2>Status</h2>
       <div class="kv">
+        <span>Modus</span><b id="kMode">–</b>
+        <span>Local Core</span><b id="kLocal">–</b>
         <span>Kern</span><b id="kCore">–</b>
         <span>Modell</span><b id="kModel">–</b>
         <span>Zugriff</span><b id="kAccess">–</b>
@@ -168,6 +195,18 @@ form.cmd button.stop { color: var(--red); }
     <section class="panel alerts" id="alerts" hidden aria-live="polite">
       <h2>Meldungen <span id="alertCount"></span></h2>
       <ul id="alertList"></ul>
+    </section>
+    <section class="panel sales" id="salesPanel">
+      <h2>Vertrieb <button type="button" id="leadsBtn" title="Lead-Details (nur im Local-Modus)">LEADS</button></h2>
+      <div class="kv two">
+        <span>Gefunden</span><b id="sDiscovered">–</b><span>Geprüft</span><b id="sAudited">–</b>
+        <span>Repair</span><b id="sRepair">–</b><span>Blockiert</span><b id="sBlocked" title="ohne Versandgrundlage">–</b>
+        <span>CHF 150 Kand.</span><b id="s150c">–</b><span>CHF 500 Kand.</span><b id="s500c">–</b>
+        <span>Versandber.</span><b id="sEligible">–</b><span>Kontaktiert</span><b id="sContacted">–</b>
+        <span>Antworten</span><b id="sReplies">–</b><span>Kunden</span><b id="sCustomers">–</b>
+        <span>Verk. 150</span><b id="s150">–</b><span>Verk. 500</span><b id="s500">–</b>
+        <span>Umsatz</span><b id="sRevenue">–</b>
+      </div>
     </section>
     <section class="panel">
       <h2>Protokoll <span id="count"></span></h2>
@@ -198,6 +237,16 @@ form.cmd button.stop { color: var(--red); }
   </div>
 </div>
 
+<div class="leads" id="leads" hidden role="dialog" aria-modal="true" aria-labelledby="leadsTitle">
+  <div class="leads-box">
+    <section class="panel">
+      <h2><span id="leadsTitle">Leads <span id="leadsCount"></span></span> <button type="button" id="leadsClose">SCHLIESSEN</button></h2>
+      <ul class="lead-list" id="leadList"></ul>
+    </section>
+    <section class="panel lead-detail" id="leadDetail"><p>Lead auswählen.</p></section>
+  </div>
+</div>
+
 <div class="boot" id="boot">
   <div class="boot-in">
     <h1>J.A.R.V.I.S.</h1>
@@ -213,6 +262,7 @@ form.cmd button.stop { color: var(--red); }
   </div>
 </div>
 
+<script src="mode-detect.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -224,7 +274,8 @@ const HOSTED = !/^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 const qCore = new URLSearchParams(location.search).get("core");
 if (qCore) store.set("core", qCore);
 const CORE = HOSTED ? String(store.get("core", "http://localhost:3000")).replace(/\/+$/, "") : "";
-let mode = "local"; // local | cloud | offline
+let mode = "offline"; // local | cloud | offline – bestimmt die automatische Erkennung (mode-detect.js)
+let booted = false;
 // Einmal-Link https://…/?key=PASSWORT speichert das Passwort auf diesem Gerät; danach öffnet sich Jarvis ohne Abfrage.
 const qKey = new URLSearchParams(location.search).get("key");
 if (qKey) { store.set("cloudKey", qKey); history.replaceState(null, "", location.pathname); }
@@ -697,7 +748,7 @@ async function loadShared() {
       shared = { ...s, sync: { ok: true, lastSuccessAt: s.sync?.lastLocalPushAt, cloud: true } };
     } else return;
     renderShared();
-  } catch { $("kSync").textContent = "FEHLER"; }
+  } catch { $("kSync").textContent = "FEHLER"; $("kSync").className = "on-bad"; }
 }
 function renderShared() {
   const s = shared || {}, w = s.business?.worker, d = s.business?.discovery, sync = s.sync || {};
@@ -706,24 +757,35 @@ function renderShared() {
   $("kMail").textContent = w ? `${w.todaySent} / ${w.limit}` : "–";
   $("kDiscovery").textContent = d?.lastRunAt ? fmtTime(d.lastRunAt) : "–";
   $("kSync").textContent = sync.cloud ? `OK · PC zuletzt ${fmtTime(sync.lastSuccessAt)}` : sync.ok ? `OK ${fmtTime(sync.lastSuccessAt)}` : sync.error ? `FEHLER ${fmtTime(sync.lastErrorAt)}` : "–";
-  const unread = (s.notifications || []).filter((n) => n.status === "unread")
-    .sort((a, b) => (a.priority === "high") - (b.priority === "high") || a.createdAt.localeCompare(b.createdAt)).reverse();
-  $("kAlerts").textContent = unread.length ? `${unread.length} ungelesen` : "keine";
+  $("kSync").className = sync.ok ? "on-ok" : sync.error ? "on-bad" : "";
+  $("kWorker").className = w ? (online ? "on-ok" : "on-bad") : "";
+  const isContact = (n) => n.type === "human_contact_requested" || n.type === "call_requested";
+  const all = s.notifications || [];
+  const unread = all.filter((n) => n.status === "unread");
+  // Sichtbar: alles Ungelesene und jeder noch nicht erledigte Kundenalarm (auch wenn schon gelesen).
+  const shown = all.filter((n) => n.status === "unread" || isContact(n))
+    .sort((a, b) => (a.status === "unread") - (b.status === "unread") || (a.priority === "high") - (b.priority === "high") || a.createdAt.localeCompare(b.createdAt)).reverse();
+  const open = all.filter(isContact).length;
+  $("kAlerts").textContent = open || unread.length ? `${open} offen · ${unread.length} neu` : "keine";
   $("kAlerts").classList.toggle("hot", unread.some((n) => n.priority === "high"));
-  $("alerts").hidden = !unread.length;
-  $("alertCount").textContent = unread.length ? String(unread.length) : "";
+  $("alerts").hidden = !shown.length;
+  $("alertCount").textContent = shown.length ? String(shown.length) : "";
+  renderSales(s.sales);
   const ul = $("alertList");
-  ul.replaceChildren(...unread.map((n) => {
+  ul.replaceChildren(...shown.map((n) => {
     const li = document.createElement("li");
-    li.className = n.priority === "high" ? "high" : "";
+    li.className = (n.priority === "high" ? "high" : "") + (n.status === "read" ? " seen" : "");
     const el = (tag, cls, text) => { const x = document.createElement(tag); x.className = cls; x.textContent = text; return x; };
     if (n.priority === "high") li.append(el("div", "prio", n.type === "human_contact_requested" || n.type === "call_requested" ? "PRIORITÄT – Persönlicher Kontakt" : "PRIORITÄT"));
     li.append(el("div", "who", n.company || n.contactName || "Kunde"), el("div", "sum", n.summary), el("time", "", fmtTime(n.createdAt)));
     const acts = el("div", "acts", "");
     const read = el("button", "", "Gelesen"); read.type = "button"; read.onclick = () => markRead(n.id);
+    const done = el("button", "", "Erledigt"); done.type = "button"; done.title = "Meldung entfernen – kommt auch nach dem Abgleich nicht zurück";
+    done.onclick = () => dismiss(n.id);
     const talk = el("button", "", "Mit Jarvis besprechen"); talk.type = "button";
     talk.onclick = () => { $("cmdInput").value = `Zur Meldung: ${n.summary} Wie gehe ich am besten vor?`; $("cmdInput").focus(); };
-    acts.append(read, talk); li.append(acts);
+    if (n.status === "unread") acts.append(read);
+    acts.append(done, talk); li.append(acts);
     return li;
   }));
   // Browser-Benachrichtigung je Meldung nur einmal
@@ -741,6 +803,76 @@ async function markRead(id) {
   try { mode === "local" ? await api("/api/notifications/read", { id }) : await cloudState({ op: "read", id }); } catch {}
   loadShared();
 }
+// Erledigt: lokal bzw. in der Cloud als Tombstone gemerkt – die Meldung taucht nach keinem Sync wieder auf.
+async function dismiss(id) {
+  if (shared) { shared.notifications = (shared.notifications || []).filter((n) => n.id !== id); renderShared(); }
+  try { mode === "local" ? await api("/api/notifications/dismiss", { id }) : await cloudState({ op: "dismiss", id }); } catch {}
+  loadShared();
+}
+// ---------- Vertrieb: nur zwei Angebote (CHF 150 Check, CHF 500 Reparatur) ----------
+const chf = (v) => "CHF " + Number(v || 0).toLocaleString("de-CH");
+function renderSales(m) {
+  const set = (id, v) => { $(id).textContent = m ? v : "–"; };
+  set("sDiscovered", m?.discovered); set("sAudited", m?.audited); set("sRepair", m?.qualified_repair); set("sBlocked", m?.blocked_no_legal_basis);
+  set("s150c", m?.offer_150_candidates); set("s500c", m?.offer_500_candidates); set("sEligible", m?.eligible_to_contact);
+  set("sContacted", m?.contacted); set("sReplies", m?.replies); set("sCustomers", m?.customers);
+  set("s150", m?.sales_150); set("s500", m?.sales_500); set("sRevenue", chf(m?.total_revenue));
+  $("leadsBtn").disabled = mode !== "local";
+}
+const OFFER_LABEL = { REPAIR_CHECK_150: "CHF 150", REPAIR_FIX_500: "CHF 500", NONE: "NONE" };
+const STAGE_LABEL = { discovered: "gefunden", audited: "geprüft", repair_candidate: "Repair-Kandidat", blocked_no_legal_basis: "blockiert – keine Versandgrundlage",
+  approved: "versandberechtigt", contacted: "kontaktiert", replied: "geantwortet", customer: "Kunde", not_interested: "kein Interesse", do_not_contact: "nicht kontaktieren" };
+let leadData = [];
+async function openLeads() {
+  if (mode !== "local") return;
+  $("leads").hidden = false;
+  $("leadList").replaceChildren(); $("leadDetail").textContent = "Lade …";
+  try {
+    const r = await (await fetch(CORE + "/api/leads")).json();
+    leadData = (r.leads || []).sort((a, b) => (b.offer.offer_class !== "NONE") - (a.offer.offer_class !== "NONE") || String(a.company || a.domain).localeCompare(String(b.company || b.domain)));
+    $("leadsCount").textContent = String(leadData.length);
+    $("leadList").replaceChildren(...leadData.map((l, i) => {
+      const li = document.createElement("li");
+      const name = document.createElement("span"); name.textContent = l.company || l.domain;
+      const o = document.createElement("span"); o.className = "o" + (l.offer.offer_class === "NONE" ? " none" : ""); o.textContent = OFFER_LABEL[l.offer.offer_class] || "NONE";
+      li.append(name, o); li.tabIndex = 0;
+      li.onclick = li.onkeydown = (e) => { if (e.type === "click" || e.key === "Enter") showLead(i); };
+      return li;
+    }));
+    if (leadData.length) showLead(0); else $("leadDetail").textContent = "Noch keine Leads.";
+  } catch { $("leadDetail").textContent = "Lead-Daten nicht erreichbar (nur im Local-Modus verfügbar)."; }
+}
+function showLead(i) {
+  const l = leadData[i], box = $("leadDetail");
+  [...$("leadList").children].forEach((li, j) => li.classList.toggle("sel", j === i));
+  // Alles per textContent – Befunde stammen von fremden Websites.
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text !== undefined) x.textContent = text; return x; };
+  const kv = (rows) => { const d = el("div", "kv"); for (const [k, v] of rows) d.append(el("span", "", k), el("b", "", v ?? "–")); return d; };
+  const c = l.contact || {};
+  const out = [el("h3", "", l.company || l.domain)];
+  if (!l.legalBasis) out.push(el("div", "block", "NICHT VERSANDBERECHTIGT"));
+  out.push(kv([
+    ["Domain", l.domain], ["E-Mail", c.email ? `${c.email}${c.emailSource ? " (" + c.emailSource + ")" : ""}` : "–"], ["Kontakt", c.name || "–"],
+    ["Audit", fmtTime(l.auditedAt)], ["Status", STAGE_LABEL[l.status] || l.status], ["Versandgrundlage", l.legalBasisStatus],
+    ["Letzter Kontakt", fmtTime(l.lastContactAt)], ["Antwort", l.replied ? "ja" : "nein"], ["Kunde", l.customerStatus || "–"],
+  ]));
+  const o = l.offer;
+  out.push(el("div", "", "ANGEBOT"), kv([["Klasse", `${OFFER_LABEL[o.offer_class]} (${o.offer_class})`], ["Sicherheit", o.confidence], ["Begründung", o.rationale], ["Nächster Schritt", o.recommended_next_step]]));
+  if (l.sale) out.push(el("div", "", "VERKAUF"), kv([["Angebot", OFFER_LABEL[l.sale.selected_offer]], ["Datum", l.sale.sale_date], ["Wert", chf(l.sale.sale_value)], ["Arbeit", l.sale.work_status]]));
+  out.push(el("div", "", `BEFUNDE (${l.issues.length})`));
+  const ul = el("ul");
+  for (const x of l.issues) { const li = el("li"); li.append(el("span", "sev", `${x.severity} · ${x.type}: `), document.createTextNode(`${x.evidence} — ${x.url}`)); ul.append(li); }
+  if (!l.issues.length) ul.append(el("li", "", "Keine belegten Befunde."));
+  out.push(ul, el("div", "", `EVIDENCE FÜR ANGEBOT (${o.evidence.length})`));
+  const ev = el("ul");
+  for (const x of o.evidence) ev.append(el("li", "", `${x.type} (${x.severity}): ${x.evidence}`));
+  if (!o.evidence.length) ev.append(el("li", "", "–"));
+  out.push(ev);
+  box.replaceChildren(...out);
+}
+$("leadsBtn").addEventListener("click", openLeads);
+$("leadsClose").addEventListener("click", () => { $("leads").hidden = true; });
+addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("leads").hidden) { e.stopPropagation(); $("leads").hidden = true; } }, true);
 // Cloud: gemeinsamen Gesprächsverlauf übernehmen bzw. fortschreiben (begrenzt, nur Sir/Jarvis-Sätze)
 async function loadCloudConversation() {
   try {
@@ -756,27 +888,48 @@ const pushCloudTurns = (turns, reset = false) => cloudState({ op: "conversation"
 setInterval(loadShared, 30_000);
 
 // ---------- Start ----------
-async function loadStatus() {
-  status = {};
-  try {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 2500);
-    status = await (await fetch(CORE + "/api/status", { signal: ac.signal })).json();
-    clearTimeout(timer);
-    mode = "local";
-  } catch {
-    mode = "offline";
-    if (HOSTED) { try { if ((await (await fetch("/api/cloud")).json()).configured) mode = "cloud"; } catch {} }
-  }
+// Local/Cloud automatisch: LOCAL, wenn der Local Core antwortet; sonst CLOUD (falls eingerichtet). Prüft alle 20 s erneut.
+async function probeLocal() {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 2500);
+  try { status = await (await fetch(CORE + "/api/status", { signal: ac.signal, cache: "no-store" })).json(); return true; }
+  catch { return false; } finally { clearTimeout(timer); }
+}
+async function probeCloud() {
+  if (!HOSTED) return false;
+  try { return !!(await (await fetch("/api/cloud", { cache: "no-store" })).json()).configured; } catch { return false; }
+}
+function renderMode() {
+  if (mode !== "local") status = {};
   $("kCore").textContent = mode === "local" ? (status.claude ? "Claude Code " + status.claude.split(" ")[0] : "Claude Code fehlt") : mode === "cloud" ? "Cloud" : "offline";
   $("kModel").textContent = status.model || (mode === "cloud" ? "Cloud" : "–");
   $("kAccess").textContent = mode === "local" ? (status.fullAccess ? "VOLL" : "Standard") : "kein PC-Zugriff";
+  $("kMode").textContent = mode === "local" ? "LOCAL" : mode === "cloud" ? "CLOUD" : "OFFLINE";
+  $("kLocal").textContent = mode === "local" ? "ONLINE" : "OFFLINE";
+  $("kLocal").className = mode === "local" ? "on-ok" : "on-bad";
   $("modePill").textContent = mode === "local" ? "LOCAL" : mode === "cloud" ? "CLOUD" : "OFFLINE";
   $("modePill").classList.toggle("cloud", mode !== "local");
+  $("leadsBtn").disabled = mode !== "local";
   if (mode !== "local") { for (const k of ["cpu", "mem"]) { $(k).textContent = "–"; $(k + "Bar").style.width = "0"; } $("host").textContent = mode === "cloud" ? "CLOUD" : ""; }
+}
+async function applyMode(next, prev) {
+  mode = next;
+  renderMode();
+  if (!booted) { if (next !== "offline" && !$("bootBtn").hidden) $("bootBtn").textContent = "Jarvis starten"; return; }
+  if (prev === null) return;
+  log("SYSTEM", next === "local" ? "Local Core erreichbar – LOCAL-Modus mit PC-Zugriff." : next === "cloud" ? "Local Core nicht erreichbar – CLOUD-Modus ohne PC-Zugriff." : "Weder Local Core noch Cloud erreichbar.", next === "local" ? "green" : "amber");
+  if (next !== "local") $("leads").hidden = true;
+  if (next === "local") poll();
+  if (next === "cloud") { if (!cloudKey) { $("boot").hidden = false; booted = false; return boot(); } await loadCloudConversation(); }
+  loadShared();
+}
+const detector = JarvisModeDetect.createModeDetector({ probeLocal, probeCloud, onChange: applyMode, isBusy: () => busy, intervalMs: 20_000 });
+async function loadStatus() {
+  await detector.check();
+  renderMode();
   loadVoices();
 }
-loadStatus();
+loadStatus().finally(() => detector.start());
 
 let micReady = null;
 async function boot() {
@@ -815,6 +968,7 @@ async function boot() {
   await line("> Gemeinsamer Zustand ................... " + (shared ? "OK" : "NICHT VERFÜGBAR"));
   await line("> Alle Systeme online.", 500);
   $("boot").hidden = true;
+  booted = true;
   if (mode === "local") poll();
   if (SR && wakeMode()) startRec();
   const h = new Date().getHours();

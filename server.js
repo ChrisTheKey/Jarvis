@@ -8,12 +8,23 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+// Autostart (Task „Jarvis Local Core“): `node server.js --supervise` startet diesen Server als Kindprozess und hält ihn am Leben.
+if (process.argv.includes("--supervise")) {
+  const { supervise } = await import("./local-core.js");
+  process.exit(await supervise());
+}
 loadEnv(path.join(ROOT, ".env"));
 // Gemeinsamer Jarvis-Zustand (nach loadEnv, damit JARVIS_SYNC_TOKEN aus .env gilt)
 const { createLocalState, syncWithCloud, cloudContextPrefix } = await import("./local-state.js");
 const { personaVersion } = await import("./persona-version.js");
+const { EXIT_BUSY, EXIT_PORT_CONFLICT, SERVICE, probeCore } = await import("./local-core.js");
+const sales = await import("./sales.js");
+const gmailRegistry = async () => { try { return (await import("./gmail.js")).listOwned(); } catch { return { sent: {}, drafts: {} }; } };
 const local = createLocalState();
+// Vertriebskennzahlen lokal neu berechnen (nur Zahlen gehen in den gemeinsamen Zustand). Fehler sind unkritisch.
+const refreshSales = async () => { try { local.setSales(sales.persistMetrics({ registry: await gmailRegistry() })); } catch {} };
 const syncSoon = () => { syncWithCloud({ local, force: true }).catch(() => {}); };
+const STARTED_AT = new Date().toISOString();
 
 const PORT = Number(process.env.PORT || 3000);
 const MODEL = process.env.JARVIS_MODEL || "sonnet";
@@ -206,6 +217,14 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       return fs.createReadStream(path.join(ROOT, "public", "index.html")).pipe(res);
     }
+    // Healthcheck für Autostart, Doppelstart-Schutz und die Local/Cloud-Erkennung im HUD.
+    if (req.method === "GET" && url.pathname === "/api/health") {
+      return json(res, 200, { ok: true, service: SERVICE, mode: "local", pid: process.pid, startedAt: STARTED_AT, supervised: process.env.JARVIS_CORE_SUPERVISED === "1" });
+    }
+    if (req.method === "GET" && url.pathname === "/mode-detect.js") {
+      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
+      return fs.createReadStream(path.join(ROOT, "public", "mode-detect.js")).pipe(res);
+    }
     if (req.method === "GET" && url.pathname === "/api/status") {
       return json(res, 200, { claude: claudeVersion, model: MODEL, fullAccess: FULL_ACCESS, tts: ELEVEN_KEY ? "elevenlabs" : "browser", session: Boolean(sessionId) });
     }
@@ -237,9 +256,22 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/shared") {
       const s = local.read();
       return json(res, 200, {
-        notifications: s.notifications.map(({ threadId, excerpt, ...n }) => n), business: s.business,
-        sync: s.syncStatus || {}, personaVersion: personaVersion(), mode: "local",
+        notifications: s.notifications.map(({ threadId, excerpt, ...n }) => n), business: s.business, sales: s.sales || null,
+        sync: s.syncStatus || {}, personaVersion: personaVersion(), mode: "local", localCore: { online: true, startedAt: STARTED_AT },
       });
+    }
+    // Lead-Pipeline mit Befunden und Angebotsklasse – nur lokal (Leads gelangen nie in die Cloud).
+    if (req.method === "GET" && url.pathname === "/api/leads") {
+      const { leads } = sales.loadPipeline({ registry: await gmailRegistry() });
+      const metrics = sales.computeMetrics(leads);
+      return json(res, 200, { leads, metrics, offers: sales.OFFERS });
+    }
+    if (req.method === "POST" && url.pathname === "/api/notifications/dismiss") {
+      const { id } = JSON.parse(await readBody(req, 2000));
+      if (typeof id !== "string" || !/^[a-z0-9-]{4,64}$/.test(id)) return json(res, 400, { error: "Ungültige ID." });
+      local.dismiss(id);
+      syncSoon();
+      return json(res, 200, { ok: true });
     }
     if (req.method === "POST" && url.pathname === "/api/notifications/read") {
       const { id } = JSON.parse(await readBody(req, 2000));
@@ -267,11 +299,27 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-checkClaude();
-// Beim Start und alle 2 Minuten den Cloud-Stand übernehmen (gelesen-Status, Cloud-Gespräch). Fehler sind unkritisch.
-syncSoon();
-setInterval(() => syncWithCloud({ local }).catch(() => {}), 120_000).unref();
+// Doppelstart-Schutz: Port belegt → läuft dort schon ein Jarvis, still beenden (EXIT_BUSY), sonst Port-Konflikt melden.
+server.on("error", async (err) => {
+  if (err.code !== "EADDRINUSE") { console.error("Serverfehler: " + err.message); process.exit(1); }
+  if (await probeCore(PORT)) { console.log(`
+  J.A.R.V.I.S. läuft bereits:  http://localhost:${PORT}
+`); process.exit(EXIT_BUSY); }
+  console.error(`Port ${PORT} ist von einem anderen Programm belegt. Anderen Port in .env setzen (PORT=...).`);
+  process.exit(EXIT_PORT_CONFLICT);
+});
+// Läuft unter dem Aufpasser: endet der Aufpasser, endet auch der Server (keine verwaisten Kerne).
+if (process.env.JARVIS_CORE_SUPERVISED === "1") {
+  const parent = process.ppid;
+  setInterval(() => { try { process.kill(parent, 0); } catch (e) { if (e.code !== "EPERM") process.exit(0); } }, 5_000).unref();
+}
+
+// Ausschliesslich 127.0.0.1 – nie alle Schnittstellen, nie nach aussen.
 server.listen(PORT, "127.0.0.1", () => {
+  checkClaude();
+  // Beim Start und alle 2 Minuten Kennzahlen auffrischen und den Cloud-Stand abgleichen. Fehler sind unkritisch.
+  refreshSales().finally(syncSoon);
+  setInterval(() => refreshSales().finally(() => syncWithCloud({ local }).catch(() => {})), 120_000).unref();
   console.log(`\n  J.A.R.V.I.S. ist online:  http://localhost:${PORT}\n`);
   console.log(`  Modell: ${MODEL} · Zugriff: ${FULL_ACCESS ? "VOLLZUGRIFF" : "Standard"} · Stimme: ${ELEVEN_KEY ? "ElevenLabs" : "Browser"}`);
   if (WEB_ORIGINS.size) console.log(`  Freigegebene Web-Oberfläche: ${[...WEB_ORIGINS].join(", ")}`);

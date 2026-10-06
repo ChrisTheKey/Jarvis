@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { emptyState, sanitizeState, mergeNotifications, mergeConversation, LIMITS, redact } from "./shared-state.js";
+import { emptyState, sanitizeState, mergeNotifications, mergeConversation, mergeDismissed, addDismissed, withoutDismissed, LIMITS, redact } from "./shared-state.js";
 import { personaVersion } from "./persona-version.js";
 import { KIND_TEXT } from "./human-contact.js";
 
@@ -55,13 +55,14 @@ export function createLocalState({ file = MIRROR_FILE, now = () => new Date() } 
       const id = "hc-" + hash(sourceId);
       let created = null;
       update((s) => {
-        if (s.notifications.some((n) => n.id === id)) return s;
+        // Schon vorhanden oder von Sir bereits erledigt (Tombstone) → nie erneut anlegen.
+        if (s.notifications.some((n) => n.id === id) || !withoutDismissed([{ id, createdAt: now().toISOString() }], s.dismissed).length) return s;
         const t = now().toISOString();
         created = { id, type, kind, priority, createdAt: t, updatedAt: t, readAt: null, company: String(company).slice(0, LIMITS.nameChars),
           contactName: String(contactName).slice(0, LIMITS.nameChars), threadRef: threadId ? hash(threadId, 12) : null,
           summary: String(summary).slice(0, LIMITS.summaryChars), status: "unread",
           threadId, excerpt: redact(String(excerpt)).slice(0, 200) }; // nur lokal
-        s.notifications = mergeNotifications(s.notifications, [created]);
+        s.notifications = mergeNotifications(s.notifications, [created], s.dismissed);
         return s;
       });
       return { id, created: !!created, notification: created };
@@ -70,6 +71,14 @@ export function createLocalState({ file = MIRROR_FILE, now = () => new Date() } 
       return update((s) => {
         const t = now().toISOString();
         s.notifications = s.notifications.map((n) => (n.id === id && n.status !== "read" ? { ...n, status: "read", readAt: t, updatedAt: t } : n));
+        return s;
+      });
+    },
+    // Erledigt: Meldung entfernen und Tombstone merken, damit sie nach keinem Abgleich zurückkommt.
+    dismiss(id) {
+      return update((s) => {
+        s.dismissed = addDismissed(s.dismissed, id, now().toISOString());
+        s.notifications = withoutDismissed(s.notifications, s.dismissed);
         return s;
       });
     },
@@ -99,6 +108,8 @@ export function createLocalState({ file = MIRROR_FILE, now = () => new Date() } 
       return ctx;
     },
     setBusiness(business, extra = {}) { return update((s) => ({ ...s, business, ...extra })); },
+    // Vertriebskennzahlen (nur Zahlen) – getrennt vom Worker-Status, damit sich Worker und Local Core nicht überschreiben.
+    setSales(sales) { return update((s) => ({ ...s, sales })); },
   };
 }
 
@@ -141,7 +152,8 @@ export async function syncWithCloud({ local, fetchFn = globalThis.fetch, config 
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const remote = sanitizeState(await r.json());
     local.update((cur) => {
-      cur.notifications = mergeNotifications(cur.notifications, remote.notifications);
+      cur.dismissed = mergeDismissed(cur.dismissed, remote.dismissed, now());
+      cur.notifications = mergeNotifications(cur.notifications, remote.notifications, cur.dismissed);
       cur.conversation = mergeConversation(cur.conversation, remote.conversation);
       if (remote.mode?.last && (!cur.mode?.at || remote.mode.at > cur.mode.at)) cur.mode = remote.mode;
       cur.syncStatus = { ok: true, lastSuccessAt: now().toISOString(), failures: 0, nextAttemptAt: null, error: null };

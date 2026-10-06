@@ -16,6 +16,7 @@ export function statusBlock(st, now = Date.now()) {
     `Jarvis auf dem PC: ${online ? "online" : "offline – kein PC-Zugriff"}${w?.lastCycle ? ` (letzter Mail-Durchlauf ${w.lastCycle})` : ""}.`,
     w ? `Mails heute: ${w.todaySent} von ${w.limit}, Versand mit Versandgrundlage ${w.autoSend ? "aktiv" : "inaktiv"}.` : "",
     d ? `Website-Suche: heute ${d.websitesFoundToday} gefunden, ${d.websitesWithIssuesToday} mit Problemen, ${d.qualifiedLeads} qualifizierte Leads (ohne Versandgrundlage nicht anschreibbar).` : "",
+    st.sales ? `Vertrieb (nur zwei Angebote: CHF-150-Check, CHF-500-Reparatur): ${st.sales.discovered} Leads, ${st.sales.offer_150_candidates} CHF-150- und ${st.sales.offer_500_candidates} CHF-500-Kandidaten, ${st.sales.eligible_to_contact} versandberechtigt, ${st.sales.customers} Kunden, Umsatz CHF ${st.sales.total_revenue}.` : "",
     unread.length ? `Ungelesene Meldungen: ${unread.slice(-5).map((n) => (n.priority === "high" ? "PRIORITÄT: " : "") + n.summary).join(" | ")}` : "Keine ungelesenen Meldungen.",
     st.profile?.notes ? `Bekannte Fakten über Sir:\n${st.profile.notes}` : "",
   ].filter(Boolean).join("\n");

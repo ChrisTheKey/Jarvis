@@ -122,3 +122,27 @@ Der Server ist nur auf deinem eigenen Rechner erreichbar (localhost) und lehnt A
 - Lokal liegt der Spiegel in `.secrets/shared_state.json`; der Worker und `server.js` gleichen ihn mit `/api/state` (Netlify Function + Netlify Blobs) ab. „Gelesen“ wird in beide Richtungen übernommen und nie wieder auf „ungelesen“ gesetzt. Gmail-Aktionen bleiben ausschliesslich lokal.
 - Persona: `persona.md` ist die einzige Quelle. Die Cloud-Fassung erzeugt `npm run build:persona` (läuft auch beim Netlify-Build); Abschnitte zwischen `<!-- nur-lokal -->`-Markierungen gelten nur auf dem PC.
 - Einrichtung: `npm run setup-sync` legt einen Sync-Token in `.secrets/jarvis_sync.json` an und zeigt ihn an. In Netlify als `JARVIS_SYNC_TOKEN` eintragen (neben `JARVIS_PASSWORD` und `ANTHROPIC_API_KEY`) und neu deployen.
+
+### Vertrieb: genau zwei Angebote
+
+`sales.js` ordnet jeden Lead ausschliesslich einer von drei Klassen zu – aus belegten Audit-Befunden (`websiteIssues` mit `type`, `url`, `evidence`, `severity`, `detectedAt`), nie erfunden:
+
+- `REPAIR_CHECK_150` (CHF 150): Website prüfen, Probleme dokumentieren, Empfehlungen – keine Umsetzung.
+- `REPAIR_FIX_500` (CHF 500): konkrete, auf der bestehenden Website behebbare Probleme reparieren.
+- `NONE`: kein Angebot begründbar (keine/zu wenig Befunde oder Website nicht erreichbar).
+
+Jede Einordnung enthält `offer_class`, `confidence`, `evidence[]`, `rationale`, `recommended_next_step`. Lebenszyklus (abgeleitet, ohne Migration): discovered, audited, repair_candidate, blocked_no_legal_basis, approved, contacted, replied, customer, not_interested, do_not_contact. Die Versandgrundlage bleibt unverändert `legalBasis()` (opt_in / existing_customer) – eine öffentliche Adresse ist nie eine Grundlage.
+
+- Verkauf erfassen: `node sales.js sale <domain> REPAIR_CHECK_150|REPAIR_FIX_500 [--date JJJJ-MM-TT]` (Wert kommt immer aus dem Angebot). Weitere: `status <domain> replied|not_interested`, `work <domain> open|in_progress|delivered`, `report`, `leads`.
+- Daten: `.secrets/mail_worker/sales.json`, Kennzahlen `.secrets/mail_worker/metrics.json`. In die Cloud gehen nur die Zähler/CHF-Summen.
+- HUD: Panel „Vertrieb“ und „LEADS“ (Lead-Details mit Befunden, Angebot, Versandgrundlage – nur im Local-Modus).
+
+### Meldungen erledigen
+
+„Erledigt“ im HUD entfernt eine Meldung lokal und in der Cloud. Ihre ID wird als Tombstone gemerkt (höchstens 500, 180 Tage; Älteres deckt ein Zeitstempel ab), deshalb taucht sie nach keinem Abgleich wieder auf.
+
+### Local Core Autostart
+
+`powershell -ExecutionPolicy Bypass -File install-local-core.ps1` legt die Aufgabe „Jarvis Local Core“ an (bei Anmeldung, unsichtbar, Neustart nach Fehlern; nur bei Bedarf UAC). Sie startet `node server.js --supervise`: ein Aufpasser startet den bestehenden Server und startet ihn nach Abstürzen neu. Der Server bindet nur 127.0.0.1; läuft schon ein Jarvis auf dem Port, beendet sich ein zweiter Start sofort. Healthcheck: `http://localhost:3000/api/health`, Log: `.secrets/local_core/core.log` (begrenzt, geschwärzt). Entfernen mit `-Uninstall`. Der Task „Jarvis Mail Worker“ bleibt davon unabhängig.
+
+Das HUD erkennt automatisch LOCAL (Local Core erreichbar, PC-Zugriff) oder CLOUD (nur Gespräch) und prüft alle 20 Sekunden erneut – es wechselt selbst zurück auf LOCAL, sobald der Core online ist.

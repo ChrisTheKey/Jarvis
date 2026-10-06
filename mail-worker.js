@@ -557,6 +557,8 @@ async function loop() {
     } catch (e) { log("error", "discovery_failed", { error: e.message }); }
     // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.
     try {
+      // Vertriebskennzahlen (nur Zähler/CHF-Summen der zwei Angebote) lokal festhalten und mitsynchronisieren.
+      try { local.setSales((await import("./sales.js")).persistMetrics({ registry: gmail.listOwned() })); } catch (e) { log("error", "metrics_failed", { error: e.message }); }
       if (r?.report) local.setBusiness(businessSnapshot(r, finder.discoveryReport()), { personaVersion: (await import("./persona-version.js")).personaVersion(), profile: profileNotes() });
       await shared.syncWithCloud({ local, log });
     } catch (e) { log("error", "shared_state_failed", { error: e.message }); }

@@ -6,7 +6,7 @@
 // Thread-/Message-IDs, Lead-Datenbank, Suppression-Liste, vollständige E-Mail-Inhalte, lokale Pfade.
 // Alles wird über eine Whitelist neu aufgebaut – unbekannte Felder fallen weg, sensible Feldnamen werden abgelehnt.
 
-export const LIMITS = { notifications: 50, turns: 12, turnChars: 600, summaryChars: 200, nameChars: 80, notesChars: 2000, turnsPerWrite: 4, bodyBytes: 64_000 };
+export const LIMITS = { notifications: 50, tombstones: 500, tombstoneDays: 180, turns: 12, turnChars: 600, summaryChars: 200, nameChars: 80, notesChars: 2000, turnsPerWrite: 4, bodyBytes: 64_000 };
 export const NOTIFICATION_TYPES = ["human_contact_requested", "call_requested", "info"];
 
 // Feldnamen, die nie in den gemeinsamen Zustand gehören.
@@ -32,11 +32,53 @@ export function findSensitiveKeys(obj, prefix = "") {
 
 export function emptyState() {
   return { version: 1, updatedAt: null, personaVersion: null, mode: { last: null, at: null }, profile: { notes: "", updatedAt: null },
-    conversation: { turns: [], updatedAt: null, resetAt: null }, notifications: [], business: null, sync: { lastLocalPushAt: null } };
+    conversation: { turns: [], updatedAt: null, resetAt: null }, notifications: [], dismissed: emptyDismissed(), business: null, sales: null, sync: { lastLocalPushAt: null } };
+}
+
+// ---------- Erledigte Meldungen (Tombstones) ----------
+// Eine erledigte Meldung wird nicht einfach gelöscht, sondern ihre ID als Tombstone gemerkt – sonst brächte der nächste
+// Abgleich sie von der anderen Seite zurück. Tombstones sind begrenzt (Anzahl und Alter); was dabei wegfällt, deckt
+// „before“ ab: Meldungen, die vor diesem Zeitpunkt entstanden sind, gelten als erledigt. So kann keine Meldung auferstehen.
+export const emptyDismissed = () => ({ ids: [], before: null });
+const ID_RE = /^[a-z0-9-]{4,64}$/;
+
+export function pruneDismissed(d = emptyDismissed(), now = new Date()) {
+  const byId = new Map();
+  for (const x of Array.isArray(d?.ids) ? d.ids : []) {
+    const at = iso(x?.at);
+    if (!x || typeof x.id !== "string" || !ID_RE.test(x.id) || !at) continue;
+    const prev = byId.get(x.id);
+    if (!prev || at < prev.at) byId.set(x.id, { id: x.id, at }); // früheste Erledigung zählt
+  }
+  let before = iso(d?.before);
+  const horizon = new Date(+now - LIMITS.tombstoneDays * 86_400_000).toISOString();
+  const sorted = [...byId.values()].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+  const keep = sorted.filter((x) => x.at >= horizon).slice(-LIMITS.tombstones);
+  const dropped = sorted.filter((x) => !keep.includes(x));
+  if (dropped.length) {
+    const last = dropped.at(-1).at;
+    if (!before || last > before) before = last;
+  }
+  return { ids: keep, before };
+}
+
+export function mergeDismissed(a, b, now = new Date()) {
+  const before = [iso(a?.before), iso(b?.before)].filter(Boolean).sort().at(-1) || null;
+  return pruneDismissed({ ids: [...(a?.ids || []), ...(b?.ids || [])], before }, now);
+}
+
+// Entfernt erledigte Meldungen (per ID oder per „before“) aus einer Liste.
+export function withoutDismissed(list = [], d = emptyDismissed()) {
+  const gone = new Set((d?.ids || []).map((x) => x.id));
+  return list.filter((n) => n && !gone.has(n.id) && !(d?.before && n.createdAt && n.createdAt <= d.before));
+}
+
+export function addDismissed(d, id, at) {
+  return mergeDismissed(d, { ids: [{ id, at }], before: null }, new Date(at));
 }
 
 export function sanitizeNotification(n) {
-  if (!n || typeof n !== "object" || typeof n.id !== "string" || !/^[a-z0-9-]{4,64}$/.test(n.id)) return null;
+  if (!n || typeof n !== "object" || typeof n.id !== "string" || !ID_RE.test(n.id)) return null;
   const createdAt = iso(n.createdAt);
   if (!createdAt) return null;
   const status = oneOf(n.status, ["unread", "read"], "unread");
@@ -56,6 +98,16 @@ export function sanitizeTurn(t) {
   const at = iso(t.at);
   if (!content || !at) return null;
   return { role: t.role, content, at, source: oneOf(t.source, ["local", "cloud"], "cloud") };
+}
+
+// Vertriebszahlen: nur Zähler und CHF-Summen der zwei Angebote – keine Firmen, Adressen oder Befunde.
+export const SALES_FIELDS = ["discovered", "audited", "qualified_repair", "offer_150_candidates", "offer_500_candidates", "eligible_to_contact",
+  "blocked_no_legal_basis", "contacted", "replies", "customers", "sales_150", "sales_500", "revenue_150", "revenue_500", "total_revenue"];
+export function sanitizeSales(x) {
+  if (!x || typeof x !== "object") return null;
+  const out = { updatedAt: iso(x.updatedAt) };
+  for (const k of SALES_FIELDS) out[k] = num(x[k]);
+  return out;
 }
 
 function sanitizeBusiness(b) {
@@ -85,19 +137,21 @@ export function sanitizeState(s = {}) {
       turns: (Array.isArray(conv.turns) ? conv.turns : []).map(sanitizeTurn).filter(Boolean).slice(-LIMITS.turns),
       updatedAt: iso(conv.updatedAt), resetAt: iso(conv.resetAt),
     },
-    notifications: (Array.isArray(s.notifications) ? s.notifications : []).map(sanitizeNotification).filter(Boolean).slice(-LIMITS.notifications * 2),
+    dismissed: pruneDismissed(s.dismissed),
+    notifications: withoutDismissed((Array.isArray(s.notifications) ? s.notifications : []).map(sanitizeNotification).filter(Boolean), pruneDismissed(s.dismissed)).slice(-LIMITS.notifications * 2),
     business: sanitizeBusiness(s.business),
+    sales: sanitizeSales(s.sales),
     sync: { lastLocalPushAt: iso(s.sync?.lastLocalPushAt) },
   };
 }
 
 // ---------- Zusammenführen ----------
 
-// Pro ID gewinnt der neuere Stand – aber „gelesen“ wird nie wieder zu „ungelesen“.
+// Pro ID gewinnt der neuere Stand – aber „gelesen“ wird nie wieder zu „ungelesen“, und Erledigtes (Tombstone) nie wieder sichtbar.
 // Felder, die nur eine Seite kennt (z. B. lokale Thread-ID), bleiben erhalten.
-export function mergeNotifications(a = [], b = []) {
+export function mergeNotifications(a = [], b = [], dismissed = emptyDismissed()) {
   const byId = new Map();
-  for (const n of [...a, ...b]) {
+  for (const n of withoutDismissed([...a, ...b], dismissed)) {
     const prev = byId.get(n.id);
     if (!prev) { byId.set(n.id, { ...n }); continue; }
     const [older, newerOne] = newer(n.updatedAt, prev.updatedAt) ? [prev, n] : [n, prev];
@@ -134,11 +188,14 @@ export function mergeConversation(a = {}, b = {}) {
 export function mergeState(base, incoming, { fromLocal = false } = {}) {
   const b = sanitizeState(base), i = sanitizeState(incoming);
   const out = { ...b };
-  out.notifications = mergeNotifications(b.notifications, i.notifications);
+  // Tombstones darf jede berechtigte Seite setzen (sie entfernen nur) – sie werden immer vereinigt.
+  out.dismissed = mergeDismissed(b.dismissed, i.dismissed);
+  out.notifications = mergeNotifications(b.notifications, i.notifications, out.dismissed);
   out.conversation = mergeConversation(b.conversation, i.conversation);
   if (i.mode.last && newer(i.mode.at, b.mode.at)) out.mode = i.mode;
   if (fromLocal) {
     if (i.business && newer(i.business.updatedAt, b.business?.updatedAt)) out.business = i.business;
+    if (i.sales && newer(i.sales.updatedAt, b.sales?.updatedAt)) out.sales = i.sales;
     if (i.personaVersion) out.personaVersion = i.personaVersion;
     if (i.profile.updatedAt && newer(i.profile.updatedAt, b.profile.updatedAt)) out.profile = i.profile;
     out.sync = { lastLocalPushAt: i.sync.lastLocalPushAt || new Date().toISOString() };
@@ -172,7 +229,7 @@ export function memoryStore(initial = null) {
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 // Zwei Berechtigungen: x-jarvis-sync (JARVIS_SYNC_TOKEN, nur der lokale Kern) darf alles Erlaubte schreiben;
-// x-jarvis-key (JARVIS_PASSWORD, Sir im Browser) darf nur lesen, als gelesen markieren, Gesprächsverlauf und Modus setzen.
+// x-jarvis-key (JARVIS_PASSWORD, Sir im Browser) darf nur lesen, als gelesen/erledigt markieren, Gesprächsverlauf und Modus setzen.
 export function createStateHandler({ getStore, env, now = () => new Date() }) {
   return async (req) => {
     const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD");
@@ -201,6 +258,9 @@ export function createStateHandler({ getStore, env, now = () => new Date() }) {
     } else if (body.op === "read") {
       if (typeof body.id !== "string") return reply(400, { error: "id fehlt." });
       change = (s) => ({ ...s, notifications: s.notifications.map((n) => (n.id === body.id && n.status !== "read" ? { ...n, status: "read", readAt: t, updatedAt: t } : n)) });
+    } else if (body.op === "dismiss") {
+      if (typeof body.id !== "string" || !ID_RE.test(body.id)) return reply(400, { error: "id fehlt." });
+      change = (s) => mergeState(s, { dismissed: { ids: [{ id: body.id, at: t }], before: null } });
     } else if (body.op === "conversation") {
       // Zeitstempel immer vom Server (Reihenfolge per Millisekunden-Versatz) – Client-Zeiten werden ignoriert.
       const turns = (Array.isArray(body.turns) ? body.turns : []).slice(0, LIMITS.turnsPerWrite).map((x, i) => ({ role: x?.role, content: x?.content, at: new Date(Date.parse(t) + i).toISOString(), source: isLocal ? "local" : "cloud" }));
