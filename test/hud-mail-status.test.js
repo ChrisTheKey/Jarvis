@@ -20,7 +20,7 @@ function mailStatus() {
   return ctx.JarvisMailStatus;
 }
 const { summarizeMail, allSystemsOnline } = mailStatus();
-const VPS_UP = { online: true, authority: "vps", pending: 0 };
+const VPS_UP = { online: true, authority: "vps", pending: 0, ai: "online", core: { role: "vps" } };
 
 test("VPS active → HUD Worker ONLINE, Mail Service VPS, Mail Worker VPS ACTIVE", () => {
   const m = summarizeMail({ service: VPS_UP });
@@ -67,13 +67,14 @@ test("„Alle Systeme sind online“ nur bei tatsächlich gesundem Zustand", () 
   assert.equal(allSystemsOnline({ core: true, mail: summarizeMail({ service: { ...VPS_UP, online: false } }) }), false, "Worker offline");
   assert.equal(allSystemsOnline({ core: true, mail: summarizeMail({ service: null }) }), false, "Cloud unbekannt");
   assert.equal(allSystemsOnline({ core: true, mail: null }), false, "Status nicht geladen");
-  assert.equal(allSystemsOnline({ core: false, mail: summarizeMail({ service: VPS_UP }) }), false, "Kern fehlt");
+  assert.equal(allSystemsOnline({ core: false, mail: summarizeMail({ service: VPS_UP }) }), false, "Zusatzbedingung des Aufrufers fehlt");
+  assert.equal(allSystemsOnline({ mail: summarizeMail({ service: { ...VPS_UP, core: null } }) }), false, "VPS ohne Cloud-Core-Status");
   const html = read("public/index.html");
-  // Der Satz steht nur noch im allOnline-Zweig; das Boot-Protokoll ebenso.
-  assert.match(html, /allOnline \? "Alle Systeme sind online\." :/);
+  // Der Satz steht nur in allOnline-Zweigen (LOCAL und CLOUD); das Boot-Protokoll ebenso.
+  assert.equal(html.match(/allOnline \? "Alle Systeme sind online/g).length, 2);
+  assert.equal(html.match(/Alle Systeme sind online/g).length, 2);
   assert.match(html, /allOnline \? "> Alle Systeme online\." :/);
-  assert.equal(html.match(/Alle Systeme sind online/g).length, 1);
-  assert.match(html, /JarvisMailStatus\.allSystemsOnline\(\{ core: mode === "cloud" \|\| !!status\.claude, mail: mailHud \}\)/);
+  assert.match(html, /const allOnline = JarvisMailStatus\.allSystemsOnline\(\{ mail: mailHud \}\);/);
 });
 
 test("LOCAL-UI-Modus + VPS-Mail-Worker gleichzeitig: Worker kommt aus der Cloud, nicht aus dem Windows-Zyklus", async () => {
@@ -104,4 +105,31 @@ test("LOCAL-UI-Modus + VPS-Mail-Worker gleichzeitig: Worker kommt aus der Cloud,
   // Cloud nicht erreichbar → null, kein Wurf.
   const down = await fetchMailService({ config: { token: "x", workerToken: "", url: URL_STATE }, fetchFn: async () => { throw new Error("offline"); } });
   assert.deepEqual([down.ok, down.service, down.authority], [false, null, null]);
+});
+
+// ---------- Cloud-first (Phase C): PC optional ----------
+
+test("Windows komplett offline (CLOUD-Modus): System ONLINE, Jarvis Core CLOUD ONLINE, nur Local Client OFFLINE", () => {
+  const m = summarizeMail({ service: VPS_UP, localMode: false, clientSeenAt: null });
+  assert.deepEqual([m.system, m.core, m.client, m.windows, m.mailWorker, m.authority, m.pending, m.ai],
+    ["ONLINE", "CLOUD ONLINE", "OFFLINE", "OFFLINE", "VPS ACTIVE", "VPS", 0, "ONLINE"]);
+  assert.equal(allSystemsOnline({ mail: m }), true, "Jarvis ist ohne PC online");
+});
+
+test("CLOUD-Modus mit PC an (anderes Gerät): Local Client ONLINE, Windows STANDBY – nie als Sender", () => {
+  const now = Date.parse("2026-10-07T19:00:00Z");
+  const m = summarizeMail({ service: VPS_UP, clientSeenAt: "2026-10-07T18:58:00Z", now });
+  assert.deepEqual([m.client, m.windows, m.mailWorker], ["ONLINE", "STANDBY", "VPS ACTIVE"]);
+  assert.equal(summarizeMail({ service: VPS_UP, clientSeenAt: "2026-10-07T18:50:00Z", now }).client, "OFFLINE", "älter als 5 Minuten");
+});
+
+test("Cloud Core ausgefallen: System EINGESCHRÄNKT, keine Erfolgsmeldung; AI PAUSED wird angezeigt", () => {
+  const down = summarizeMail({ service: { ...VPS_UP, online: false } });
+  assert.deepEqual([down.system, down.core, down.healthy], ["EINGESCHRÄNKT", "OFFLINE", false]);
+  assert.equal(allSystemsOnline({ mail: down }), false);
+  assert.equal(summarizeMail({ service: { ...VPS_UP, ai: "paused_credit" } }).ai, "PAUSED — CREDIT LIMIT");
+  const html = read("public/index.html");
+  for (const id of ["kSystem", "kJarvisCore", "kLocal", "kAiService"]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /<span>Local Client<\/span>/);
+  assert.match(html, /\$\("kLocal"\)\.className = mode === "local" \? "on-ok" : "on-idle"/, "PC offline ist kein roter Systemfehler");
 });

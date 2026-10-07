@@ -190,8 +190,10 @@ form.cmd button.stop { color: var(--red); }
     <section class="panel">
       <h2>Status</h2>
       <div class="kv">
+        <span>System</span><b id="kSystem" title="Gesamtsystem: Cloud Core + Mail-Worker – der PC ist dafür nicht nötig">–</b>
+        <span>Jarvis Core</span><b id="kJarvisCore" title="Cloud Core auf dem VPS (24/7)">–</b>
+        <span>Local Client</span><b id="kLocal" title="Optionaler Windows-PC (Claude Code, Mikrofon, Dateien)">–</b>
         <span>Modus</span><b id="kMode">–</b>
-        <span>Local Core</span><b id="kLocal">–</b>
         <span>Kern</span><b id="kCore">–</b>
         <span>Modell</span><b id="kModel">–</b>
         <span>Zugriff</span><b id="kAccess">–</b>
@@ -869,8 +871,11 @@ const MAIL_STATUS = { pending: "wartet auf Mail-Worker", processing: "wird verar
 let mailHud = null;
 function renderMailService(svc, localWorker = null) {
   const set = (id, v, cls = "") => { $(id).textContent = v; $(id).className = cls; };
-  mailHud = JarvisMailStatus.summarizeMail({ service: svc, localWorker });
+  mailHud = JarvisMailStatus.summarizeMail({ service: svc, localWorker, localMode: mode === "local", clientSeenAt: shared?.sync?.lastClientPushAt || null });
   const m = mailHud, tone = (ok, idle) => (ok ? "on-ok" : idle ? "on-idle" : "on-bad");
+  set("kSystem", m.system, tone(m.system === "ONLINE"));
+  set("kJarvisCore", m.core, tone(m.core === "CLOUD ONLINE"));
+  set("kLocal", m.client, m.client === "ONLINE" ? "on-ok" : "on-idle");
   set("kWorker", m.worker, tone(m.worker === "ONLINE"));
   set("kMailService", m.mailService, tone(m.healthy));
   set("kMailWorker", m.mailWorker, tone(m.healthy, m.mailWorker === "STANDBY"));
@@ -878,7 +883,7 @@ function renderMailService(svc, localWorker = null) {
   set("kWinWorker", m.windows || "–", m.windows === "ACTIVE" ? "on-ok" : m.windows === "STANDBY" ? "on-idle" : m.windows ? "on-bad" : "");
   set("kMailPending", m.pending === null ? "–" : String(m.pending));
   if (!svc) return;
-  set("kAiService", svc.ai === "paused_credit" ? "PAUSED — CREDIT LIMIT" : svc.ai === "online" ? "ONLINE" : "–", svc.ai === "paused_credit" ? "on-bad" : svc.ai === "online" ? "on-ok" : "");
+  set("kAiService", m.ai, svc.ai === "paused_credit" ? "on-bad" : svc.ai === "online" ? "on-ok" : "");
   set("kMailSent", String(svc.sent_today));
   set("kMailBlocked", String(svc.blocked_today));
   set("kMailEsc", String(svc.escalations_today), svc.escalations_today ? "on-bad" : "");
@@ -1091,7 +1096,7 @@ function renderMode() {
   $("kAccess").textContent = mode === "local" ? (status.fullAccess ? "VOLL" : "Standard") : "kein PC-Zugriff";
   $("kMode").textContent = mode === "local" ? "LOCAL" : mode === "cloud" ? "CLOUD" : "OFFLINE";
   $("kLocal").textContent = mode === "local" ? "ONLINE" : "OFFLINE";
-  $("kLocal").className = mode === "local" ? "on-ok" : "on-bad";
+  $("kLocal").className = mode === "local" ? "on-ok" : "on-idle"; // optionaler Client – offline ist kein Systemfehler
   $("modePill").textContent = mode === "local" ? "LOCAL" : mode === "cloud" ? "CLOUD" : "OFFLINE";
   $("modePill").classList.toggle("cloud", mode !== "local");
   $("leadsBtn").disabled = mode !== "local";
@@ -1153,8 +1158,10 @@ async function boot() {
   await line("> Gemeinsamer Zustand ................... " + (shared ? "OK" : "NICHT VERFÜGBAR"));
   if (mode === "local") await loadMailService(); else if (mode === "cloud") await loadMailRequests();
   await line("> Mail-Worker .......................... " + (mailHud ? `${mailHud.mailWorker} · AUTHORITY ${mailHud.authority}` : "UNBEKANNT"));
-  const allOnline = JarvisMailStatus.allSystemsOnline({ core: mode === "cloud" || !!status.claude, mail: mailHud });
-  await line(allOnline ? "> Alle Systeme online." : "> Eingeschränkt: Mail-Worker nicht online.", 500);
+  await line("> Jarvis Core .......................... " + (mailHud ? mailHud.core : "UNBEKANNT") + " · Local Client " + (mode === "local" ? "ONLINE" : "OFFLINE"));
+  // Gesamtsystem = Cloud Core + Mail-Worker. Der PC ist optional: ohne ihn ist Jarvis trotzdem online.
+  const allOnline = JarvisMailStatus.allSystemsOnline({ mail: mailHud });
+  await line(allOnline ? "> Alle Systeme online." : "> Eingeschränkt: Cloud Core oder Mail-Worker nicht online.", 500);
   $("boot").hidden = true;
   booted = true;
   if (mode === "local") poll();
@@ -1163,7 +1170,7 @@ async function boot() {
   const greet = h < 5 ? `Noch wach, ${USER_NAME}?` : h < 11 ? `Guten Morgen, ${USER_NAME}.` : h < 18 ? `Guten Tag, ${USER_NAME}.` : `Guten Abend, ${USER_NAME}.`;
   const call = wakeMode() && SR ? "Sagen Sie einfach Jarvis, wenn Sie mich brauchen." : "Ich bin bereit.";
   const msg = mode === "cloud"
-    ? `${greet} Wie kann ich helfen?`
+    ? `${greet} ${allOnline ? "Alle Systeme sind online – ich laufe in der Cloud, der PC wird nicht gebraucht." : `Achtung: Kein aktiver Mail-Worker (${mailHud ? mailHud.mailWorker : "Status unbekannt"}).`} Wie kann ich helfen?`
     : status.claude
       ? `${greet} ${allOnline ? "Alle Systeme sind online." : `Achtung: Kein aktiver Mail-Worker (${mailHud ? mailHud.mailWorker : "Status unbekannt"}).`} ${call}`
       : `${greet} Ich kann Claude Code nicht finden. Bitte installieren Sie es und melden Sie sich einmal im Terminal an.`;
