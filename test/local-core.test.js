@@ -237,3 +237,14 @@ test("HUD-Endpunkt /api/shared gibt keine Gmail-Thread-IDs oder Auszüge heraus"
   assert.equal(r.json.localCore.online, true);
   core.kill();
 });
+
+test("Netlify-HUD: Chromes Local-Network-Access-Abfrage wird nicht durch den Kurz-Timeout abgebrochen", () => {
+  const html = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
+  const probe = html.slice(html.indexOf("async function localAccess()"), html.indexOf("async function probeCloud()"));
+  assert.match(probe, /navigator\.permissions\.query\(\{ name \}\)/);
+  assert.match(probe, /\["loopback-network", "local-network-access"\]/);
+  assert.match(probe, /if \(access === "denied"\) return false;/);
+  // Bei offener Abfrage: genau eine Anfrage ohne AbortSignal offen halten, danach sofort neu prüfen (Auto-LOCAL).
+  assert.match(probe, /lnaPending \|\|= fetch\(CORE \+ "\/api\/status", \{ cache: "no-store" \}\)[\s\S]*detector\.check\(\)/);
+  assert.ok(probe.indexOf('access === "prompt"') < probe.indexOf("new AbortController()"), "Kurz-Timeout erst nach erteilter Erlaubnis");
+});

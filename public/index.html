@@ -937,7 +937,23 @@ setInterval(loadShared, 30_000);
 
 // ---------- Start ----------
 // Local/Cloud automatisch: LOCAL, wenn der Local Core antwortet; sonst CLOUD (falls eingerichtet). Prüft alle 20 s erneut.
+// Chrome (Local Network Access): Die Netlify-Seite braucht eine einmalige Erlaubnis für localhost. Solange Chrome fragt,
+// hängt der Request – ein kurzer Abbruch schlösse die Abfrage jedes Mal wieder. Darum genau eine Anfrage offen halten.
+let lnaPending = null;
+async function localAccess() {
+  if (!HOSTED || !navigator.permissions) return "granted";
+  for (const name of ["loopback-network", "local-network-access"]) { try { return (await navigator.permissions.query({ name })).state; } catch {} }
+  return "granted"; // Browser ohne diese Sperre
+}
 async function probeLocal() {
+  const access = await localAccess();
+  $("kLocal").title = access === "granted" ? "" : "Chrome muss dieser Seite den Zugriff auf Geräte im lokalen Netzwerk erlauben (Abfrage „Zulassen“ bzw. Website-Einstellungen).";
+  if (access === "denied") return false;
+  if (access === "prompt") {
+    lnaPending ||= fetch(CORE + "/api/status", { cache: "no-store" }).then(() => true, () => false)
+      .then((ok) => { lnaPending = null; if (ok) setTimeout(() => detector.check(), 0); });
+    return false;
+  }
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 2500);
   try { status = await (await fetch(CORE + "/api/status", { signal: ac.signal, cache: "no-store" })).json(); return true; }
