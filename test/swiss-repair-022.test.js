@@ -15,6 +15,15 @@ import { DAILY_SEND_LIMIT, assertOwnedDraft } from "../gmail.js";
 import { sanitizeState, findSensitiveKeys } from "../shared-state.js";
 import { runDiscovery } from "../lead-finder.js";
 import { createAuditor } from "../site-auditor.js";
+// TF-024: vollständig belegte Grundlagen (Empfänger, Quelle, Datum, Umfang, Beleg, vorher eingeholt, aktiv, Vertrauen HIGH).
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch mit Einwilligungs-Checkbox",
+  consentScope: "Hinweise und Angebote zu Website-Prüfung und Website-Reparatur von Helvetic Webdesign", consentEvidence: "Double-Opt-in bestätigt am 2026-09-01 (Formular-Eintrag 4711)",
+  obtainedBeforeMarketingSend: true, withdrawalStatus: "active", consentConfidence: "HIGH" };
+const optIn = (email) => ({ ...OPTIN, consentRecipient: email });
+const CUSTOMER = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true,
+  customerRelationshipEvidence: "Auftrag und Rechnung 2025-118 (Website-Wartung)", relationshipDate: "2025-05-10", previousService: "Website-Wartung",
+  advertisedService: "Website-Reparatur", similarityRationale: "Gleiche Website, gleiche Art Leistung (Pflege/Reparatur)", emailSource: "Kundenkorrespondenz zum Auftrag 2025-118",
+  sameProvider: true, optOutStatus: "none", customerConfidence: "HIGH" };
 
 const T0 = new Date("2026-10-06T08:00:00Z"); // 10:00 Zürich – im Morgenfenster
 const NIGHT = new Date("2026-10-06T20:00:00Z"); // 22:00 Zürich – ausserhalb aller Kampagnenfenster
@@ -200,24 +209,30 @@ test("public email alone != automatic send eligibility", () => {
 });
 
 test("opt_in → automatic eligible", () => {
-  const q = qualifyRepairLead(lead({ approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular" }), { now: T0 });
-  assert.equal(q.contact_basis, "OPT_IN");
+  const q = qualifyRepairLead(lead({ ...optIn("info@muster.ch") }), { now: T0 });
+  assert.equal(q.contact_basis, "EXPLICIT_OPT_IN");
+  assert.equal(q.automatic_marketing_send_eligible, true);
+  assert.equal(q.message_class, "MARKETING");
   assert.equal(q.automatic_send_eligible, true);
   assert.equal(q.draft_creation_eligible, false);
   assert.equal(q.stage, "repair_candidate");
 });
 
 test("existing customer similar service → eligible", () => {
-  const q = qualifyRepairLead(lead({ approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true }), { now: T0 });
+  const q = qualifyRepairLead(lead({ ...CUSTOMER }), { now: T0 });
   assert.equal(q.contact_basis, "EXISTING_CUSTOMER_SIMILAR_SERVICE");
   assert.equal(q.automatic_send_eligible, true);
   assert.equal(legalBasis(lead({ approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: false }), T0), null);
 });
 
 test("requested contact → eligible nur innerhalb des angefragten Umfangs", () => {
-  const req = { approved: true, consentBasis: "requested_contact", request_source: "Anfrage per Kontaktformular 2026-09-20", request_date: "2026-09-20T09:00:00Z" };
+  // TF-024: angefragter Kontakt ist SOLICITED_RESPONSE (keine Marketing-Grundlage) und braucht vollständige Belege.
+  const req = { approved: true, consentBasis: "requested_contact", request_source: "Anfrage per Kontaktformular 2026-09-20", request_date: "2026-09-20T09:00:00Z",
+    request_evidence: "Formular-Eintrag 2026-09-20: «Bitte Offerte für Reparatur unserer Website»", response_scope: "Offerte Website-Reparatur",
+    recipient_or_submission_channel: "info@muster.ch", requestConfidence: "HIGH" };
   assert.equal(legalBasis(lead({ ...req, request_scope: "Offerte Website-Reparatur" }), T0), "requested_contact");
-  assert.equal(qualifyRepairLead(lead({ ...req, request_scope: ["website_repair"] }), { now: T0 }).contact_basis, "REQUESTED_CONTACT");
+  const sq = qualifyRepairLead(lead({ ...req, request_scope: ["website_repair"] }), { now: T0 });
+  assert.deepEqual([sq.contact_basis, sq.message_class, sq.automatic_marketing_send_eligible], ["REQUESTED_CONTACT", "SOLICITED_RESPONSE", false]);
   assert.equal(legalBasis(lead({ ...req, request_scope: "Offerte Fotografie" }), T0), null, "anderer Zusammenhang");
   assert.equal(legalBasis(lead({ ...req, request_scope: "Website", request_source: "" }), T0), null, "Quelle fehlt");
   assert.equal(legalBasis(lead({ ...req, request_scope: "Website", request_date: "2027-01-01" }), T0), null, "Datum in der Zukunft");

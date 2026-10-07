@@ -15,6 +15,7 @@
 // Eine öffentlich gefundene Adresse (auch info@, Impressum, Verzeichnis) ist nie eine automatische Versandgrundlage.
 import crypto from "node:crypto";
 import { legalBasis, normEmail } from "./mail-worker.js";
+import { evaluateSwissEmailPermission } from "./email-permission.js";
 import { OFFERS, NONE, LANDING_PAGE_URL } from "./sales.js";
 
 // Lokales Register der Cold-Lead-Entwürfe (Dateiname aus TF-022 beibehalten, damit vorhandene Daten lesbar bleiben).
@@ -23,10 +24,13 @@ export const COLD_DRAFTS_FILE = REVIEWS_FILE;
 export const COLD_MODE = "COLD_LEAD_DRAFT_ONLY";
 export const COLD_DRAFT_COOLDOWN_DAYS = 180; // keine zweite Cold-Mail an dieselbe Firma/Adresse innerhalb dieses Zeitraums
 export const CONTACT_BASIS = Object.freeze({
-  OPT_IN: "OPT_IN", EXISTING_CUSTOMER_SIMILAR_SERVICE: "EXISTING_CUSTOMER_SIMILAR_SERVICE", REQUESTED_CONTACT: "REQUESTED_CONTACT",
+  EXPLICIT_OPT_IN: "EXPLICIT_OPT_IN", EXISTING_CUSTOMER_SIMILAR_SERVICE: "EXISTING_CUSTOMER_SIMILAR_SERVICE", REQUESTED_CONTACT: "REQUESTED_CONTACT",
+  ACTIVE_RFP_RESPONSE: "ACTIVE_RFP_RESPONSE",
   COLD_LEAD_DRAFT_ONLY: COLD_MODE, NONE: "NONE",
 });
-const AUTO_BASIS = { opt_in: "OPT_IN", existing_customer: "EXISTING_CUSTOMER_SIMILAR_SERVICE", requested_contact: "REQUESTED_CONTACT" };
+// TF-024: Marketing nur EXPLICIT_OPT_IN / EXISTING_CUSTOMER_SIMILAR_SERVICE; Anfrage/Ausschreibung nur SOLICITED_RESPONSE.
+const AUTO_BASIS = { opt_in: "EXPLICIT_OPT_IN", existing_customer: "EXISTING_CUSTOMER_SIMILAR_SERVICE", requested_contact: "REQUESTED_CONTACT", active_rfp: "ACTIVE_RFP_RESPONSE" };
+const MARKETING_BASIS = new Set(["opt_in", "existing_customer"]);
 export const SITE_CONDITIONS = Object.freeze(["modern_maintainable", "repairable", "unclear", "redesign_likely"]);
 export const REPAIR_LIFECYCLE = Object.freeze(["discovered", "audited", "swiss_verified", "modern_repair_fit", "repair_candidate", "blocked_no_contact_basis",
   "cold_lead_draft_only", "draft_created", "contacted", "replied", "customer", "not_interested", "do_not_contact"]);
@@ -193,7 +197,8 @@ export function contactBasis(lead = {}, { candidate = false, now = new Date(), s
   const public_email_only = !!email && !basis;
   const out = (contact_basis, extra = {}) => ({ contact_basis, automatic_send_eligible: false, automatic_marketing_send_eligible: false, draft_creation_eligible: false,
     individual_review_required: false, message_class: null, legal_basis: "NONE", automatic_send_allowed: false, public_email_only, ...extra });
-  if (basis) return out(AUTO_BASIS[basis], { automatic_send_eligible: true, automatic_marketing_send_eligible: true, automatic_send_allowed: true, legal_basis: AUTO_BASIS[basis], message_class: "AUTO_SEND_ELIGIBLE" });
+  if (basis) return out(AUTO_BASIS[basis], { automatic_send_eligible: true, automatic_marketing_send_eligible: MARKETING_BASIS.has(basis), automatic_send_allowed: true,
+    legal_basis: AUTO_BASIS[basis], message_class: MARKETING_BASIS.has(basis) ? "MARKETING" : "SOLICITED_RESPONSE" });
   // Cold Lead: nur Entwurf. Gefundene Adresse, Impressum, .ch, Befund oder guter Lead lösen NIE Auto-Send aus.
   if (candidate && business && !suppressed && lead.status !== "do_not_contact" && lead.status !== "suppressed")
     return out(CONTACT_BASIS.COLD_LEAD_DRAFT_ONLY, { draft_creation_eligible: true, individual_review_required: true, message_class: "DRAFT_ONLY" });
@@ -245,6 +250,8 @@ export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, 
     contact_name: lead.contact_name || null, contact_role: lead.contact_role || null, business_email: contact.draft_creation_eligible || contact.automatic_send_eligible ? normEmail(lead.email || "") : null,
     contact_source: lead.contact_source || lead.emailSource || null, source_url: lead.source_url || null, collected_at: lead.collected_at || lead.auditedAt || null,
     contact_confidence: lead.contact_confidence || (lead.email ? "medium" : "none"),
+    // TF-024: Begründung der Permission-Engine (nur Anzeige; entscheidet legalBasis in mail-worker.js).
+    permission: contact.automatic_send_eligible ? null : evaluateSwissEmailPermission(lead, { type: contact.draft_creation_eligible ? "COLD_DRAFT" : "MARKETING" }, now).rationale,
   };
 }
 

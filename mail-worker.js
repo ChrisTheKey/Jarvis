@@ -25,6 +25,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { detectHumanContact } from "./human-contact.js";
 import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend } from "./swiss-repair.js";
+import { evaluateSwissEmailPermission } from "./email-permission.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -83,7 +84,7 @@ export const OPT_OUT_RE = /\b(unsubscribe|abmelden|austragen|stopp?\b|keine (wei
 export const ESCALATE_RE = /(vertrag|vertr[aä]ge|contract|agb|haftung|anwalt|lawyer|rechtlich|legal|klage|gericht|rechnung|invoice|zahlung|payment|[uü]berweis|iban|kreditkarte|credit card|rabatt|discount|preisnachlass|skonto|passwort|password|zugangsdaten|credentials|login|beschwerde|complaint|betrug|fraud|bankverbindung|bankdaten|kontonummer|bank account|secret|geheim|preis(?:änderung|aenderung|erhöhung|anpassung)|price (?:change|increase)|garantie|guarantee|\bverbindlich|\bbinding|schadenersatz|damages|kündig|terminat)/i;
 // Mailklassen: A/B (Kampagnen) nur in den Versandfenstern, C/D (Gespräch, manuell von Chris) zeitnah rund um die Uhr.
 export const MAIL_CLASS = { erstkontakt: "automatic_sales_outreach", antwort: "conversation_reply", "cloud-auftrag": "manual_chris_mail", einzelmail: "individual_approved_mail" };
-export const mailClassOf = (a = {}) => MAIL_CLASS[a.kind] || (String(a.kind || "").startsWith("follow-up") ? "sales_followup" : "automatic_sales_outreach");
+export const mailClassOf = (a = {}) => (a.messageClass === "SOLICITED_RESPONSE" ? "solicited_response" : null) || MAIL_CLASS[a.kind] || (String(a.kind || "").startsWith("follow-up") ? "sales_followup" : "automatic_sales_outreach");
 export const IMMEDIATE_CLASSES = new Set(["conversation_reply", "manual_chris_mail"]);
 const ALLOW_ALL = { acquire: async () => ({ ok: true }), done: async () => {} };
 const AUTO_SUBJECT_RE = /(automatische antwort|abwesenheit|out of office|automatic reply|auto-?reply|réponse automatique|risposta automatica)/i;
@@ -93,26 +94,20 @@ const UNSUB_RE = /abmelden|unsubscribe|désinscri|disiscriv/i;
 // Behauptete Website-Mängel – ohne dokumentierte websiteIssues darf eine Erstmail so etwas nicht enthalten.
 export const CLAIM_RE = /(fehler|defekt|kaputt|funktioniert nicht|nicht erreichbar|nicht mehr erreichbar|404|zertifikat|veraltet|langsam|unsicher|broken|not working|outdated|slow|certificate|erreur|cass[ée]|errore|non funziona)/i;
 
-// Versandgrundlage eines Leads. approved allein genügt nie; nichts wird angenommen oder ergänzt.
+// Versandgrundlage eines Leads – entscheidet ausschliesslich die TF-024-Permission-Engine (email-permission.js).
+// approved (Chris hat den Lead in seine Liste gesetzt) ist zusätzlich nötig, ersetzt aber nie die Grundlage.
+//   "opt_in" / "existing_customer"        MARKETING (EXPLICIT_OPT_IN / EXISTING_CUSTOMER_SIMILAR_SERVICE)
+//   "requested_contact" / "active_rfp"    SOLICITED_RESPONSE – nur im angefragten Umfang (Website-Reparatur), nie Follow-up-Funnel
 export function legalBasis(lead = {}, now = new Date()) {
-  if (lead.approved !== true) return null;
-  if (lead.consentBasis === "opt_in") {
-    const at = Date.parse(lead.consentAt);
-    const source = typeof lead.consentSource === "string" && lead.consentSource.trim();
-    return Number.isFinite(at) && at <= +now && source ? "opt_in" : null;
-  }
-  if (lead.consentBasis === "existing_customer") return lead.existingCustomer === true && lead.similarService === true ? "existing_customer" : null;
-  // Empfänger hat selbst angefragt: Quelle, Datum und Umfang dokumentiert – gilt nur, wenn der Umfang Website/Reparatur abdeckt.
-  if (lead.consentBasis === "requested_contact") {
-    const at = Date.parse(lead.requestDate ?? lead.request_date);
-    const source = String(lead.requestSource ?? lead.request_source ?? "").trim();
-    const scope = [].concat(lead.requestScope ?? lead.request_scope ?? []).join(" ");
-    return Number.isFinite(at) && at <= +now && source && REQUEST_SCOPE_RE.test(scope) ? "requested_contact" : null;
-  }
+  if (!lead || lead.approved !== true) return null;
+  const m = evaluateSwissEmailPermission(lead, { type: "MARKETING" }, now);
+  if (m.allowed) return m.legal_basis === "EXPLICIT_OPT_IN" ? "opt_in" : "existing_customer";
+  const s = evaluateSwissEmailPermission(lead, { type: "SOLICITED_RESPONSE", scope: "Website-Reparatur" }, now);
+  if (s.allowed) return s.legal_basis === "ACTIVE_RFP_RESPONSE" ? "active_rfp" : "requested_contact";
   return null;
 }
-export const REQUEST_SCOPE_RE = /website|webseite|homepage|reparatur|repair|site web|sito web/i;
-// Automatische Follow-ups nur bei diesen Grundlagen. Angefragter Kontakt und Einzelmails (one-to-one) bekommen keinen Funnel.
+export const MARKETING_LEGAL = new Set(["opt_in", "existing_customer"]);
+// Automatische Follow-ups nur bei Marketing-Grundlagen. Angefragter Kontakt, Ausschreibung und Cold-/Einzelmails bekommen keinen Funnel.
 export const FOLLOWUP_BASES = new Set(["opt_in", "existing_customer"]);
 export const INDIVIDUAL_BASIS = "individual_one_to_one";
 
@@ -338,7 +333,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       save();
       const d = await make(result);
       state.actions[key] = { status: "prepared", at: t.toISOString(), kind: info.kind, threadId: d.threadId, draftId: d.draftId, review,
-        to: normEmail(info.to), autoSend: !!info.autoSend && !review, paced: !!info.paced };
+        to: normEmail(info.to), autoSend: !!info.autoSend && !review, paced: !!info.paced, ...(info.messageClass ? { messageClass: info.messageClass } : {}) };
       if (info.basis && d.threadId) state.compliantThreads[d.threadId] = { to: normEmail(info.to), basis: info.basis, lang: info.lang || "de", at: t.toISOString() };
       if (info.paced) state.lastPacedAt = +t;
       if (d.isNew !== false) { state.prepared[d.draftId] = { key, at: t.toISOString(), kind: info.kind }; used++; }
@@ -493,7 +488,10 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         const { name, company, website, language, notes: leadNotes, websiteIssues } = lead;
         await prepare("outreach:" + to, {
           kind: "erstkontakt", to, subject: company || name || to, basis, lang: language, commercial: true, paced: true, autoSend: true, noIssues: !websiteIssues?.length,
-          task: { kind: "outreach", sender: cfg.sender, offer: cfg.offer, lead: { name, company, website, language, notes: leadNotes, websiteIssues: websiteIssues || [] } },
+          // TF-024: angefragter Kontakt / Ausschreibung ist SOLICITED_RESPONSE (nur im angefragten Umfang), nie Marketing.
+          messageClass: MARKETING_LEGAL.has(basis) ? "MARKETING" : "SOLICITED_RESPONSE",
+          task: { kind: "outreach", sender: cfg.sender, offer: cfg.offer, ...(MARKETING_LEGAL.has(basis) ? {} : { solicitedScope: String(lead.responseScope || lead.response_scope || lead.rfpScope || lead.rfp_scope || "") }),
+            lead: { name, company, website, language, notes: leadNotes, websiteIssues: websiteIssues || [] } },
         }, (r) => gmail.createDraft({ to: name ? `${name.replace(/[<>"\r\n]/g, "")} <${to}>` : to, subject: r.subject || "Kurze Frage", body: r.body }));
         paced++;
       } catch (e) {

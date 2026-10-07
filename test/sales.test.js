@@ -9,6 +9,15 @@ import { OFFERS, OFFER_CLASSES, NONE, classifyOffer, observedEvidence, recordSal
 import { legalBasis, HARD_LIMIT, DEFAULT_CONFIG } from "../mail-worker.js";
 import { DAILY_SEND_LIMIT, assertOwnedDraft } from "../gmail.js";
 import { sanitizeState, findSensitiveKeys } from "../shared-state.js";
+// TF-024: vollständig belegte Grundlagen (Empfänger, Quelle, Datum, Umfang, Beleg, vorher eingeholt, aktiv, Vertrauen HIGH).
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch mit Einwilligungs-Checkbox",
+  consentScope: "Hinweise und Angebote zu Website-Prüfung und Website-Reparatur von Helvetic Webdesign", consentEvidence: "Double-Opt-in bestätigt am 2026-09-01 (Formular-Eintrag 4711)",
+  obtainedBeforeMarketingSend: true, withdrawalStatus: "active", consentConfidence: "HIGH" };
+const optIn = (email) => ({ ...OPTIN, consentRecipient: email });
+const CUSTOMER = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true,
+  customerRelationshipEvidence: "Auftrag und Rechnung 2025-118 (Website-Wartung)", relationshipDate: "2025-05-10", previousService: "Website-Wartung",
+  advertisedService: "Website-Reparatur", similarityRationale: "Gleiche Website, gleiche Art Leistung (Pflege/Reparatur)", emailSource: "Kundenkorrespondenz zum Auftrag 2025-118",
+  sameProvider: true, optOutStatus: "none", customerConfidence: "HIGH" };
 
 const T0 = new Date("2026-10-06T08:00:00Z");
 const ROOT = decodeURIComponent(new URL("..", import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1");
@@ -121,12 +130,12 @@ test("blocked_no_legal_basis bleibt blockiert – auch mit Angebot, Antwortstatu
   recordSale({}, "muster.ch", { offer: "REPAIR_FIX_500", lead: after, now: T0 });
   assert.deepEqual(after, lead, "ein Verkauf ändert nie die Versandgrundlage des Leads");
   // Mit echter Grundlage: approved
-  const ok = { ...lead, approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular", status: undefined };
+  const ok = { ...lead, ...optIn(lead.email), status: undefined };
   assert.equal(lifecycleStatus(ok, { now: T0 }), "approved");
 });
 
 test("Suppression bleibt aktiv: do_not_contact hat Vorrang vor allem", () => {
-  const lead = { ...discoveredLead(), approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular", status: undefined };
+  const lead = { ...discoveredLead(), ...optIn("info@muster.ch"), status: undefined };
   assert.equal(lifecycleStatus(lead, { now: T0, suppression: { "info@muster.ch": { reason: "opt-out" } } }), "do_not_contact");
   write("leads.json", [lead]);
   write("suppression.json", { "info@muster.ch": { reason: "opt-out" } });
@@ -154,7 +163,7 @@ test("fremde Gmail-Entwürfe bleiben geschützt", async () => {
 
 test("Lebenszyklus: alle Stufen, bestehende Datensätze ohne Migration", () => {
   assert.deepEqual([...LIFECYCLE], ["discovered", "audited", "repair_candidate", "blocked_no_legal_basis", "approved", "contacted", "replied", "customer", "not_interested", "do_not_contact"]);
-  const basis = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Formular" };
+  const basis = optIn("info@muster.ch");
   const L = (o) => ({ ...discoveredLead(), status: undefined, ...o });
   assert.equal(lifecycleStatus({ status: "discovered" }, { now: T0 }), "discovered");
   assert.equal(lifecycleStatus(L({ status: "no_issues", websiteIssues: [] }), { now: T0 }), "audited");
@@ -211,7 +220,7 @@ test("Kennzahlen: Kandidaten, Verkäufe und Umsatz nur aus den zwei Angeboten; m
 });
 
 test("Kennzahlen kontaktiert/Antworten aus Jarvis-Register und Worker-Zustand", () => {
-  const basis = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true };
+  const basis = { ...CUSTOMER };
   write("leads.json", [{ ...discoveredLead({ status: undefined }), ...basis }]);
   write("state.json", { actions: { "reply:m1": { status: "prepared", to: "Info@Muster.ch" } } });
   const registry = { sent: { s1: { to: "Muster AG <info@muster.ch>", sentAt: "2026-10-01T09:00:00Z" } }, drafts: {} };

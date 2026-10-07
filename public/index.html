@@ -973,6 +973,7 @@ function showLead(i) {
       ["Repair Evidence", rp.repair_evidence.length ? rp.repair_evidence.map((e) => `${e.issue_type} (${e.severity}${e.reproducible ? ", reproduzierbar" : ""}): ${e.evidence} — ${e.url}`).join(" | ") : "keine"],
       ["Offer Class", `${OFFER_LABEL[rp.offer.offer_class]} (${rp.offer.offer_class}, ${rp.offer.confidence}) – ${rp.offer.rationale}`],
       ["Contact Basis", rp.contact_basis + (rp.public_email_only ? " (nur öffentliche Adresse)" : "")], ["Legal Basis", rp.legal_basis],
+      ["Message Class", rp.message_class || "BLOCKED"], ["Permission (TF-024)", rp.permission || "Grundlage vollständig belegt"],
       ["Auto-Send erlaubt", rp.automatic_send_allowed ? "JA" : "NEIN"], ["Manual Send Decision Required", rp.contact_basis === "COLD_LEAD_DRAFT_ONLY" ? "JA" : "NEIN"],
       ["Draft Status", l.review ? `${l.review.status}${l.review.blocked_reason ? " – " + l.review.blocked_reason : ""}${l.review.suppressed_after_draft ? " – EMPFÄNGER HAT SICH ABGEMELDET" : ""}` : "–"],
       ["Suppression Status", l.suppressed ? "gesperrt" : "nicht gesperrt"], ["Opt-out Status", l.optedOut ? "abgemeldet" : "kein Opt-out"],

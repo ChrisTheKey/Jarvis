@@ -17,7 +17,15 @@ const read = (f) => fs.readFileSync(path.join(ROOT, f), "utf8");
 const MORNING = new Date("2026-10-06T07:35:00Z"); // 09:35 Zürich (Sommerzeit)
 const AFTERNOON = new Date("2026-10-06T12:35:00Z"); // 14:35 Zürich
 const BETWEEN = new Date("2026-10-06T10:30:00Z"); // 12:30 Zürich – kein Fenster
-const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular" };
+// TF-024: vollständig belegte Grundlagen (Empfänger, Quelle, Datum, Umfang, Beleg, vorher eingeholt, aktiv, Vertrauen HIGH).
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch mit Einwilligungs-Checkbox",
+  consentScope: "Hinweise und Angebote zu Website-Prüfung und Website-Reparatur von Helvetic Webdesign", consentEvidence: "Double-Opt-in bestätigt am 2026-09-01 (Formular-Eintrag 4711)",
+  obtainedBeforeMarketingSend: true, withdrawalStatus: "active", consentConfidence: "HIGH" };
+const optIn = (email) => ({ ...OPTIN, consentRecipient: email });
+const CUSTOMER = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true,
+  customerRelationshipEvidence: "Auftrag und Rechnung 2025-118 (Website-Wartung)", relationshipDate: "2025-05-10", previousService: "Website-Wartung",
+  advertisedService: "Website-Reparatur", similarityRationale: "Gleiche Website, gleiche Art Leistung (Pflege/Reparatur)", emailSource: "Kundenkorrespondenz zum Auftrag 2025-118",
+  sameProvider: true, optOutStatus: "none", customerConfidence: "HIGH" };
 let dir, g, clock;
 
 // Gmail-Attrappe wie gmail.js: Tages- (100) und Fensterlimit (50), Register erst nach Erfolg.
@@ -254,8 +262,8 @@ test("Absturz mitten im Fenster: nach Neustart kein zweiter Lauf", async () => {
 test("Compliance unverändert: suppressed, Opt-out, ohne Versandgrundlage, öffentliche Adresse → 0 Sends", async () => {
   write("suppression.json", { "weg@laden.ch": { reason: "opt-out" }, "abgemeldet@laden.ch": { reason: "unzustellbar" } });
   write("leads.json", [
-    { email: "weg@laden.ch", ...OPTIN }, // Opt-out
-    { email: "abgemeldet@laden.ch", ...OPTIN }, // suppressed
+    { email: "weg@laden.ch", ...optIn("weg@laden.ch") }, // Opt-out
+    { email: "abgemeldet@laden.ch", ...optIn("abgemeldet@laden.ch") }, // suppressed
     { email: "info@firma.ch", company: "Firma AG", approved: true, emailSource: "https://firma.ch/impressum" }, // nur öffentlich gefunden
     { email: "chef@firma.ch", approved: true, consentBasis: "opt_in" }, // opt_in ohne Beleg
     { email: "alt@kunde.ch", approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: false },
@@ -271,7 +279,7 @@ test("Compliance unverändert: suppressed, Opt-out, ohne Versandgrundlage, öffe
 
 test("Versandgrundlage wird direkt vor dem Send erneut geprüft (Follow-up/Erstkontakt im Fenster)", async () => {
   clock = BETWEEN;
-  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "anna@laden.ch", ...optIn("anna@laden.ch") }]);
   await worker().tick();
   assert.deepEqual(sends(), [], "vorbereitet, aber noch kein Fenster");
   write("leads.json", [{ email: "anna@laden.ch", approved: true }]); // Grundlage entfernt
@@ -360,7 +368,7 @@ test("Cloud-Auftrag: Ablaufzeit → expired (Cloud und lokal)", async () => {
 });
 
 test("Cloud ist keine Freigabe: ungültig, ohne Versandgrundlage, suppressed → blocked mit Grund", async () => {
-  write("leads.json", [{ email: "ohne@grund.ch", approved: true }, { email: "weg@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "ohne@grund.ch", approved: true }, { email: "weg@laden.ch", ...optIn("weg@laden.ch") }]);
   write("suppression.json", { "weg@laden.ch": { reason: "opt-out" } });
   const mk = (id, recipient) => ({ request_id: id, recipient, subject: "Hallo", body: "Text", status: "pending", expires_at: "2026-10-07T06:00:00Z", created_at: "2026-10-06T06:00:00Z" });
   inboxAdd(createStore(dir), [mk("mr-invalid-01", "kaputt"), mk("mr-nobasis-01", "ohne@grund.ch"), mk("mr-public-01", "info@gefunden.ch"), mk("mr-suppr-01", "weg@laden.ch")]);
@@ -384,7 +392,7 @@ test("gültiger Cloud-Auftrag (manual_chris_mail) erreicht den Worker, wird zeit
   assert.equal((await pullMailRequests({ config, fetchFn: async () => { throw new Error("offline"); } })).ok, false);
   assert.equal((await createMailQueue(store, { now: () => qclock }).list())[0].status, "pending");
   // Worker wieder online, zwischen den Fenstern: manueller Auftrag von Chris wird geprüft und sofort gesendet (kein Warten auf 14:30).
-  write("leads.json", [{ email: MAIL.recipient, language: "de", ...OPTIN }]);
+  write("leads.json", [{ email: MAIL.recipient, language: "de", ...optIn(MAIL.recipient) }]);
   write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: { name: "Chris Muster", email: "chris@x.ch" } }); // ohne offer: keine eigenen Erstkontakte
   const pulled = await pullMailRequests({ config, fetchFn: viaHandler(handler) });
   assert.equal(pulled.requests.length, 1);

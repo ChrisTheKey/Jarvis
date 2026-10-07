@@ -1,13 +1,33 @@
-# PROJECT_STATE – TF-JARVIS-ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-OUTREACH-022 + SWISS-COLD-LEAD-DRAFT-OUTREACH-025
+# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
 Letzte Aktualisierung: 2026-10-07
 
+## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
+Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
+`legalBasis` bzw. Cold-Send-Sperre macht Tests rot. (TF-023 existiert nicht.)
+- Zentrale Engine `evaluateSwissEmailPermission(lead, message)` → { allowed, message_class, legal_basis, confidence, evidence[], rationale }.
+  `legalBasis()` delegiert ausschliesslich dorthin (plus `approved`, das nie eine Grundlage ersetzt). Kein Override/Bypass/Force/Batch.
+- MARKETING Auto-Send NUR: EXPLICIT_OPT_IN (Empfänger, Quelle, Datum, Umfang Website-Leistung, Beleg, obtainedBeforeMarketingSend=true,
+  withdrawalStatus=active, consentConfidence=HIGH) oder EXISTING_CUSTOMER_SIMILAR_SERVICE (Beleg der Kundenbeziehung, relationshipDate,
+  previousService + advertisedService beide Website-Leistung, similarityRationale, emailSource aus der Kundenbeziehung, sameProvider=true,
+  optOutStatus=none, existingCustomer+similarService, customerConfidence=HIGH).
+- REQUESTED_CONTACT = SOLICITED_RESPONSE (nie Marketing): requestSource/Date/Scope/Evidence, responseScope, recipientOrSubmissionChannel, HIGH;
+  nur innerhalb des angefragten Umfangs (Website-Reparatur), kein Follow-up-Funnel.
+- ACTIVE_RFP = nur konkrete SOLICITED_RESPONSE: rfpUrl, rfpDate, rfpScope (Website-Leistung), submissionChannel, Deadline in der Zukunft,
+  exactEvidence, serviceMatch=true, stillActive=true, HIGH. Allgemeine Einladungen („Offerten willkommen“, Partner-/Lieferantenseiten) zählen nie.
+- MEDIUM/LOW = BLOCK, fehlende Evidence = BLOCK. Öffentliche Adresse (info@, Impressum, Kontaktseite, Verzeichnis, Maps, LinkedIn, Whois,
+  Register, .ch), Reparaturbefund, vermutetes Interesse und Chris-Freigabe sind NIE eine Grundlage. Human Approval kann das Legal Gate nicht überschreiben.
+- WICHTIG für leads.json: bestehende Einträge mit altem Minimal-Beleg (opt_in nur consentAt+consentSource, Bestandskunde nur zwei Flags)
+  werden jetzt BLOCKIERT, bis die TF-024-Felder nachgetragen sind. Feldnamen camelCase (z. B. consentRecipient, consentScope …) oder snake_case.
+- 0 Auto-Send-Berechtigte = 0 Auto-Send. 09:30 max 50 / 14:30 max 50 / 100 pro Tag sind nur das technische Maximum.
+- Angebote aktuell: REPAIR_CHECK_150 = CHF 150, REPAIR_FIX_500 (interne ID bleibt) = CHF 480. Kein drittes Angebot, kein Redesign, kein Neubau.
+- TF-021 VPS/Netlify 401 (Token-Mismatch) bleibt separater offener Blocker; VPS-Authority unverändert.
+
 ## TF-025 SWISS COLD LEAD DRAFT OUTREACH (dauerhaft; Code: `swiss-repair.js`, `gmail.js`, `mail-worker.js`, `lead-finder.js`)
 Tests: `test/swiss-repair-025.test.js` (20). Gegencheck: Entfernen von Cold-Send-Sperre, Suppression-Sperre bzw. Fremd-Entwurf-Schutz macht Tests rot.
-TF-023/TF-024 existieren im Repo NICHT – Auto-Send-Regeln sind unverändert die aus TF-022 (opt_in, Bestandskunde+ähnliche Leistung,
-dokumentierter angefragter Kontakt). TF-025 ändert daran nichts.
+Integriert mit TF-024: Cold Leads = message_class DRAFT_ONLY, legal_basis NONE; die Engine erlaubt für COLD_DRAFT nie einen Versand.
 - Jarvis darf Schweizer Repair-Leads finden (TF-022-Kriterien) und öffentliche GESCHÄFTLICHE Kontakte recherchieren: nur Firmenwebsite
   (Team-, Impressum-, Kontakt-, Startseite) und OSM. Nur Adressen auf der Firmendomain; Freemail/fremde Domains werden verworfen.
   Persönliche Adresse nur mit sicher zugeordnetem Namen. Vorrang: Web/Marketing/IT > Geschäftsführung > andere Person > info@.

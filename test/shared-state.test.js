@@ -12,6 +12,15 @@ import { createLocalState, createHumanContactNotifier, syncWithCloud, cloudConte
 import { createWorker } from "../mail-worker.js";
 import { personaVersion } from "../persona-version.js";
 import { render as renderPersona, cloudPersona } from "../scripts/build-persona.mjs";
+// TF-024: vollständig belegte Grundlagen (Empfänger, Quelle, Datum, Umfang, Beleg, vorher eingeholt, aktiv, Vertrauen HIGH).
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch mit Einwilligungs-Checkbox",
+  consentScope: "Hinweise und Angebote zu Website-Prüfung und Website-Reparatur von Helvetic Webdesign", consentEvidence: "Double-Opt-in bestätigt am 2026-09-01 (Formular-Eintrag 4711)",
+  obtainedBeforeMarketingSend: true, withdrawalStatus: "active", consentConfidence: "HIGH" };
+const optIn = (email) => ({ ...OPTIN, consentRecipient: email });
+const CUSTOMER = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true,
+  customerRelationshipEvidence: "Auftrag und Rechnung 2025-118 (Website-Wartung)", relationshipDate: "2025-05-10", previousService: "Website-Wartung",
+  advertisedService: "Website-Reparatur", similarityRationale: "Gleiche Website, gleiche Art Leistung (Pflege/Reparatur)", emailSource: "Kundenkorrespondenz zum Auftrag 2025-118",
+  sameProvider: true, optOutStatus: "none", customerConfidence: "HIGH" };
 
 const ROOT = decodeURIComponent(new URL("..", import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1");
 const T0 = new Date("2026-10-06T08:00:00Z");

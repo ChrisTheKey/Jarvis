@@ -15,7 +15,15 @@ const ROOT = decodeURIComponent(new URL("..", import.meta.url).pathname).replace
 const read = (f) => fs.readFileSync(path.join(ROOT, f), "utf8");
 const NIGHT = new Date("2026-10-06T20:00:00Z"); // 22:00 Zürich – kein Versandfenster
 const MORNING = new Date("2026-10-06T07:35:00Z"); // 09:35 Zürich
-const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular" };
+// TF-024: vollständig belegte Grundlagen (Empfänger, Quelle, Datum, Umfang, Beleg, vorher eingeholt, aktiv, Vertrauen HIGH).
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch mit Einwilligungs-Checkbox",
+  consentScope: "Hinweise und Angebote zu Website-Prüfung und Website-Reparatur von Helvetic Webdesign", consentEvidence: "Double-Opt-in bestätigt am 2026-09-01 (Formular-Eintrag 4711)",
+  obtainedBeforeMarketingSend: true, withdrawalStatus: "active", consentConfidence: "HIGH" };
+const optIn = (email) => ({ ...OPTIN, consentRecipient: email });
+const CUSTOMER = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true,
+  customerRelationshipEvidence: "Auftrag und Rechnung 2025-118 (Website-Wartung)", relationshipDate: "2025-05-10", previousService: "Website-Wartung",
+  advertisedService: "Website-Reparatur", similarityRationale: "Gleiche Website, gleiche Art Leistung (Pflege/Reparatur)", emailSource: "Kundenkorrespondenz zum Auftrag 2025-118",
+  sameProvider: true, optOutStatus: "none", customerConfidence: "HIGH" };
 const ENV = { JARVIS_PASSWORD: "pw-test", JARVIS_SYNC_TOKEN: "sync-windows-token", JARVIS_MAIL_WORKER_TOKEN: "vps-worker-token" };
 const MAIL = { recipient: "anna@laden.ch", subject: "Ihr Website-Check", body: "Guten Tag Frau Muster, wie besprochen sende ich Ihnen die Infos." };
 let clock, blob, env, handler, vpsDir, winDir, g;
@@ -133,7 +141,7 @@ test("VPS ohne anerkannten Token (Netlify noch nicht umgestellt): Standby, liest
 // ---------- Windows offline: Cloud → VPS → Gmail (Attrappe) → Status zurück ----------
 
 test("Windows Local Core OFFLINE: Cloud-Auftrag → VPS übernimmt → Mock-Mail gesendet → Status SENT in der Cloud", async () => {
-  write(vpsDir, "leads.json", [{ email: MAIL.recipient, language: "de", ...OPTIN }]);
+  write(vpsDir, "leads.json", [{ email: MAIL.recipient, language: "de", ...optIn(MAIL.recipient) }]);
   const request = await createRequest();
   assert.equal(request.status, "pending");
   assert.equal(request.mail_class, "manual_chris_mail");
@@ -205,7 +213,7 @@ test("Risiko-Antwort: nicht gesendet, Entwurf zur Prüfung, Eskalation an Chris 
 test("Opt-out und Suppression blockieren Antworten und manuelle Aufträge", async () => {
   ownThread("t1", { reply: "Bitte keine weiteren Mails, abmelden." });
   write(vpsDir, "state.json", { compliantThreads: { t1: { basis: "opt_in" } } });
-  write(vpsDir, "leads.json", [{ email: "weg@laden.ch", ...OPTIN }]);
+  write(vpsDir, "leads.json", [{ email: "weg@laden.ch", ...optIn("weg@laden.ch") }]);
   write(vpsDir, "suppression.json", { "weg@laden.ch": { reason: "opt-out" } });
   const rq = await createRequest({ ...MAIL, recipient: "weg@laden.ch" });
   await iterate("vps", vpsDir, vpsConfig);
@@ -310,7 +318,7 @@ test("Neustarts ändern die Authority nicht: Windows bleibt Standby, auch wenn d
 // ---------- Failover und Recovery ----------
 
 test("VPS offline: Aufträge bleiben PENDING, Cloud zeigt OFFLINE; nach Wiederanlauf ONLINE, Queue abgearbeitet, keine Duplikate", async () => {
-  write(vpsDir, "leads.json", [{ email: MAIL.recipient, ...OPTIN }, { email: "bob@laden.ch", ...OPTIN }]);
+  write(vpsDir, "leads.json", [{ email: MAIL.recipient, ...optIn(MAIL.recipient) }, { email: "bob@laden.ch", ...optIn("bob@laden.ch") }]);
   await iterate("vps", vpsDir, vpsConfig); // war online
   clock = new Date(+clock + HEARTBEAT_STALE_MS + 60_000); // Ausfall
   const a = await createRequest(), b = await createRequest({ ...MAIL, recipient: "bob@laden.ch" });
@@ -332,7 +340,7 @@ test("VPS offline: Aufträge bleiben PENDING, Cloud zeigt OFFLINE; nach Wiederan
 });
 
 test("Absturz nach Übernahme (PROCESSING): derselbe VPS übernimmt den Auftrag nach Neustart, nichts geht verloren", async () => {
-  write(vpsDir, "leads.json", [{ email: MAIL.recipient, ...OPTIN }]);
+  write(vpsDir, "leads.json", [{ email: MAIL.recipient, ...optIn(MAIL.recipient) }]);
   const rq = await createRequest();
   await mailRequests.claimMailRequests({ config: vpsConfig, fetchFn: viaHandler(handler) }); // übernommen, dann Absturz ohne lokale Ablage
   assert.equal((await cloudList()).requests[0].status, "processing");
@@ -433,7 +441,7 @@ test("AI_BUDGET_EXHAUSTED im Worker: keine zweite Anfrage, nichts gesendet, Auft
   ownThread("t1", { reply: "Danke! Was umfasst der Website-Check genau?" });
   ownThread("t2", { to: "b@firma.ch", reply: "Wann hätten Sie Zeit für den Check?" });
   write(vpsDir, "state.json", { compliantThreads: { t1: { basis: "opt_in" }, t2: { basis: "opt_in" } } });
-  write(vpsDir, "leads.json", [{ email: MAIL.recipient, language: "de", ...OPTIN }]);
+  write(vpsDir, "leads.json", [{ email: MAIL.recipient, language: "de", ...optIn(MAIL.recipient) }]);
   let aiCalls = 0, credit = false;
   const paused = [];
   const compose = async () => { aiCalls++; if (!credit) throw new AiBudgetError("HTTP 400"); return { decision: "draft", reason: "", body: "Guten Tag, gerne.\n\nChris Muster" }; };

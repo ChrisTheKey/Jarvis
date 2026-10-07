@@ -74,7 +74,15 @@ function addOwnFollowUp(tid, at) {
 
 const write = (name, data) => fs.writeFileSync(path.join(dir, name), JSON.stringify(data));
 const worker = () => createWorker({ dir, gmail: g, now: () => clock, log: () => {}, compose: async (task) => { composed.push(task); return composeResult(task); } });
-const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch" };
+// TF-024: vollständig belegte Grundlagen (Empfänger, Quelle, Datum, Umfang, Beleg, vorher eingeholt, aktiv, Vertrauen HIGH).
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch mit Einwilligungs-Checkbox",
+  consentScope: "Hinweise und Angebote zu Website-Prüfung und Website-Reparatur von Helvetic Webdesign", consentEvidence: "Double-Opt-in bestätigt am 2026-09-01 (Formular-Eintrag 4711)",
+  obtainedBeforeMarketingSend: true, withdrawalStatus: "active", consentConfidence: "HIGH" };
+const optIn = (email) => ({ ...OPTIN, consentRecipient: email });
+const CUSTOMER = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true,
+  customerRelationshipEvidence: "Auftrag und Rechnung 2025-118 (Website-Wartung)", relationshipDate: "2025-05-10", previousService: "Website-Wartung",
+  advertisedService: "Website-Reparatur", similarityRationale: "Gleiche Website, gleiche Art Leistung (Pflege/Reparatur)", emailSource: "Kundenkorrespondenz zum Auftrag 2025-118",
+  sameProvider: true, optOutStatus: "none", customerConfidence: "HIGH" };
 const auto = (extra = {}) => live({ sendMode: "compliant_auto", sender: { name: "Chris Muster", company: "Muster Web", email: "chris@x.ch" }, ...extra });
 const sends = () => g.calls.filter((c) => c.startsWith("SEND"));
 const live = (extra = {}) => write("config.json", { dryRun: false, offer: "Ich prüfe Websites.", sender: { name: "Chris", signature: "Chris" }, ...extra });
@@ -110,7 +118,7 @@ test("fremde Mail/fremder Thread: wird nie gelesen oder angefasst", async () => 
 
 test("Opt-out: dauerhaft gesperrt, keine Antwort, kein Follow-up, kein Erstkontakt", async () => {
   ownThread("t1", { replies: ["Bitte keine weiteren Mails."] });
-  write("leads.json", [{ email: "kunde@firma.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "kunde@firma.ch", ...optIn("kunde@firma.ch") }]);
   await worker().tick();
   const supp = JSON.parse(fs.readFileSync(path.join(dir, "suppression.json"), "utf8"));
   assert.ok(supp["kunde@firma.ch"]);
@@ -187,8 +195,8 @@ test("doppelter Worker: zweiter Start wird blockiert, abgestandenes Lock wird ü
 
 test("gleicher Lead mehrfach in der Liste: nur ein Erstkontakt", async () => {
   write("leads.json", [
-    { email: "info@laden.ch", name: "Laden", ...OPTIN },
-    { email: "INFO@laden.ch", ...OPTIN },
+    { email: "info@laden.ch", name: "Laden", ...optIn("info@laden.ch") },
+    { email: "INFO@laden.ch", ...optIn("INFO@laden.ch") },
     { email: "ohne-freigabe@x.ch" },
     { email: "kaputt", approved: true },
   ]);
@@ -225,7 +233,7 @@ test("Dry-Run (Standard): zeigt den Plan, legt nichts an", async () => {
 test("ohne sendMode compliant_auto wird nie gesendet – auch nicht bei gültiger Versandgrundlage", async () => {
   ownThread("t1", { replies: ["Wann passt es Ihnen?"] });
   write("state.json", { compliantThreads: { t1: { to: "kunde@firma.ch", basis: "opt_in" } } });
-  write("leads.json", [{ email: "neu@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "neu@laden.ch", ...optIn("neu@laden.ch") }]);
   await worker().tick();
   assert.deepEqual(sends(), []);
   const src = fs.readFileSync(new URL("../mail-worker.js", import.meta.url), "utf8");
@@ -255,7 +263,7 @@ test("Suppression überlebt Neustart und sperrt Leads, Antworten und Follow-ups"
   await worker().tick();
   // "Neustart": neue Instanz, neue Mail desselben Kontakts, derselbe Kontakt als freigegebener Lead
   g.threads.t1.push({ messageId: "in-neu", from: "Anna <kunde@firma.ch>", to: "chris@x.ch", subject: "Re", body: "Doch noch eine Frage?", sent: false, draft: false, internalDate: +T0 + 5 * 3600e3 });
-  write("leads.json", [{ email: "Kunde@Firma.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "Kunde@Firma.ch", ...optIn("Kunde@Firma.ch") }]);
   clock = new Date(+T0 + 10 * DAY);
   const r = await worker().tick();
   assert.equal(r.plan.length, 0);
@@ -270,7 +278,7 @@ test("Dry-Run-Bericht: Antworten, Opt-outs, Follow-ups, Leads, Tageszähler und 
   ownThread("t2", { to: "b@firma.ch", replies: ["Stop."], sentAt: new Date(+T0 - DAY) });
   ownThread("t3", { to: "c@firma.ch", sentAt: new Date(+T0 - 4 * DAY) });
   ownThread("t4", { to: "d@firma.ch", sentAt: new Date(+T0 - 3600e3) }); // heute gesendet
-  write("leads.json", [{ email: "neu@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "neu@laden.ch", ...optIn("neu@laden.ch") }]);
   const r = await worker().tick();
   assert.equal(r.dryRun, true);
   assert.deepEqual(r.plan.map((p) => [p.kind, p.to]), [["antwort", "a@firma.ch"], ["follow-up 1", "c@firma.ch"], ["erstkontakt", "neu@laden.ch"]]);
@@ -308,13 +316,13 @@ test("Worker läuft eigenständig ohne server.js", () => {
 // ---------- Echtversand nur mit Versandgrundlage (sendMode compliant_auto) ----------
 
 test("Versandgrundlage: opt_in und Bestandskunde mit ähnlicher Leistung erlaubt, alles andere nicht", () => {
-  assert.equal(legalBasis({ ...OPTIN }, T0), "opt_in");
+  assert.equal(legalBasis({ email: "k@f.ch", ...optIn("k@f.ch") }, T0), "opt_in");
   assert.equal(legalBasis({ approved: true }, T0), null, "approved ohne consentBasis");
-  assert.equal(legalBasis({ ...OPTIN, consentAt: undefined }, T0), null, "ohne consentAt");
-  assert.equal(legalBasis({ ...OPTIN, consentSource: " " }, T0), null, "ohne consentSource");
-  assert.equal(legalBasis({ ...OPTIN, consentAt: "2027-01-01" }, T0), null, "Einwilligung in der Zukunft");
-  assert.equal(legalBasis({ ...OPTIN, approved: false }, T0), null);
-  assert.equal(legalBasis({ approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true }, T0), "existing_customer");
+  assert.equal(legalBasis({ email: "k@f.ch", ...optIn("k@f.ch"), consentAt: undefined }, T0), null, "ohne consentAt");
+  assert.equal(legalBasis({ email: "k@f.ch", ...optIn("k@f.ch"), consentSource: " " }, T0), null, "ohne consentSource");
+  assert.equal(legalBasis({ email: "k@f.ch", ...optIn("k@f.ch"), consentAt: "2027-01-01" }, T0), null, "Einwilligung in der Zukunft");
+  assert.equal(legalBasis({ email: "k@f.ch", ...optIn("k@f.ch"), approved: false }, T0), null);
+  assert.equal(legalBasis({ email: "k@f.ch", ...CUSTOMER }, T0), "existing_customer");
   assert.equal(legalBasis({ approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: false }, T0), null);
   assert.equal(legalBasis({ approved: true, consentBasis: "existing_customer", existingCustomer: false, similarService: true }, T0), null);
   assert.equal(legalBasis({ approved: true, consentBasis: "public_address" }, T0), null);
@@ -322,7 +330,7 @@ test("Versandgrundlage: opt_in und Bestandskunde mit ähnlicher Leistung erlaubt
 
 test("opt_in-Lead: Erstkontakt wird gesendet, mit Absenderidentität und Abmeldehinweis", async () => {
   auto();
-  write("leads.json", [{ email: "anna@laden.ch", name: "Anna Muster", company: "Laden AG", ...OPTIN }]);
+  write("leads.json", [{ email: "anna@laden.ch", name: "Anna Muster", company: "Laden AG", ...optIn("anna@laden.ch") }]);
   const r = await worker().tick();
   assert.deepEqual(sends(), ["SEND dr1"]);
   assert.deepEqual(r.sends.map((x) => [x.kind, x.to]), [["erstkontakt", "anna@laden.ch"]]);
@@ -338,7 +346,7 @@ test("opt_in-Lead: Erstkontakt wird gesendet, mit Absenderidentität und Abmelde
 test("Abmeldehinweis in der Sprache des Empfängers und nie doppelt", async () => {
   auto();
   composeResult = () => ({ decision: "draft", subject: "Hi", body: "Hello Anna, ...\n\nChris Muster" });
-  write("leads.json", [{ email: "anna@shop.com", language: "en", ...OPTIN }]);
+  write("leads.json", [{ email: "anna@shop.com", language: "en", ...optIn("anna@shop.com") }]);
   await worker().tick();
   const body = g.reg.sent["sent-dr1"].body;
   assert.match(body, /reply with "unsubscribe"/);
@@ -363,21 +371,21 @@ test("approved ohne Versandgrundlage und öffentliche info@-Adresse: blockiert u
 
 test("Bestandskunde mit ähnlicher Leistung: Versand erlaubt", async () => {
   auto();
-  write("leads.json", [{ email: "kunde@alt.ch", approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true }]);
+  write("leads.json", [{ email: "kunde@alt.ch", ...CUSTOMER }]);
   await worker().tick();
   assert.deepEqual(sends(), ["SEND dr1"]);
 });
 
 test("Opt-out nach Erstkontakt: dauerhaft gesperrt, kein Follow-up, keine Antwort, kein neuer Erstkontakt", async () => {
   auto();
-  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "anna@laden.ch", ...optIn("anna@laden.ch") }]);
   await worker().tick();
   const tid = g.reg.sent["sent-dr1"].threadId;
   g.threads[tid].push({ messageId: "in-1", from: "Anna <anna@laden.ch>", to: "chris@x.ch", subject: "Re", body: "Abmelden", sent: false, draft: false, internalDate: +T0 + 3600e3 });
   clock = new Date(+T0 + 2 * 3600e3);
   await worker().tick();
   assert.ok(JSON.parse(fs.readFileSync(path.join(dir, "suppression.json"), "utf8"))["anna@laden.ch"]);
-  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }, { email: "ANNA@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "anna@laden.ch", ...optIn("anna@laden.ch") }, { email: "ANNA@laden.ch", ...optIn("ANNA@laden.ch") }]);
   for (const d of [4, 10, 20]) { clock = new Date(+T0 + d * DAY); await worker().tick(); }
   assert.deepEqual(sends(), ["SEND dr1"], "nur der ursprüngliche Erstkontakt");
   assert.ok(!g.calls.some((c) => /^(reply|create)/.test(c) && c !== "create anna@laden.ch"));
@@ -385,7 +393,7 @@ test("Opt-out nach Erstkontakt: dauerhaft gesperrt, kein Follow-up, keine Antwor
 
 test("Suppression wird direkt vor dem Send geprüft", async () => {
   auto();
-  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "anna@laden.ch", ...optIn("anna@laden.ch") }]);
   const w = worker();
   const orig = g.createDraft;
   g.createDraft = async (x) => { const d = await orig(x); write("suppression.json", { "anna@laden.ch": { reason: "opt-out" } }); return d; };
@@ -413,7 +421,7 @@ test("Tageslimit bleibt hart: bei 99 genau ein Send, bei 100 keiner", async () =
 
 test("Doppelversand: zweiter Durchlauf und Absturz während des Sendens senden nie erneut", async () => {
   auto();
-  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "anna@laden.ch", ...optIn("anna@laden.ch") }]);
   await worker().tick();
   clock = new Date(+T0 + 30 * 60_000);
   await worker().tick();
@@ -431,7 +439,7 @@ test("Doppelversand: zweiter Durchlauf und Absturz während des Sendens senden n
 
 test("fehlgeschlagener Send zählt nicht und wird nicht automatisch wiederholt", async () => {
   auto();
-  write("leads.json", [{ email: "anna@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "anna@laden.ch", ...optIn("anna@laden.ch") }]);
   g.failSend = "Gmail POST /drafts/send: invalid recipient";
   const r = await worker().tick();
   assert.equal(r.sends.length, 0);
@@ -445,7 +453,7 @@ test("fehlgeschlagener Send zählt nicht und wird nicht automatisch wiederholt",
 test("Versand nur im Versandfenster: vorbereitete Mails warten auf 14:30, nachts kein Versand", async () => {
   auto();
   clock = new Date("2026-10-06T10:30:00Z"); // 12:30 Zürich: zwischen den Fenstern
-  write("leads.json", ["a", "b"].map((x) => ({ email: x + "@laden.ch", ...OPTIN })));
+  write("leads.json", ["a", "b"].map((x) => ({ email: x + "@laden.ch", ...optIn(x + "@laden.ch") })));
   const r = await worker().tick();
   assert.equal(sends().length, 0, "zwischen den Fenstern kein Versand");
   assert.equal(r.plan.length, 2, "Entwürfe werden trotzdem vorbereitet");
@@ -453,7 +461,7 @@ test("Versand nur im Versandfenster: vorbereitete Mails warten auf 14:30, nachts
   await worker().tick();
   assert.equal(sends().length, 2, "alle vorbereiteten Erstkontakte im Nachmittagsfenster");
   clock = new Date("2026-10-06T20:00:00Z"); // 22:00 Zürich
-  write("leads.json", [{ email: "d@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "d@laden.ch", ...optIn("d@laden.ch") }]);
   await worker().tick();
   assert.equal(sends().length, 2, "nachts kein Versand");
 });
@@ -462,7 +470,7 @@ test("fremde Gmail-Mail bleibt im Echtversand unangetastet", async () => {
   auto();
   ownThread("t1");
   g.threads.tFremd = [{ messageId: "x", from: "boss@firma.ch", body: "Abmelden? Bitte Vertrag schicken", sent: false, draft: false, internalDate: +T0 }];
-  write("leads.json", [{ email: "neu@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "neu@laden.ch", ...optIn("neu@laden.ch") }]);
   await worker().tick();
   assert.ok(!g.calls.some((c) => c.includes("tFremd")));
   assert.ok(!sends().some((c) => c.includes("tFremd")));
@@ -508,7 +516,7 @@ test("Antwort im zulässigen Thread wird gesendet und hat Vorrang", async () => 
   auto();
   ownThread("t1", { replies: ["Klingt gut, was wäre der nächste Schritt?"], sentAt: new Date(+T0 - DAY) });
   write("state.json", { compliantThreads: { t1: { basis: "opt_in" } }, lastSendAt: +T0 - 60_000 });
-  write("leads.json", [{ email: "neu@laden.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "neu@laden.ch", ...optIn("neu@laden.ch") }]);
   const r = await worker().tick();
   assert.equal(r.sends[0].kind, "antwort", "Antwort trotz Versandabstand sofort");
 });

@@ -71,7 +71,15 @@ const discover = (candidates, opts = {}) => runDiscovery({ dir, gmail: g, search
 const cand = (host, extra = {}) => ({ company: "Muster Schreinerei AG", website: `https://${host}`, email: "", chain: false, source: `OpenStreetMap node/1 (${host})`, ...extra });
 const AUTO = { dryRun: false, sendMode: "compliant_auto", offer: "Website-Reparatur", sender: { name: "Chris Kälin", company: "Helvetic Webdesign", email: "chris@helvetic-webdesign.ch" } };
 const worker = () => createWorker({ dir, gmail: g, now: () => T0, log: () => {}, compose: async (task) => { composed.push(task); return composeResult(task); } });
-const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular" };
+// TF-024: vollständig belegte Grundlagen (Empfänger, Quelle, Datum, Umfang, Beleg, vorher eingeholt, aktiv, Vertrauen HIGH).
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch mit Einwilligungs-Checkbox",
+  consentScope: "Hinweise und Angebote zu Website-Prüfung und Website-Reparatur von Helvetic Webdesign", consentEvidence: "Double-Opt-in bestätigt am 2026-09-01 (Formular-Eintrag 4711)",
+  obtainedBeforeMarketingSend: true, withdrawalStatus: "active", consentConfidence: "HIGH" };
+const optIn = (email) => ({ ...OPTIN, consentRecipient: email });
+const CUSTOMER = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true,
+  customerRelationshipEvidence: "Auftrag und Rechnung 2025-118 (Website-Wartung)", relationshipDate: "2025-05-10", previousService: "Website-Wartung",
+  advertisedService: "Website-Reparatur", similarityRationale: "Gleiche Website, gleiche Art Leistung (Pflege/Reparatur)", emailSource: "Kundenkorrespondenz zum Auftrag 2025-118",
+  sameProvider: true, optOutStatus: "none", customerConfidence: "HIGH" };
 
 beforeEach(() => {
   web = {}; fetched = [];
@@ -246,7 +254,7 @@ test("gefundener Lead ohne Versandgrundlage: nie Entwurf, nie Send", async () =>
 
 test("gültiges opt_in in Sirs Liste: Befunde werden angehängt, compliant_auto sendet mit genau diesen Befunden", async () => {
   site("kunde.ch", { "/": { body: page({ viewport: false, links: ["/kontakt", "/impressum", "/preise"] }) }, "/preise": { status: 404 } });
-  write("leads.json", [{ email: "info@kunde.ch", company: "Kunde AG", ...OPTIN }]);
+  write("leads.json", [{ email: "info@kunde.ch", company: "Kunde AG", ...optIn("info@kunde.ch") }]);
   const r = await discover([cand("kunde.ch", { company: "Kunde AG" })]);
   assert.equal(r.found[0].status, "matched_existing_lead");
   const lead = read("leads.json")[0];
@@ -260,20 +268,20 @@ test("gültiges opt_in in Sirs Liste: Befunde werden angehängt, compliant_auto 
 });
 
 test("Bestandskunde mit ähnlicher Leistung: darf senden", async () => {
-  write("leads.json", [{ email: "info@alt.ch", approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true }]);
+  write("leads.json", [{ email: "info@alt.ch", ...CUSTOMER }]);
   await worker().tick();
   assert.equal(sent.length, 1);
 });
 
 test("Suppression: auch mit Versandgrundlage nie senden", async () => {
-  write("leads.json", [{ email: "info@stop.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "info@stop.ch", ...optIn("info@stop.ch") }]);
   write("suppression.json", { "info@stop.ch": { reason: "opt-out" } });
   await worker().tick();
   assert.equal(sent.length, 0);
 });
 
 test("Mail ohne dokumentierte Befunde darf keine Website-Probleme behaupten", async () => {
-  write("leads.json", [{ email: "info@ohne.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "info@ohne.ch", ...optIn("info@ohne.ch") }]);
   composeResult = () => ({ decision: "draft", subject: "Ihre Website", body: "Guten Tag\n\nIhre Kontaktseite liefert einen 404-Fehler." });
   await worker().tick();
   assert.equal(sent.length, 0);
@@ -282,7 +290,7 @@ test("Mail ohne dokumentierte Befunde darf keine Website-Probleme behaupten", as
 
 test("Tageslimit 100 bleibt bestehen", async () => {
   for (let i = 0; i < 100; i++) g.reg.sent["o" + i] = { to: `x${i}@y.ch`, threadId: "alt" + i, sentAt: T0.toISOString() };
-  write("leads.json", [{ email: "info@neu.ch", ...OPTIN }]);
+  write("leads.json", [{ email: "info@neu.ch", ...optIn("info@neu.ch") }]);
   const r = await worker().tick();
   assert.equal(sent.length, 0);
   assert.equal(r.report.freeToday, 0);

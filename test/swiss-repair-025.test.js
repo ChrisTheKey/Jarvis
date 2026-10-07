@@ -15,6 +15,15 @@ import { createWorker, createStore, legalBasis, zurichDay, HARD_LIMIT, WINDOW_LI
 import { runDiscovery } from "../lead-finder.js";
 import { createAuditor } from "../site-auditor.js";
 import { sanitizeState, findSensitiveKeys } from "../shared-state.js";
+// TF-024: vollständig belegte Grundlagen (Empfänger, Quelle, Datum, Umfang, Beleg, vorher eingeholt, aktiv, Vertrauen HIGH).
+const OPTIN = { approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Kontaktformular helvetic-webdesign.ch mit Einwilligungs-Checkbox",
+  consentScope: "Hinweise und Angebote zu Website-Prüfung und Website-Reparatur von Helvetic Webdesign", consentEvidence: "Double-Opt-in bestätigt am 2026-09-01 (Formular-Eintrag 4711)",
+  obtainedBeforeMarketingSend: true, withdrawalStatus: "active", consentConfidence: "HIGH" };
+const optIn = (email) => ({ ...OPTIN, consentRecipient: email });
+const CUSTOMER = { approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true,
+  customerRelationshipEvidence: "Auftrag und Rechnung 2025-118 (Website-Wartung)", relationshipDate: "2025-05-10", previousService: "Website-Wartung",
+  advertisedService: "Website-Reparatur", similarityRationale: "Gleiche Website, gleiche Art Leistung (Pflege/Reparatur)", emailSource: "Kundenkorrespondenz zum Auftrag 2025-118",
+  sameProvider: true, optOutStatus: "none", customerConfidence: "HIGH" };
 
 const T0 = new Date("2026-10-06T08:00:00Z"); // 10:00 Zürich – Morgenfenster 09:30
 const DAY = 86_400_000;
@@ -413,7 +422,7 @@ test("EDIT/DISCARD wirken über den Worker nur auf den eigenen Entwurf", async (
 test("Kennzahlen: Cold Leads, Kontakte, Drafts, manuell versendet, Auto-Send, Blocked, Opt-outs – nur Zahlen im gemeinsamen Zustand", async () => {
   write("discovered.json", { leads: {
     "muster.ch": lead(), "b.ch": lead({ domain: "b.ch", company: "B AG", email: "info@b.ch" }), "c.ch": lead({ domain: "c.ch", company: "C AG", email: "info@c.ch" }),
-    "opt.ch": lead({ domain: "opt.ch", company: "Opt AG", email: "info@opt.ch", approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Formular" }),
+    "opt.ch": lead({ domain: "opt.ch", company: "Opt AG", email: "info@opt.ch", ...optIn("info@opt.ch") }),
     "priv.ch": lead({ domain: "priv.ch", company: "Priv AG", email: "x@gmail.com" }),
   } });
   for (const d of ["muster.ch", "b.ch", "c.ch"]) queue(lead({ domain: d, company: d === "muster.ch" ? "Muster AG" : d[0].toUpperCase() + " AG", email: `info@${d}` }));
@@ -459,9 +468,9 @@ test("Discovery: Schweizer Repair-Lead → Kontakt aus Team-Seite, lokaler Cold-
 });
 
 test("TF-022/Auto-Send-Regeln unverändert: opt_in / Bestandskunde / angefragter Kontakt; 50 + 50 / 100; 0 berechtigt → 0 Sends", async () => {
-  assert.equal(legalBasis(lead({ approved: true, consentBasis: "opt_in", consentAt: "2026-09-01T10:00:00Z", consentSource: "Formular" }), T0), "opt_in");
-  assert.equal(legalBasis(lead({ approved: true, consentBasis: "existing_customer", existingCustomer: true, similarService: true }), T0), "existing_customer");
-  assert.equal(legalBasis(lead({ approved: true, consentBasis: "requested_contact", request_source: "Formular", request_date: "2026-09-20", request_scope: "Website-Reparatur" }), T0), "requested_contact");
+  assert.equal(legalBasis(lead({ ...optIn("info@muster.ch") }), T0), "opt_in");
+  assert.equal(legalBasis(lead({ ...CUSTOMER }), T0), "existing_customer");
+  assert.equal(legalBasis(lead({ approved: true, consentBasis: "requested_contact", request_source: "Formular", request_date: "2026-09-20", request_scope: "Website-Reparatur", request_evidence: "Formular-Eintrag «Bitte Offerte Website-Reparatur»", response_scope: "Website-Reparatur", recipient_or_submission_channel: "info@muster.ch", requestConfidence: "HIGH" }), T0), "requested_contact");
   assert.equal(HARD_LIMIT, 100);
   assert.equal(WINDOW_LIMIT, 50);
   assert.deepEqual(SEND_WINDOWS.map((w) => [w.start, w.limit]), [["09:30", 50], ["14:30", 50]]);
