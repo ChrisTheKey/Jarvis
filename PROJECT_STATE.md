@@ -139,6 +139,23 @@ der auch die HUD-Anzeige AI SERVICE enthält). Danach VPS neu deployen (`bash de
   (keine abweichenden Deploy-Context-/Branch-Werte), dann Production-Redeploy mit „Clear cache“; danach `node scripts/check-mail-auth.mjs`
   → erwartet vps_worker 200. Erst dann `bash deploy/vps/deploy.sh fiverr` und Schritt 6.
 
+## Diagnose 2026-10-07 16:27 UTC (Fortsetzung)
+- Git sauber, HEAD 4f0d2b6 = origin. Local Core ok (pid 11816). Windows-Worker lebt (Lock/Metrics aktuell), `standby_no_send_authority`.
+- check-mail-auth: Windows 200 / dedicated=true / holder=vps / self=false; VPS 401. Lokaler Token: Länge 43, sha256_12 `523a5de6514a`.
+- Code-Vergleich (`mail-requests.js` safeEqual, exakt, kein Trim) ist korrekt → 401 = Netlify-Production-Wert ≠ lokaler Wert.
+- SSH `fiverr` scheitert: Key `fiverr_hetzner_working_ed25519` ist passphrase-geschützt, ssh-agent nicht geladen → VPS nicht prüfbar.
+- **RISIKO / REIHENFOLGE GEÄNDERT:** VPS läuft noch c4b9b2c (vor TF-024/025, ohne Cold-Send-Sperre, alte legalBasis) und hat per
+  Secret-Migration leads.json. Sobald der Netlify-Token passt, wird der VPS SOFORT aktiver Sender. Darum ZUERST VPS auf aktuellen
+  Commit deployen (bleibt wegen 401 im Standby), DANN Netlify-Token korrigieren.
+- Neue Reihenfolge: (a) ssh-agent + Key laden → (b) `bash deploy/vps/deploy.sh fiverr` (ohne Flag) → VPS-Commit prüfen
+  → (c) Netlify-Wert per Fingerprint der Zwischenablage gegen `523a5de6514a`/43 prüfen, korrigieren, Production-Redeploy
+  → (d) check-mail-auth: VPS 200 self=true, Windows self=false → genau ein Sender.
+- 16:37 UTC (a)+(b) ERLEDIGT: Erster Deploy 4f0d2b6 → Crash-Loop `ERR_MODULE_NOT_FOUND /app/swiss-repair.js` (Dockerfile-COPY ohne
+  swiss-repair.js/email-permission.js seit TF-022/024; nichts gesendet). Fix 5cb78a3 (+ Test: transitive Imports ⊆ COPY), 234/234 grün,
+  neu deployt: DEPLOYED_COMMIT 5cb78a3, Container healthy, restart=unless-stopped, 0 Restarts, worker_started role=vps,
+  sync 401 → `standby_no_send_authority`, authority.json holder=local self=false. Commit 5cb78a3 lokal, noch nicht gepusht.
+- Nächster Schritt: (c) Netlify-Token per Fingerprint prüfen/korrigieren + Production-Redeploy.
+
 ## Offene Blocker
 - Stand 11:21 UTC: Netlify HAT `JARVIS_MAIL_WORKER_TOKEN` (Cloud meldet authority.dedicated=true), aber mit ANDEREM Wert als
   `.secrets/vps_worker.env` → VPS bekommt 401, bleibt Standby. Wahrscheinlich wurde ein alter Zwischenablage-Inhalt eingefügt
@@ -148,7 +165,7 @@ der auch die HUD-Anzeige AI SERVICE enthält). Danach VPS neu deployen (`bash de
 - 11:43 UTC: nach erneutem Einfügen per clip.exe + neuem Deploy (neues ETag) weiterhin 401, dedicated=true → Wert in Production
   stimmt immer noch nicht mit der lokalen Datei überein (z. B. kontextspezifischer Override, Team-Variable, Anführungszeichen).
 - Live-Netlify-Build enthält 138c460 noch nicht (HUD ohne „AI SERVICE“). VPS noch auf c4b9b2c (ohne AI-Fail-Closed).
-- Fix: Token mit `grep '^JARVIS_MAIL_WORKER_TOKEN=' .secrets/vps_worker.env | cut -d= -f2- | tr -d '
+- Fix: Token mit `grep '^JARVIS_MAIL_WORKER_TOKEN=' .secrets/vps_worker.env | cut -d= -f2- | tr -d '
 ' | clip.exe` kopieren,
   in Netlify ersetzen, Production neu deployen; dann `bash deploy/vps/deploy.sh fiverr` (ohne Flag), dann Schritt 6.
 - 2026-10-07 16:00 UTC: 401 weiterhin vorhanden (siehe Diagnose-Stand). Zusätzlich: GitHub lieferte beim Push HTTP 500.
