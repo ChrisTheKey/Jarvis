@@ -265,18 +265,18 @@ const server = http.createServer(async (req, res) => {
     }
     // Lead-Pipeline mit Befunden und Angebotsklasse – nur lokal (Leads gelangen nie in die Cloud).
     if (req.method === "GET" && url.pathname === "/api/leads") {
-      const { leads } = sales.loadPipeline({ registry: await gmailRegistry() });
-      const metrics = sales.computeMetrics(leads);
+      const { leads, optOuts } = sales.loadPipeline({ registry: await gmailRegistry() });
+      const metrics = sales.computeMetrics(leads, new Date(), { optOuts });
       return json(res, 200, { leads, metrics, offers: sales.OFFERS });
     }
-    // Einzelprüfung (INDIVIDUAL_ONE_TO_ONE_REVIEW): genau EINE Mail je Aufruf freigeben, ablehnen oder bearbeiten – nur lokal.
-    // Es gibt bewusst keinen Endpunkt für Sammelfreigaben.
-    const reviewOp = url.pathname.match(/^\/api\/reviews\/(approve|reject|edit)$/)?.[1];
-    if (req.method === "POST" && reviewOp) {
+    // Cold-Lead-Entwürfe (COLD_LEAD_DRAFT_ONLY): je Aufruf genau EIN Entwurf bearbeiten, verwerfen oder als manuell versendet
+    // markieren – nur lokal. Es gibt bewusst keinen Endpunkt zum Senden, Erzwingen oder Setzen einer Rechtsgrundlage.
+    const coldOp = url.pathname.match(/^\/api\/cold-drafts\/(edit|discard|mark-manual-sent)$/)?.[1];
+    if (req.method === "POST" && coldOp) {
       let payload;
       try { payload = JSON.parse(await readBody(req, 20_000)); } catch { return json(res, 400, { error: "Ungültige Anfrage." }); }
       try {
-        const r = swissRepair.reviewAction(mailStore(MAIL_DIR), reviewOp, payload);
+        const r = swissRepair.coldDraftAction(mailStore(MAIL_DIR), coldOp, payload);
         refreshSales();
         return json(res, 200, { ok: true, review: r });
       } catch (e) { return json(res, 400, { error: e.message }); }

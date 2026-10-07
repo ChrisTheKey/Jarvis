@@ -4,8 +4,10 @@
 // Swiss Repair Outreach (Schweiz-Signale, Website-Zustand, Einzelprüfung) liegt in swiss-repair.js.
 //
 // Angebote (keine weiteren Preisstufen, kein Neubau, kein Redesign, kein Upsell):
-//   REPAIR_CHECK_150  CHF 150  Website prüfen, Probleme dokumentieren, Empfehlungen liefern – keine Umsetzung
-//   REPAIR_FIX_500    CHF 500  konkrete Probleme auf der bestehenden Website reparieren bzw. optimieren
+//   REPAIR_CHECK_150  CHF 150  Check & Anleitung: Fehler prüfen, erklären, Schritt-für-Schritt-Anleitung – Reparatur macht der Kunde selbst
+//   REPAIR_FIX_500    CHF 480  Check & Reparatur: kompletter Check, alle gefundenen Fehler beheben, Test Desktop/Smartphone
+// Die Klassen-IDs (…_500) bleiben aus Kompatibilität mit gespeicherten Daten; massgeblich ist OFFERS[…].price
+// bzw. die Landingpage LANDING_PAGE_URL.
 // Lässt sich keines aus belegten Audit-Befunden begründen: NONE. Evidence stammt nur aus websiteIssues des Audits.
 //
 //   node sales.js report                         Kennzahlen (auch in .secrets/mail_worker/metrics.json)
@@ -16,22 +18,24 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, legalBasis, normEmail } from "./mail-worker.js";
-import { qualifyRepairLead, REVIEWS_FILE } from "./swiss-repair.js";
+import { qualifyRepairLead, COLD_DRAFTS_FILE, FREEMAIL_RE } from "./swiss-repair.js";
 
 export const OFFERS = Object.freeze({
-  REPAIR_CHECK_150: Object.freeze({ price: 150, currency: "CHF", label: "Website-Check CHF 150", scope: "Website prüfen, konkrete Probleme dokumentieren, Ergebnisse und Empfehlungen liefern – keine umfangreiche Reparatur." }),
-  REPAIR_FIX_500: Object.freeze({ price: 500, currency: "CHF", label: "Reparatur CHF 500", scope: "Konkrete technische oder sichtbare Probleme auf der bestehenden Website reparieren bzw. optimieren." }),
+  REPAIR_CHECK_150: Object.freeze({ price: 150, currency: "CHF", label: "Check & Anleitung für CHF 150", scope: "Ich prüfe Ihre Website auf Fehler, erkläre jedes gefundene Problem verständlich und liefere eine Schritt-für-Schritt-Anleitung, mit der Sie die Reparatur selbst durchführen können. Festpreis." }),
+  REPAIR_FIX_500: Object.freeze({ price: 480, currency: "CHF", label: "Check & Reparatur für CHF 480", scope: "Kompletter Check der gesamten Website, alle gefundenen Fehler werden behoben und auf Desktop und Smartphone getestet. Festpreis, Rechnung erst nach Ihrer Abnahme – kein Fix, keine Rechnung." }),
 });
 export const OFFER_CLASSES = Object.freeze(Object.keys(OFFERS));
+// Landingpage von Chris mit beiden Angeboten und Anfrageformular – wird in Werbemails verlinkt.
+export const LANDING_PAGE_URL = "https://helvetic-webdesign-reperatur.netlify.app/";
 export const NONE = "NONE";
 export const isOfferClass = (c) => OFFER_CLASSES.includes(c);
 
 export const LIFECYCLE = Object.freeze(["discovered", "audited", "repair_candidate", "blocked_no_legal_basis", "approved", "contacted", "replied", "customer", "not_interested", "do_not_contact"]);
 export const WORK_STATUS = Object.freeze(["open", "in_progress", "delivered"]);
 
-// Konkrete, auf der bestehenden Website behebbare Probleme (nur mit Schweregrad mittel/hoch) → Reparatur CHF 500.
+// Konkrete, auf der bestehenden Website behebbare Probleme (nur mit Schweregrad mittel/hoch) → Reparatur CHF 480.
 const FIXABLE = new Set(["https_certificate", "no_https", "redirect_loop", "mixed_content", "broken_link", "broken_image", "contact_page_broken", "http_error", "missing_title", "slow_response", "outdated_cms"]);
-// Diese Befunde sprechen gegen ein Weiterverwenden bzw. lassen sich passiv nicht beurteilen → nie Grundlage für CHF 500.
+// Diese Befunde sprechen gegen ein Weiterverwenden bzw. lassen sich passiv nicht beurteilen → nie Grundlage für CHF 480.
 const NOT_REPAIRABLE = new Set(["unreachable", "outdated_technology"]);
 const SEVERITY = ["low", "medium", "high"];
 
@@ -137,7 +141,7 @@ export function loadPipeline({ dir = WORKER_DIR, registry = { sent: {}, drafts: 
   const suppression = store.read("suppression.json", {});
   const state = store.read("state.json", { actions: {} });
   const records = store.read("sales.json", { records: {} }).records || {};
-  const reviews = store.read(REVIEWS_FILE, { reviews: {} }).reviews || {};
+  const reviews = store.read(COLD_DRAFTS_FILE, { reviews: {} }).reviews || {};
   const contacted = new Set(Object.values(registry.sent || {}).map((x) => normEmail(x.to || "")).filter(Boolean));
   const replied = new Set(Object.entries(state.actions || {}).filter(([k]) => k.startsWith("reply:")).map(([, a]) => normEmail(a.to || "")).filter(Boolean));
   // Sirs Lead-Liste hat Vorrang (dort steht die Versandgrundlage); gefundene Leads ergänzen nur.
@@ -152,26 +156,29 @@ export function loadPipeline({ dir = WORKER_DIR, registry = { sent: {}, drafts: 
     const email = normEmail(l.email || "");
     const status = lifecycleStatus(l, { ...ctx, record });
     const review = reviews[l.domain] || null;
-    const repair = qualifyRepairLead(l, { now, review, base: status });
+    const suppressed = !!(email && suppression[email]) || l.status === "suppressed";
+    const repair = qualifyRepairLead(l, { now, review, base: status, suppressed });
     return {
       key: l.domain, company: l.company || null, domain: l.domain, website: l.website || null,
       contact: { email: l.email || null, emailSource: l.emailSource || null, name: l.name || null, nameSource: l.nameSource || null },
       issues: observedEvidence(l.websiteIssues), auditedAt: l.auditedAt || null, auditScore: l.auditScore ?? null,
       offer, legalBasis: basis, eligible: !!basis && !suppression[email], legalBasisStatus: basis ? `versandberechtigt (${basis})` : "NICHT VERSANDBERECHTIGT",
-      status, repair, review, suppressed: !!(email && suppression[email]) || l.status === "suppressed", optedOut: !!(email && /opt-out/i.test(suppression[email]?.reason || "")),
+      status, repair, review, suppressed, optedOut: !!(email && /opt-out/i.test(suppression[email]?.reason || "")),
       rawStatus: l.status || null, source: l.source,
       lastContactAt: lastSent(registry, email), replied: !!(email && replied.has(email)) || record.status === "replied",
       sale: validSale(record.sale) ? record.sale : null, customerStatus: validSale(record.sale) ? record.sale.customer_status : null,
     };
   });
-  return { leads, records };
+  const optOuts = Object.values(suppression).filter((x) => /opt-out/i.test(x?.reason || "")).length;
+  return { leads, records, optOuts };
 }
 function lastSent(registry, email) {
   if (!email) return null;
   return Object.values(registry.sent || {}).filter((x) => normEmail(x.to || "") === email).map((x) => x.sentAt).filter(Boolean).sort().at(-1) || null;
 }
 
-export function computeMetrics(leads = [], now = new Date()) {
+const COLD_STAGES = new Set(["cold_lead_draft_only", "draft_created", "contacted", "replied", "customer", "not_interested"]);
+export function computeMetrics(leads = [], now = new Date(), { optOuts = null } = {}) {
   const count = (f) => leads.filter(f).length;
   const sales = leads.map((l) => l.sale).filter(validSale);
   const s150 = sales.filter((s) => s.selected_offer === "REPAIR_CHECK_150"), s500 = sales.filter((s) => s.selected_offer === "REPAIR_FIX_500");
@@ -196,8 +203,15 @@ export function computeMetrics(leads = [], now = new Date()) {
     repair_150_candidates: count((l) => l.repair?.offer.offer_class === "REPAIR_CHECK_150"),
     repair_500_candidates: count((l) => l.repair?.offer.offer_class === "REPAIR_FIX_500"),
     auto_send_eligible: count((l) => l.repair?.automatic_send_eligible && !l.suppressed),
-    individual_review_required: count((l) => l.repair?.stage === "individual_review_required"),
-    blocked: count((l) => ["blocked_no_contact_basis", "blocked_no_legal_basis", "do_not_contact"].includes(l.repair?.stage) || l.status === "blocked_no_legal_basis"),
+    // TF-025 Cold-Lead-Entwürfe (nie automatisch gesendet)
+    cold_leads_found: count((l) => l.repair?.contact_basis === "COLD_LEAD_DRAFT_ONLY" || l.review?.draft_mode === "COLD_LEAD_DRAFT_ONLY"),
+    business_contacts_found: count((l) => !!l.auditedAt && !!l.contact.email && !FREEMAIL_RE.test(l.contact.email)),
+    drafts_created: count((l) => !!l.review?.gmail_draft_id),
+    drafts_open: count((l) => l.review?.status === "draft_created"),
+    drafts_manually_sent: count((l) => l.review?.status === "manually_sent"),
+    blocked: count((l) => ["blocked_no_contact_basis", "do_not_contact"].includes(l.repair?.stage) || l.review?.status === "blocked"
+      || (l.status === "blocked_no_legal_basis" && !COLD_STAGES.has(l.repair?.stage))),
+    opt_outs: optOuts ?? count((l) => l.optedOut),
     revenue_150: s150.length * OFFERS.REPAIR_CHECK_150.price, revenue_500: s500.length * OFFERS.REPAIR_FIX_500.price,
   };
   m.total_revenue = m.revenue_150 + m.revenue_500;
@@ -206,8 +220,8 @@ export function computeMetrics(leads = [], now = new Date()) {
 
 // Kennzahlen berechnen und lokal festhalten (metrics.json). Gibt nur Zahlen zurück – sicher für den gemeinsamen Zustand.
 export function persistMetrics({ dir = WORKER_DIR, registry, now = new Date() } = {}) {
-  const { leads } = loadPipeline({ dir, registry, now });
-  const metrics = computeMetrics(leads, now);
+  const { leads, optOuts } = loadPipeline({ dir, registry, now });
+  const metrics = computeMetrics(leads, now, { optOuts });
   createStore(dir).write("metrics.json", metrics);
   return metrics;
 }

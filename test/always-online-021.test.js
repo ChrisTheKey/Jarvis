@@ -403,7 +403,7 @@ test("Texte auf dem VPS über die Anthropic-API: Schlüssel nur im Header, unles
 
 test("Two-Offer-Pipeline unverändert und keine Preisangebote im neuen Code", async () => {
   const { OFFER_CLASSES, OFFERS } = await import("../sales.js");
-  assert.deepEqual(OFFER_CLASSES.map((c) => OFFERS[c].price), [150, 500]);
+  assert.deepEqual(OFFER_CLASSES.map((c) => OFFERS[c].price), [150, 480]);
   for (const f of ["deploy/vps/docker-compose.yml", "deploy/vps/Dockerfile", "mail-requests.js", "public/index.html"]) assert.doesNotMatch(read(f), /2['’]?490|Redesign-Angebot|Neubau-Angebot/i, f);
 });
 

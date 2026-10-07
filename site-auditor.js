@@ -177,8 +177,9 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     })();
     const contactUrl = near(/kontakt|contact|contatto/i);
     const impressumUrl = near(/impressum|imprint|mentions-l[ée]gales|colophon|note-legali/i);
+    const teamUrl = near(/\bteam\b|ueber-uns|über-uns|uber-uns|about-us|qui-sommes|chi-siamo/i);
     const pages = { home: html };
-    const toCheck = [...new Set([contactUrl, impressumUrl, ...unique].filter(Boolean))].slice(0, maxLinks);
+    const toCheck = [...new Set([contactUrl, impressumUrl, teamUrl, ...unique].filter(Boolean))].slice(0, maxLinks);
     for (const u of toCheck) {
       const path = new URL(u).pathname;
       if (!allowed(path)) continue;
@@ -190,6 +191,7 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
       } else if (r.status < 400) {
         if (u === contactUrl) pages.contact = r.html;
         if (u === impressumUrl) pages.impressum = r.html;
+        if (u === teamUrl && teamUrl !== contactUrl && teamUrl !== impressumUrl) pages.team = r.html;
       }
     }
     const imgUrls = [...new Set(imgs.map((t) => attr(t, "src")).filter((s) => s && !/^data:/i.test(s)).map((s) => { try { return new URL(s, page.url).href; } catch { return null; } }).filter(Boolean))];
@@ -199,7 +201,7 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
       if (!r.error && BROKEN(r.status)) add("broken_image", u, `Bild liefert HTTP ${r.status} (eingebunden auf ${page.url})`, "medium");
     }
 
-    return result(true, { finalUrl: page.url, title, pages, contactUrl, impressumUrl });
+    return result(true, { finalUrl: page.url, title, pages, contactUrl, impressumUrl, teamUrl });
   }
 
   return { audit };

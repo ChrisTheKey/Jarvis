@@ -25,6 +25,9 @@ const REGISTRY_FILE = path.join(SECRETS, "gmail_jarvis.json");
 const API = "https://gmail.googleapis.com/gmail/v1/users/me";
 const SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.labels"];
 export const LABEL = "JARVIS";
+// TF-025: Cold-Lead-Entwürfe – Jarvis legt sie an, sendet sie aber NIE (weder Worker, VPS, Kampagne noch Cloud-Queue).
+// Nur Chris versendet sie selbst in Gmail. Diese Sperre sitzt hier, auf der untersten Ebene vor jedem Send.
+export const COLD_DRAFT_MODE = "COLD_LEAD_DRAFT_ONLY";
 
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } };
 function writeSecret(file, data) {
@@ -210,7 +213,8 @@ export async function createDraft(fields) {
   const info = await labelAndDescribe(draft.message.id, lid);
   if (fields.threadId && info.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
   const reply = fields.inReplyTo ? { inReplyTo: fields.inReplyTo, references: fields.references } : {};
-  updateRegistry((r) => { r.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, createdAt: new Date().toISOString() }; });
+  const cold = fields.mode === COLD_DRAFT_MODE ? { mode: COLD_DRAFT_MODE, leadId: fields.leadId || null, draftHash: fields.draftHash || null, legalBasis: "NONE" } : {};
+  updateRegistry((r) => { r.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, ...cold, createdAt: new Date().toISOString() }; });
   return { draftId: draft.id, ...info };
 }
 
@@ -231,7 +235,8 @@ export const WINDOW_SEND_LIMIT = 50;
 export const SEND_WINDOW_IDS = ["morning", "afternoon"];
 const zurichDay = (d) => new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Zurich" }).format(d);
 // Unklare Sendungen (Absturz zwischen Gmail und Register) zählen vorsichtig mit; fehlgeschlagene nicht.
-const todays = (reg, now) => [...Object.values(reg.sent || {}), ...Object.values(reg.sending || {})].filter((s) => s.sentAt && zurichDay(new Date(s.sentAt)) === zurichDay(now));
+// Von Chris manuell in Gmail versendete Cold-Entwürfe sind keine Jarvis-Sends und zählen nicht aufs Limit.
+const todays = (reg, now) => [...Object.values(reg.sent || {}), ...Object.values(reg.sending || {})].filter((s) => !s.manual && s.sentAt && zurichDay(new Date(s.sentAt)) === zurichDay(now));
 export const sentToday = (reg = loadRegistry(), now = new Date()) => todays(reg, now).length;
 export const sentInWindow = (window, reg = loadRegistry(), now = new Date()) => todays(reg, now).filter((s) => s.window === window).length;
 
@@ -253,7 +258,11 @@ async function withSendLock(fn) {
 }
 
 // window: "morning" | "afternoon" für automatische Läufe des Mail-Workers; ohne Fenster (z. B. manuell) gilt nur das Tageslimit.
-export const sendDraft = (draftId, { window = null } = {}) => withSendLock(async () => {
+export const assertSendable = (draftId, reg = loadRegistry()) => {
+  if (reg.drafts?.[draftId]?.mode === COLD_DRAFT_MODE) throw new Error(`Entwurf ${draftId} ist ein Cold-Lead-Entwurf (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie. Nur Chris entscheidet manuell in Gmail.`);
+};
+export const sendDraft = async (draftId, { window = null } = {}) => { assertSendable(draftId); return withSendLock(async () => {
+  assertSendable(draftId);
   if (window !== null && !SEND_WINDOW_IDS.includes(window)) throw new Error(`Unbekanntes Versandfenster ${window} – nicht gesendet.`);
   const reg = loadRegistry();
   const { entry } = await assertOwnedDraft(draftId, reg);
@@ -272,7 +281,56 @@ export const sendDraft = (draftId, { window = null } = {}) => withSendLock(async
     r.sent[sent.id] = { ...info, to: entry.to, subject: entry.subject, fromDraft: draftId, ...(window && { window }), sentAt: new Date().toISOString() };
   });
   return info;
-});
+}); };
+
+// Verwirft einen EIGENEN Entwurf (z. B. DISCARD DRAFT im Dashboard). Fremde Entwürfe: assertOwnedDraft lehnt ab, bevor Gmail gefragt wird.
+export async function deleteDraft(draftId) {
+  const reg = loadRegistry();
+  await assertOwnedDraft(draftId, reg);
+  await gmail("DELETE", `/drafts/${encodeURIComponent(draftId)}`);
+  updateRegistry((r) => { delete r.drafts[draftId]; });
+  return { draftId, deleted: true };
+}
+
+// Erkennt, ob Chris einen Cold-Entwurf in Gmail manuell versendet (oder dort gelöscht) hat. Geprüft werden nur registrierte
+// Cold-Entwürfe und nur der Thread, den dieser Entwurf selbst eröffnet hat. Als Jarvis-Thread registriert wird er nur, wenn die
+// Zuordnung eindeutig ist: Thread-ID gleich, erste Nachricht ist eine gesendete Nachricht an denselben Empfänger mit demselben
+// Betreff, nicht älter als der Entwurf. Die Rechtsgrundlage bleibt NONE; ein Fenster/Limit wird nicht belastet.
+export async function syncColdDrafts() {
+  const out = [];
+  for (const [draftId, e] of Object.entries(loadRegistry().drafts || {})) {
+    if (e.mode !== COLD_DRAFT_MODE) continue;
+    const exists = await gmail("GET", `/drafts/${encodeURIComponent(draftId)}?format=minimal`).then(() => true, (err) => {
+      if (/not found|404/i.test(err.message)) return false;
+      throw err;
+    });
+    if (exists) continue;
+    const thread = await gmail("GET", `/threads/${encodeURIComponent(e.threadId)}?format=metadata&metadataHeaders=To&metadataHeaders=Subject`).catch((err) => {
+      if (/not found|404/i.test(err.message)) return null;
+      throw err;
+    });
+    const msgs = (thread?.messages || []).slice().sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
+    const first = msgs[0];
+    const hdr = (m, n) => m?.payload?.headers?.find((h) => h.name.toLowerCase() === n)?.value || "";
+    const sameTo = first && hdr(first, "to").toLowerCase().includes(String(e.to).toLowerCase().replace(/^.*<|>.*$/g, ""));
+    const unique = thread && thread.id === e.threadId && first && msgs.every((m) => m.threadId === e.threadId)
+      && (first.labelIds || []).includes("SENT") && !(first.labelIds || []).includes("DRAFT") && sameTo
+      && hdr(first, "subject") === (e.subject || "") && Number(first.internalDate) >= Date.parse(e.createdAt) - 60_000;
+    if (unique) {
+      const sentAt = new Date(Number(first.internalDate)).toISOString();
+      updateRegistry((r) => {
+        delete r.drafts[draftId];
+        r.sent[first.id] = { messageId: first.id, threadId: e.threadId, to: e.to, subject: e.subject, fromDraft: draftId, sentAt, manual: true, mode: COLD_DRAFT_MODE, leadId: e.leadId, legalBasis: "NONE" };
+      });
+      out.push({ draftId, leadId: e.leadId, status: "manually_sent", messageId: first.id, threadId: e.threadId, sentAt });
+    } else {
+      // Gelöscht oder nicht eindeutig zuzuordnen: nicht als Jarvis-Thread registrieren.
+      updateRegistry((r) => { delete r.drafts[draftId]; });
+      out.push({ draftId, leadId: e.leadId, status: thread ? "unclear" : "gone" });
+    }
+  }
+  return out;
+}
 
 export const listOwned = () => loadRegistry();
 

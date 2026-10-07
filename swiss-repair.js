@@ -1,5 +1,5 @@
-// Swiss Repair Outreach (TF-022) – Jarvis sucht Schweizer Firmen mit grundsätzlich brauchbarer Website und einem konkreten,
-// passiv belegten Reparaturbefund. Angeboten werden ausschliesslich REPAIR_CHECK_150 (CHF 150) und REPAIR_FIX_500 (CHF 500).
+// Swiss Repair Outreach (TF-022 / TF-025) – Jarvis sucht Schweizer Firmen mit grundsätzlich brauchbarer Website und einem
+// konkreten, passiv belegten Reparaturbefund. Angeboten werden ausschliesslich REPAIR_CHECK_150 (CHF 150) und REPAIR_FIX_500 (CHF 480).
 // Kein Neubau, kein Redesign, kein Upsell. Dieses Modul sendet nie selbst.
 //
 // Versandgrundlagen (contact_basis):
@@ -7,24 +7,29 @@
 //   EXISTING_CUSTOMER_SIMILAR_SERVICE   Bestandskunde + ähnliche eigene Leistung       → automatische Fenster erlaubt
 //   REQUESTED_CONTACT                   Empfänger hat selbst angefragt (Quelle/Datum/Umfang),
 //                                       nur wenn der Umfang Website/Reparatur abdeckt → automatische Fenster erlaubt
-//   INDIVIDUAL_ONE_TO_ONE_REVIEW        neue Schweizer Firma ohne obige Grundlage      → NIE automatisch, nie Batch, nie Follow-up.
-//                                       Einzelner Entwurf, Chris prüft und gibt genau diese Mail frei (lead_id + Empfänger +
-//                                       draft_hash + Befund-Hash). Jede Änderung an Entwurf oder Empfänger hebt die Freigabe auf.
+//   COLD_LEAD_DRAFT_ONLY (TF-025)       neue Schweizer Firma, öffentliche GESCHÄFTLICHE Adresse, keine obige Grundlage:
+//                                       Jarvis legt genau EINEN Gmail-Entwurf an – und sendet ihn NIE. Kein Worker, kein VPS,
+//                                       keine Kampagne, keine Cloud-Queue. Chris entscheidet selbst in Gmail. legal_basis bleibt NONE,
+//                                       auch nach einem manuellen Versand. Kein automatischer Follow-up.
 //   NONE                                kein Kontakt (blocked_no_contact_basis)
-// Eine öffentliche Adresse allein (public_email_only) ist nie eine automatische Versandgrundlage.
+// Eine öffentlich gefundene Adresse (auch info@, Impressum, Verzeichnis) ist nie eine automatische Versandgrundlage.
 import crypto from "node:crypto";
-import { legalBasis, normEmail, finalizeCommercial } from "./mail-worker.js";
-import { OFFERS, NONE } from "./sales.js";
+import { legalBasis, normEmail } from "./mail-worker.js";
+import { OFFERS, NONE, LANDING_PAGE_URL } from "./sales.js";
 
+// Lokales Register der Cold-Lead-Entwürfe (Dateiname aus TF-022 beibehalten, damit vorhandene Daten lesbar bleiben).
 export const REVIEWS_FILE = "individual_reviews.json";
+export const COLD_DRAFTS_FILE = REVIEWS_FILE;
+export const COLD_MODE = "COLD_LEAD_DRAFT_ONLY";
+export const COLD_DRAFT_COOLDOWN_DAYS = 180; // keine zweite Cold-Mail an dieselbe Firma/Adresse innerhalb dieses Zeitraums
 export const CONTACT_BASIS = Object.freeze({
   OPT_IN: "OPT_IN", EXISTING_CUSTOMER_SIMILAR_SERVICE: "EXISTING_CUSTOMER_SIMILAR_SERVICE", REQUESTED_CONTACT: "REQUESTED_CONTACT",
-  INDIVIDUAL_ONE_TO_ONE_REVIEW: "INDIVIDUAL_ONE_TO_ONE_REVIEW", NONE: "NONE",
+  COLD_LEAD_DRAFT_ONLY: COLD_MODE, NONE: "NONE",
 });
 const AUTO_BASIS = { opt_in: "OPT_IN", existing_customer: "EXISTING_CUSTOMER_SIMILAR_SERVICE", requested_contact: "REQUESTED_CONTACT" };
 export const SITE_CONDITIONS = Object.freeze(["modern_maintainable", "repairable", "unclear", "redesign_likely"]);
 export const REPAIR_LIFECYCLE = Object.freeze(["discovered", "audited", "swiss_verified", "modern_repair_fit", "repair_candidate", "blocked_no_contact_basis",
-  "individual_review_required", "approved_one_to_one", "contacted", "replied", "customer", "not_interested", "do_not_contact"]);
+  "cold_lead_draft_only", "draft_created", "contacted", "replied", "customer", "not_interested", "do_not_contact"]);
 
 // ---------- 1) Schweiz-Signale ----------
 
@@ -87,7 +92,7 @@ export const isRepairFit = (c) => c === "modern_maintainable" || c === "repairab
 
 // ---------- 3) Konkreter Reparaturbefund (nur aus dem passiven Audit) ----------
 
-// "fix": Umsetzung sinnvoll (CHF 500); "check": zuerst Analyse/Dokumentation (CHF 150).
+// "fix": Umsetzung sinnvoll (CHF 480); "check": zuerst Analyse/Dokumentation (CHF 150).
 export const REPAIR_TYPES = Object.freeze({
   broken_link: "fix", contact_page_broken: "fix", broken_image: "fix", broken_mailto: "fix", https_certificate: "fix", redirect_loop: "fix",
   missing_title: "fix", no_https: "fix", mixed_content: "check", slow_response: "check", no_https_redirect: "check",
@@ -113,20 +118,86 @@ export function classifyRepairOffer(lead = {}, swiss = swissFor(lead), condition
   const fix = evidence.filter((e) => REPAIR_TYPES[e.issue_type] === "fix" && e.severity !== "low" && e.reproducible);
   const types = (list) => [...new Set(list.map((e) => e.issue_type))].join(", ");
   if (fix.length) return out("REPAIR_FIX_500", fix.length >= 2 || fix.some((e) => e.severity === "high") ? "high" : "medium",
-    `Website grundsätzlich weiterverwendbar; konkrete reparierbare Befunde: ${types(fix)}.`, "Reparatur CHF 500 anbieten – nur mit diesen Befunden.");
+    `Website grundsätzlich weiterverwendbar; konkrete reparierbare Befunde: ${types(fix)}.`, "Check & Reparatur CHF 480 anbieten – nur mit diesen Befunden.");
   return out("REPAIR_CHECK_150", evidence.some((e) => e.reproducible) ? "medium" : "low",
     `Befunde (${types(evidence)}) rechtfertigen Analyse/Dokumentation, keine grössere Umsetzung.`, "Website-Check CHF 150 anbieten – nur mit diesen Befunden.");
 }
 
-// ---------- 5) Versandgrundlage ----------
+// ---------- 5) Geschäftlicher Kontakt (nur öffentliche Firmenseiten) ----------
 
-export function contactBasis(lead = {}, { candidate = false, now = new Date() } = {}) {
+// Freemail-/Privatadressen sind nie ein geschäftlicher Cold-Kontakt.
+export const FREEMAIL_RE = /@(gmail|googlemail|outlook|hotmail|live|yahoo|icloud|me|gmx|web|bluewin|hispeed|sunrise|protonmail|proton|yandex|aol)\.[a-z.]+$/i;
+const EMAIL_G = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+const GENERIC_LOCAL = /^(info|kontakt|contact|office|mail|hallo|hello|post|admin|empfang|reception|sekretariat|team|anfrage|offerte|verkauf|sales|support)$/i;
+const ROLE_RE = /(Webmaster|Website|Web|Online[- ]?Marketing|Marketing|Kommunikation|Informatik|IT[- ]?(?:Leiter(?:in)?|Verantwortliche[rn]?|Support)?|Geschäftsführ(?:er|erin|ung)|Geschäftsleitung|Inhaber(?:in)?|CEO|Leiter(?:in)? [A-ZÄÖÜ][a-zäöü]+)/;
+const NAME_RE = /([A-ZÄÖÜ][a-zäöüéèàç]+(?:[ -][A-ZÄÖÜ][a-zäöüéèàç]+){1,2})/g;
+const fold = (s = "") => s.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/ä/g, "a").replace(/[^a-z]/g, "");
+const rolePriority = (role = "") => /web|marketing|kommunikation|informatik|\bIT\b|IT-/i.test(role) ? 4 : /geschäfts|inhaber|ceo/i.test(role) ? 3 : role ? 2 : 1;
+
+// Name nur, wenn er sicher zur Adresse gehört: lokaler Teil = vorname.nachname / v.nachname / vorname / nachname.
+function nameForEmail(local, context) {
+  const l = fold(local);
+  for (const m of context.matchAll(NAME_RE)) {
+    const parts = m[1].split(/[ -]/).map(fold).filter(Boolean);
+    if (parts.length < 2) continue;
+    const [first, last] = [parts[0], parts.at(-1)];
+    if ([first + last, first[0] + last, last + first, first, last].includes(l)) return { name: m[1], at: m.index };
+  }
+  return null;
+}
+
+export function discoverBusinessContact({ pages = {}, domain = "", urls = {}, osmEmail = null, osmSource = null, owner = null, now = new Date() } = {}) {
+  const own = (e) => { const d = normEmail(e).split("@")[1] || ""; return d === domain || d.endsWith("." + domain); };
+  const found = [], rejected = [];
+  const sources = [["team", pages.team], ["impressum", pages.impressum], ["kontakt", pages.contact], ["startseite", pages.home]].filter(([, h]) => h);
+  for (const [where, html] of sources) {
+    const text = String(html).replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<a\b[^>]*href=["']mailto:([^"'?]+)[^>]*>/gi, " $1 ")
+      .replace(/<br\s*\/?>|<\/(p|div|li|tr|td|h\d)>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+    for (const m of text.matchAll(EMAIL_G)) {
+      const email = normEmail(m[0]);
+      if (/\.(png|jpe?g|gif|svg|webp)$/i.test(email) || found.some((f) => f.business_email === email) || rejected.some((r) => r.email === email)) continue;
+      if (FREEMAIL_RE.test(email)) { rejected.push({ email, reason: "private_or_freemail" }); continue; }
+      if (!own(email)) { rejected.push({ email, reason: "not_company_domain" }); continue; }
+      const context = text.slice(Math.max(0, m.index - 160), m.index + m[0].length + 40);
+      const local = email.split("@")[0];
+      const generic = GENERIC_LOCAL.test(local);
+      const hit = generic ? null : nameForEmail(local, context);
+      const contact_name = hit?.name || null;
+      // Rolle nur aus dem Text zwischen Name und Adresse – nie von einer Nachbarperson übernehmen.
+      const contact_role = hit ? context.slice(hit.at).match(ROLE_RE)?.[1] || null : null;
+      found.push({ business_email: email, contact_name, contact_role, generic, contact_source: where, source_url: urls[where] || null });
+    }
+  }
+  if (osmEmail && own(osmEmail) && !found.some((f) => f.business_email === normEmail(osmEmail)))
+    found.push({ business_email: normEmail(osmEmail), contact_name: null, contact_role: null, generic: GENERIC_LOCAL.test(normEmail(osmEmail).split("@")[0]), contact_source: "openstreetmap", source_url: osmSource });
+  // Persönliche Adressen nur mit sicher zugeordnetem Namen; Reihenfolge: Web/Marketing/IT > Geschäftsführung > andere Person > info@.
+  const usable = found.filter((f) => f.generic || f.contact_name);
+  const rank = (f) => (f.contact_name ? rolePriority(f.contact_role) + 1 : 1) * 10 + (f.contact_source === "openstreetmap" ? 0 : 1);
+  const best = usable.sort((a, b) => rank(b) - rank(a))[0];
+  if (!best) return { business_email: null, contact_name: null, contact_role: null, contact_source: null, source_url: null, collected_at: null, contact_confidence: "none", rejected };
+  // Kleine Firma mit info@: Geschäftsführung/Inhaber nur aus dem Impressum (dort ausdrücklich so bezeichnet) für die Anrede.
+  const named = best.contact_name || (best.generic && owner ? owner : null);
+  return {
+    business_email: best.business_email, contact_name: named, contact_role: best.contact_role || (named && !best.contact_name ? "Geschäftsführung/Inhaber (Impressum)" : null),
+    contact_source: best.contact_source, source_url: best.source_url, collected_at: now.toISOString(),
+    contact_confidence: best.contact_source === "openstreetmap" ? "low" : best.contact_name ? "high" : "medium", rejected,
+  };
+}
+
+// ---------- 5b) Versandgrundlage ----------
+
+export function contactBasis(lead = {}, { candidate = false, now = new Date(), suppressed = false } = {}) {
   const basis = legalBasis(lead, now);
   const email = normEmail(lead.email || "");
+  const business = !!email && !FREEMAIL_RE.test(email);
   const public_email_only = !!email && !basis;
-  if (basis) return { contact_basis: AUTO_BASIS[basis], automatic_send_eligible: true, individual_review_required: false, public_email_only };
-  if (candidate && email) return { contact_basis: CONTACT_BASIS.INDIVIDUAL_ONE_TO_ONE_REVIEW, automatic_send_eligible: false, individual_review_required: true, public_email_only };
-  return { contact_basis: CONTACT_BASIS.NONE, automatic_send_eligible: false, individual_review_required: false, public_email_only };
+  const out = (contact_basis, extra = {}) => ({ contact_basis, automatic_send_eligible: false, automatic_marketing_send_eligible: false, draft_creation_eligible: false,
+    individual_review_required: false, message_class: null, legal_basis: "NONE", automatic_send_allowed: false, public_email_only, ...extra });
+  if (basis) return out(AUTO_BASIS[basis], { automatic_send_eligible: true, automatic_marketing_send_eligible: true, automatic_send_allowed: true, legal_basis: AUTO_BASIS[basis], message_class: "AUTO_SEND_ELIGIBLE" });
+  // Cold Lead: nur Entwurf. Gefundene Adresse, Impressum, .ch, Befund oder guter Lead lösen NIE Auto-Send aus.
+  if (candidate && business && !suppressed && lead.status !== "do_not_contact" && lead.status !== "suppressed")
+    return out(CONTACT_BASIS.COLD_LEAD_DRAFT_ONLY, { draft_creation_eligible: true, individual_review_required: true, message_class: "DRAFT_ONLY" });
+  return out(CONTACT_BASIS.NONE);
 }
 
 // ---------- 6) Ranking ----------
@@ -148,29 +219,32 @@ export function repairFitScore({ swiss, condition, evidence = [], lead = {} }) {
 const swissFor = (lead) => lead.swiss_evidence ? { country: lead.country || null, swiss_evidence: lead.swiss_evidence, swiss_confidence: lead.swiss_confidence || "none" }
   : swissSignals({ domain: lead.domain || "", uid: lead.uid, discoverySource: lead.discoverySource || "" });
 
-export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, base = null } = {}) {
+export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, base = null, suppressed = false } = {}) {
   const swiss = swissFor(lead);
   const condition = siteCondition(lead);
   const offer = classifyRepairOffer(lead, swiss, condition);
   const candidate = offer.offer_class !== NONE;
-  const contact = contactBasis(lead, { candidate, now });
+  const blocked = suppressed || ["do_not_contact"].includes(base);
+  const contact = contactBasis(lead, { candidate, now, suppressed: blocked });
   const score = repairFitScore({ swiss, condition, evidence: offer.evidence, lead });
-  const approved = !!(review && approvalValid(review) && review.status === "approved");
   let stage = "discovered";
   if (lead.auditedAt || lead.websiteIssues?.length) stage = "audited";
   if (stage === "audited" && swiss.country === "CH") stage = "swiss_verified";
   if (stage === "swiss_verified" && isRepairFit(condition.site_condition)) stage = "modern_repair_fit";
   if (stage === "modern_repair_fit" && candidate) {
-    stage = contact.automatic_send_eligible ? "repair_candidate" : contact.individual_review_required ? (approved ? "approved_one_to_one" : "individual_review_required") : "blocked_no_contact_basis";
+    stage = contact.automatic_send_eligible ? "repair_candidate" : contact.draft_creation_eligible
+      ? (review?.status === "draft_created" ? "draft_created" : "cold_lead_draft_only") : "blocked_no_contact_basis";
   }
   // Spätere Pipeline-Stufen (kontaktiert, Antwort, Kunde, Sperre) aus dem bestehenden Lebenszyklus haben Vorrang.
   if (["contacted", "replied", "customer", "not_interested", "do_not_contact"].includes(base)) stage = base;
-  if (review?.status === "sent" && !["replied", "customer", "not_interested", "do_not_contact"].includes(stage)) stage = "contacted";
+  if (["manually_sent", "sent"].includes(review?.status) && !["replied", "customer", "not_interested", "do_not_contact"].includes(stage)) stage = "contacted";
   return {
     country: swiss.country, swiss_evidence: swiss.swiss_evidence, swiss_confidence: swiss.swiss_confidence,
     site_condition: condition.site_condition, site_condition_reasons: condition.reasons,
     repair_evidence: offer.evidence, offer, ...contact, ...score, stage,
+    contact_name: lead.contact_name || null, contact_role: lead.contact_role || null, business_email: contact.draft_creation_eligible || contact.automatic_send_eligible ? normEmail(lead.email || "") : null,
     contact_source: lead.contact_source || lead.emailSource || null, source_url: lead.source_url || null, collected_at: lead.collected_at || lead.auditedAt || null,
+    contact_confidence: lead.contact_confidence || (lead.email ? "medium" : "none"),
   };
 }
 
@@ -194,109 +268,125 @@ const SUBJECT_TEXT = { broken_link: "defekter Link", contact_page_broken: "Konta
   https_certificate: "Zertifikatsproblem", redirect_loop: "Weiterleitungsfehler", missing_title: "fehlender Seitentitel", no_https: "HTTPS", mixed_content: "unverschlüsselte Inhalte",
   slow_response: "Ladezeit", no_https_redirect: "HTTPS-Weiterleitung" };
 
-export function buildIndividualDraft(lead = {}, q = qualifyRepairLead(lead), sender = {}) {
+export const COLD_FOOTER = "Falls solche Hinweise für Sie nicht relevant sind, genügt eine kurze Antwort und ich melde mich diesbezüglich nicht erneut.";
+
+export function buildColdDraft(lead = {}, q = qualifyRepairLead(lead), sender = {}) {
   const ev = q.offer.evidence.slice(0, 3);
   if (!ev.length || q.offer.offer_class === NONE) throw new Error("Kein belegter Reparaturbefund – kein Entwurf.");
   const site = (lead.domain || "").replace(/^www\./, "");
   const o = OFFERS[q.offer.offer_class];
+  // Anrede nur mit sicher bekanntem Namen – ohne Annahmen über Geschlecht („Guten Tag Vorname Nachname“).
+  const hello = q.contact_name ? `Guten Tag ${q.contact_name}` : "Guten Tag";
   const lines = ev.map((e) => `- ${ISSUE_TEXT[e.issue_type](e)} Beobachtet am ${fmtDate(e.observed_at)}.`);
+  const signature = sender.signature?.trim() || [sender.name, sender.company, sender.email].filter(Boolean).join("\n");
   const body = [
-    "Guten Tag",
+    hello,
     "",
-    `beim Besuch von ${site}${lead.company ? ` (${lead.company})` : ""} ist mir eine konkrete Stelle aufgefallen, die nicht wie vorgesehen funktioniert:`,
+    `bei der Durchsicht der Website von ${lead.company || site} (${site}) ist mir Folgendes aufgefallen:`,
     "",
     ...lines,
     "",
-    "Ihre bestehende Website ist grundsätzlich gut brauchbar – es geht nicht um einen Neubau, sondern um eine gezielte Reparatur dieses Punktes.",
+    "Ihre bestehende Website wirkt grundsätzlich weiterverwendbar. Der Punkt lässt sich voraussichtlich gezielt beheben, ohne die Website neu aufzubauen.",
     "",
-    `Passend dazu biete ich «${o.label}» an: ${o.scope}`,
+    `Für solche Fälle biete ich «${o.label}» an: ${o.scope}`,
     "",
-    "Wenn das für Sie interessant ist, genügt eine kurze Antwort. Falls nicht, ist keine Reaktion nötig.",
+    `Ablauf und Angebote im Überblick: ${LANDING_PAGE_URL}`,
+    "",
+    "Wenn das für Sie interessant ist, genügt eine kurze Antwort.",
     "",
     "Freundliche Grüsse",
+    signature,
+    "",
+    COLD_FOOTER,
   ].join("\n");
   const subject = `${lead.company || site}: ${SUBJECT_TEXT[ev[0].issue_type]} auf ${site}`;
-  return { subject, body: finalizeCommercial(body, sender, "de") };
+  return { subject, body };
 }
+// TF-022-Name bleibt als Alias erhalten.
+export const buildIndividualDraft = buildColdDraft;
 
-// ---------- 9) Einzelfreigabe (genau eine Mail, gebunden an Empfänger + Entwurf + Befund) ----------
+// ---------- 9) Cold-Lead-Entwurf (nur Entwurf, nie gesendet) ----------
 
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 export const draftHash = (subject = "", body = "") => sha(`${subject}\n\n${body}`);
 export const evidenceHash = (evidence = []) => sha(JSON.stringify(evidence.map((e) => [e.issue_type, e.url, e.evidence, e.observed_at, e.severity])));
-const binding = (r) => sha(JSON.stringify([r.lead_id, normEmail(r.recipient || ""), r.draft_hash, r.evidence_hash]));
+const DAY_MS = 86_400_000;
+const LEGAL = Object.freeze({ draft_mode: COLD_MODE, message_class: "DRAFT_ONLY", automatic_send_allowed: false, legal_basis: "NONE",
+  manual_send_decision_required: true, legal_status: "NO_AUTOMATIC_SEND_BASIS" });
+// Diese Felder sind fest – kein Aufruf (Dashboard, manueller Versand, Bearbeitung) kann sie ändern.
+const withLegal = (r) => ({ ...r, ...LEGAL });
 
-export function createReview(lead, { sender = {}, now = new Date(), q = qualifyRepairLead(lead, { now }) } = {}) {
-  if (q.contact_basis !== CONTACT_BASIS.INDIVIDUAL_ONE_TO_ONE_REVIEW) throw new Error("Nur für INDIVIDUAL_ONE_TO_ONE_REVIEW.");
-  const { subject, body } = buildIndividualDraft(lead, q, sender);
+export function createColdDraft(lead, { sender = {}, now = new Date(), q = qualifyRepairLead(lead, { now }) } = {}) {
+  if (!q.draft_creation_eligible || q.contact_basis !== COLD_MODE) throw new Error("Nur für COLD_LEAD_DRAFT_ONLY.");
+  const { subject, body } = buildColdDraft(lead, q, sender);
   const issue_evidence = q.offer.evidence.slice(0, 3);
-  return {
-    lead_id: lead.domain, company: lead.company || null, domain: lead.domain, recipient: normEmail(lead.email),
-    contact_source: q.contact_source, source_url: q.source_url, collected_at: q.collected_at,
-    offer_class: q.offer.offer_class, issue_evidence, evidence_hash: evidenceHash(issue_evidence),
-    subject, body, draft_hash: draftHash(subject, body), contact_basis: CONTACT_BASIS.INDIVIDUAL_ONE_TO_ONE_REVIEW,
-    status: "pending_review", human_reviewed: false, human_approved: false, approval: null, created_at: now.toISOString(), updated_at: now.toISOString(),
-  };
+  return withLegal({
+    lead_id: lead.domain, jarvis_draft_id: `cold:${lead.domain}:${now.getTime()}`, company: lead.company || null, domain: lead.domain,
+    recipient: normEmail(lead.email), contact_name: q.contact_name, contact_role: q.contact_role, business_email: normEmail(lead.email),
+    contact_source: q.contact_source, source_url: q.source_url, collected_at: q.collected_at, contact_confidence: q.contact_confidence,
+    offer_class: q.offer.offer_class, issue_evidence, evidence_hash: evidenceHash(issue_evidence), repair_fit_score: q.repair_fit_score,
+    subject, body, draft_hash: draftHash(subject, body),
+    status: "queued", gmail_draft_id: null, message_id: null, thread_id: null,
+    manual_send_detected: false, manual_send_at: null, gmail_message_id: null, created_at: now.toISOString(), updated_at: now.toISOString(),
+  });
 }
 
-// Gültig nur, wenn Chris genau diese Kombination freigegeben hat und seither nichts geändert wurde.
-export function approvalValid(r) {
-  if (!r || r.human_reviewed !== true || r.human_approved !== true || !r.approval) return false;
-  if (r.draft_hash !== draftHash(r.subject, r.body) || r.evidence_hash !== evidenceHash(r.issue_evidence || [])) return false;
-  const a = r.approval;
-  return a.lead_id === r.lead_id && normEmail(a.recipient || "") === normEmail(r.recipient || "") && a.draft_hash === r.draft_hash
-    && a.evidence_hash === r.evidence_hash && a.binding === binding(r);
+const normCo = (s = "") => s.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/\b(ag|gmbh|sa|sarl|sagl|kg|klg)\b/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+// Duplikat: gleiche Firma, Domain, Empfänger oder gleicher Befund – offen, bereits verschickt oder innerhalb der Sperrfrist verworfen.
+export function coldDuplicate(records = {}, lead = {}, { contacted = new Set(), now = new Date() } = {}) {
+  const to = normEmail(lead.email || ""), co = normCo(lead.company || "");
+  if (to && contacted.has(to)) return "bereits kontaktiert";
+  for (const r of Object.values(records)) {
+    const same = r.lead_id === lead.domain || r.domain === lead.domain || (to && normEmail(r.recipient || "") === to) || (co && normCo(r.company || "") === co);
+    if (!same) continue;
+    if (["queued", "draft_created"].includes(r.status) || r.discard_requested) return "offener Entwurf vorhanden";
+    if (["manually_sent", "sent"].includes(r.status)) return "bereits kontaktiert";
+    if (+now - Date.parse(r.updated_at || r.created_at) < COLD_DRAFT_COOLDOWN_DAYS * DAY_MS) return `innerhalb der Sperrfrist (${COLD_DRAFT_COOLDOWN_DAYS} Tage)`;
+  }
+  return null;
 }
 
-const one = (id) => { if (typeof id !== "string" || !id || id.length > 253) throw new Error("Genau eine lead_id angeben – keine Sammelfreigabe."); return id; };
-
-export function approveReview(r, { draft_hash, recipient, now = new Date() } = {}) {
-  if (!r) throw new Error("Entwurf nicht gefunden.");
-  if (r.status !== "pending_review") throw new Error(`Nur offene Entwürfe können freigegeben werden (Status ${r.status}).`);
-  if (draft_hash !== r.draft_hash || draft_hash !== draftHash(r.subject, r.body)) throw new Error("Entwurf hat sich geändert – bitte erneut prüfen.");
-  if (normEmail(recipient || "") !== normEmail(r.recipient || "")) throw new Error("Empfänger stimmt nicht mit dem geprüften Entwurf überein.");
-  if (r.evidence_hash !== evidenceHash(r.issue_evidence || [])) throw new Error("Befund hat sich geändert – bitte erneut prüfen.");
-  const out = { ...r, status: "approved", human_reviewed: true, human_approved: true, updated_at: now.toISOString() };
-  out.approval = { lead_id: r.lead_id, recipient: normEmail(r.recipient), draft_hash: r.draft_hash, evidence_hash: r.evidence_hash, approved_at: now.toISOString(), approved_by: "chris" };
-  out.approval.binding = binding(out);
-  return out;
-}
-
-export function editReview(r, { subject = r.subject, body = r.body, recipient = r.recipient, now = new Date() } = {}) {
-  if (!r || ["sent", "rejected"].includes(r.status)) throw new Error("Dieser Entwurf kann nicht mehr bearbeitet werden.");
-  if (typeof subject !== "string" || typeof body !== "string" || !subject.trim() || !body.trim() || body.length > 6000) throw new Error("Betreff und Text erforderlich (max. 6000 Zeichen).");
-  if (Array.isArray(recipient) || !/^[^\s@<>(),;:]+@[^\s@<>(),;:]+\.[a-z]{2,}$/i.test(recipient)) throw new Error("Genau ein gültiger Empfänger.");
-  const next = { ...r, subject, body, recipient: normEmail(recipient), draft_hash: draftHash(subject, body), updated_at: now.toISOString() };
-  const changed = next.draft_hash !== r.draft_hash || next.recipient !== normEmail(r.recipient);
-  // Jede Änderung an Entwurf oder Empfänger: Freigabe verfällt.
-  return changed ? { ...next, status: "pending_review", human_reviewed: false, human_approved: false, approval: null } : next;
-}
-
-export const rejectReview = (r, { now = new Date() } = {}) => {
-  if (!r || r.status === "sent") throw new Error("Dieser Entwurf kann nicht abgelehnt werden.");
-  return { ...r, status: "rejected", human_reviewed: true, human_approved: false, approval: null, updated_at: now.toISOString() };
-};
-
-// Einzige Aktion-Schnittstelle (Dashboard/Server): genau eine lead_id pro Aufruf. Sammelfreigaben gibt es nicht.
-export function reviewAction(store, action, payload = {}, now = new Date()) {
-  if (Array.isArray(payload) || Array.isArray(payload.lead_id) || "lead_ids" in payload || "all" in payload) throw new Error("Sammelfreigabe ist nicht erlaubt – nur einzelne Mails.");
-  const id = one(payload.lead_id);
-  const data = store.read(REVIEWS_FILE, { reviews: {} });
-  const r = data.reviews?.[id];
-  if (!r) throw new Error("Entwurf nicht gefunden.");
-  const next = action === "approve" ? approveReview(r, { ...payload, now }) : action === "reject" ? rejectReview(r, { now }) : action === "edit" ? editReview(r, { ...payload, now }) : null;
-  if (!next) throw new Error("Unbekannte Aktion.");
-  const fresh = store.read(REVIEWS_FILE, { reviews: {} });
-  fresh.reviews = { ...(fresh.reviews || {}), [id]: next };
-  store.write(REVIEWS_FILE, fresh);
-  return next;
-}
-
-// Legt für eine neue Firma höchstens einen offenen Entwurf an (nie überschreiben, nie senden).
-export function ensureReview(store, lead, { sender, now = new Date() } = {}) {
-  const data = store.read(REVIEWS_FILE, { reviews: {} });
-  if (data.reviews?.[lead.domain]) return data.reviews[lead.domain];
-  const r = createReview(lead, { sender, now });
-  store.write(REVIEWS_FILE, { ...data, reviews: { ...(data.reviews || {}), [lead.domain]: r } });
+// Legt höchstens einen lokalen Cold-Entwurf je Firma an (der Gmail-Entwurf entsteht im Mail-Worker). Nie senden.
+export function ensureColdDraft(store, lead, { sender, now = new Date(), contacted, suppression = store.read("suppression.json", {}) } = {}) {
+  const data = store.read(COLD_DRAFTS_FILE, { reviews: {} });
+  const to = normEmail(lead.email || "");
+  if (suppression[to] || Object.keys(suppression).some((a) => a.split("@")[1] === lead.domain && !FREEMAIL_RE.test(a))) return { blocked: "suppression" };
+  const dup = coldDuplicate(data.reviews, lead, { contacted, now });
+  if (dup) return { blocked: dup, existing: data.reviews?.[lead.domain] || null };
+  const r = createColdDraft(lead, { sender, now });
+  store.write(COLD_DRAFTS_FILE, { ...data, reviews: { ...(data.reviews || {}), [lead.domain]: r } });
   return r;
 }
+export const ensureReview = (store, lead, opts) => ensureColdDraft(store, lead, opts);
+
+const one = (id) => { if (typeof id !== "string" || !id || id.length > 253) throw new Error("Genau eine lead_id angeben – keine Sammelaktion."); return id; };
+
+// Dashboard-Aktionen – je Aufruf genau EIN Entwurf. Es gibt kein Senden, kein Erzwingen, keine Rechtsgrundlage zum Setzen.
+export function coldDraftAction(store, action, payload = {}, now = new Date()) {
+  if (Array.isArray(payload) || Array.isArray(payload.lead_id) || "lead_ids" in payload || "all" in payload) throw new Error("Sammelaktion ist nicht erlaubt – nur einzelne Entwürfe.");
+  const id = one(payload.lead_id);
+  const data = store.read(COLD_DRAFTS_FILE, { reviews: {} });
+  const r = data.reviews?.[id];
+  if (!r) throw new Error("Entwurf nicht gefunden.");
+  let next;
+  if (action === "edit") {
+    if (!["queued", "draft_created"].includes(r.status)) throw new Error("Dieser Entwurf kann nicht mehr bearbeitet werden.");
+    const { subject = r.subject, body = r.body } = payload;
+    if (typeof subject !== "string" || typeof body !== "string" || !subject.trim() || !body.trim() || body.length > 6000 || /[\r\n]/.test(subject)) throw new Error("Betreff und Text erforderlich (max. 6000 Zeichen).");
+    next = { ...r, subject, body, draft_hash: draftHash(subject, body), pending_update: r.status === "draft_created", updated_at: now.toISOString() };
+  } else if (action === "discard") {
+    if (!["queued", "draft_created"].includes(r.status)) throw new Error("Dieser Entwurf kann nicht verworfen werden.");
+    next = r.status === "queued" ? { ...r, status: "discarded", updated_at: now.toISOString() } : { ...r, discard_requested: true, updated_at: now.toISOString() };
+  } else if (action === "mark-manual-sent") {
+    if (r.status !== "draft_created") throw new Error("Nur ein in Gmail vorhandener Entwurf kann als manuell versendet markiert werden.");
+    next = { ...r, status: "manually_sent", manual_send_marked: true, manual_send_at: now.toISOString(), updated_at: now.toISOString() };
+  } else throw new Error("Unbekannte Aktion.");
+  const fresh = store.read(COLD_DRAFTS_FILE, { reviews: {} });
+  fresh.reviews = { ...(fresh.reviews || {}), [id]: withLegal(next) };
+  store.write(COLD_DRAFTS_FILE, fresh);
+  return fresh.reviews[id];
+}
+
+// Vom Mail-Worker nach einem erkannten manuellen Versand: nur Fakten (Zeit, IDs) – legal_basis bleibt NONE.
+export const markManualSend = (r, { messageId, threadId, sentAt }) =>
+  withLegal({ ...r, status: "manually_sent", manual_send_detected: true, manual_send_at: sentAt, gmail_message_id: messageId, thread_id: threadId, updated_at: new Date().toISOString() });

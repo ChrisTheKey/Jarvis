@@ -24,7 +24,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { detectHumanContact } from "./human-contact.js";
-import { REVIEWS_FILE, approvalValid } from "./swiss-repair.js";
+import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend } from "./swiss-repair.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -79,13 +79,12 @@ export function newText(body = "") {
   }
   return out.join("\n").trim();
 }
-export const OPT_OUT_RE = /\b(unsubscribe|abmelden|austragen|stopp?\b|keine (weiteren |weitere )?(e-?mails?|mails|nachrichten|kontaktaufnahme)|nicht (mehr )?(kontaktieren|anschreiben)|kein interesse|not interested|remove me|do not (contact|email)|don'?t (contact|email)|désinscri|ne plus me contacter|non contattarmi|disiscriv)/i;
+export const OPT_OUT_RE = /\b(unsubscribe|abmelden|austragen|stopp?\b|keine (weiteren |weitere )?(e-?mails?|mails|nachrichten|kontaktaufnahme)|nicht (mehr )?(kontaktieren|anschreiben)|kein interesse|not interested|remove me|(mich|uns|adresse|e-?mail)\s+(bitte\s+)?(aus\s+\S+\s+(verteiler|liste|kartei)\s+)?(entfernen|löschen)|entfernen sie (mich|uns|meine|unsere)|aus (ihrem|dem|ihrer) (verteiler|liste|kartei)|nicht relevant|do not (contact|email)|don'?t (contact|email)|désinscri|ne plus me contacter|non contattarmi|disiscriv)/i;
 export const ESCALATE_RE = /(vertrag|vertr[aä]ge|contract|agb|haftung|anwalt|lawyer|rechtlich|legal|klage|gericht|rechnung|invoice|zahlung|payment|[uü]berweis|iban|kreditkarte|credit card|rabatt|discount|preisnachlass|skonto|passwort|password|zugangsdaten|credentials|login|beschwerde|complaint|betrug|fraud|bankverbindung|bankdaten|kontonummer|bank account|secret|geheim|preis(?:änderung|aenderung|erhöhung|anpassung)|price (?:change|increase)|garantie|guarantee|\bverbindlich|\bbinding|schadenersatz|damages|kündig|terminat)/i;
 // Mailklassen: A/B (Kampagnen) nur in den Versandfenstern, C/D (Gespräch, manuell von Chris) zeitnah rund um die Uhr.
 export const MAIL_CLASS = { erstkontakt: "automatic_sales_outreach", antwort: "conversation_reply", "cloud-auftrag": "manual_chris_mail", einzelmail: "individual_approved_mail" };
 export const mailClassOf = (a = {}) => MAIL_CLASS[a.kind] || (String(a.kind || "").startsWith("follow-up") ? "sales_followup" : "automatic_sales_outreach");
-// individual_approved_mail: genau eine von Chris einzeln freigegebene Mail – nie Teil der Kampagnenfenster.
-export const IMMEDIATE_CLASSES = new Set(["conversation_reply", "manual_chris_mail", "individual_approved_mail"]);
+export const IMMEDIATE_CLASSES = new Set(["conversation_reply", "manual_chris_mail"]);
 const ALLOW_ALL = { acquire: async () => ({ ok: true }), done: async () => {} };
 const AUTO_SUBJECT_RE = /(automatische antwort|abwesenheit|out of office|automatic reply|auto-?reply|réponse automatique|risposta automatica)/i;
 const BOUNCE_RE = /mailer-daemon|postmaster/i;
@@ -259,6 +258,27 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const state = { ...structuredClone(STATE), ...store.read("state.json", STATE) };
     const supp = store.read("suppression.json", {});
     const exclude = new Set(cfg.excludeAddresses.map(normEmail));
+    // TF-025: von Chris manuell in Gmail versendete Cold-Entwürfe erkennen (nur eigene, eindeutig zugeordnete Threads).
+    // Ergebnis sind nur Fakten (Zeit, IDs) – nie eine Rechtsgrundlage. Danach gelten die normalen sicheren Antwortregeln.
+    if (!dry && !readOnly && typeof gmail.syncColdDrafts === "function") {
+      try {
+        const found = await gmail.syncColdDrafts();
+        if (found.length) {
+          const cold = store.read(COLD_DRAFTS_FILE, { reviews: {} });
+          for (const f of found) {
+            const id = Object.keys(cold.reviews || {}).find((k) => cold.reviews[k].gmail_draft_id === f.draftId);
+            if (!id) continue;
+            cold.reviews[id] = f.status === "manually_sent" ? markManualSend(cold.reviews[id], f)
+              : { ...cold.reviews[id], status: "discarded", discarded_in_gmail: true, updated_at: t.toISOString() };
+            log("info", "cold_draft_" + f.status, { lead_id: id, threadId: f.threadId || null });
+          }
+          store.write(COLD_DRAFTS_FILE, cold);
+        }
+      } catch (e) {
+        if (TRANSIENT_RE.test(e.message)) throw e;
+        log("error", "cold_sync_failed", { error: e.message });
+      }
+    }
     const reg = gmail.listOwned();
     const plan = [], notes = [], optouts = [], ownThreads = [], sends = [], blockedLeads = [], eligibleLeads = [], humanContacts = [], escalations = [];
     // Echtversand nur im ausdrücklich gesetzten Modus, nie im Dry-Run und nie ohne echte Absenderidentität.
@@ -411,7 +431,9 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         }
 
         // Follow-ups nur, wenn noch nie eine externe Antwort kam und kein eigener Entwurf offen ist.
-        if (ext.length === 0 && !isPending(pendingDraft) && state.compliantThreads[threadId]?.basis !== INDIVIDUAL_BASIS) {
+        // Kein automatischer Follow-up für Einzel-/Cold-Threads (auch nicht nach manuellem Versand durch Chris).
+        const coldThread = entries.some((e) => e.mode === COLD_MODE || e.manual) || state.compliantThreads[threadId]?.basis === INDIVIDUAL_BASIS;
+        if (ext.length === 0 && !isPending(pendingDraft) && !coldThread) {
           const n = own.length;
           const due = n === 1 ? own[0].internalDate + cfg.followUpDays[0] * DAY_MS : n === 2 ? own[1].internalDate + cfg.followUpDays[1] * DAY_MS : null;
           if (due) seen.followUpDue = new Date(due).toISOString();
@@ -556,35 +578,45 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       }
     }
 
-    // 3b) Einzeln von Chris freigegebene Repair-Mails (INDIVIDUAL_ONE_TO_ONE_REVIEW): genau der freigegebene Text an genau den
-    // freigegebenen Empfänger. Ohne gültige Freigabe (Empfänger + draft_hash + Befund) nichts. Kein Kampagnenfenster, kein Follow-up.
-    const reviews = store.read(REVIEWS_FILE, { reviews: {} }).reviews || {};
-    for (const [id, rv] of Object.entries(reviews)) {
-      if (rv?.status !== "approved" || !approvalValid(rv)) continue;
-      const to = normEmail(rv.recipient), key = "individual:" + id;
-      if (state.actions[key] || !EMAIL_RE.test(to)) continue;
-      if (supp[to] || exclude.has(to)) continue;
-      if (contacted.has(to)) { notes.push(`Einzelmail ${id}: Empfänger wurde bereits angeschrieben – nicht erneut.`); continue; }
-      if (dry) { plan.push({ kind: "einzelmail", to, subject: rv.subject, autoSend: auto, review: false }); continue; }
-      if (free() <= 0) { notes.push("Tageslimit erreicht – Einzelmail folgt morgen."); break; }
+    // 3b) TF-025 Cold-Lead-Entwürfe (COLD_LEAD_DRAFT_ONLY): nur ENTWURF in Gmail anlegen, bearbeiten oder verwerfen – nie senden.
+    // Sie kommen nie in state.actions (also nie in die Send-Queue, nie in ein Kampagnenfenster) und zählen nicht als Send.
+    const coldData = store.read(COLD_DRAFTS_FILE, { reviews: {} });
+    const coldPatch = {};
+    const suppAll = { ...store.read("suppression.json", {}), ...supp };
+    const domainSuppressed = (d) => Object.keys(suppAll).some((a) => a.split("@")[1] === d && !FREEMAIL_RE.test(a));
+    for (const [id, rv] of Object.entries(coldData.reviews || {})) {
+      if (!rv || rv.draft_mode !== COLD_MODE && rv.status !== "queued") continue;
+      const to = normEmail(rv.recipient || "");
+      if (dry || readOnly) { if (rv.status === "queued") plan.push({ kind: "cold-entwurf", to, subject: rv.subject, autoSend: false, review: true }); continue; }
       try {
-        state.actions[key] = { status: "creating", at: t.toISOString(), kind: "einzelmail", to };
-        save();
-        const d = await gmail.createDraft({ to, subject: rv.subject, body: rv.body });
-        state.actions[key] = { status: "prepared", at: t.toISOString(), kind: "einzelmail", threadId: d.threadId, draftId: d.draftId, review: false, to,
-          autoSend: true, paced: false, reviewId: id, draftHash: rv.draft_hash };
-        state.compliantThreads[d.threadId] = { to, basis: INDIVIDUAL_BASIS, lang: "de", at: t.toISOString() };
-        state.prepared[d.draftId] = { key, at: t.toISOString(), kind: "einzelmail" };
-        state.threadDrafts[d.threadId] = d.draftId;
-        used++;
-        contacted.add(to);
-        save();
-        log("info", "individual_draft_prepared", { lead_id: id, draftId: d.draftId });
+        if (rv.status === "queued") {
+          if (suppAll[to] || exclude.has(to) || domainSuppressed(rv.domain)) { coldPatch[id] = { status: "blocked", blocked_reason: "suppression" }; continue; }
+          if (!EMAIL_RE.test(to) || FREEMAIL_RE.test(to)) { coldPatch[id] = { status: "blocked", blocked_reason: "keine geschäftliche Adresse" }; continue; }
+          if (contacted.has(to)) { coldPatch[id] = { status: "blocked", blocked_reason: "bereits kontaktiert/Entwurf vorhanden" }; continue; }
+          const d = await gmail.createDraft({ to, subject: rv.subject, body: rv.body, mode: COLD_MODE, leadId: id, draftHash: rv.draft_hash });
+          contacted.add(to);
+          coldPatch[id] = { status: "draft_created", gmail_draft_id: d.draftId, message_id: d.messageId || null, thread_id: d.threadId, draft_created_at: t.toISOString() };
+          log("info", "cold_draft_created", { lead_id: id, draftId: d.draftId });
+        } else if (rv.status === "draft_created" && rv.discard_requested) {
+          await gmail.deleteDraft(rv.gmail_draft_id); // nur eigene Entwürfe (gmail.js prüft Besitz)
+          coldPatch[id] = { status: "discarded", discard_requested: false };
+        } else if (rv.status === "draft_created" && rv.pending_update) {
+          await gmail.updateDraft(rv.gmail_draft_id, { subject: rv.subject, body: rv.body }); // nur eigene Entwürfe
+          coldPatch[id] = { pending_update: false };
+        } else if (rv.status === "draft_created" && (suppAll[to] || domainSuppressed(rv.domain)) && !rv.suppressed_after_draft) {
+          coldPatch[id] = { suppressed_after_draft: true }; // Dashboard warnt: Empfänger hat sich inzwischen abgemeldet
+        }
       } catch (e) {
-        if (TRANSIENT_RE.test(e.message)) throw e;
-        log("error", "individual_failed", { lead_id: id, error: e.message });
+        if (TRANSIENT_RE.test(e.message)) { if (Object.keys(coldPatch).length) writeCold(); throw e; }
+        log("error", "cold_draft_failed", { lead_id: id, error: e.message });
       }
     }
+    function writeCold() {
+      const fresh = store.read(COLD_DRAFTS_FILE, { reviews: {} });
+      for (const [id, patch] of Object.entries(coldPatch)) if (fresh.reviews?.[id]) fresh.reviews[id] = { ...fresh.reviews[id], ...patch, updated_at: t.toISOString() };
+      store.write(COLD_DRAFTS_FILE, fresh);
+    }
+    if (Object.keys(coldPatch).length) writeCold();
 
     // 4) Versand. Gesprächsantworten (conversation_reply) und manuelle Aufträge von Chris (manual_chris_mail) gehen zeitnah
     // raus, rund um die Uhr. Kampagnen (automatic_sales_outreach, sales_followup) ausschliesslich in den zwei Versandfenstern,
@@ -626,16 +658,12 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         const to = normEmail(fresh.drafts[a.draftId].to);
         if (suppNow[to] || suppNow[a.to] || exclude.has(to)) { blockAt(key, a, "suppressed", "Empfänger ist gesperrt (Abmeldung/Suppression)."); continue; }
         if (!EMAIL_RE.test(to)) { blockAt(key, a, "blocked", "Empfänger ungültig."); continue; }
+        // Cold-Lead-Entwürfe (und Altlasten aus TF-022) sendet Jarvis nie – nur Chris manuell in Gmail. Vor allen anderen Prüfungen.
+        if (a.kind === "einzelmail" || fresh.drafts[a.draftId]?.mode === COLD_MODE) { blockAt(key, a, "cold_draft_never_auto", "COLD_LEAD_DRAFT_ONLY – nur manueller Versand durch Chris."); continue; }
         if (!state.compliantThreads[a.threadId]) { blockAt(key, a, "blocked_no_legal_basis", "Keine Versandgrundlage für diesen Thread."); continue; }
         if (a.basisFrom === "lead" || a.kind === "erstkontakt") {
           const lead = (Array.isArray(freshLeads) ? freshLeads : []).find((l) => normEmail(l?.email) === to);
           if (!legalBasis(lead, t)) { blockAt(key, a, "blocked_no_legal_basis", "Versandgrundlage nicht mehr gültig (blocked_no_legal_basis)."); continue; }
-        }
-        if (a.kind === "einzelmail") {
-          const rv = (store.read(REVIEWS_FILE, { reviews: {} }).reviews || {})[a.reviewId];
-          if (!approvalValid(rv) || rv.status !== "approved" || rv.draft_hash !== a.draftHash || normEmail(rv.recipient) !== to) {
-            blockAt(key, a, "approval_invalid", "Einzelfreigabe ungültig (Entwurf/Empfänger geändert oder zurückgezogen)."); continue;
-          }
         }
         // Serverseitiges Lock: hält es ein anderer Worker oder ist die Mail schon gesendet → nie senden.
         // Cloud nicht erreichbar → jetzt nicht senden, Mail bleibt vorbereitet (nächster Durchlauf).
@@ -657,10 +685,6 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           state.lastSendAt = +t;
           sends.push({ kind: a.kind, mailClass: mailClassOf(a), to, threadId: a.threadId, window: w });
           if (a.cloudRequest) cloudSet(a.cloudRequest, "sent", campaign ? `Gesendet im Fenster ${w}.` : "Gesendet.");
-          if (a.kind === "einzelmail" && !readOnly) {
-            const cur = store.read(REVIEWS_FILE, { reviews: {} });
-            if (cur.reviews?.[a.reviewId]) { cur.reviews[a.reviewId] = { ...cur.reviews[a.reviewId], status: "sent", sent_at: t.toISOString() }; store.write(REVIEWS_FILE, cur); }
-          }
           log("info", "sent", { key, kind: a.kind, mailClass: mailClassOf(a), to, draftId: a.draftId, threadId: a.threadId, window: w });
           await sendGuard.done(key, "SENT");
         } catch (err) {

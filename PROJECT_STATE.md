@@ -1,8 +1,37 @@
-# PROJECT_STATE – TF-JARVIS-ALWAYS-ONLINE-MAIL-021 + TF-JARVIS-SWISS-REPAIR-OUTREACH-022
+# PROJECT_STATE – TF-JARVIS-ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-OUTREACH-022 + SWISS-COLD-LEAD-DRAFT-OUTREACH-025
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
 Letzte Aktualisierung: 2026-10-07
+
+## TF-025 SWISS COLD LEAD DRAFT OUTREACH (dauerhaft; Code: `swiss-repair.js`, `gmail.js`, `mail-worker.js`, `lead-finder.js`)
+Tests: `test/swiss-repair-025.test.js` (20). Gegencheck: Entfernen von Cold-Send-Sperre, Suppression-Sperre bzw. Fremd-Entwurf-Schutz macht Tests rot.
+TF-023/TF-024 existieren im Repo NICHT – Auto-Send-Regeln sind unverändert die aus TF-022 (opt_in, Bestandskunde+ähnliche Leistung,
+dokumentierter angefragter Kontakt). TF-025 ändert daran nichts.
+- Jarvis darf Schweizer Repair-Leads finden (TF-022-Kriterien) und öffentliche GESCHÄFTLICHE Kontakte recherchieren: nur Firmenwebsite
+  (Team-, Impressum-, Kontakt-, Startseite) und OSM. Nur Adressen auf der Firmendomain; Freemail/fremde Domains werden verworfen.
+  Persönliche Adresse nur mit sicher zugeordnetem Namen. Vorrang: Web/Marketing/IT > Geschäftsführung > andere Person > info@.
+  Gespeichert: contact_name, contact_role, business_email, contact_source, source_url, collected_at, contact_confidence. Keine Firmenverzeichnisse (noch nicht angebunden).
+- COLD_LEAD_DRAFT_ONLY: CH + modern_maintainable/repairable + Repair-Befund + geschäftliche Adresse + keine Auto-Send-Grundlage + nicht gesperrt.
+  → draft_creation_eligible=true, automatic_marketing_send_eligible=false, message_class=DRAFT_ONLY, legal_basis=NONE,
+  legal_status=NO_AUTOMATIC_SEND_BASIS, manual_send_decision_required=true (fest, keine Aktion kann das ändern).
+- Ablauf: Discovery legt höchstens EINEN lokalen Cold-Entwurf je Firma an (`.secrets/mail_worker/individual_reviews.json`), der Mail-Worker
+  (Windows) erstellt daraus einen normalen Gmail-Entwurf (Label JARVIS, im Register mit mode=COLD_LEAD_DRAFT_ONLY, leadId, draftHash). Dann STOPP.
+- Cold-Entwürfe werden NIE von Jarvis gesendet: `gmail.sendDraft` lehnt mode=COLD_LEAD_DRAFT_ONLY ohne Gmail-Aufruf ab (gilt für Worker,
+  VPS, Kampagnenfenster, Cloud-Queue, CLI); zusätzlich Sperre im Versandpfad des Workers. Sie kommen nie in die Send-Queue und zählen nicht als Send.
+- Chris entscheidet manuell in Gmail. `gmail.syncColdDrafts` erkennt den manuellen Versand nur bei eindeutigem eigenem Thread
+  (Thread-ID, erste Nachricht SENT an denselben Empfänger mit demselben Betreff, nicht älter als der Entwurf) und registriert ihn als
+  Jarvis-Thread mit manual=true, legalBasis=NONE (kein Limitverbrauch). Manueller Versand erzeugt NIE eine Rechtsgrundlage.
+- Antworten in solchen Threads: bestehende sichere Reply-Regeln (Antwort-ENTWURF, kein Auto-Send ohne Grundlage). Kein automatischer Follow-up.
+- Opt-out/Suppression gelten vollständig (auch domainweit für neue Cold-Entwürfe). Opt-out-Erkennung ergänzt: „entfernen Sie mich“,
+  „aus Ihrem Verteiler“, „nicht relevant“.
+- Duplikate: kein zweiter Cold-Entwurf für dieselbe Firma/Domain/Adresse, solange einer offen ist, nach manuellem Versand nie,
+  nach Verwerfen erst nach 180 Tagen.
+- Dashboard (LEADS): Zähler Cold Leads, geschäftliche Kontakte, Drafts erstellt/offen/manuell versendet, Auto-Send Leads, Blocked, Opt-outs;
+  Hinweis „ENTWURF ERSTELLT — NICHT AUTOMATISCH VERSANDBERECHTIGT“; Aktionen OPEN / EDIT / DISCARD DRAFT, MARK AS MANUALLY SENT
+  (Endpunkte `/api/cold-drafts/{edit,discard,mark-manual-sent}`, je genau ein Entwurf). Es gibt kein Senden/Erzwingen/Override.
+- Der TF-022-Pfad „Einzelfreigabe → Jarvis sendet“ ist durch TF-025 ersetzt (Jarvis sendet Cold-Mails gar nicht mehr).
+- Angebote: weiterhin genau zwei (`OFFERS` in `sales.js`). Stand 2026-10-07 von Chris parallel geändert auf CHF 150 / CHF 480 + Landingpage-Link.
 
 ## TF-022 Swiss Repair Outreach Policy (dauerhaft, Code: `swiss-repair.js`)
 Status: implementiert, 210/210 Tests grün (28 neue in `test/swiss-repair-022.test.js`). Ändert nichts an VPS/Netlify/Authority (Rollout 021 unten unverändert offen).

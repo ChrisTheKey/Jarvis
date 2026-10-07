@@ -25,9 +25,9 @@ const write = (name, data) => fs.writeFileSync(path.join(dir, name), JSON.string
 
 // ---------- Angebote ----------
 
-test("es gibt genau zwei Angebote: CHF 150 und CHF 500 – keine dritte Klasse", () => {
+test("es gibt genau zwei Angebote: CHF 150 und CHF 480 – keine dritte Klasse", () => {
   assert.deepEqual(OFFER_CLASSES, ["REPAIR_CHECK_150", "REPAIR_FIX_500"]);
-  assert.deepEqual(OFFER_CLASSES.map((c) => OFFERS[c].price), [150, 500]);
+  assert.deepEqual(OFFER_CLASSES.map((c) => OFFERS[c].price), [150, 480]);
   assert.ok(Object.isFrozen(OFFERS));
   assert.throws(() => { OFFERS.REDESIGN_2490 = { price: 2490 }; });
   // Über alle denkbaren Befund-Kombinationen kommt nur 150, 500 oder NONE heraus.
@@ -42,10 +42,10 @@ test("es gibt genau zwei Angebote: CHF 150 und CHF 500 – keine dritte Klasse",
   assert.doesNotMatch(src, /2['’]?490|redesign_|neubau_|REPAIR_[A-Z]+_(?!150|500)\d+/i, "keine weitere Preisstufe im Code oder Dashboard");
 });
 
-test("CHF-500: konkrete, behebbare Probleme auf bestehender Website", () => {
+test("CHF-480: konkrete, behebbare Probleme auf bestehender Website", () => {
   const c = classifyOffer(discoveredLead({ websiteIssues: [issue("https_certificate", "high", "TLS-Fehler beim Aufruf: CERT_HAS_EXPIRED"), issue("missing_alt", "low")] }));
   assert.equal(c.offer_class, "REPAIR_FIX_500");
-  assert.equal(c.price_chf, 500);
+  assert.equal(c.price_chf, 480);
   assert.equal(c.confidence, "high");
   assert.deepEqual(c.evidence.map((e) => e.type), ["https_certificate"]);
   for (const k of ["offer_class", "confidence", "evidence", "rationale", "recommended_next_step"]) assert.ok(k in c, k);
@@ -171,11 +171,11 @@ test("Lebenszyklus: alle Stufen, bestehende Datensätze ohne Migration", () => {
   assert.throws(() => setPipelineStatus({}, "muster.ch", "customer"), /nur replied und not_interested/);
 });
 
-test("Verkauf: nur CHF 150 oder CHF 500, Wert immer aus dem Angebot", () => {
+test("Verkauf: nur CHF 150 oder CHF 480, Wert immer aus dem Angebot", () => {
   const lead = discoveredLead();
   const r = recordSale({}, "muster.ch", { offer: "REPAIR_FIX_500", date: "2026-10-06", lead, now: T0 })["muster.ch"];
   assert.deepEqual(Object.keys(r.sale).sort(), ["currency", "customer_status", "evidence", "sale_date", "sale_value", "selected_offer", "work_status"]);
-  assert.equal(r.sale.sale_value, 500);
+  assert.equal(r.sale.sale_value, 480);
   assert.equal(r.sale.customer_status, "customer");
   assert.equal(r.sale.work_status, "open");
   assert.deepEqual(r.sale.evidence, observedEvidence(lead.websiteIssues));
@@ -201,11 +201,11 @@ test("Kennzahlen: Kandidaten, Verkäufe und Umsatz nur aus den zwei Angeboten; m
     "replies", "customers", "sales_150", "sales_500", "revenue_150", "revenue_500", "total_revenue"];
   assert.deepEqual({ ...Object.fromEntries(legacy.map((k) => [k, m[k]])), updatedAt: undefined }, { updatedAt: undefined,
     discovered: 4, audited: 3, qualified_repair: 2, offer_150_candidates: 1, offer_500_candidates: 1, eligible_to_contact: 0,
-    blocked_no_legal_basis: 0, contacted: 0, replies: 0, customers: 2, sales_150: 1, sales_500: 1, revenue_150: 150, revenue_500: 500, total_revenue: 650 });
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "metrics.json"), "utf8")).total_revenue, 650, "persistiert");
+    blocked_no_legal_basis: 0, contacted: 0, replies: 0, customers: 2, sales_150: 1, sales_500: 1, revenue_150: 150, revenue_500: 480, total_revenue: 630 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "metrics.json"), "utf8")).total_revenue, 630, "persistiert");
   // Kennzahlen sind sicher für den gemeinsamen Zustand: nur Zahlen, keine Lead-Daten
   const shared = sanitizeState({ sales: { ...m, company: "Muster AG", email: "info@a.ch" } });
-  assert.equal(shared.sales.total_revenue, 650);
+  assert.equal(shared.sales.total_revenue, 630);
   assert.ok(!JSON.stringify(shared).includes("info@a.ch"));
   assert.deepEqual(findSensitiveKeys(shared), []);
 });

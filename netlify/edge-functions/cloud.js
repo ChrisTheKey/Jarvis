@@ -40,7 +40,7 @@ export function statusBlock(st, now = Date.now()) {
     w ? `Mails heute: ${w.todaySent} von ${w.limit} (Morgenfenster 09:30: ${w.windows?.morning?.count ?? 0} von ${w.windows?.morning?.limit ?? 50}, Nachmittagsfenster 14:30: ${w.windows?.afternoon?.count ?? 0} von ${w.windows?.afternoon?.limit ?? 50}), Versand mit Versandgrundlage ${w.autoSend ? "aktiv" : "inaktiv"}.` : "",
     st.mailRequests?.length ? `Letzte Mailaufträge: ${st.mailRequests.slice(-5).map((r) => `${r.recipient} – ${r.status}${r.reason ? " (" + r.reason + ")" : ""}`).join(" | ")}` : "",
     d ? `Website-Suche: heute ${d.websitesFoundToday} gefunden, ${d.websitesWithIssuesToday} mit Problemen, ${d.qualifiedLeads} qualifizierte Leads (ohne Versandgrundlage nicht anschreibbar).` : "",
-    st.sales ? `Vertrieb (nur zwei Angebote: CHF-150-Check, CHF-500-Reparatur): ${st.sales.discovered} Leads, ${st.sales.offer_150_candidates} CHF-150- und ${st.sales.offer_500_candidates} CHF-500-Kandidaten, ${st.sales.eligible_to_contact} versandberechtigt, ${st.sales.customers} Kunden, Umsatz CHF ${st.sales.total_revenue}.` : "",
+    st.sales ? `Vertrieb (nur zwei Angebote: Check & Anleitung CHF 150, Check & Reparatur CHF 480): ${st.sales.discovered} Leads, ${st.sales.offer_150_candidates} CHF-150- und ${st.sales.offer_500_candidates} CHF-480-Kandidaten, ${st.sales.eligible_to_contact} versandberechtigt, ${st.sales.customers} Kunden, Umsatz CHF ${st.sales.total_revenue}.` : "",
     unread.length ? `Ungelesene Meldungen: ${unread.slice(-5).map((n) => (n.priority === "high" ? "PRIORITÄT: " : "") + n.summary).join(" | ")}` : "Keine ungelesenen Meldungen.",
     st.profile?.notes ? `Bekannte Fakten über Chris:\n${st.profile.notes}` : "",
   ].filter(Boolean).join("\n");

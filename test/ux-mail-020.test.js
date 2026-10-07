@@ -464,8 +464,8 @@ test("Local Core nur auf 127.0.0.1, Worker unabhängig, HUD pollt moderat", () =
 
 // ---------- 13. Zwei Angebote unverändert ----------
 
-test("Two-Offer-Pipeline unverändert: nur CHF 150 und CHF 500", async () => {
+test("Two-Offer-Pipeline unverändert: nur CHF 150 und CHF 480", async () => {
   const { OFFER_CLASSES, OFFERS } = await import("../sales.js");
-  assert.deepEqual(OFFER_CLASSES.map((c) => OFFERS[c].price), [150, 500]);
+  assert.deepEqual(OFFER_CLASSES.map((c) => OFFERS[c].price), [150, 480]);
   for (const f of ["mail-requests.js", "netlify/edge-functions/cloud.js", "public/index.html", "persona.md"]) assert.doesNotMatch(read(f), /2['’]?490|Redesign-Angebot|Neubau-Angebot/i, f);
 });

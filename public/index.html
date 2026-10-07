@@ -118,8 +118,17 @@ form.cmd button.stop { color: var(--red); }
 #kAlerts.hot { color: var(--red); }
 .alerts li.seen { opacity: .65; }
 .on-ok { color: var(--green) !important; } .on-bad { color: var(--red) !important; }
-/* Vertrieb: zwei Angebote (CHF 150 / CHF 500), kompakt zweispaltig */
+/* Vertrieb: zwei Angebote (CHF 150 / CHF 480), kompakt zweispaltig */
 .sales { flex: none !important; }
+/* Verkäufe: je Angebot Anzahl und Umsatz, darunter der Gesamtumsatz */
+.sold { flex: none !important; }
+.sold .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sold .tile { border: 1px solid var(--line); padding: 8px 10px; }
+.sold .tile span { display: block; font: 11px var(--mono); color: var(--muted); letter-spacing: .06em; }
+.sold .tile b { display: block; font: 700 26px var(--ui); color: var(--text); margin: 2px 0; }
+.sold .tile i { font: 12px var(--mono); color: var(--green); font-style: normal; }
+.sold .total { display: flex; justify-content: space-between; align-items: baseline; margin-top: 10px; font: 12px var(--mono); color: var(--muted); letter-spacing: .1em; }
+.sold .total b { font: 700 22px var(--ui); color: var(--green); letter-spacing: .02em; }
 .kv.two { grid-template-columns: auto 1fr auto 1fr; font-size: 12px; }
 .panel h2 button, .leads-box button { background: none; border: 1px solid var(--line); color: var(--cyan); font: 11px var(--mono); letter-spacing: .08em; padding: 2px 8px; cursor: pointer; }
 .panel h2 button:disabled { color: var(--muted); cursor: not-allowed; }
@@ -214,18 +223,27 @@ form.cmd button.stop { color: var(--red); }
       <h2>Meldungen <span id="alertCount"></span></h2>
       <ul id="alertList"></ul>
     </section>
+    <section class="panel sold" id="soldPanel" aria-live="polite">
+      <h2>Verkäufe</h2>
+      <div class="tiles">
+        <div class="tile"><span>CHECK &amp; ANLEITUNG · CHF 150</span><b id="s150">–</b><i id="sRev150">–</i></div>
+        <div class="tile"><span>CHECK &amp; REPARATUR · CHF 480</span><b id="s500">–</b><i id="sRev500">–</i></div>
+      </div>
+      <div class="total"><span>UMSATZ TOTAL</span><b id="sRevenue">–</b></div>
+    </section>
     <section class="panel sales" id="salesPanel">
       <h2>Vertrieb <button type="button" id="leadsBtn" title="Lead-Details (nur im Local-Modus)">LEADS</button></h2>
       <div class="kv two">
         <span>Gefunden</span><b id="sDiscovered">–</b><span>CH verifiziert</span><b id="sSwiss">–</b>
         <span>Geprüft</span><b id="sAudited">–</b><span>Repair Fit</span><b id="sFit" title="modern/weiterverwendbar">–</b>
         <span>Repair Kand.</span><b id="sRepair">–</b><span>Blockiert</span><b id="sBlocked" title="ohne Versandgrundlage">–</b>
-        <span>CHF 150 Kand.</span><b id="s150c">–</b><span>CHF 500 Kand.</span><b id="s500c">–</b>
-        <span>Auto-Versand</span><b id="sEligible" title="automatisch versandberechtigt">–</b><span>Einzelprüfung</span><b id="sReview" title="Einzelprüfung durch Chris erforderlich">–</b>
+        <span>CHF 150 Kand.</span><b id="s150c">–</b><span>CHF 480 Kand.</span><b id="s500c">–</b>
+        <span>Auto-Send Leads</span><b id="sEligible" title="automatisch versandberechtigt">–</b><span>Opt-outs</span><b id="sOptOuts">–</b>
+        <span>Cold Leads</span><b id="sCold" title="Cold Leads gefunden – nur Entwurf, nie automatisch gesendet">–</b><span>Gesch. Kontakte</span><b id="sContacts" title="Geschäftliche Kontakte gefunden">–</b>
+        <span>Drafts erstellt</span><b id="sDrafts">–</b><span>Drafts offen</span><b id="sDraftsOpen">–</b>
+        <span>Manuell versendet</span><b id="sManual" title="von Chris selbst in Gmail versendet">–</b>
         <span>Kontaktiert</span><b id="sContacted">–</b>
         <span>Antworten</span><b id="sReplies">–</b><span>Kunden</span><b id="sCustomers">–</b>
-        <span>Verk. 150</span><b id="s150">–</b><span>Verk. 500</span><b id="s500">–</b>
-        <span>Umsatz</span><b id="sRevenue">–</b>
       </div>
     </section>
     <section class="panel">
@@ -884,7 +902,7 @@ async function dismiss(id) {
   try { mode === "local" ? await api("/api/notifications/dismiss", { id }) : await cloudState({ op: "dismiss", id }); } catch {}
   loadShared();
 }
-// ---------- Vertrieb: nur zwei Angebote (CHF 150 Check, CHF 500 Reparatur) ----------
+// ---------- Vertrieb: nur zwei Angebote (CHF 150 Check & Anleitung, CHF 480 Check & Reparatur) ----------
 const chf = (v) => "CHF " + Number(v || 0).toLocaleString("de-CH");
 function renderSales(m) {
   const set = (id, v) => { $(id).textContent = m ? v : "–"; };
@@ -892,15 +910,18 @@ function renderSales(m) {
   set("sDiscovered", m?.discovered); set("sSwiss", m?.swiss_verified ?? "–"); set("sAudited", m?.audited); set("sFit", m?.modern_repair_fit ?? "–");
   set("sRepair", m?.repair_candidates ?? m?.qualified_repair); set("sBlocked", m?.blocked ?? m?.blocked_no_legal_basis);
   set("s150c", m?.repair_150_candidates ?? m?.offer_150_candidates); set("s500c", m?.repair_500_candidates ?? m?.offer_500_candidates);
-  set("sEligible", m?.auto_send_eligible ?? m?.eligible_to_contact); set("sReview", m?.individual_review_required ?? "–");
+  set("sEligible", m?.auto_send_eligible ?? m?.eligible_to_contact); set("sOptOuts", m?.opt_outs ?? "–");
+  set("sCold", m?.cold_leads_found ?? "–"); set("sContacts", m?.business_contacts_found ?? "–"); set("sDrafts", m?.drafts_created ?? "–");
+  set("sDraftsOpen", m?.drafts_open ?? "–"); set("sManual", m?.drafts_manually_sent ?? "–");
   set("sContacted", m?.contacted); set("sReplies", m?.replies); set("sCustomers", m?.customers);
-  set("s150", m?.sales_150); set("s500", m?.sales_500); set("sRevenue", chf(m?.total_revenue));
+  set("s150", m?.sales_150 ?? 0); set("s500", m?.sales_500 ?? 0);
+  set("sRev150", chf(m?.revenue_150)); set("sRev500", chf(m?.revenue_500)); set("sRevenue", chf(m?.total_revenue));
   $("leadsBtn").disabled = mode !== "local";
 }
-const OFFER_LABEL = { REPAIR_CHECK_150: "CHF 150", REPAIR_FIX_500: "CHF 500", NONE: "NONE" };
+const OFFER_LABEL = { REPAIR_CHECK_150: "CHF 150", REPAIR_FIX_500: "CHF 480", NONE: "NONE" };
 const STAGE_LABEL = { discovered: "gefunden", audited: "geprüft", repair_candidate: "Repair-Kandidat", blocked_no_legal_basis: "blockiert – keine Versandgrundlage",
   approved: "versandberechtigt", contacted: "kontaktiert", swiss_verified: "Schweiz verifiziert", modern_repair_fit: "Modern/Repair Fit",
-  blocked_no_contact_basis: "blockiert – keine Kontaktgrundlage", individual_review_required: "Einzelprüfung erforderlich", approved_one_to_one: "einzeln freigegeben", replied: "geantwortet", customer: "Kunde", not_interested: "kein Interesse", do_not_contact: "nicht kontaktieren" };
+  blocked_no_contact_basis: "blockiert – keine Kontaktgrundlage", cold_lead_draft_only: "Cold Lead – Entwurf wird erstellt", draft_created: "Entwurf erstellt – wartet auf Chris", replied: "geantwortet", customer: "Kunde", not_interested: "kein Interesse", do_not_contact: "nicht kontaktieren" };
 let leadData = [];
 async function openLeads() {
   if (mode !== "local") return;
@@ -909,7 +930,7 @@ async function openLeads() {
   try {
     const r = await (await fetch(CORE + "/api/leads")).json();
     // Ranking nach repair_fit_score (Einzelprüfungen zuerst), sonst wie bisher.
-    const rank = (l) => (l.repair?.stage === "individual_review_required" ? 100 : 0) + (l.repair?.repair_fit_score || 0);
+    const rank = (l) => (["cold_lead_draft_only", "draft_created"].includes(l.repair?.stage) ? 100 : 0) + (l.repair?.repair_fit_score || 0);
     leadData = (r.leads || []).sort((a, b) => rank(b) - rank(a) || (b.offer.offer_class !== "NONE") - (a.offer.offer_class !== "NONE") || String(a.company || a.domain).localeCompare(String(b.company || b.domain)));
     $("leadsCount").textContent = String(leadData.length);
     $("leadList").replaceChildren(...leadData.map((l, i) => {
@@ -942,20 +963,23 @@ function showLead(i) {
   out.push(el("div", "", "ANGEBOT"), kv([["Klasse", `${OFFER_LABEL[o.offer_class]} (${o.offer_class})`], ["Sicherheit", o.confidence], ["Begründung", o.rationale], ["Nächster Schritt", o.recommended_next_step]]));
   const rp = l.repair;
   if (rp) {
-    if (rp.stage === "individual_review_required") out.push(el("div", "block", "EINZELPRÜFUNG DURCH CHRIS ERFORDERLICH"));
+    if (l.review?.draft_mode === "COLD_LEAD_DRAFT_ONLY" && l.review.gmail_draft_id) out.push(el("div", "block", "ENTWURF ERSTELLT — NICHT AUTOMATISCH VERSANDBERECHTIGT"));
+    else if (rp.contact_basis === "COLD_LEAD_DRAFT_ONLY") out.push(el("div", "block", "COLD LEAD — NUR ENTWURF, NICHT AUTOMATISCH VERSANDBERECHTIGT"));
     out.push(el("div", "", "SWISS REPAIR"), kv([
-      ["Firma", l.company || "–"], ["Domain", l.domain],
+      ["Firma", l.company || "–"], ["Domain", l.domain], ["Kontaktperson", rp.contact_name || "–"], ["Rolle", rp.contact_role || "–"],
+      ["Geschäftliche E-Mail", rp.business_email || "–"],
       ["Swiss Evidence", rp.swiss_evidence.length ? `${rp.swiss_confidence}: ${rp.swiss_evidence.map((e) => `${e.signal} (${e.value})`).join(", ")}` : `keine (${rp.swiss_confidence})`],
       ["Site Condition", `${rp.site_condition} – ${rp.site_condition_reasons.join("; ")}`],
       ["Repair Evidence", rp.repair_evidence.length ? rp.repair_evidence.map((e) => `${e.issue_type} (${e.severity}${e.reproducible ? ", reproduzierbar" : ""}): ${e.evidence} — ${e.url}`).join(" | ") : "keine"],
       ["Offer Class", `${OFFER_LABEL[rp.offer.offer_class]} (${rp.offer.offer_class}, ${rp.offer.confidence}) – ${rp.offer.rationale}`],
-      ["Contact Basis", rp.contact_basis + (rp.public_email_only ? " (nur öffentliche Adresse)" : "")],
-      ["Automatic Send Eligible", rp.automatic_send_eligible ? "JA" : "NEIN"], ["Individual Review Required", rp.individual_review_required ? "JA" : "NEIN"],
+      ["Contact Basis", rp.contact_basis + (rp.public_email_only ? " (nur öffentliche Adresse)" : "")], ["Legal Basis", rp.legal_basis],
+      ["Auto-Send erlaubt", rp.automatic_send_allowed ? "JA" : "NEIN"], ["Manual Send Decision Required", rp.contact_basis === "COLD_LEAD_DRAFT_ONLY" ? "JA" : "NEIN"],
+      ["Draft Status", l.review ? `${l.review.status}${l.review.blocked_reason ? " – " + l.review.blocked_reason : ""}${l.review.suppressed_after_draft ? " – EMPFÄNGER HAT SICH ABGEMELDET" : ""}` : "–"],
       ["Suppression Status", l.suppressed ? "gesperrt" : "nicht gesperrt"], ["Opt-out Status", l.optedOut ? "abgemeldet" : "kein Opt-out"],
-      ["Kontaktstatus", STAGE_LABEL[rp.stage] || rp.stage], ["Kontaktquelle", rp.contact_source ? `${rp.contact_source} (${rp.source_url || "–"}, ${fmtTime(rp.collected_at)})` : "–"],
+      ["Kontaktstatus", STAGE_LABEL[rp.stage] || rp.stage], ["Kontaktquelle", rp.contact_source ? `${rp.contact_source} (${rp.source_url || "–"}, ${fmtTime(rp.collected_at)}, ${rp.contact_confidence})` : "–"],
       ["Repair Fit Score", String(rp.repair_fit_score)],
     ]));
-    if (l.review) out.push(reviewBox(l, el));
+    if (l.review?.draft_mode === "COLD_LEAD_DRAFT_ONLY") out.push(coldDraftBox(l, el));
   }
   if (l.sale) out.push(el("div", "", "VERKAUF"), kv([["Angebot", OFFER_LABEL[l.sale.selected_offer]], ["Datum", l.sale.sale_date], ["Wert", chf(l.sale.sale_value)], ["Arbeit", l.sale.work_status]]));
   out.push(el("div", "", `BEFUNDE (${l.issues.length})`));
@@ -969,31 +993,32 @@ function showLead(i) {
   out.push(ev);
   box.replaceChildren(...out);
 }
-// Einzelprüfung: genau ein Entwurf, eine Freigabe. Bewusst keine Sammelfreigabe.
-function reviewBox(l, el) {
+// Cold-Lead-Entwurf: Jarvis sendet nie. Aktionen je genau EIN Entwurf; Versand entscheidet Chris selbst in Gmail.
+function coldDraftBox(l, el) {
   const r = l.review, box = el("div", "review");
-  box.append(el("div", "", `ENTWURF (${r.status}) an ${r.recipient}`));
+  box.append(el("div", "", `ENTWURF (${r.status}) an ${r.recipient} · Legal Basis: ${r.legal_basis} · ${r.legal_status}`));
   const subj = el("input"); subj.value = r.subject; subj.style.width = "100%";
   const body = el("textarea"); body.value = r.body; body.rows = 14; body.style.width = "100%";
   const msg = el("div", "");
-  const locked = ["sent", "rejected"].includes(r.status);
-  subj.disabled = body.disabled = locked;
+  const open = ["queued", "draft_created"].includes(r.status);
+  subj.disabled = body.disabled = !open;
   const act = async (op, extra) => {
     msg.textContent = "…";
     try {
-      const res = await api("/api/reviews/" + op, { lead_id: r.lead_id, ...extra });
+      const res = await api("/api/cold-drafts/" + op, { lead_id: r.lead_id, ...extra });
       const j = await res.json();
       msg.textContent = res.ok ? `OK: ${j.review.status}` : `Fehler: ${j.error}`;
       if (res.ok) { l.review = j.review; showLead(leadData.indexOf(l)); }
     } catch { msg.textContent = "Fehler: nicht erreichbar."; }
   };
-  const btn = (label, fn) => { const b = el("button", "", label); b.type = "button"; b.disabled = locked; b.onclick = fn; return b; };
-  const edited = () => subj.value !== r.subject || body.value !== r.body;
-  box.append(subj, body,
-    btn("Approve this individual email", () => edited() ? (msg.textContent = "Erst speichern – Änderungen heben die Freigabe auf.") : act("approve", { draft_hash: r.draft_hash, recipient: r.recipient })),
-    btn("Edit", () => act("edit", { subject: subj.value, body: body.value })),
-    btn("Reject", () => act("reject")), msg);
-  if (r.status === "approved") box.append(el("div", "", "Freigegeben – gilt nur für genau diesen Empfänger, Text und Befund."));
+  const btn = (label, fn, enabled = open) => { const b = el("button", "", label); b.type = "button"; b.disabled = !enabled; b.onclick = fn; return b; };
+  const link = el("a", "", "OPEN DRAFT");
+  if (r.message_id) { link.href = "https://mail.google.com/mail/u/0/#drafts?compose=" + encodeURIComponent(r.message_id); link.target = "_blank"; link.rel = "noopener"; }
+  box.append(subj, body, link,
+    btn("EDIT DRAFT", () => act("edit", { subject: subj.value, body: body.value })),
+    btn("DISCARD DRAFT", () => act("discard")),
+    btn("MARK AS MANUALLY SENT", () => act("mark-manual-sent"), r.status === "draft_created"), msg);
+  if (r.status === "draft_created") box.append(el("div", "", "Versand nur durch Chris direkt in Gmail. Jarvis sendet diesen Entwurf nie."));
   return box;
 }
 $("leadsBtn").addEventListener("click", openLeads);

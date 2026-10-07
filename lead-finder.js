@@ -11,7 +11,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuditor } from "./site-auditor.js";
-import { swissSignals, qualifyRepairLead, ensureReview, PLACEHOLDER_RE } from "./swiss-repair.js";
+import { swissSignals, qualifyRepairLead, ensureColdDraft, discoverBusinessContact, PLACEHOLDER_RE } from "./swiss-repair.js";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock, heartbeat, legalBasis, normEmail, zurichDay } from "./mail-worker.js";
 
 export const DISCOVERY_LOCK = "discovery.lock";
@@ -170,18 +170,21 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
         stats.audited++;
         const id = extractIdentity(a.pages, domain);
         const osmEmail = c.email && emailDomain(c.email) === domain ? normEmail(c.email) : null;
+        // TF-025: geschäftlicher Kontakt nur von den öffentlichen Firmenseiten (Team, Impressum, Kontakt, Startseite) bzw. OSM.
+        // Bevorzugt: zuständige Person (Web/Marketing/IT) > Geschäftsführung > andere Person > info@. Nie Freemail/Privatadressen.
+        const bc = discoverBusinessContact({ pages: a.pages || {}, domain, osmEmail, osmSource: c.source, owner: id.owner, now: t,
+          urls: { team: a.teamUrl, impressum: a.impressumUrl, kontakt: a.contactUrl, startseite: a.finalUrl || lead.website } });
         Object.assign(lead, {
           websiteIssues: a.issues, reachable: a.reachable, auditedAt: t.toISOString(), title: a.title || null,
-          email: id.email || osmEmail, emailSource: id.email ? `${id.emailSource} (${a.finalUrl || lead.website})` : osmEmail ? c.source : null,
+          email: bc.business_email, emailSource: bc.business_email ? (bc.contact_source === "openstreetmap" ? c.source : `${bc.contact_source} (${bc.source_url || a.finalUrl || lead.website})`) : null,
           company: lead.company || id.company, uid: id.uid, name: id.owner, nameSource: id.owner ? a.impressumUrl : null,
         });
         // Swiss Repair Outreach: Schweiz-Signale, Platzhalterseite und Herkunft der Kontaktdaten (Datenminimierung) festhalten.
         const homeText = strip(a.pages?.home || "").slice(0, 3000);
         Object.assign(lead, swissSignals({ domain, uid: id.uid, pages: a.pages || {}, discoverySource: c.source }), {
           placeholder: PLACEHOLDER_RE.test(`${a.title || ""} ${homeText}`),
-          contact_source: lead.email ? (id.email ? id.emailSource : "openstreetmap") : null,
-          source_url: lead.email ? (id.email ? ({ impressum: a.impressumUrl, kontakt: a.contactUrl }[id.emailSource] || a.finalUrl || lead.website) : c.source) : null,
-          collected_at: lead.email ? t.toISOString() : null,
+          contact_name: bc.contact_name, contact_role: bc.contact_role, business_email: bc.business_email, contact_source: bc.contact_source,
+          source_url: bc.source_url, collected_at: bc.collected_at, contact_confidence: bc.contact_confidence,
         });
         const { score, details } = scoreLead({ issues: a.issues, identity: id, company: lead.company, reachable: a.reachable });
         Object.assign(lead, { auditScore: score, scoreDetails: details });
@@ -208,10 +211,13 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
         if (["blocked_no_legal_basis", "matched_existing_lead"].includes(lead.status)) stats.qualified++;
         const q = qualifyRepairLead(lead, { now: t });
         Object.assign(lead, { site_condition: q.site_condition, repair_fit_score: q.repair_fit_score, repair_stage: q.stage, contact_basis: q.contact_basis });
-        // Neue Schweizer Firma ohne Versandgrundlage: genau EIN individueller Entwurf zur Einzelprüfung durch Chris – nie gesendet.
+        // TF-025 COLD_LEAD_DRAFT_ONLY: höchstens EIN lokaler Cold-Entwurf je Firma (Gmail-Entwurf legt der Mail-Worker an). Nie gesendet.
         const sender = store.read("config.json", {}).sender;
-        if (lead.status === "blocked_no_legal_basis" && q.stage === "individual_review_required" && sender?.name) {
-          try { ensureReview(store, lead, { sender, now: t }); } catch (e) { log("error", "review_draft_failed", { domain, error: e.message }); }
+        if (lead.status === "blocked_no_legal_basis" && q.stage === "cold_lead_draft_only" && sender?.name) {
+          try {
+            const r = ensureColdDraft(store, lead, { sender, now: t, contacted, suppression: supp });
+            if (r.blocked) log("info", "cold_draft_skipped", { domain, reason: r.blocked });
+          } catch (e) { log("error", "cold_draft_failed", { domain, error: e.message }); }
         }
         log("info", "lead_discovered", { domain, status: lead.status, score, issues: a.issues.length, repair_stage: lead.repair_stage });
       } catch (e) {

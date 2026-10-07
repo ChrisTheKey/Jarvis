@@ -139,8 +139,9 @@ Der Server ist nur auf deinem eigenen Rechner erreichbar (localhost) und lehnt A
 
 `sales.js` ordnet jeden Lead ausschliesslich einer von drei Klassen zu – aus belegten Audit-Befunden (`websiteIssues` mit `type`, `url`, `evidence`, `severity`, `detectedAt`), nie erfunden:
 
-- `REPAIR_CHECK_150` (CHF 150): Website prüfen, Probleme dokumentieren, Empfehlungen – keine Umsetzung.
-- `REPAIR_FIX_500` (CHF 500): konkrete, auf der bestehenden Website behebbare Probleme reparieren.
+- `REPAIR_CHECK_150` – „Check & Anleitung“ (CHF 150): Fehler prüfen und erklären, Schritt-für-Schritt-Anleitung – die Reparatur macht der Kunde selbst.
+- `REPAIR_FIX_500` – „Check & Reparatur“ (CHF 480, die Klassen-ID bleibt aus Kompatibilität): kompletter Check, alle gefundenen Fehler beheben, Test auf Desktop und Smartphone; kein Fix, keine Rechnung.
+- Beide Angebote stehen auf der Landingpage https://helvetic-webdesign-reperatur.netlify.app/ (`LANDING_PAGE_URL` in `sales.js`), die jede Werbemail verlinkt.
 - `NONE`: kein Angebot begründbar (keine/zu wenig Befunde oder Website nicht erreichbar).
 
 Jede Einordnung enthält `offer_class`, `confidence`, `evidence[]`, `rationale`, `recommended_next_step`. Lebenszyklus (abgeleitet, ohne Migration): discovered, audited, repair_candidate, blocked_no_legal_basis, approved, contacted, replied, customer, not_interested, do_not_contact. Die Versandgrundlage bleibt unverändert `legalBasis()` (opt_in / existing_customer) – eine öffentliche Adresse ist nie eine Grundlage.
