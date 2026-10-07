@@ -189,9 +189,16 @@ form.cmd button.stop { color: var(--red); }
         <span>Stimme</span><b id="kVoice">–</b>
         <span>Laufzeit</span><b id="kUptime">–</b>
         <span>Worker</span><b id="kWorker">–</b>
+        <span>Mail Service</span><b id="kMailService" title="Always-on Mail-Worker (Heartbeat)">–</b>
+        <span>Mail Worker</span><b id="kMailWorker" title="send_authority">–</b>
+        <span>Wartend</span><b id="kMailPending">–</b>
+        <span>Gesendet heute</span><b id="kMailSent">–</b>
+        <span>Blockiert</span><b id="kMailBlocked">–</b>
+        <span>Eskalationen</span><b id="kMailEsc">–</b>
         <span>Mail heute</span><b id="kMail">–</b>
         <span>Morgenfenster</span><b id="kMorning" title="Versandlauf 09:30 (Europe/Zurich)">–</b>
         <span>Nachmittagsfenster</span><b id="kAfternoon" title="Versandlauf 14:30 (Europe/Zurich)">–</b>
+        <span>Sales heute</span><b id="kSales" title="Automatische Sales-/Marketing-Sends (max. 100)">–</b>
         <span>Discovery</span><b id="kDiscovery">–</b>
         <span>Alerts</span><b id="kAlerts">–</b>
         <span>Sync</span><b id="kSync">–</b>
@@ -709,9 +716,9 @@ async function run(text, { typed = false } = {}) {
           $("say").textContent = ev.message;
           speak("Verzeihung, Chris. Es gab ein Problem. Details stehen auf dem Bildschirm.");
         } else if (ev.type === "mail_request") {
-          // Cloud-Mailauftrag: nur in die Warteschlange gelegt – der lokale Worker prüft und sendet im Versandfenster.
+          // Cloud-Mailauftrag: nur in die Warteschlange gelegt – der Mail-Worker auf dem Server prüft und sendet zeitnah.
           const msg = ev.ok
-            ? `Mailauftrag an ${ev.request.recipient} übergeben${ev.duplicate ? " (bereits vorhanden)" : ""}. Der lokale Worker prüft ihn und sendet nur im nächsten Versandfenster.`
+            ? `Mailauftrag an ${ev.request.recipient} übergeben${ev.duplicate ? " (bereits vorhanden)" : ""}. Der Mail-Worker prüft ihn und sendet ihn zeitnah, sofern alle Regeln erfüllt sind.`
             : `Mailauftrag abgelehnt: ${ev.error}`;
           log("MAIL", msg, ev.ok ? "amber" : "red");
           said += (said ? "\n\n" : "") + msg;
@@ -788,6 +795,7 @@ function renderShared() {
     const x = w?.windows?.[id];
     $(el).textContent = x ? `${x.count} / ${x.limit}${x.executed ? " · gelaufen" : ""}` : w ? "0 / 50" : "–";
   }
+  $("kSales").textContent = w ? `${(w.windows?.morning?.count || 0) + (w.windows?.afternoon?.count || 0)} / 100` : "–";
   $("kDiscovery").textContent = d?.lastRunAt ? fmtTime(d.lastRunAt) : "–";
   $("kSync").textContent = sync.cloud ? `OK · PC zuletzt ${fmtTime(sync.lastSuccessAt)}` : sync.ok ? `OK ${fmtTime(sync.lastSuccessAt)}` : sync.error ? `FEHLER ${fmtTime(sync.lastErrorAt)}` : "–";
   $("kSync").className = sync.ok ? "on-ok" : sync.error ? "on-bad" : "";
@@ -809,7 +817,7 @@ function renderShared() {
     const li = document.createElement("li");
     li.className = (n.priority === "high" ? "high" : "") + (n.status === "read" ? " seen" : "");
     const el = (tag, cls, text) => { const x = document.createElement(tag); x.className = cls; x.textContent = text; return x; };
-    if (n.priority === "high") li.append(el("div", "prio", n.type === "human_contact_requested" || n.type === "call_requested" ? "PRIORITÄT – Persönlicher Kontakt" : "PRIORITÄT"));
+    if (n.priority === "high") li.append(el("div", "prio", n.type === "human_contact_requested" || n.type === "call_requested" ? "PRIORITÄT – Persönlicher Kontakt" : n.type === "mail_escalation" ? "PRIORITÄT – Antwort prüfen" : "PRIORITÄT"));
     li.append(el("div", "who", n.company || n.contactName || "Kunde"), el("div", "sum", n.summary), el("time", "", fmtTime(n.createdAt)));
     const acts = el("div", "acts", "");
     const read = el("button", "", "Gelesen"); read.type = "button"; read.onclick = () => markRead(n.id);
@@ -825,21 +833,36 @@ function renderShared() {
   if ("Notification" in window && Notification.permission === "granted") {
     const done = new Set(store.get("notified", []));
     for (const n of unread.filter((x) => x.priority === "high" && !done.has(x.id))) {
-      try { new Notification("Jarvis – Kunde möchte persönlichen Kontakt", { body: n.summary, tag: n.id }); } catch {}
+      try { new Notification(n.type === "mail_escalation" ? "Jarvis – Antwort braucht Prüfung" : "Jarvis – Kunde möchte persönlichen Kontakt", { body: n.summary, tag: n.id }); } catch {}
       done.add(n.id);
       log("ALARM", n.summary, "red");
     }
     store.set("notified", [...done].slice(-200));
   }
 }
-// Cloud: Ergebnis der Mailaufträge vom lokalen Worker (accepted_local / blocked / sent / failed / expired) melden.
+// Cloud: Ergebnis der Mailaufträge vom Mail-Worker (PENDING / PROCESSING / SENT / BLOCKED / FAILED) und MAIL SERVICE ONLINE/OFFLINE.
 const mailSeen = store.get("mailSeen", {});
-const MAIL_STATUS = { pending: "wartet auf lokalen Worker", accepted_local: "lokal geprüft, wartet auf Versandfenster", blocked: "blockiert", sent: "gesendet", failed: "fehlgeschlagen", expired: "abgelaufen" };
+const MAIL_STATUS = { pending: "wartet auf Mail-Worker", processing: "wird verarbeitet", accepted_local: "geprüft, wird gesendet", blocked: "blockiert", sent: "gesendet", failed: "fehlgeschlagen", expired: "abgelaufen" };
+function renderMailService(svc) {
+  const set = (id, v, cls = "") => { $(id).textContent = v; $(id).className = cls; };
+  if (!svc) return;
+  set("kMailService", svc.online ? "ONLINE" : "OFFLINE", svc.online ? "on-ok" : "on-bad");
+  set("kMailWorker", `${svc.authority === "vps" ? "VPS" : "LOKAL"} ${svc.online ? "ONLINE" : "OFFLINE"}`, svc.online ? "on-ok" : "on-bad");
+  set("kMailPending", String(svc.pending));
+  set("kMailSent", String(svc.sent_today));
+  set("kMailBlocked", String(svc.blocked_today));
+  set("kMailEsc", String(svc.escalations_today), svc.escalations_today ? "on-bad" : "");
+  $("kMorning").textContent = `${svc.sales.morning} / ${svc.sales.window_limit}`;
+  $("kAfternoon").textContent = `${svc.sales.afternoon} / ${svc.sales.window_limit}`;
+  $("kSales").textContent = `${svc.sales.today} / ${svc.sales.daily_limit}`;
+}
 async function loadMailRequests() {
   try {
     const r = await fetch("/api/mail-requests", { headers: { "x-jarvis-key": cloudKey }, cache: "no-store" });
     if (!r.ok) return;
-    for (const q of (await r.json()).requests || []) {
+    const j = await r.json();
+    renderMailService(j.service);
+    for (const q of j.requests || []) {
       if (mailSeen[q.request_id] === q.status) continue;
       if (mailSeen[q.request_id] !== undefined || q.status !== "pending") log("MAIL", `${q.recipient}: ${MAIL_STATUS[q.status] || q.status}${q.reason ? " – " + q.reason : ""}`, q.status === "sent" ? "green" : q.status === "blocked" || q.status === "failed" ? "red" : "amber");
       mailSeen[q.request_id] = q.status;

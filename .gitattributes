@@ -1,0 +1,4 @@
+*.sh text eol=lf
+start.command text eol=lf
+deploy/vps/Dockerfile text eol=lf
+deploy/vps/*.yml text eol=lf

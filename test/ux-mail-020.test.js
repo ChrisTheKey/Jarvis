@@ -59,13 +59,14 @@ const readJson = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf
 const worker = () => createWorker({ dir, gmail: g, now: () => clock, log: () => {}, compose: async () => ({ decision: "draft", subject: "Kurze Frage", body: "Guten Tag ...\n\nChris Muster" }) });
 const auto = () => write("config.json", { dryRun: false, sendMode: "compliant_auto", offer: "Website-Check", sender: { name: "Chris Muster", email: "chris@x.ch" } });
 const sends = () => g.calls.filter((c) => c.startsWith("SEND"));
-// n versandbereite Antworten in zulässigen Threads (wie vom Worker vorbereitet)
+// n versandbereite Kampagnen-Mails (Follow-ups, sales_followup) in zulässigen Threads (wie vom Worker vorbereitet).
+// Kampagnen sind an die Versandfenster gebunden; Gesprächsantworten nicht (TF-021).
 function queued(n, prefix = "q") {
   const st = { actions: {}, compliantThreads: {} };
   for (let i = 0; i < n; i++) {
     const tid = `${prefix}t${i}`, did = `${prefix}d${i}`, to = `k${i}@${prefix}.ch`;
     g.reg.drafts[did] = { threadId: tid, to, createdAt: "2026-10-05T10:00:00Z" };
-    st.actions[`reply:${prefix}${i}`] = { status: "prepared", autoSend: true, paced: false, kind: "antwort", draftId: did, threadId: tid, to, at: `2026-10-05T10:00:${String(i % 60).padStart(2, "0")}Z` };
+    st.actions[`followup:${tid}:1`] = { status: "prepared", autoSend: true, paced: true, kind: "follow-up 1", draftId: did, threadId: tid, to, at: `2026-10-05T10:00:${String(i % 60).padStart(2, "0")}Z` };
     st.compliantThreads[tid] = { to, basis: "opt_in" };
   }
   write("state.json", st);
@@ -228,7 +229,7 @@ test("zweiter Worker-Tick und Worker-Neustart wiederholen ein Fenster nie", asyn
   // Nach dem Lauf neu vorbereitete Mails warten auf das nächste Fenster
   const st = readJson("state.json");
   g.reg.drafts.late = { threadId: "lt", to: "late@x.ch" };
-  st.actions["reply:late"] = { status: "prepared", autoSend: true, paced: false, kind: "antwort", draftId: "late", threadId: "lt", to: "late@x.ch", at: MORNING.toISOString() };
+  st.actions["followup:lt:1"] = { status: "prepared", autoSend: true, paced: true, kind: "follow-up 1", draftId: "late", threadId: "lt", to: "late@x.ch", at: MORNING.toISOString() };
   st.compliantThreads.lt = { basis: "opt_in" };
   write("state.json", st);
   clock = new Date(+MORNING + 5 * 60_000);
@@ -375,14 +376,14 @@ test("Cloud ist keine Freigabe: ungültig, ohne Versandgrundlage, suppressed →
   assert.equal(r.cloudResults.length, 4);
 });
 
-test("gültiger Cloud-Auftrag erreicht den lokalen Worker, geht ins Versandfenster und das Ergebnis zurück in die Cloud", async () => {
+test("gültiger Cloud-Auftrag (manual_chris_mail) erreicht den Worker, wird zeitnah gesendet und das Ergebnis geht zurück in die Cloud", async () => {
   const { handler, store } = cloud();
   const config = { token: ENV.JARVIS_SYNC_TOKEN, url: "https://jarvis.test/api/state" };
   // PC offline: Auftrag bleibt pending
   const { request } = await (await handler(req("POST", { op: "create", ...MAIL }, asUser))).json();
   assert.equal((await pullMailRequests({ config, fetchFn: async () => { throw new Error("offline"); } })).ok, false);
   assert.equal((await createMailQueue(store, { now: () => qclock }).list())[0].status, "pending");
-  // Worker wieder online, aber zwischen den Fenstern: geprüft und angenommen, noch nicht gesendet
+  // Worker wieder online, zwischen den Fenstern: manueller Auftrag von Chris wird geprüft und sofort gesendet (kein Warten auf 14:30).
   write("leads.json", [{ email: MAIL.recipient, language: "de", ...OPTIN }]);
   write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: { name: "Chris Muster", email: "chris@x.ch" } }); // ohne offer: keine eigenen Erstkontakte
   const pulled = await pullMailRequests({ config, fetchFn: viaHandler(handler) });
@@ -390,20 +391,14 @@ test("gültiger Cloud-Auftrag erreicht den lokalen Worker, geht ins Versandfenst
   assert.equal(inboxAdd(createStore(dir), pulled.requests), 1);
   assert.equal(inboxAdd(createStore(dir), pulled.requests), 0, "idempotent");
   clock = BETWEEN;
-  await worker().tick();
-  await pushInbox(createStore(dir), (x) => pushMailResult({ config, fetchFn: viaHandler(handler), ...x }));
-  let cloudList = (await (await handler(req("GET", null, asUser))).json()).requests;
-  assert.equal(cloudList[0].status, "accepted_local");
-  assert.deepEqual(sends(), []);
-  // Nachmittagsfenster: Versand, Ergebnis „sent“ in der Cloud
-  clock = AFTERNOON;
-  await worker().tick();
-  assert.equal(sends().length, 1);
+  const r = await worker().tick();
+  assert.equal(sends().length, 1, "zeitnah, nicht erst im Versandfenster");
   const sent = Object.values(g.reg.sent)[0];
   assert.equal(sent.to, MAIL.recipient);
-  assert.equal(sent.window, "afternoon");
+  assert.equal(sent.window, null, "zählt nicht als Kampagne im Fenster");
+  assert.equal(r.sends[0].mailClass, "manual_chris_mail");
   await pushInbox(createStore(dir), (x) => pushMailResult({ config, fetchFn: viaHandler(handler), ...x }));
-  cloudList = (await (await handler(req("GET", null, asUser))).json()).requests;
+  let cloudList = (await (await handler(req("GET", null, asUser))).json()).requests;
   assert.equal(cloudList[0].status, "sent");
   assert.equal(cloudList[0].request_id, request.request_id);
   // Endzustand unveränderlich; Cloud kennt keine Gmail-Interna

@@ -1,0 +1,12 @@
+# Jarvis Always-on Mail-Worker (VPS). Derselbe mail-worker.js wie unter Windows – keine zweite Mail-Engine.
+# Build-Kontext ist das Repository-Wurzelverzeichnis (siehe docker-compose.yml). Keine Abhängigkeiten nötig.
+# Secrets kommen nie ins Image: Gmail-Credentials/Token und Worker-Zustand liegen im Volume /data/secrets (nur auf dem VPS).
+FROM node:22-alpine
+RUN apk add --no-cache tzdata
+ENV NODE_ENV=production TZ=Europe/Zurich JARVIS_SECRETS_DIR=/data/secrets JARVIS_WORKER_ROLE=vps JARVIS_POLL_MINUTES=2
+WORKDIR /app
+COPY package.json mail-worker.js gmail.js mail-requests.js shared-state.js local-state.js human-contact.js lead-finder.js site-auditor.js sales.js persona-version.js persona.md mail-writer.md ./
+USER node
+# Gesund, solange der Worker sein Lock in den letzten 5 Minuten erneuert hat (Herzschlag jede Minute).
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 CMD ["node", "mail-worker.js", "--healthcheck"]
+CMD ["node", "mail-worker.js"]

@@ -125,9 +125,11 @@ export function cloudContextPrefix(turns) {
 export function syncConfig() {
   let file = {};
   try { file = JSON.parse(fs.readFileSync(SYNC_FILE, "utf8")); } catch {}
-  const token = process.env.JARVIS_SYNC_TOKEN || file.token || "";
+  // VPS: eigener Worker-Token (send_authority); er gilt in der Cloud auch für den Zustandsabgleich.
+  const workerToken = process.env.JARVIS_MAIL_WORKER_TOKEN || "";
+  const token = process.env.JARVIS_SYNC_TOKEN || file.token || workerToken;
   const origin = (process.env.JARVIS_SYNC_URL || file.url || (process.env.JARVIS_WEB_ORIGIN || "https://chrisjarvis.netlify.app").split(",")[0]).trim().replace(/\/+$/, "");
-  return { token, url: /\/api\/state$/.test(origin) ? origin : origin + "/api/state" };
+  return { token, workerToken, url: /\/api\/state$/.test(origin) ? origin : origin + "/api/state" };
 }
 
 // Einmalig einen zufälligen Sync-Token lokal anlegen (nie im Repository, nie als Argument).
@@ -156,6 +158,9 @@ export async function syncWithCloud({ local, fetchFn = globalThis.fetch, config 
       cur.notifications = mergeNotifications(cur.notifications, remote.notifications, cur.dismissed);
       cur.conversation = mergeConversation(cur.conversation, remote.conversation);
       if (remote.mode?.last && (!cur.mode?.at || remote.mode.at > cur.mode.at)) cur.mode = remote.mode;
+      // Status des Mail-Workers mit send_authority (z. B. VPS) übernehmen, wenn er neuer ist als der lokale Stand.
+      if (remote.business?.updatedAt && !(cur.business?.updatedAt >= remote.business.updatedAt)) cur.business = remote.business;
+      if (remote.sales?.updatedAt && !(cur.sales?.updatedAt >= remote.sales.updatedAt)) cur.sales = remote.sales;
       cur.syncStatus = { ok: true, lastSuccessAt: now().toISOString(), failures: 0, nextAttemptAt: null, error: null };
       return cur;
     });
@@ -200,6 +205,26 @@ export function showToast({ title, body, url = "http://localhost:3000" }, { exe 
       child.stdin.end(TOAST_PS);
     } catch (e) { finish({ ok: false, error: e.message }); }
   });
+}
+
+// Eskalation: Antwort in einem Jarvis-Thread braucht Chris (Vertrag, Zahlung, Rabatt, unklare Identität …). Nur Entwurf,
+// nie gesendet. Persistente Meldung (je Gmail-Nachricht einmal), Toast wo möglich, sofort in die Cloud. Wirft nie.
+export function createEscalationNotifier({ local = createLocalState(), toast = showToast, sync = (o) => syncWithCloud({ local, ...o }), log = () => {} } = {}) {
+  return async ({ messageId, threadId, company, contactName, reason }) => {
+    try {
+      const who = company || contactName || "Ein Kunde";
+      const summary = `${who}: Antwort braucht Ihre Prüfung (${String(reason || "heikler Inhalt").slice(0, 80)}). Entwurf liegt bereit, nichts gesendet.`;
+      const r = local.addNotification({ sourceId: "esc:" + messageId, type: "mail_escalation", kind: null, company, contactName, threadId, summary });
+      if (!r.created) return { ...r, duplicate: true };
+      log("info", "mail_escalation", { id: r.id, threadId });
+      const shown = await toast({ title: "Jarvis – Antwort braucht Prüfung", body: summary }).catch((e) => ({ ok: false, error: e.message }));
+      await Promise.resolve(sync({ force: true })).catch(() => {});
+      return { ...r, toast: shown.ok };
+    } catch (e) {
+      log("error", "notify_failed", { error: e.message });
+      return { created: false, error: e.message };
+    }
+  };
 }
 
 // Alarm „Kunde möchte persönlichen Kontakt“: persistent speichern, Toast zeigen, sofort synchronisieren. Wirft nie.

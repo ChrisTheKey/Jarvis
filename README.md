@@ -98,7 +98,18 @@ Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschlie
 - Autostart einrichten: `powershell -ExecutionPolicy Bypass -File install-mail-worker.ps1` – fragt per UAC nach Administratorrechten, legt die Aufgabe „Jarvis Mail Worker“ an (Start bei Anmeldung, Neustart nach Fehler), ersetzt einen alten Worker-Prozess und prüft die Einrichtung. Entfernen mit `-Uninstall`.
 - `node gmail.js send` verweigert ab 100 heute gesendeten Jarvis-Mails (Europe/Zurich).
 - Cloud-Mailaufträge: Der Cloud-Jarvis legt nur strukturierte Aufträge in `/api/mail-requests` ab (Netlify Blobs, ohne Gmail-Zugang). Der lokale Mail-Worker holt sie ab, prüft sie nach denselben Regeln (Versandgrundlage, Suppression, Duplikate, Limits) und sendet nur im nächsten Versandfenster; das Ergebnis (`accepted_local`, `blocked`, `sent`, `failed`, `expired`) geht zurück in die Cloud.
-- Der Worker läuft nur, solange der Rechner an, wach und online ist.
+- Ohne VPS läuft der Worker nur, solange der Rechner an, wach und online ist – siehe „Always-on Mail-Worker (VPS)“.
+
+### Always-on Mail-Worker (VPS)
+
+Derselbe `mail-worker.js` läuft 24/7 als Docker-Container auf dem Hetzner-VPS (`deploy/vps/`, Compose-Projekt `jarvis-mail` unter `/opt/jarvis-mail`, `restart: unless-stopped`, Healthcheck `node mail-worker.js --healthcheck`). Der Windows-PC ist für Mails dann nicht mehr nötig.
+
+- **Mailklassen:** `automatic_sales_outreach` und `sales_followup` nur in den Fenstern 09:30/14:30 (je 50, Tag 100). `conversation_reply` und `manual_chris_mail` (Cloud-Auftrag von Chris) zeitnah rund um die Uhr – nach denselben Schutzregeln (Thread-Ownership, Opt-out, Suppression, Versandgrundlage, Duplikate, Limits).
+- **Eskalation statt Auto-Antwort:** Vertrag, Zahlung/Bank, Rabatt, Preisänderung, Passwort/Secret, Beschwerde, verbindliche Zusage, unklare Identität, Telefonwunsch → nur Entwurf (`JARVIS-PRUEFEN`) und Meldung `mail_escalation` bzw. `human_contact_requested` in Cloud und Local.
+- **send_authority:** Ist in Netlify `JARVIS_MAIL_WORKER_TOKEN` gesetzt, ist allein der VPS Sender: er übernimmt Cloud-Aufträge per Lease (`pending → processing → sent/blocked/failed`), holt vor jedem Gmail-Send ein serverseitiges Lock (Hash-Schlüssel, `lease_owner`, `lease_expires_at`, `status`; ein Lock geht nie an einen anderen Worker über) und meldet alle 2 Minuten einen Heartbeat. Der Windows-Worker erkennt das, merkt es sich in `.secrets/mail_worker/authority.json` und bleibt im Standby (kein Gmail, kein Versand). Ohne den Token bleibt alles wie bisher lokal.
+- **Cloud-HUD:** Mail Service ONLINE/OFFLINE (Heartbeat jünger als 5 Minuten), Mail Worker VPS, Wartend, Gesendet heute, Blockiert, Eskalationen, Sales Morgen/Nachmittag/Tag.
+- **Secrets nur auf dem VPS:** Gmail-Credentials, Token, Register und Worker-Zustand liegen in `/opt/jarvis-mail/secrets` (700/600, Container-User 1000), `/opt/jarvis-mail/.env` (600) enthält nur `JARVIS_MAIL_WORKER_TOKEN` und `ANTHROPIC_API_KEY` (Texte über die API, da auf dem VPS kein Claude Code angemeldet ist). Nichts davon geht nach Netlify, in den Browser oder ins Git.
+- **Einrichtung (einmalig):** `.secrets/vps_worker.env` nach `deploy/vps/env.example` anlegen, dann `deploy/vps/deploy.sh <ssh-host> --with-secrets` (danach Updates ohne `--with-secrets`; vorhandene VPS-Secrets werden nie überschrieben). Erst wenn der Container gesund ist, in Netlify `JARVIS_MAIL_WORKER_TOKEN` (gleicher Wert) setzen und neu deployen – ab dann ist der VPS send_authority. Leads und Suppression werden ab da auf dem VPS gepflegt.
 
 ### Lead-Finder und Website-Audit (Hintergrund)
 

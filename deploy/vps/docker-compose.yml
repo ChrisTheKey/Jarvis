@@ -1,0 +1,34 @@
+# Jarvis Always-on Mail-Worker auf dem Hetzner-VPS – eigenes Compose-Projekt unter /opt/jarvis-mail,
+# unabhängig von anderen Diensten auf dem Server.
+#   cd /opt/jarvis-mail && sudo docker compose up -d --build
+# Startet automatisch nach VPS-Neustart (Docker-Dienst), Container-Neustart und Prozessabsturz (restart: unless-stopped).
+name: jarvis-mail
+services:
+  mail-worker:
+    build:
+      context: ./app
+      dockerfile: deploy/vps/Dockerfile
+    image: jarvis-mail-worker:latest
+    restart: unless-stopped
+    # Nur: JARVIS_MAIL_WORKER_TOKEN, ANTHROPIC_API_KEY, optional JARVIS_SYNC_URL / JARVIS_MAIL_MODEL. Datei mit Rechten 600.
+    env_file: ./.env
+    volumes:
+      # Gmail-Credentials, Token, Register, Leads, Suppression, Worker-Zustand – nur hier, Verzeichnis 700, Dateien 600.
+      - ./secrets:/data/secrets
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "mail-worker.js", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

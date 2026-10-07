@@ -8,3 +8,4 @@ workspace/ergebnisse/*
 token.json
 *_token.json
 .playwright-mcp/
+deploy/vps/.env

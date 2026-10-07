@@ -7,7 +7,7 @@
 // Alles wird über eine Whitelist neu aufgebaut – unbekannte Felder fallen weg, sensible Feldnamen werden abgelehnt.
 
 export const LIMITS = { notifications: 50, tombstones: 500, tombstoneDays: 180, turns: 12, turnChars: 600, summaryChars: 200, nameChars: 80, notesChars: 2000, turnsPerWrite: 4, bodyBytes: 64_000 };
-export const NOTIFICATION_TYPES = ["human_contact_requested", "call_requested", "info"];
+export const NOTIFICATION_TYPES = ["human_contact_requested", "call_requested", "mail_escalation", "info"];
 
 // Feldnamen, die nie in den gemeinsamen Zustand gehören.
 const SENSITIVE_KEY = /token|secret|passw|kennwort|credential|api[-_]?key|private[-_]?key|refresh|authori[sz]ation|cookie|oauth|client[-_]?id|^(thread|message)[-_]?id$|^(rfc)?message[-_]?id$|registry|^suppression$|^leads$|^drafts$|^sent$|^path$|^file$/i;
@@ -235,8 +235,9 @@ const reply = (status, body) => new Response(JSON.stringify(body), { status, hea
 // x-jarvis-key (JARVIS_PASSWORD, Chris im Browser) darf nur lesen, als gelesen/erledigt markieren, Gesprächsverlauf und Modus setzen.
 export function createStateHandler({ getStore, env, now = () => new Date() }) {
   return async (req) => {
-    const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD");
-    const isLocal = !!syncToken && safeEqual(req.headers.get("x-jarvis-sync"), syncToken);
+    const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD"), workerToken = env("JARVIS_MAIL_WORKER_TOKEN");
+    // Der VPS-Mail-Worker synchronisiert mit seinem eigenen Token (gleiche Rechte wie der lokale Kern).
+    const isLocal = (!!syncToken && safeEqual(req.headers.get("x-jarvis-sync"), syncToken)) || (!!workerToken && safeEqual(req.headers.get("x-jarvis-sync"), workerToken));
     const isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
     if (req.method === "GET" && new URL(req.url).searchParams.has("probe")) return reply(200, { configured: !!syncToken });
     if (!isLocal && !isUser) return reply(401, { error: "Nicht berechtigt." });

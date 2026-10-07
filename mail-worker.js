@@ -12,6 +12,11 @@
 //   node mail-worker.js --supervise  wie oben, startet den Worker nach einem Absturz neu (für den Autostart)
 //   node mail-worker.js --once       genau eine Prüfung
 //   node mail-worker.js --plan       Dry-Run: zeigt, was heute vorbereitet/gesendet würde – ändert nichts (Alias --dry-run)
+//   node mail-worker.js --healthcheck  Exit 0, wenn der laufende Worker sich in den letzten 5 Minuten gemeldet hat (Docker)
+//
+// Always-on: Auf dem VPS (JARVIS_WORKER_ROLE=vps, deploy/vps/) ist dieser Worker send_authority und läuft 24/7.
+// Gesprächsantworten und manuelle Aufträge von Chris gehen zeitnah raus, Kampagnen nur in den Fenstern. Jeder Send braucht
+// ein serverseitiges Lock (/api/mail-requests); der Windows-Worker sendet dann nichts mehr (Standby).
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -74,7 +79,12 @@ export function newText(body = "") {
   return out.join("\n").trim();
 }
 export const OPT_OUT_RE = /\b(unsubscribe|abmelden|austragen|stopp?\b|keine (weiteren |weitere )?(e-?mails?|mails|nachrichten|kontaktaufnahme)|nicht (mehr )?(kontaktieren|anschreiben)|kein interesse|not interested|remove me|do not (contact|email)|don'?t (contact|email)|désinscri|ne plus me contacter|non contattarmi|disiscriv)/i;
-export const ESCALATE_RE = /(vertrag|vertr[aä]ge|contract|agb|haftung|anwalt|lawyer|rechtlich|legal|klage|gericht|rechnung|invoice|zahlung|payment|[uü]berweis|iban|kreditkarte|credit card|rabatt|discount|preisnachlass|skonto|passwort|password|zugangsdaten|credentials|login|beschwerde|complaint|betrug|fraud)/i;
+export const ESCALATE_RE = /(vertrag|vertr[aä]ge|contract|agb|haftung|anwalt|lawyer|rechtlich|legal|klage|gericht|rechnung|invoice|zahlung|payment|[uü]berweis|iban|kreditkarte|credit card|rabatt|discount|preisnachlass|skonto|passwort|password|zugangsdaten|credentials|login|beschwerde|complaint|betrug|fraud|bankverbindung|bankdaten|kontonummer|bank account|secret|geheim|preis(?:änderung|aenderung|erhöhung|anpassung)|price (?:change|increase)|garantie|guarantee|\bverbindlich|\bbinding|schadenersatz|damages|kündig|terminat)/i;
+// Mailklassen: A/B (Kampagnen) nur in den Versandfenstern, C/D (Gespräch, manuell von Chris) zeitnah rund um die Uhr.
+export const MAIL_CLASS = { erstkontakt: "automatic_sales_outreach", antwort: "conversation_reply", "cloud-auftrag": "manual_chris_mail" };
+export const mailClassOf = (a = {}) => MAIL_CLASS[a.kind] || (String(a.kind || "").startsWith("follow-up") ? "sales_followup" : "automatic_sales_outreach");
+export const IMMEDIATE_CLASSES = new Set(["conversation_reply", "manual_chris_mail"]);
+const ALLOW_ALL = { acquire: async () => ({ ok: true }), done: async () => {} };
 const AUTO_SUBJECT_RE = /(automatische antwort|abwesenheit|out of office|automatic reply|auto-?reply|réponse automatique|risposta automatica)/i;
 const BOUNCE_RE = /mailer-daemon|postmaster/i;
 const AI_RE = /\b(KI|AI|Claude|Jarvis|ChatGPT|künstliche Intelligenz|language model|Sprachmodell)\b/;
@@ -172,7 +182,9 @@ const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, compli
 // Cloud-Mailaufträge (lokale Ablage): request_id -> { request, status, reason, synced }
 export const CLOUD_INBOX = "cloud_requests.json";
 
-export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {} }) {
+// sendGuard: serverseitiges Send-Lock vor jedem Gmail-Send (VPS/Windows können nie dieselbe Mail senden).
+// escalate: Meldung an Chris, wenn eine Antwort nicht automatisch gesendet werden darf.
+export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, sendGuard = ALLOW_ALL }) {
   const store = createStore(dir);
   // Firma zu einer Absenderadresse – nur aus der Lead-Liste von Chris bzw. den gefundenen Leads, nie geraten.
   const companyFor = (email) => {
@@ -204,7 +216,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const supp = store.read("suppression.json", {});
     const exclude = new Set(cfg.excludeAddresses.map(normEmail));
     const reg = gmail.listOwned();
-    const plan = [], notes = [], optouts = [], ownThreads = [], sends = [], blockedLeads = [], eligibleLeads = [], humanContacts = [];
+    const plan = [], notes = [], optouts = [], ownThreads = [], sends = [], blockedLeads = [], eligibleLeads = [], humanContacts = [], escalations = [];
     // Echtversand nur im ausdrücklich gesetzten Modus, nie im Dry-Run und nie ohne echte Absenderidentität.
     const wantAuto = cfg.sendMode === "compliant_auto" && !dry;
     const auto = wantAuto && !!cfg.sender?.name;
@@ -241,7 +253,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
 
     async function prepare(key, info, make) {
       if (state.actions[key]) return; // schon erledigt oder in Arbeit → keine Doppelentwürfe
-      if (dry) { plan.push({ ...info, autoSend: !!info.autoSend && cfg.sendMode === "compliant_auto" && !info.escalate }); used++; return; }
+      if (dry) { plan.push({ ...info, sourceMessageId: undefined, autoSend: !!info.autoSend && cfg.sendMode === "compliant_auto" && !info.escalate }); used++; return; }
       const result = await compose(info.task);
       if (info.commercial && result.body) result.body = finalizeCommercial(result.body, cfg.sender, info.lang);
       if (result.decision === "optout") { suppress([info.to], "opt-out (erkannt beim Schreiben)", info.threadId); return "optout"; }
@@ -262,6 +274,13 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       if (d.threadId) state.threadDrafts[d.threadId] = d.draftId;
       save();
       if (review) await gmail.markDraftForReview(d.draftId);
+      // Eingehende Antwort, die nicht automatisch beantwortet werden darf: Entwurf liegt bereit, Chris wird informiert
+      // (Telefon-/Terminwunsch meldet notify bereits). Ein Fehler hier stoppt den Worker nie.
+      if (review && info.kind === "antwort" && !info.humanContact && info.sourceMessageId) {
+        escalations.push({ threadId: info.threadId });
+        try { await escalate({ messageId: info.sourceMessageId, threadId: info.threadId, company: info.company || "", contactName: info.contactName || "", reason: info.escalateReason || result.reason || "unklar" }); }
+        catch (e) { log("error", "escalate_failed", { threadId: info.threadId, error: e.message }); }
+      }
       log("info", "draft_prepared", { kind: info.kind, draftId: d.draftId, threadId: d.threadId, to: info.to, review, reason: result.reason });
       plan.push({ ...info, task: undefined, draftId: d.draftId, review, autoSend: state.actions[key].autoSend });
     }
@@ -319,10 +338,16 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           }
           if (free() <= 0) { notes.push(`Tageslimit erreicht – Antwort in ${threadId} folgt morgen.`); continue; }
           const key = "reply:" + m.messageId;
+          // Eskalation statt Auto-Antwort: heikler Inhalt (Vertrag, Zahlung, Rabatt, Passwort …), Telefon-/Terminwunsch
+          // oder unklare Identität (Absender ist nicht der von Jarvis angeschriebene Empfänger).
+          const risky = text.match(ESCALATE_RE)?.[0];
+          const identityUnclear = !recips.includes(sender);
+          const escalateReason = risky ? `heikler Inhalt: ${risky}` : identityUnclear ? "unklare Identität des Absenders" : null;
           const res = await prepare(key, {
             // Wunsch nach Telefonat/Termin ist immer ein Eskalationsfall: nur Entwurf, nie automatisch senden.
-            kind: "antwort", threadId, to: sender, subject: m.subject, escalate: ESCALATE_RE.test(text) || !!hc,
-            autoSend: !!state.compliantThreads[threadId] && !ESCALATE_RE.test(text) && !hc,
+            kind: "antwort", threadId, to: sender, subject: m.subject, escalate: !!escalateReason || !!hc, escalateReason, humanContact: !!hc,
+            sourceMessageId: m.messageId, company: companyFor(sender), contactName: displayName(m.from),
+            autoSend: !!state.compliantThreads[threadId] && !escalateReason && !hc,
             task: { kind: "reply", humanContact: hc?.kind || null, sender: cfg.sender, offer: cfg.offer, thread: mails.map((x) => ({ from: x.from, date: x.date, subject: x.subject, body: (x.sent ? x.body : newText(x.body) || x.body).slice(0, 4000) })) },
           }, async (r) => {
             // Ein noch offener eigener Entwurf in diesem Thread wird aktualisiert statt verdoppelt.
@@ -415,8 +440,8 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       store.write("leads.json", current);
     }
 
-    // 3) Cloud-Mailaufträge: ein Cloud-Auftrag ist keine Freigabe. Es gelten exakt dieselben Regeln wie für Erstkontakte
-    // bzw. Antworten im eigenen Thread; gesendet wird nur im nächsten Versandfenster.
+    // 3) Cloud-Mailaufträge (manual_chris_mail): ein Cloud-Auftrag ist keine Freigabe. Es gelten exakt dieselben Regeln wie für
+    // Erstkontakte bzw. Antworten im eigenen Thread. Erlaubte Aufträge werden zeitnah gesendet (Schritt 4), nicht erst im Fenster.
     const inbox = store.read(CLOUD_INBOX, {});
     const cloudResults = [];
     const cloudSet = (id, status, reason = null) => {
@@ -463,14 +488,14 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         save();
         const body = finalizeCommercial(rq.body, cfg.sender, lang);
         const d = threadId ? await gmail.replyToThread(threadId, { body }) : await gmail.createDraft({ to, subject: rq.subject, body });
-        state.actions[key] = { status: "prepared", at: t.toISOString(), kind: "cloud-auftrag", threadId: d.threadId, draftId: d.draftId, review: false, to, autoSend: true, paced: true,
+        state.actions[key] = { status: "prepared", at: t.toISOString(), kind: "cloud-auftrag", threadId: d.threadId, draftId: d.draftId, review: false, to, autoSend: true, paced: false,
           cloudRequest: id, ...(threadId ? {} : { basisFrom: "lead" }) };
         state.compliantThreads[d.threadId] ||= { to, basis, lang, at: t.toISOString() };
         state.prepared[d.draftId] = { key, at: t.toISOString(), kind: "cloud-auftrag" };
         if (d.threadId) state.threadDrafts[d.threadId] = d.draftId;
         used++;
         contacted.add(to);
-        cloudSet(id, "accepted_local", "Geprüft – wird im nächsten Versandfenster (09:30 oder 14:30) gesendet.");
+        cloudSet(id, "accepted_local", "Geprüft – wird jetzt gesendet.");
         save();
       } catch (err) {
         if (TRANSIENT_RE.test(err.message)) { saveInbox(); throw err; }
@@ -479,36 +504,42 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       }
     }
 
-    // 4) Versand: ausschliesslich in den zwei Versandfenstern, je Fenster genau ein Lauf (persistiert vor dem ersten Send).
-    // Antworten zuerst; direkt vor jedem Send erneut Suppression, Empfänger, Versandgrundlage und Kapazität prüfen.
+    // 4) Versand. Gesprächsantworten (conversation_reply) und manuelle Aufträge von Chris (manual_chris_mail) gehen zeitnah
+    // raus, rund um die Uhr. Kampagnen (automatic_sales_outreach, sales_followup) ausschliesslich in den zwei Versandfenstern,
+    // je Fenster genau ein Lauf (persistiert vor dem ersten Send). Direkt vor jedem Send erneut Suppression, Empfänger,
+    // Versandgrundlage und Kapazität prüfen – und ein serverseitiges Send-Lock holen (nie zwei Worker für dieselbe Mail).
     const win = sendWindowAt(t);
     state.windows = Object.fromEntries(Object.entries(state.windows || {}).filter(([d]) => d === day)); // nur heute
     const todayWin = (state.windows[day] ||= {});
-    if (auto && !win) notes.push("Automatischer Versand nur in den Fenstern 09:30 und 14:30 (Europe/Zurich).");
+    const runWindow = !!(auto && win && !todayWin[win.id]);
+    if (auto && !win) notes.push("Kampagnen (Erstkontakte, Follow-ups) nur in den Fenstern 09:30 und 14:30 (Europe/Zurich).");
     if (auto && win && todayWin[win.id]) notes.push(`Versandfenster ${win.id} heute bereits ausgeführt.`);
-    if (auto && win && !todayWin[win.id]) {
+    const queue = auto ? Object.entries(state.actions).filter(([, a]) => a.status === "prepared" && a.autoSend && (IMMEDIATE_CLASSES.has(mailClassOf(a)) || runWindow))
+      .sort(([, a], [, b]) => (IMMEDIATE_CLASSES.has(mailClassOf(b)) - IMMEDIATE_CLASSES.has(mailClassOf(a))) || (a.paced - b.paced) || a.at.localeCompare(b.at)) : [];
+    if (runWindow) {
       todayWin[win.id] = { executedAt: t.toISOString(), status: "running", sent: 0 };
       save(); // ab hier gilt das Fenster als ausgeführt – auch nach Absturz oder Neustart
+    }
+    if (queue.length) {
       const fresh = gmail.listOwned();
       const isToday = (x) => x.sentAt && zurichDay(new Date(x.sentAt)) === day;
       const todays = [...Object.values(fresh.sent || {}), ...Object.values(fresh.sending || {})].filter(isToday);
-      let sentNow = todays.length, inWin = todays.filter((x) => x.window === win.id).length;
+      let sentNow = todays.length, inWin = runWindow ? todays.filter((x) => x.window === win.id).length : 0;
       const freshLeads = store.read("leads.json", []);
-      const queue = Object.entries(state.actions).filter(([, a]) => a.status === "prepared" && a.autoSend)
-        .sort(([, a], [, b]) => (a.paced - b.paced) || a.at.localeCompare(b.at));
       const blockAt = (key, a, status, reason) => {
-        Object.assign(a, { status, reason });
+        Object.assign(a, { status, reason, blockedAt: t.toISOString() });
         log("warn", "send_blocked", { key, status, reason });
         if (a.cloudRequest) cloudSet(a.cloudRequest, "blocked", reason);
       };
       for (const [key, a] of queue) {
+        const campaign = !IMMEDIATE_CLASSES.has(mailClassOf(a));
         if (!fresh.drafts?.[a.draftId]) {
           a.status = Object.values(fresh.sent || {}).some((x) => x.fromDraft === a.draftId) ? "sent_by_sir" : "draft_gone";
           if (a.cloudRequest) cloudSet(a.cloudRequest, "failed", "Entwurf wurde in Gmail entfernt oder von Hand gesendet.");
           continue;
         }
         if (sentNow >= cfg.limit) { notes.push(`Tageslimit von ${cfg.limit} erreicht – weiterer Versand erst morgen.`); break; }
-        if (inWin >= win.limit) { notes.push(`Fensterlimit von ${win.limit} erreicht – Rest folgt im nächsten Versandfenster.`); break; }
+        if (campaign && inWin >= win.limit) { notes.push(`Fensterlimit von ${win.limit} erreicht – Rest folgt im nächsten Versandfenster.`); break; }
         const suppNow = { ...store.read("suppression.json", {}), ...supp };
         const to = normEmail(fresh.drafts[a.draftId].to);
         if (suppNow[to] || suppNow[a.to] || exclude.has(to)) { blockAt(key, a, "suppressed", "Empfänger ist gesperrt (Abmeldung/Suppression)."); continue; }
@@ -518,36 +549,59 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           const lead = (Array.isArray(freshLeads) ? freshLeads : []).find((l) => normEmail(l?.email) === to);
           if (!legalBasis(lead, t)) { blockAt(key, a, "blocked_no_legal_basis", "Versandgrundlage nicht mehr gültig (blocked_no_legal_basis)."); continue; }
         }
+        // Serverseitiges Lock: hält es ein anderer Worker oder ist die Mail schon gesendet → nie senden.
+        // Cloud nicht erreichbar → jetzt nicht senden, Mail bleibt vorbereitet (nächster Durchlauf).
+        const lock = await sendGuard.acquire({ key, request_id: a.cloudRequest || null, threadId: a.threadId, messageId: key.startsWith("reply:") ? key.slice(6) : a.draftId });
+        if (!lock.ok) {
+          if (lock.final) blockAt(key, a, "locked_elsewhere", "Send-Lock gehört einem anderen Worker oder Mail wurde bereits gesendet.");
+          else notes.push("Send-Lock nicht erreichbar – Versand im nächsten Durchlauf.");
+          if (lock.final) continue;
+          break;
+        }
         a.status = "sending";
         save();
+        const w = campaign ? win.id : null;
         try {
-          await gmail.sendDraft(a.draftId, { window: win.id });
-          Object.assign(a, { status: "sent", sentAt: t.toISOString(), window: win.id });
-          sentNow++; inWin++; todayWin[win.id].sent++;
+          await gmail.sendDraft(a.draftId, { window: w });
+          Object.assign(a, { status: "sent", sentAt: t.toISOString(), window: w, mailClass: mailClassOf(a) });
+          sentNow++;
+          if (campaign) { inWin++; todayWin[win.id].sent++; }
           state.lastSendAt = +t;
-          sends.push({ kind: a.kind, to, threadId: a.threadId, window: win.id });
-          if (a.cloudRequest) cloudSet(a.cloudRequest, "sent", `Gesendet im Fenster ${win.id}.`);
-          log("info", "sent", { key, kind: a.kind, to, draftId: a.draftId, threadId: a.threadId, window: win.id });
+          sends.push({ kind: a.kind, mailClass: mailClassOf(a), to, threadId: a.threadId, window: w });
+          if (a.cloudRequest) cloudSet(a.cloudRequest, "sent", campaign ? `Gesendet im Fenster ${w}.` : "Gesendet.");
+          log("info", "sent", { key, kind: a.kind, mailClass: mailClassOf(a), to, draftId: a.draftId, threadId: a.threadId, window: w });
+          await sendGuard.done(key, "SENT");
         } catch (err) {
           Object.assign(a, { status: "send_failed", error: err.message }); // nie automatisch wiederholen; Entwurf bleibt für Chris
           if (a.cloudRequest) cloudSet(a.cloudRequest, "failed", "Gmail hat den Versand abgelehnt.");
           log("error", "send_failed", { key, to, error: err.message });
           save();
+          await sendGuard.done(key, "FAILED");
           if (TRANSIENT_RE.test(err.message)) { saveInbox(); throw err; }
         }
         save();
       }
-      todayWin[win.id].status = "done";
     }
+    if (runWindow) todayWin[win.id].status = "done";
     saveInbox();
 
     // Fensterzähler aus dem Register (zählt nur erfolgreiche bzw. unklare Sends).
     const regEnd = gmail.listOwned();
     const sentEnd = [...Object.values(regEnd.sent || {}), ...Object.values(regEnd.sending || {})].filter((x) => x.sentAt && zurichDay(new Date(x.sentAt)) === day);
     const windows = Object.fromEntries(SEND_WINDOWS.map((w) => [w.id, { sent: sentEnd.filter((x) => x.window === w.id).length, limit: w.limit, executed: !!todayWin[w.id], start: w.start }]));
+    // Tageszahlen für Heartbeat und Cloud-HUD (nur Zahlen).
+    const today = (iso) => !!iso && zurichDay(new Date(iso)) === day;
+    const acts = Object.values(state.actions);
+    const stats = {
+      sent_today: sentEnd.length, campaign_morning: windows.morning.sent, campaign_afternoon: windows.afternoon.sent, campaign_today: windows.morning.sent + windows.afternoon.sent,
+      replies_today: acts.filter((a) => a.status === "sent" && a.kind === "antwort" && today(a.sentAt)).length,
+      manual_today: acts.filter((a) => a.status === "sent" && a.kind === "cloud-auftrag" && today(a.sentAt)).length,
+      blocked_today: acts.filter((a) => today(a.blockedAt)).length + Object.values(store.read(CLOUD_INBOX, {})).filter((e) => e.status === "blocked" && today(e.updatedAt)).length,
+      escalations_today: acts.filter((a) => a.kind === "antwort" && a.review && today(a.at)).length,
+    };
 
     save();
-    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, window: win?.id || null, windows, cloudResults, ownThreads, plan, sends, optouts, humanContacts,
+    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, window: win?.id || null, windows, stats, escalations, cloudResults, ownThreads, plan, sends, optouts, humanContacts,
       suppressedTotal: Object.keys(supp).length, eligibleLeads: eligibleLeads.length, blockedLeads: blockedLeads.length, notes };
   }
 
@@ -617,9 +671,43 @@ export function claudeCompose({ model = "sonnet" } = {}) {
   });
 }
 
+// Dieselbe Schreibanweisung (mail-writer.md) über die Anthropic-API – für den VPS, wo kein Claude Code angemeldet ist.
+// Der Schlüssel kommt nur aus der Umgebung (ANTHROPIC_API_KEY) und wird nie geloggt.
+export function apiCompose({ apiKey = process.env.ANTHROPIC_API_KEY, model = process.env.JARVIS_MAIL_MODEL || "claude-sonnet-5-5", fetchFn = globalThis.fetch, system = null } = {}) {
+  return async (task) => {
+    if (!apiKey) throw new Error("Textgenerator: ANTHROPIC_API_KEY fehlt");
+    const r = await fetchFn("https://api.anthropic.com/v1/messages", {
+      method: "POST", signal: AbortSignal.timeout(120_000),
+      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      body: JSON.stringify({ model, max_tokens: 2000, system: system ?? fs.readFileSync(WRITER_PROMPT, "utf8"), messages: [{ role: "user", content: JSON.stringify(task) }] }),
+    });
+    if (!r.ok) throw new Error(`Textgenerator: HTTP ${r.status}`);
+    const text = ((await r.json()).content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+    // Unlesbare Ausgabe → nie raten: Entwurf zur Prüfung markieren.
+    try { return { decision: "escalate", reason: "", ...JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) }; }
+    catch { return { decision: "escalate", reason: "Antwort des Textgenerators unlesbar", body: "" }; }
+  };
+}
+
 // ---------- Kommandozeile ----------
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Rolle dieses Prozesses: "vps" (always-on, send_authority) oder "local" (Windows).
+export const workerRole = (env = process.env) => (env.JARVIS_WORKER_ROLE === "vps" ? "vps" : "local");
+export const AUTHORITY_FILE = "authority.json";
+// send_authority für den lokalen Worker entscheiden. Einmal gesehene VPS-Authority bleibt gespeichert (auch über Neustarts
+// und Cloud-Ausfälle) und wird nur aufgehoben, wenn die Cloud ausdrücklich meldet, dass kein VPS-Worker eingerichtet ist.
+// Der VPS-Worker startet ohne Bestätigung im Standby (defaultSelf=false) – erst wenn die Cloud seinen Token als
+// send_authority anerkennt, liest und sendet er. So laufen vor der Umstellung nie zwei Worker auf denselben Threads.
+export function resolveAuthority(store, remote, now = new Date(), defaultSelf = true) {
+  const saved = store.read(AUTHORITY_FILE, null);
+  if (remote && typeof remote.dedicated === "boolean") {
+    const next = { holder: remote.dedicated ? "vps" : "local", self: !!remote.self, checkedAt: now.toISOString() };
+    if (saved?.holder !== next.holder || saved?.self !== next.self) store.write(AUTHORITY_FILE, next);
+    return next;
+  }
+  return saved || { holder: defaultSelf ? "local" : "unknown", self: defaultSelf, checkedAt: null };
+}
 
 // Nur Zahlen und Zeitpunkte – keine Adressen, IDs oder Inhalte.
 export function businessSnapshot(r, d = {}, t = new Date().toISOString()) {
@@ -665,6 +753,28 @@ export async function pushInbox(store, push) {
 }
 const BUSY = 3; // Exit-Code „Lock belegt“ – z. B. während eines manuellen --once
 
+// Ein Durchlauf der Worker-Schleife (ohne Discovery/Shared State): Cloud-Aufträge mit Lease übernehmen, send_authority
+// prüfen, Gmail-Durchlauf, Ergebnisse zurückmelden, Heartbeat. Wirft nie wegen der Cloud.
+export async function workerIteration({ role, store, worker, config, mailRequests, fetchFn = globalThis.fetch, startedAt = null, log = () => {} }) {
+  let claim = { ok: false, requests: [] };
+  try { claim = await mailRequests.claimMailRequests({ config, fetchFn }); inboxAdd(store, claim.requests); }
+  catch (e) { log("error", "cloud_requests_pull_failed", { error: e.message }); }
+  // Genau ein Sender. Windows nach der Migration: Standby – sendet nichts, liest kein Gmail, alles macht der VPS.
+  // VPS, dessen Token die Cloud nicht kennt (401): ebenfalls Standby, bis JARVIS_MAIL_WORKER_TOKEN in Netlify gesetzt ist.
+  const remote = claim.ok ? claim.authority : role === "vps" && claim.status === 401 ? { dedicated: false, self: false } : null;
+  const authority = resolveAuthority(store, remote, new Date(), role !== "vps");
+  if (!authority.self) return { standby: true, authority };
+  const result = await worker.tick();
+  try { await pushInbox(store, (x) => mailRequests.pushMailResult({ config, fetchFn, ...x })); }
+  catch (e) { log("error", "cloud_requests_push_failed", { error: e.message }); }
+  // Heartbeat an die Cloud: MAIL SERVICE ONLINE und Tageszahlen (nur Zahlen, keine Adressen oder IDs).
+  const hb = result?.stats ? await mailRequests.sendHeartbeat({ config, fetchFn, stats: result.stats, started_at: startedAt }) : { ok: false };
+  return { standby: false, authority, result, heartbeat: hb.ok };
+}
+
+// Abfrageintervall: VPS standardmässig 2 Minuten (JARVIS_POLL_MINUTES), nie unter 1 Minute – keine aggressive API-Schleife.
+export const pollMs = (cfg, env = process.env) => Math.max(1, Number(env.JARVIS_POLL_MINUTES) || Number(cfg.pollMinutes) || 5) * 60_000;
+
 async function loop() {
   const gmail = await import("./gmail.js");
   const log = createLogger(WORKER_DIR);
@@ -672,25 +782,36 @@ async function loop() {
   const release = () => releaseLock(WORKER_DIR);
   process.on("exit", release);
   for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0));
-  // Gemeinsamer Zustand (lokaler Spiegel + Cloud-Abgleich) und Sofort-Alarm bei Telefonwunsch.
+  const role = workerRole();
+  // Gemeinsamer Zustand (lokaler Spiegel + Cloud-Abgleich), Sofort-Alarm bei Telefonwunsch und Eskalationsmeldungen.
   const shared = await import("./local-state.js");
+  const mailRequests = await import("./mail-requests.js");
   const local = shared.createLocalState();
   const notify = shared.createHumanContactNotifier({ local, log });
-  const worker = createWorker({ gmail, compose: (task) => claudeCompose({ model: worker.config().model })(task), log, notify });
-  log("info", "worker_started", { pid: process.pid, dryRun: worker.config().dryRun !== false });
+  const escalate = shared.createEscalationNotifier({ local, log });
+  // Ohne Cloud-Zugang (kein Token) gibt es keinen zweiten Sender – dann genügt das lokale Lock.
+  const sendGuard = shared.syncConfig().token || shared.syncConfig().workerToken ? mailRequests.cloudSendGuard({ config: shared.syncConfig() }) : undefined;
+  // VPS: Anthropic-API (kein Claude Code angemeldet); Windows: wie bisher Claude Code.
+  const compose = role === "vps" || process.env.JARVIS_COMPOSE === "api" ? apiCompose() : (task) => claudeCompose({ model: worker.config().model })(task);
+  const worker = createWorker({ gmail, compose, log, notify, escalate, sendGuard });
+  const startedAt = new Date().toISOString();
+  log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
   // Herzschlag auch während langer Durchläufe, damit kein zweiter Worker das Lock für verwaist hält.
   setInterval(() => heartbeat(WORKER_DIR), 60_000);
   const finder = await import("./lead-finder.js");
   await shared.syncWithCloud({ local, log, force: true }); // beim Start: neuesten Cloud-Stand übernehmen
-  const mailRequests = await import("./mail-requests.js");
+  let standbyLogged = false;
   for (;;) {
     heartbeat(WORKER_DIR);
-    // Offene Cloud-Mailaufträge abholen (nur strukturierte Daten; geprüft und gesendet wird ausschliesslich hier lokal).
-    try { inboxAdd(createStore(WORKER_DIR), (await mailRequests.pullMailRequests({ config: shared.syncConfig() })).requests); }
-    catch (e) { log("error", "cloud_requests_pull_failed", { error: e.message }); }
-    const r = await worker.tick();
-    try { await pushInbox(createStore(WORKER_DIR), (x) => mailRequests.pushMailResult({ config: shared.syncConfig(), ...x })); }
-    catch (e) { log("error", "cloud_requests_push_failed", { error: e.message }); }
+    const it = await workerIteration({ role, store: createStore(WORKER_DIR), worker, config: shared.syncConfig(), mailRequests, startedAt, log });
+    if (it.standby) {
+      if (!standbyLogged) { log("info", "standby_no_send_authority", { holder: it.authority.holder }); standbyLogged = true; }
+      try { await shared.syncWithCloud({ local, log }); } catch (e) { log("error", "shared_state_failed", { error: e.message }); }
+      await sleep(pollMs(worker.config()));
+      continue;
+    }
+    standbyLogged = false;
+    const r = it.result;
     // Danach (Antworten haben Vorrang): neue Websites suchen und prüfen, wenn fällig. Sendet nie.
     try {
       const d = await finder.runDiscovery({ gmail, log });
@@ -700,11 +821,16 @@ async function loop() {
     try {
       // Vertriebskennzahlen (nur Zähler/CHF-Summen der zwei Angebote) lokal festhalten und mitsynchronisieren.
       try { local.setSales((await import("./sales.js")).persistMetrics({ registry: gmail.listOwned() })); } catch (e) { log("error", "metrics_failed", { error: e.message }); }
-      if (r?.report) local.setBusiness(businessSnapshot(r, finder.discoveryReport()), { personaVersion: (await import("./persona-version.js")).personaVersion(), profile: profileNotes() });
+      if (r?.report) local.setBusiness(businessSnapshot(r, finder.discoveryReport()), { personaVersion: (await import("./persona-version.js")).personaVersion(), ...(role === "vps" ? {} : { profile: profileNotes() }) });
       await shared.syncWithCloud({ local, log });
     } catch (e) { log("error", "shared_state_failed", { error: e.message }); }
-    await sleep(worker.config().pollMinutes * 60_000);
+    await sleep(pollMs(worker.config()));
   }
+}
+
+// Docker-Healthcheck: gesund, solange der Worker-Prozess sein Lock in den letzten 5 Minuten erneuert hat.
+export function healthy(dir = WORKER_DIR, now = Date.now(), maxAgeMs = 5 * 60_000) {
+  try { const l = JSON.parse(fs.readFileSync(path.join(dir, "worker.lock"), "utf8")); return now - (l.beat || 0) < maxAgeMs; } catch { return false; }
 }
 
 // Startet den Worker als Kindprozess neu, wenn er abstürzt (der Task Scheduler sieht hinter conhost keinen Exit-Code).
@@ -734,6 +860,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   };
   const run = {
     "--supervise": supervise,
+    "--healthcheck": async () => (healthy() ? 0 : 1),
     "--plan": dryRun,
     "--dry-run": dryRun,
     "--once": async () => {
