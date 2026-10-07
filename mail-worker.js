@@ -906,6 +906,11 @@ export async function workerIteration({ role, store, worker, config, mailRequest
 }
 
 // Abfrageintervall: VPS standardmässig 2 Minuten (JARVIS_POLL_MINUTES), nie unter 1 Minute – keine aggressive API-Schleife.
+// Public Key für die Backups (im Image neben mail-worker.js, im Repo unter deploy/vps/). Kein Key → kein Backup.
+export function backupPublicKey() {
+  for (const p of [path.join(ROOT, "backup-public.pem"), path.join(ROOT, "deploy", "vps", "backup-public.pem")]) { try { return fs.readFileSync(p, "utf8"); } catch {} }
+  return null;
+}
 export const pollMs = (cfg, env = process.env) => Math.max(1, Number(env.JARVIS_POLL_MINUTES) || Number(cfg.pollMinutes) || 5) * 60_000;
 
 async function loop() {
@@ -914,6 +919,7 @@ async function loop() {
   if (!acquireLock(WORKER_DIR)) { log("info", "already_running"); console.log("Mail-Worker läuft bereits."); return BUSY; }
   // Operational State auf die Schema-Version dieses Codes bringen; neuerer Stand → Abbruch (fail closed, nichts wird gesendet).
   const cloudCore = await import("./cloud-core.js");
+  const backup = await import("./backup.js");
   try { const m = cloudCore.migrateStateDir(WORKER_DIR); if (m.applied.length) log("info", "state_migrated", m); }
   catch (e) { log("error", "state_schema_refused", { error: e.message }); releaseLock(WORKER_DIR); throw e; }
   const release = () => releaseLock(WORKER_DIR);
@@ -941,7 +947,7 @@ async function loop() {
   let standbyLogged = false;
   for (;;) {
     heartbeat(WORKER_DIR);
-    const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: cloudCore.backupInfo?.(WORKER_DIR) || null });
+    const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
     const it = await workerIteration({ role, store: createStore(WORKER_DIR), worker, config: shared.syncConfig(), mailRequests, startedAt, log, core });
     if (it.standby) {
       if (!standbyLogged) { log("info", "standby_no_send_authority", { holder: it.authority.holder }); standbyLogged = true; }
@@ -963,6 +969,14 @@ async function loop() {
       if (r?.report) local.setBusiness(businessSnapshot(r, finder.discoveryReport()), { personaVersion: (await import("./persona-version.js")).personaVersion(), ...(role === "vps" ? {} : { profile: profileNotes() }) });
       await shared.syncWithCloud({ local, log });
     } catch (e) { log("error", "shared_state_failed", { error: e.message }); }
+    // Cloud Core (VPS): tägliches verschlüsseltes State-Backup (lokal rotierend + offsite). Fehler stoppen den Worker nie.
+    if (role === "vps") {
+      try {
+        const pem = backupPublicKey();
+        if (pem) await backup.dailyBackup({ secretsDir: SECRETS, workerDir: WORKER_DIR, publicKeyPem: pem, zurichDay, log,
+          upload: (await import("./backup-api.js")).backupUploader({ config: shared.syncConfig() }) });
+      } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
+    }
     await sleep(pollMs(worker.config()));
   }
 }

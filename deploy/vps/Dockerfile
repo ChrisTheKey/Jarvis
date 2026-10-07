@@ -5,7 +5,8 @@ FROM node:22-alpine
 RUN apk add --no-cache tzdata
 ENV NODE_ENV=production TZ=Europe/Zurich JARVIS_SECRETS_DIR=/data/secrets JARVIS_WORKER_ROLE=vps JARVIS_POLL_MINUTES=2
 WORKDIR /app
-COPY package.json mail-worker.js gmail.js mail-requests.js shared-state.js local-state.js human-contact.js lead-finder.js site-auditor.js sales.js swiss-repair.js email-permission.js cloud-core.js persona-version.js persona.md mail-writer.md ./
+COPY deploy/vps/backup-public.pem ./backup-public.pem
+COPY package.json mail-worker.js gmail.js mail-requests.js shared-state.js local-state.js human-contact.js lead-finder.js site-auditor.js sales.js swiss-repair.js email-permission.js cloud-core.js backup.js backup-api.js persona-version.js persona.md mail-writer.md ./
 USER node
 # Gesund, solange der Worker sein Lock in den letzten 5 Minuten erneuert hat (Herzschlag jede Minute).
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 CMD ["node", "mail-worker.js", "--healthcheck"]
