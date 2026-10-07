@@ -32,7 +32,7 @@ export function findSensitiveKeys(obj, prefix = "") {
 
 export function emptyState() {
   return { version: 1, updatedAt: null, personaVersion: null, mode: { last: null, at: null }, profile: { notes: "", updatedAt: null },
-    conversation: { turns: [], updatedAt: null, resetAt: null }, notifications: [], dismissed: emptyDismissed(), business: null, sales: null, sync: { lastLocalPushAt: null } };
+    conversation: { turns: [], updatedAt: null, resetAt: null }, notifications: [], dismissed: emptyDismissed(), business: null, sales: null, sync: { lastLocalPushAt: null, lastCorePushAt: null, lastClientPushAt: null } };
 }
 
 // ---------- Erledigte Meldungen (Tombstones) ----------
@@ -146,7 +146,8 @@ export function sanitizeState(s = {}) {
     notifications: withoutDismissed((Array.isArray(s.notifications) ? s.notifications : []).map(sanitizeNotification).filter(Boolean), pruneDismissed(s.dismissed)).slice(-LIMITS.notifications * 2),
     business: sanitizeBusiness(s.business),
     sales: sanitizeSales(s.sales),
-    sync: { lastLocalPushAt: iso(s.sync?.lastLocalPushAt) },
+    // lastCorePushAt: VPS Cloud Core (Worker-Token); lastClientPushAt: optionaler Windows-Client (Sync-Token).
+    sync: { lastLocalPushAt: iso(s.sync?.lastLocalPushAt), lastCorePushAt: iso(s.sync?.lastCorePushAt), lastClientPushAt: iso(s.sync?.lastClientPushAt) },
   };
 }
 
@@ -190,7 +191,9 @@ export function mergeConversation(a = {}, b = {}) {
 
 // base = gespeicherter Zustand, incoming = bereits bereinigter Teilzustand.
 // Business-Status, Persona-Version und Notizen darf nur der lokale Kern (Sync-Token) setzen.
-export function mergeState(base, incoming, { fromLocal = false } = {}) {
+// ownsBusiness: Business/Sales übernimmt die Cloud nur vom Inhaber der Authority (mit VPS: nur vom Cloud Core) –
+// ein optionaler Windows-Client mit veralteten Daten kann sie nicht mehr überschreiben.
+export function mergeState(base, incoming, { fromLocal = false, ownsBusiness = true } = {}) {
   const b = sanitizeState(base), i = sanitizeState(incoming);
   const out = { ...b };
   // Tombstones darf jede berechtigte Seite setzen (sie entfernen nur) – sie werden immer vereinigt.
@@ -199,11 +202,12 @@ export function mergeState(base, incoming, { fromLocal = false } = {}) {
   out.conversation = mergeConversation(b.conversation, i.conversation);
   if (i.mode.last && newer(i.mode.at, b.mode.at)) out.mode = i.mode;
   if (fromLocal) {
-    if (i.business && newer(i.business.updatedAt, b.business?.updatedAt)) out.business = i.business;
-    if (i.sales && newer(i.sales.updatedAt, b.sales?.updatedAt)) out.sales = i.sales;
+    if (ownsBusiness && i.business && newer(i.business.updatedAt, b.business?.updatedAt)) out.business = i.business;
+    if (ownsBusiness && i.sales && newer(i.sales.updatedAt, b.sales?.updatedAt)) out.sales = i.sales;
     if (i.personaVersion) out.personaVersion = i.personaVersion;
     if (i.profile.updatedAt && newer(i.profile.updatedAt, b.profile.updatedAt)) out.profile = i.profile;
-    out.sync = { lastLocalPushAt: i.sync.lastLocalPushAt || new Date().toISOString() };
+    const at = i.sync.lastLocalPushAt || new Date().toISOString();
+    out.sync = { ...b.sync, lastLocalPushAt: at, ...(i.sync.lastCorePushAt ? { lastCorePushAt: i.sync.lastCorePushAt } : {}), ...(i.sync.lastClientPushAt ? { lastClientPushAt: i.sync.lastClientPushAt } : {}) };
   }
   return out;
 }
@@ -239,7 +243,8 @@ export function createStateHandler({ getStore, env, now = () => new Date() }) {
   return async (req) => {
     const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD"), workerToken = env("JARVIS_MAIL_WORKER_TOKEN");
     // Der VPS-Mail-Worker synchronisiert mit seinem eigenen Token (gleiche Rechte wie der lokale Kern).
-    const isLocal = (!!syncToken && safeEqual(req.headers.get("x-jarvis-sync"), syncToken)) || (!!workerToken && safeEqual(req.headers.get("x-jarvis-sync"), workerToken));
+    const isCore = !!workerToken && safeEqual(req.headers.get("x-jarvis-sync"), workerToken);
+    const isLocal = (!!syncToken && safeEqual(req.headers.get("x-jarvis-sync"), syncToken)) || isCore;
     const isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
     if (req.method === "GET" && new URL(req.url).searchParams.has("probe")) return reply(200, { configured: !!syncToken });
     if (!isLocal && !isUser) return reply(401, { error: "Nicht berechtigt." });
@@ -260,7 +265,7 @@ export function createStateHandler({ getStore, env, now = () => new Date() }) {
     let change;
     if (body.op === "sync") {
       if (!isLocal) return reply(403, { error: "Nur der lokale Jarvis-Kern darf synchronisieren." });
-      change = (s) => mergeState(s, { ...body.state, sync: { lastLocalPushAt: t } }, { fromLocal: true });
+      change = (s) => mergeState(s, { ...body.state, sync: { lastLocalPushAt: t, [isCore ? "lastCorePushAt" : "lastClientPushAt"]: t } }, { fromLocal: true, ownsBusiness: !workerToken || isCore });
     } else if (body.op === "read") {
       if (typeof body.id !== "string") return reply(400, { error: "id fehlt." });
       change = (s) => ({ ...s, notifications: s.notifications.map((n) => (n.id === body.id && n.status !== "read" ? { ...n, status: "read", readAt: t, updatedAt: t } : n)) });

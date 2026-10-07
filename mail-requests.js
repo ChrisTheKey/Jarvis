@@ -5,6 +5,7 @@
 // Bewusst ohne Node-Abhängigkeiten: läuft lokal (Node), als Netlify Function und in der Edge Function.
 // Nie in der Cloud: Gmail-Zugangsdaten, OAuth-Tokens, .secrets, lokale Pfade, Befehle, Anhänge.
 import { safeEqual, findSensitiveKeys } from "./shared-state.js";
+import { cleanCore } from "./cloud-core.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
   ttlHours: 24, maxTtlHours: 72, duplicateHours: 24, bodyBytes: 16_000 };
@@ -168,7 +169,7 @@ export function finishSendLock(locks, { lock_key, owner, status }, now = new Dat
 const STAT_FIELDS = ["sent_today", "campaign_morning", "campaign_afternoon", "campaign_today", "replies_today", "manual_today", "blocked_today", "escalations_today", "ai_paused"];
 export function cleanHeartbeat(h, owner, now = new Date()) {
   const stats = Object.fromEntries(STAT_FIELDS.map((k) => [k, Number.isFinite(h?.stats?.[k]) ? Math.max(0, Math.min(10_000, Math.round(h.stats[k]))) : 0]));
-  return { worker_id: owner, role: owner === "vps" ? "vps" : "local", at: now.toISOString(), started_at: typeof h?.started_at === "string" ? h.started_at.slice(0, 40) : null, stats };
+  return { worker_id: owner, role: owner === "vps" ? "vps" : "local", at: now.toISOString(), started_at: typeof h?.started_at === "string" ? h.started_at.slice(0, 40) : null, stats, core: cleanCore(h?.core) };
 }
 export function serviceStatus(state, now = new Date(), dedicated = false) {
   const requests = cleanList(state?.requests);
@@ -182,6 +183,8 @@ export function serviceStatus(state, now = new Date(), dedicated = false) {
     // KI-Dienst des Workers: nur online / paused_credit – keine Keys, keine Billing-Daten.
     ai: hb?.at ? (s.ai_paused ? "paused_credit" : "online") : null,
     sales: { morning: s.campaign_morning || 0, afternoon: s.campaign_afternoon || 0, today: s.campaign_today || 0, window_limit: 50, daily_limit: 100 },
+    // Cloud Core (gleicher Prozess wie der Mail-Worker): Schema, Scheduler-Checkpoints, Discovery, Backup – nur Whitelist-Felder.
+    core: hb?.core ? cleanCore(hb.core) : null,
   };
 }
 
@@ -336,9 +339,9 @@ export async function pushMailResult({ config, fetchFn = globalThis.fetch, reque
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-export async function sendHeartbeat({ config, fetchFn = globalThis.fetch, stats = {}, started_at = null }) {
+export async function sendHeartbeat({ config, fetchFn = globalThis.fetch, stats = {}, started_at = null, core = null }) {
   if (!hasAuth(config)) return { ok: false };
-  try { const r = await post(config, fetchFn, { op: "heartbeat", stats, started_at }); return { ok: r.ok, status: r.status }; }
+  try { const r = await post(config, fetchFn, { op: "heartbeat", stats, started_at, core: cleanCore(core) }); return { ok: r.ok, status: r.status }; }
   catch (e) { return { ok: false, error: e.message }; }
 }
 

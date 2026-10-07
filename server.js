@@ -25,7 +25,10 @@ const { fetchMailService } = await import("./mail-requests.js");
 const gmailRegistry = async () => { try { return (await import("./gmail.js")).listOwned(); } catch { return { sent: {}, drafts: {} }; } };
 const local = createLocalState();
 // Vertriebskennzahlen lokal neu berechnen (nur Zahlen gehen in den gemeinsamen Zustand). Fehler sind unkritisch.
-const refreshSales = async () => { try { local.setSales(sales.persistMetrics({ registry: await gmailRegistry() })); } catch {} };
+// Optionaler Client: Hat der VPS die Authority (Windows-Worker im Standby), kommen die Zahlen vom Cloud Core (Sync übernimmt sie) –
+// der PC rechnet dann nicht mit seinem veralteten lokalen Stand dagegen.
+const windowsIsStandby = () => mailStore(MAIL_DIR).read(AUTHORITY_FILE, null)?.self === false;
+const refreshSales = async () => { if (windowsIsStandby()) return; try { local.setSales(sales.persistMetrics({ registry: await gmailRegistry() })); } catch {} };
 const syncSoon = () => { syncWithCloud({ local, force: true }).catch(() => {}); };
 const STARTED_AT = new Date().toISOString();
 // Mail-Worker-Status fürs HUD: Cloud (Authority + Heartbeat des Zuständigen + Wartend) und der Windows-Worker auf diesem PC.

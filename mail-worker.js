@@ -888,7 +888,7 @@ const BUSY = 3; // Exit-Code „Lock belegt“ – z. B. während eines manuelle
 
 // Ein Durchlauf der Worker-Schleife (ohne Discovery/Shared State): Cloud-Aufträge mit Lease übernehmen, send_authority
 // prüfen, Gmail-Durchlauf, Ergebnisse zurückmelden, Heartbeat. Wirft nie wegen der Cloud.
-export async function workerIteration({ role, store, worker, config, mailRequests, fetchFn = globalThis.fetch, startedAt = null, log = () => {} }) {
+export async function workerIteration({ role, store, worker, config, mailRequests, fetchFn = globalThis.fetch, startedAt = null, log = () => {}, core = null }) {
   let claim = { ok: false, requests: [] };
   try { claim = await mailRequests.claimMailRequests({ config, fetchFn }); inboxAdd(store, claim.requests); }
   catch (e) { log("error", "cloud_requests_pull_failed", { error: e.message }); }
@@ -901,7 +901,7 @@ export async function workerIteration({ role, store, worker, config, mailRequest
   try { await pushInbox(store, (x) => mailRequests.pushMailResult({ config, fetchFn, ...x })); }
   catch (e) { log("error", "cloud_requests_push_failed", { error: e.message }); }
   // Heartbeat an die Cloud: MAIL SERVICE ONLINE und Tageszahlen (nur Zahlen, keine Adressen oder IDs).
-  const hb = result?.stats ? await mailRequests.sendHeartbeat({ config, fetchFn, stats: result.stats, started_at: startedAt }) : { ok: false };
+  const hb = result?.stats ? await mailRequests.sendHeartbeat({ config, fetchFn, stats: result.stats, started_at: startedAt, core: typeof core === "function" ? core() : core }) : { ok: false };
   return { standby: false, authority, result, heartbeat: hb.ok };
 }
 
@@ -912,6 +912,10 @@ async function loop() {
   const gmail = await import("./gmail.js");
   const log = createLogger(WORKER_DIR);
   if (!acquireLock(WORKER_DIR)) { log("info", "already_running"); console.log("Mail-Worker läuft bereits."); return BUSY; }
+  // Operational State auf die Schema-Version dieses Codes bringen; neuerer Stand → Abbruch (fail closed, nichts wird gesendet).
+  const cloudCore = await import("./cloud-core.js");
+  try { const m = cloudCore.migrateStateDir(WORKER_DIR); if (m.applied.length) log("info", "state_migrated", m); }
+  catch (e) { log("error", "state_schema_refused", { error: e.message }); releaseLock(WORKER_DIR); throw e; }
   const release = () => releaseLock(WORKER_DIR);
   process.on("exit", release);
   for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0));
@@ -937,7 +941,8 @@ async function loop() {
   let standbyLogged = false;
   for (;;) {
     heartbeat(WORKER_DIR);
-    const it = await workerIteration({ role, store: createStore(WORKER_DIR), worker, config: shared.syncConfig(), mailRequests, startedAt, log });
+    const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: cloudCore.backupInfo?.(WORKER_DIR) || null });
+    const it = await workerIteration({ role, store: createStore(WORKER_DIR), worker, config: shared.syncConfig(), mailRequests, startedAt, log, core });
     if (it.standby) {
       if (!standbyLogged) { log("info", "standby_no_send_authority", { holder: it.authority.holder }); standbyLogged = true; }
       try { await shared.syncWithCloud({ local, log }); } catch (e) { log("error", "shared_state_failed", { error: e.message }); }

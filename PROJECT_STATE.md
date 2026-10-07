@@ -4,6 +4,23 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-07
 
+## CLOUD-FIRST (Rollout ab 2026-10-07) – Zielbild: VPS = Gehirn/24-7-Runtime, Netlify = UI, GitHub = Code, Windows = optionaler Client
+Entscheidungen Chris (2026-10-07): (1) VPS nur AUSGEHEND, kein offener Port – Netlify-Functions sind das authentifizierte Gateway;
+(2) Storage = bestehende atomare JSON-Stores + Schema-Versionierung/Migrationen (kein SQLite-Umbau); (3) VPS-Reboot nur per
+Konfig-Prüfung + Jarvis-Container-Neustart (echter Reboot durch Chris, da /opt/fiverr auf demselben Host); (4) Offsite-Backup
+verschlüsselt (Public Key auf VPS, Private Key nur bei Chris) in Netlify Blobs + lokale Rotation auf dem VPS.
+Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Schreiber je JSON-Datei), Code `cloud-core.js`.
+| Phase | Inhalt | Status |
+|---|---|---|
+| A | Cloud Core: Schema v1 + Migrationen (fail closed bei neuerem Stand), Core-Status (Scheduler-Checkpoints, Discovery, Backup) im Heartbeat; Cloud übernimmt Business/Sales nur vom Core (Windows-Client nie mehr); `sync.lastCorePushAt`/`lastClientPushAt`; `scripts/secret-scan.mjs` | Code fertig, 247/247 |
+| B | Migration Windows → VPS (offer-Text CHF 150/480, 6 nur-Windows-Leads), fail closed | offen |
+| C | Netlify/HUD: JARVIS CORE / LOCAL CLIENT / MAIL WORKER / AUTHORITY / QUEUE / AI SERVICE; System ONLINE ohne Windows | offen |
+| D | Windows = OPTIONAL_CLIENT | offen |
+| E | Backup (verschlüsselt, täglich, rotierend, Offsite) + Restore + `scripts/bootstrap-windows.ps1` | offen |
+| F | Disaster-Tests A–E | offen |
+Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
+VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
+
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
 `legalBasis` bzw. Cold-Send-Sperre macht Tests rot. (TF-023 existiert nicht.)
