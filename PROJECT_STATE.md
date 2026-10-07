@@ -24,6 +24,11 @@ Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-
 - 0 Auto-Send-Berechtigte = 0 Auto-Send. 09:30 max 50 / 14:30 max 50 / 100 pro Tag sind nur das technische Maximum.
 - Angebote aktuell: REPAIR_CHECK_150 = CHF 150, REPAIR_FIX_500 (interne ID bleibt) = CHF 480. Kein drittes Angebot, kein Redesign, kein Neubau.
 - TF-021 VPS/Netlify 401 (Token-Mismatch) bleibt separater offener Blocker; VPS-Authority unverändert.
+- Betrieb 2026-10-07 15:08 UTC: Local Core und Windows-Mail-Worker mit Commit a3c05d3 neu gestartet. Der alte Windows-Worker (Start 06.10.,
+  Code vor TF-021, ohne Authority-Prüfung) wurde dabei ersetzt. Neuer Windows-Worker: `standby_no_send_authority` (holder=vps, weil Netlify
+  dedicated=true meldet). Da der VPS wegen 401 ebenfalls Standby ist, verarbeitet derzeit KEIN Worker Gmail (keine Antwort-Entwürfe,
+  keine Cloud-Aufträge, keine Cold-Entwürfe, kein Versand) – nichts geht verloren, alles bleibt pending. Wird aktiv, sobald der
+  Netlify-Token-Fix (TF-021 Schritt 5) erledigt ist und der VPS mit aktuellem Commit deployt wurde.
 
 ## TF-025 SWISS COLD LEAD DRAFT OUTREACH (dauerhaft; Code: `swiss-repair.js`, `gmail.js`, `mail-worker.js`, `lead-finder.js`)
 Tests: `test/swiss-repair-025.test.js` (20). Gegencheck: Entfernen von Cold-Send-Sperre, Suppression-Sperre bzw. Fremd-Entwurf-Schutz macht Tests rot.
