@@ -34,7 +34,7 @@ Letzte Aktualisierung: 2026-10-07
   Bei erneutem Deploy ohne Secret-Änderung: `deploy/vps/deploy.sh fiverr` (ohne Flag).
 
 ## Nächster Schritt
-Schritt 2: `bash deploy/vps/deploy.sh fiverr --with-secrets` (aus `C:SERSADMINISTRATORDOCUMENTSCHRISJARVIS`, GIT BASH)
+Schritt 2: `bash deploy/vps/deploy.sh fiverr --with-secrets` (im Repo-Ordner `Documents/Chris/Jarvis`, in Git Bash)
 
 ## Offene Blocker
 - Schritt 2 noch nicht ausgeführt: Der Deploy-Befehl wurde in der Claude-Code-Session vom Auto-Mode-Berechtigungsfilter (Production Deploy) blockiert. Benutzer muss ihn selbst ausführen oder eine Bash-Erlaubnisregel dafür hinzufügen.
