@@ -217,10 +217,12 @@ form.cmd button.stop { color: var(--red); }
     <section class="panel sales" id="salesPanel">
       <h2>Vertrieb <button type="button" id="leadsBtn" title="Lead-Details (nur im Local-Modus)">LEADS</button></h2>
       <div class="kv two">
-        <span>Gefunden</span><b id="sDiscovered">–</b><span>Geprüft</span><b id="sAudited">–</b>
-        <span>Repair</span><b id="sRepair">–</b><span>Blockiert</span><b id="sBlocked" title="ohne Versandgrundlage">–</b>
+        <span>Gefunden</span><b id="sDiscovered">–</b><span>CH verifiziert</span><b id="sSwiss">–</b>
+        <span>Geprüft</span><b id="sAudited">–</b><span>Repair Fit</span><b id="sFit" title="modern/weiterverwendbar">–</b>
+        <span>Repair Kand.</span><b id="sRepair">–</b><span>Blockiert</span><b id="sBlocked" title="ohne Versandgrundlage">–</b>
         <span>CHF 150 Kand.</span><b id="s150c">–</b><span>CHF 500 Kand.</span><b id="s500c">–</b>
-        <span>Versandber.</span><b id="sEligible">–</b><span>Kontaktiert</span><b id="sContacted">–</b>
+        <span>Auto-Versand</span><b id="sEligible" title="automatisch versandberechtigt">–</b><span>Einzelprüfung</span><b id="sReview" title="Einzelprüfung durch Chris erforderlich">–</b>
+        <span>Kontaktiert</span><b id="sContacted">–</b>
         <span>Antworten</span><b id="sReplies">–</b><span>Kunden</span><b id="sCustomers">–</b>
         <span>Verk. 150</span><b id="s150">–</b><span>Verk. 500</span><b id="s500">–</b>
         <span>Umsatz</span><b id="sRevenue">–</b>
@@ -886,15 +888,19 @@ async function dismiss(id) {
 const chf = (v) => "CHF " + Number(v || 0).toLocaleString("de-CH");
 function renderSales(m) {
   const set = (id, v) => { $(id).textContent = m ? v : "–"; };
-  set("sDiscovered", m?.discovered); set("sAudited", m?.audited); set("sRepair", m?.qualified_repair); set("sBlocked", m?.blocked_no_legal_basis);
-  set("s150c", m?.offer_150_candidates); set("s500c", m?.offer_500_candidates); set("sEligible", m?.eligible_to_contact);
+  // Swiss Repair Outreach: ältere Kennzahlen (ohne die neuen Felder) fallen auf die bisherigen Werte zurück.
+  set("sDiscovered", m?.discovered); set("sSwiss", m?.swiss_verified ?? "–"); set("sAudited", m?.audited); set("sFit", m?.modern_repair_fit ?? "–");
+  set("sRepair", m?.repair_candidates ?? m?.qualified_repair); set("sBlocked", m?.blocked ?? m?.blocked_no_legal_basis);
+  set("s150c", m?.repair_150_candidates ?? m?.offer_150_candidates); set("s500c", m?.repair_500_candidates ?? m?.offer_500_candidates);
+  set("sEligible", m?.auto_send_eligible ?? m?.eligible_to_contact); set("sReview", m?.individual_review_required ?? "–");
   set("sContacted", m?.contacted); set("sReplies", m?.replies); set("sCustomers", m?.customers);
   set("s150", m?.sales_150); set("s500", m?.sales_500); set("sRevenue", chf(m?.total_revenue));
   $("leadsBtn").disabled = mode !== "local";
 }
 const OFFER_LABEL = { REPAIR_CHECK_150: "CHF 150", REPAIR_FIX_500: "CHF 500", NONE: "NONE" };
 const STAGE_LABEL = { discovered: "gefunden", audited: "geprüft", repair_candidate: "Repair-Kandidat", blocked_no_legal_basis: "blockiert – keine Versandgrundlage",
-  approved: "versandberechtigt", contacted: "kontaktiert", replied: "geantwortet", customer: "Kunde", not_interested: "kein Interesse", do_not_contact: "nicht kontaktieren" };
+  approved: "versandberechtigt", contacted: "kontaktiert", swiss_verified: "Schweiz verifiziert", modern_repair_fit: "Modern/Repair Fit",
+  blocked_no_contact_basis: "blockiert – keine Kontaktgrundlage", individual_review_required: "Einzelprüfung erforderlich", approved_one_to_one: "einzeln freigegeben", replied: "geantwortet", customer: "Kunde", not_interested: "kein Interesse", do_not_contact: "nicht kontaktieren" };
 let leadData = [];
 async function openLeads() {
   if (mode !== "local") return;
@@ -902,12 +908,15 @@ async function openLeads() {
   $("leadList").replaceChildren(); $("leadDetail").textContent = "Lade …";
   try {
     const r = await (await fetch(CORE + "/api/leads")).json();
-    leadData = (r.leads || []).sort((a, b) => (b.offer.offer_class !== "NONE") - (a.offer.offer_class !== "NONE") || String(a.company || a.domain).localeCompare(String(b.company || b.domain)));
+    // Ranking nach repair_fit_score (Einzelprüfungen zuerst), sonst wie bisher.
+    const rank = (l) => (l.repair?.stage === "individual_review_required" ? 100 : 0) + (l.repair?.repair_fit_score || 0);
+    leadData = (r.leads || []).sort((a, b) => rank(b) - rank(a) || (b.offer.offer_class !== "NONE") - (a.offer.offer_class !== "NONE") || String(a.company || a.domain).localeCompare(String(b.company || b.domain)));
     $("leadsCount").textContent = String(leadData.length);
     $("leadList").replaceChildren(...leadData.map((l, i) => {
       const li = document.createElement("li");
       const name = document.createElement("span"); name.textContent = l.company || l.domain;
-      const o = document.createElement("span"); o.className = "o" + (l.offer.offer_class === "NONE" ? " none" : ""); o.textContent = OFFER_LABEL[l.offer.offer_class] || "NONE";
+      const oc = l.repair?.offer.offer_class || l.offer.offer_class;
+      const o = document.createElement("span"); o.className = "o" + (oc === "NONE" ? " none" : ""); o.textContent = OFFER_LABEL[oc] || "NONE";
       li.append(name, o); li.tabIndex = 0;
       li.onclick = li.onkeydown = (e) => { if (e.type === "click" || e.key === "Enter") showLead(i); };
       return li;
@@ -931,6 +940,23 @@ function showLead(i) {
   ]));
   const o = l.offer;
   out.push(el("div", "", "ANGEBOT"), kv([["Klasse", `${OFFER_LABEL[o.offer_class]} (${o.offer_class})`], ["Sicherheit", o.confidence], ["Begründung", o.rationale], ["Nächster Schritt", o.recommended_next_step]]));
+  const rp = l.repair;
+  if (rp) {
+    if (rp.stage === "individual_review_required") out.push(el("div", "block", "EINZELPRÜFUNG DURCH CHRIS ERFORDERLICH"));
+    out.push(el("div", "", "SWISS REPAIR"), kv([
+      ["Firma", l.company || "–"], ["Domain", l.domain],
+      ["Swiss Evidence", rp.swiss_evidence.length ? `${rp.swiss_confidence}: ${rp.swiss_evidence.map((e) => `${e.signal} (${e.value})`).join(", ")}` : `keine (${rp.swiss_confidence})`],
+      ["Site Condition", `${rp.site_condition} – ${rp.site_condition_reasons.join("; ")}`],
+      ["Repair Evidence", rp.repair_evidence.length ? rp.repair_evidence.map((e) => `${e.issue_type} (${e.severity}${e.reproducible ? ", reproduzierbar" : ""}): ${e.evidence} — ${e.url}`).join(" | ") : "keine"],
+      ["Offer Class", `${OFFER_LABEL[rp.offer.offer_class]} (${rp.offer.offer_class}, ${rp.offer.confidence}) – ${rp.offer.rationale}`],
+      ["Contact Basis", rp.contact_basis + (rp.public_email_only ? " (nur öffentliche Adresse)" : "")],
+      ["Automatic Send Eligible", rp.automatic_send_eligible ? "JA" : "NEIN"], ["Individual Review Required", rp.individual_review_required ? "JA" : "NEIN"],
+      ["Suppression Status", l.suppressed ? "gesperrt" : "nicht gesperrt"], ["Opt-out Status", l.optedOut ? "abgemeldet" : "kein Opt-out"],
+      ["Kontaktstatus", STAGE_LABEL[rp.stage] || rp.stage], ["Kontaktquelle", rp.contact_source ? `${rp.contact_source} (${rp.source_url || "–"}, ${fmtTime(rp.collected_at)})` : "–"],
+      ["Repair Fit Score", String(rp.repair_fit_score)],
+    ]));
+    if (l.review) out.push(reviewBox(l, el));
+  }
   if (l.sale) out.push(el("div", "", "VERKAUF"), kv([["Angebot", OFFER_LABEL[l.sale.selected_offer]], ["Datum", l.sale.sale_date], ["Wert", chf(l.sale.sale_value)], ["Arbeit", l.sale.work_status]]));
   out.push(el("div", "", `BEFUNDE (${l.issues.length})`));
   const ul = el("ul");
@@ -942,6 +968,33 @@ function showLead(i) {
   if (!o.evidence.length) ev.append(el("li", "", "–"));
   out.push(ev);
   box.replaceChildren(...out);
+}
+// Einzelprüfung: genau ein Entwurf, eine Freigabe. Bewusst keine Sammelfreigabe.
+function reviewBox(l, el) {
+  const r = l.review, box = el("div", "review");
+  box.append(el("div", "", `ENTWURF (${r.status}) an ${r.recipient}`));
+  const subj = el("input"); subj.value = r.subject; subj.style.width = "100%";
+  const body = el("textarea"); body.value = r.body; body.rows = 14; body.style.width = "100%";
+  const msg = el("div", "");
+  const locked = ["sent", "rejected"].includes(r.status);
+  subj.disabled = body.disabled = locked;
+  const act = async (op, extra) => {
+    msg.textContent = "…";
+    try {
+      const res = await api("/api/reviews/" + op, { lead_id: r.lead_id, ...extra });
+      const j = await res.json();
+      msg.textContent = res.ok ? `OK: ${j.review.status}` : `Fehler: ${j.error}`;
+      if (res.ok) { l.review = j.review; showLead(leadData.indexOf(l)); }
+    } catch { msg.textContent = "Fehler: nicht erreichbar."; }
+  };
+  const btn = (label, fn) => { const b = el("button", "", label); b.type = "button"; b.disabled = locked; b.onclick = fn; return b; };
+  const edited = () => subj.value !== r.subject || body.value !== r.body;
+  box.append(subj, body,
+    btn("Approve this individual email", () => edited() ? (msg.textContent = "Erst speichern – Änderungen heben die Freigabe auf.") : act("approve", { draft_hash: r.draft_hash, recipient: r.recipient })),
+    btn("Edit", () => act("edit", { subject: subj.value, body: body.value })),
+    btn("Reject", () => act("reject")), msg);
+  if (r.status === "approved") box.append(el("div", "", "Freigegeben – gilt nur für genau diesen Empfänger, Text und Befund."));
+  return box;
 }
 $("leadsBtn").addEventListener("click", openLeads);
 $("leadsClose").addEventListener("click", () => { $("leads").hidden = true; });

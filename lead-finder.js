@@ -11,6 +11,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuditor } from "./site-auditor.js";
+import { swissSignals, qualifyRepairLead, ensureReview, PLACEHOLDER_RE } from "./swiss-repair.js";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock, heartbeat, legalBasis, normEmail, zurichDay } from "./mail-worker.js";
 
 export const DISCOVERY_LOCK = "discovery.lock";
@@ -174,6 +175,14 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
           email: id.email || osmEmail, emailSource: id.email ? `${id.emailSource} (${a.finalUrl || lead.website})` : osmEmail ? c.source : null,
           company: lead.company || id.company, uid: id.uid, name: id.owner, nameSource: id.owner ? a.impressumUrl : null,
         });
+        // Swiss Repair Outreach: Schweiz-Signale, Platzhalterseite und Herkunft der Kontaktdaten (Datenminimierung) festhalten.
+        const homeText = strip(a.pages?.home || "").slice(0, 3000);
+        Object.assign(lead, swissSignals({ domain, uid: id.uid, pages: a.pages || {}, discoverySource: c.source }), {
+          placeholder: PLACEHOLDER_RE.test(`${a.title || ""} ${homeText}`),
+          contact_source: lead.email ? (id.email ? id.emailSource : "openstreetmap") : null,
+          source_url: lead.email ? (id.email ? ({ impressum: a.impressumUrl, kontakt: a.contactUrl }[id.emailSource] || a.finalUrl || lead.website) : c.source) : null,
+          collected_at: lead.email ? t.toISOString() : null,
+        });
         const { score, details } = scoreLead({ issues: a.issues, identity: id, company: lead.company, reachable: a.reachable });
         Object.assign(lead, { auditScore: score, scoreDetails: details });
         if (a.issues.length) stats.withIssues++;
@@ -197,7 +206,14 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
         } else if (existing) lead.status = "already_in_lead_list"; // steht schon in Chris’ Liste – dort entscheidet die Versandgrundlage
         else lead.status = "blocked_no_legal_basis";
         if (["blocked_no_legal_basis", "matched_existing_lead"].includes(lead.status)) stats.qualified++;
-        log("info", "lead_discovered", { domain, status: lead.status, score, issues: a.issues.length });
+        const q = qualifyRepairLead(lead, { now: t });
+        Object.assign(lead, { site_condition: q.site_condition, repair_fit_score: q.repair_fit_score, repair_stage: q.stage, contact_basis: q.contact_basis });
+        // Neue Schweizer Firma ohne Versandgrundlage: genau EIN individueller Entwurf zur Einzelprüfung durch Chris – nie gesendet.
+        const sender = store.read("config.json", {}).sender;
+        if (lead.status === "blocked_no_legal_basis" && q.stage === "individual_review_required" && sender?.name) {
+          try { ensureReview(store, lead, { sender, now: t }); } catch (e) { log("error", "review_draft_failed", { domain, error: e.message }); }
+        }
+        log("info", "lead_discovered", { domain, status: lead.status, score, issues: a.issues.length, repair_stage: lead.repair_stage });
       } catch (e) {
         stats.errors++;
         lead.status = "audit_error";

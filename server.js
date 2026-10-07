@@ -19,6 +19,8 @@ const { createLocalState, syncWithCloud, cloudContextPrefix } = await import("./
 const { personaVersion } = await import("./persona-version.js");
 const { EXIT_BUSY, EXIT_PORT_CONFLICT, SERVICE, probeCore } = await import("./local-core.js");
 const sales = await import("./sales.js");
+const swissRepair = await import("./swiss-repair.js");
+const { WORKER_DIR: MAIL_DIR, createStore: mailStore } = await import("./mail-worker.js");
 const gmailRegistry = async () => { try { return (await import("./gmail.js")).listOwned(); } catch { return { sent: {}, drafts: {} }; } };
 const local = createLocalState();
 // Vertriebskennzahlen lokal neu berechnen (nur Zahlen gehen in den gemeinsamen Zustand). Fehler sind unkritisch.
@@ -266,6 +268,18 @@ const server = http.createServer(async (req, res) => {
       const { leads } = sales.loadPipeline({ registry: await gmailRegistry() });
       const metrics = sales.computeMetrics(leads);
       return json(res, 200, { leads, metrics, offers: sales.OFFERS });
+    }
+    // Einzelprüfung (INDIVIDUAL_ONE_TO_ONE_REVIEW): genau EINE Mail je Aufruf freigeben, ablehnen oder bearbeiten – nur lokal.
+    // Es gibt bewusst keinen Endpunkt für Sammelfreigaben.
+    const reviewOp = url.pathname.match(/^\/api\/reviews\/(approve|reject|edit)$/)?.[1];
+    if (req.method === "POST" && reviewOp) {
+      let payload;
+      try { payload = JSON.parse(await readBody(req, 20_000)); } catch { return json(res, 400, { error: "Ungültige Anfrage." }); }
+      try {
+        const r = swissRepair.reviewAction(mailStore(MAIL_DIR), reviewOp, payload);
+        refreshSales();
+        return json(res, 200, { ok: true, review: r });
+      } catch (e) { return json(res, 400, { error: e.message }); }
     }
     if (req.method === "POST" && url.pathname === "/api/notifications/dismiss") {
       const { id } = JSON.parse(await readBody(req, 2000));

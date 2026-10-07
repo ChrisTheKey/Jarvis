@@ -153,6 +153,12 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     const year = now().getFullYear();
     if (years.length && Math.max(...years) <= year - 3) add("outdated_content", page.url, `Copyright-Angabe ${Math.max(...years)} im Seiteninhalt`, "low");
 
+    // Fehlerhafte E-Mail-Links (nur der HTML-Text wird gelesen, nichts wird gesendet).
+    const badMail = tags(html, "a").map((t) => attr(t, "href") || "").filter((h) => /^mailto:/i.test(h))
+      .map((h) => { try { return decodeURIComponent(h.slice(7).split("?")[0]).trim(); } catch { return h.slice(7); } })
+      .filter((m) => !/^[^\s@<>(),;:]+@[^\s@<>(),;:]+\.[a-z]{2,}$/i.test(m));
+    if (badMail.length) add("broken_mailto", page.url, `Ungültige mailto-Adresse im Link: ${[...new Set(badMail)].slice(0, 2).map((m) => `"${m || "(leer)"}"`).join(", ")}`, "medium");
+
     // 3) Interne Links und Bilder – nur echte HTTP-Fehler zählen, Netzaussetzer nicht.
     const links = [];
     for (const t of tags(html, "a")) {

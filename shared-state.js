@@ -102,7 +102,8 @@ export function sanitizeTurn(t) {
 
 // Vertriebszahlen: nur Zähler und CHF-Summen der zwei Angebote – keine Firmen, Adressen oder Befunde.
 export const SALES_FIELDS = ["discovered", "audited", "qualified_repair", "offer_150_candidates", "offer_500_candidates", "eligible_to_contact",
-  "blocked_no_legal_basis", "contacted", "replies", "customers", "sales_150", "sales_500", "revenue_150", "revenue_500", "total_revenue"];
+  "blocked_no_legal_basis", "contacted", "replies", "customers", "sales_150", "sales_500", "revenue_150", "revenue_500", "total_revenue",
+  "swiss_verified", "modern_repair_fit", "repair_candidates", "repair_150_candidates", "repair_500_candidates", "auto_send_eligible", "individual_review_required", "blocked"];
 export function sanitizeSales(x) {
   if (!x || typeof x !== "object") return null;
   const out = { updatedAt: iso(x.updatedAt) };

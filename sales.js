@@ -1,6 +1,7 @@
 // Jarvis Vertrieb für Helvetic Webdesign – genau ZWEI Angebote, Lead-Lebenszyklus, Verkäufe und Kennzahlen.
 // Reine Auswertung: sendet nie, gibt nie frei und ändert keine Versandgrundlage. Ob ein Lead angeschrieben werden darf,
-// entscheidet ausschliesslich legalBasis() aus mail-worker.js (opt_in / existing_customer).
+// entscheidet ausschliesslich legalBasis() aus mail-worker.js (opt_in / existing_customer / requested_contact).
+// Swiss Repair Outreach (Schweiz-Signale, Website-Zustand, Einzelprüfung) liegt in swiss-repair.js.
 //
 // Angebote (keine weiteren Preisstufen, kein Neubau, kein Redesign, kein Upsell):
 //   REPAIR_CHECK_150  CHF 150  Website prüfen, Probleme dokumentieren, Empfehlungen liefern – keine Umsetzung
@@ -15,6 +16,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, legalBasis, normEmail } from "./mail-worker.js";
+import { qualifyRepairLead, REVIEWS_FILE } from "./swiss-repair.js";
 
 export const OFFERS = Object.freeze({
   REPAIR_CHECK_150: Object.freeze({ price: 150, currency: "CHF", label: "Website-Check CHF 150", scope: "Website prüfen, konkrete Probleme dokumentieren, Ergebnisse und Empfehlungen liefern – keine umfangreiche Reparatur." }),
@@ -135,6 +137,7 @@ export function loadPipeline({ dir = WORKER_DIR, registry = { sent: {}, drafts: 
   const suppression = store.read("suppression.json", {});
   const state = store.read("state.json", { actions: {} });
   const records = store.read("sales.json", { records: {} }).records || {};
+  const reviews = store.read(REVIEWS_FILE, { reviews: {} }).reviews || {};
   const contacted = new Set(Object.values(registry.sent || {}).map((x) => normEmail(x.to || "")).filter(Boolean));
   const replied = new Set(Object.entries(state.actions || {}).filter(([k]) => k.startsWith("reply:")).map(([, a]) => normEmail(a.to || "")).filter(Boolean));
   // Sirs Lead-Liste hat Vorrang (dort steht die Versandgrundlage); gefundene Leads ergänzen nur.
@@ -147,12 +150,16 @@ export function loadPipeline({ dir = WORKER_DIR, registry = { sent: {}, drafts: 
     const offer = classifyOffer(l);
     const basis = legalBasis(l, now);
     const email = normEmail(l.email || "");
+    const status = lifecycleStatus(l, { ...ctx, record });
+    const review = reviews[l.domain] || null;
+    const repair = qualifyRepairLead(l, { now, review, base: status });
     return {
       key: l.domain, company: l.company || null, domain: l.domain, website: l.website || null,
       contact: { email: l.email || null, emailSource: l.emailSource || null, name: l.name || null, nameSource: l.nameSource || null },
       issues: observedEvidence(l.websiteIssues), auditedAt: l.auditedAt || null, auditScore: l.auditScore ?? null,
       offer, legalBasis: basis, eligible: !!basis && !suppression[email], legalBasisStatus: basis ? `versandberechtigt (${basis})` : "NICHT VERSANDBERECHTIGT",
-      status: lifecycleStatus(l, { ...ctx, record }), rawStatus: l.status || null, source: l.source,
+      status, repair, review, suppressed: !!(email && suppression[email]) || l.status === "suppressed", optedOut: !!(email && /opt-out/i.test(suppression[email]?.reason || "")),
+      rawStatus: l.status || null, source: l.source,
       lastContactAt: lastSent(registry, email), replied: !!(email && replied.has(email)) || record.status === "replied",
       sale: validSale(record.sale) ? record.sale : null, customerStatus: validSale(record.sale) ? record.sale.customer_status : null,
     };
@@ -182,6 +189,15 @@ export function computeMetrics(leads = [], now = new Date()) {
     replies: count((l) => l.replied),
     customers: count((l) => l.status === "customer"),
     sales_150: s150.length, sales_500: s500.length,
+    // Swiss Repair Outreach (nur Schweizer Firmen mit brauchbarer Website und belegtem Reparaturbefund)
+    swiss_verified: count((l) => l.repair?.country === "CH" && !!l.auditedAt),
+    modern_repair_fit: count((l) => l.repair?.country === "CH" && !!l.auditedAt && ["modern_maintainable", "repairable"].includes(l.repair.site_condition)),
+    repair_candidates: count((l) => l.repair && l.repair.offer.offer_class !== NONE),
+    repair_150_candidates: count((l) => l.repair?.offer.offer_class === "REPAIR_CHECK_150"),
+    repair_500_candidates: count((l) => l.repair?.offer.offer_class === "REPAIR_FIX_500"),
+    auto_send_eligible: count((l) => l.repair?.automatic_send_eligible && !l.suppressed),
+    individual_review_required: count((l) => l.repair?.stage === "individual_review_required"),
+    blocked: count((l) => ["blocked_no_contact_basis", "blocked_no_legal_basis", "do_not_contact"].includes(l.repair?.stage) || l.status === "blocked_no_legal_basis"),
     revenue_150: s150.length * OFFERS.REPAIR_CHECK_150.price, revenue_500: s500.length * OFFERS.REPAIR_FIX_500.price,
   };
   m.total_revenue = m.revenue_150 + m.revenue_500;

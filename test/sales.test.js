@@ -197,7 +197,9 @@ test("Kennzahlen: Kandidaten, Verkäufe und Umsatz nur aus den zwei Angeboten; m
   records["d.ch"] = { sale: { selected_offer: "REPAIR_FIX_500", sale_value: 9999 } }; // falscher Preis
   write("sales.json", { records });
   const m = persistMetrics({ dir, now: T0 });
-  assert.deepEqual({ ...m, updatedAt: undefined }, { updatedAt: undefined,
+  const legacy = ["discovered", "audited", "qualified_repair", "offer_150_candidates", "offer_500_candidates", "eligible_to_contact", "blocked_no_legal_basis", "contacted",
+    "replies", "customers", "sales_150", "sales_500", "revenue_150", "revenue_500", "total_revenue"];
+  assert.deepEqual({ ...Object.fromEntries(legacy.map((k) => [k, m[k]])), updatedAt: undefined }, { updatedAt: undefined,
     discovered: 4, audited: 3, qualified_repair: 2, offer_150_candidates: 1, offer_500_candidates: 1, eligible_to_contact: 0,
     blocked_no_legal_basis: 0, contacted: 0, replies: 0, customers: 2, sales_150: 1, sales_500: 1, revenue_150: 150, revenue_500: 500, total_revenue: 650 });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "metrics.json"), "utf8")).total_revenue, 650, "persistiert");
