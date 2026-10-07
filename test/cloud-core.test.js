@@ -145,3 +145,12 @@ test("Migration: Secrets werden nie übertragen", () => {
   assert.doesNotMatch(files, /gmail_token|gmail_credentials|\.env|vps_worker/);
   assert.equal(additiveMerge(undefined, { a: 1 }, { added: 0, conflicts: 0 }).a, 1);
 });
+
+test("Windows = OPTIONAL_CLIENT: Local Core meldet seine Rolle; Mail/Scheduler/State hängen nicht am PC", () => {
+  const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  assert.match(server, /role: "optional_client"/);
+  // Der PC sendet nie (Standby), rechnet im Standby keine Sales-Zahlen und kann Business/Sales der Cloud nicht überschreiben.
+  assert.match(server, /if \(windowsIsStandby\(\)\) return;/);
+  const worker = fs.readFileSync(path.join(ROOT, "mail-worker.js"), "utf8");
+  assert.match(worker, /if \(!authority\.self\) return \{ standby: true, authority \};/);
+});

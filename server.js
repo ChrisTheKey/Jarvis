@@ -239,7 +239,8 @@ const server = http.createServer(async (req, res) => {
     }
     // Healthcheck für Autostart, Doppelstart-Schutz und die Local/Cloud-Erkennung im HUD.
     if (req.method === "GET" && url.pathname === "/api/health") {
-      return json(res, 200, { ok: true, service: SERVICE, mode: "local", pid: process.pid, startedAt: STARTED_AT, supervised: process.env.JARVIS_CORE_SUPERVISED === "1" });
+      // role: Der PC ist seit Cloud-First nur optionaler Client (Claude Code, Mikrofon, Dateien) – Mail, Scheduler, State laufen auf dem VPS.
+      return json(res, 200, { ok: true, service: SERVICE, mode: "local", role: "optional_client", pid: process.pid, startedAt: STARTED_AT, supervised: process.env.JARVIS_CORE_SUPERVISED === "1" });
     }
     // Klassische HUD-Skripte (gleich wie auf Netlify): Local/Cloud-Erkennung und Texteingabe.
     if (req.method === "GET" && ["/mode-detect.js", "/composer.js", "/mail-status.js"].includes(url.pathname)) {
