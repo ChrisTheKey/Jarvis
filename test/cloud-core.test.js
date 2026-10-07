@@ -96,3 +96,52 @@ test("Windows-Client im Standby rechnet keine eigenen Sales-Zahlen mehr (überni
   assert.match(server, /const refreshSales = async \(\) => \{ if \(windowsIsStandby\(\)\) return;/);
   assert.match(server, /read\(AUTHORITY_FILE, null\)\?\.self === false/);
 });
+
+// ---------- Phase B: Migration Windows → VPS (scripts/merge-state.mjs) ----------
+import { planMerge, additiveMerge, offerDecision } from "../scripts/merge-state.mjs";
+
+test("Migration: additiv, VPS gewinnt Konflikte, Suppression wird vereinigt, nichts geht verloren", () => {
+  const vps = {
+    "mail_worker/discovered.json": { data: { leads: { "a.ch": { status: "audited" }, "b.ch": { status: "contacted" } }, lastRunAt: "2026-10-07T18:00:00Z" }, mtime: "2026-10-07T18:00:00Z" },
+    "mail_worker/suppression.json": { data: { "x@a.ch": { reason: "opt_out" } }, mtime: "2026-10-07T18:00:00Z" },
+    "gmail_jarvis.json": { data: { drafts: { d1: { t: 1 } }, sent: {} }, mtime: "2026-10-05T00:00:00Z" },
+  };
+  const win = {
+    "mail_worker/discovered.json": { data: { leads: { "b.ch": { status: "audited" }, "c.ch": { status: "audited" } }, lastRunAt: "2026-10-07T14:00:00Z" }, mtime: "2026-10-07T14:00:00Z" },
+    "mail_worker/suppression.json": { data: { "y@b.ch": { reason: "opt_out" } }, mtime: "2026-10-07T15:00:00Z" },
+    "gmail_jarvis.json": { data: { drafts: { d1: { t: 1 } }, sent: { s1: { t: 2 } } }, mtime: "2026-10-05T00:00:00Z" },
+    "mail_worker/leads.json": { data: [{ email: "n@c.ch" }], mtime: "2026-10-05T00:00:00Z" },
+  };
+  const { changes, report } = planMerge({ vps, win });
+  const d = changes["mail_worker/discovered.json"];
+  assert.deepEqual(Object.keys(d.leads).sort(), ["a.ch", "b.ch", "c.ch"]);
+  assert.equal(d.leads["b.ch"].status, "contacted", "VPS gewinnt den Konflikt");
+  // Eintrag atomar: kein Feld aus der Windows-Version wird in den VPS-Eintrag gemischt.
+  const { changes: c2 } = planMerge({ vps: { "mail_worker/discovered.json": { data: { leads: { "b.ch": { status: "contacted" } } } } },
+    win: { "mail_worker/discovered.json": { data: { leads: { "b.ch": { status: "audited", email: "info@b.ch" } } } } } });
+  assert.equal(c2["mail_worker/discovered.json"], undefined, "keine Mischversion");
+  assert.equal(d.lastRunAt, "2026-10-07T18:00:00Z");
+  assert.ok(report["mail_worker/discovered.json"].conflicts >= 1);
+  assert.deepEqual(Object.keys(changes["mail_worker/suppression.json"]).sort(), ["x@a.ch", "y@b.ch"], "Opt-outs beider Seiten bleiben");
+  assert.deepEqual(Object.keys(changes["gmail_jarvis.json"].sent), ["s1"]);
+  assert.deepEqual(changes["mail_worker/leads.json"], [{ email: "n@c.ch" }], "auf dem VPS fehlende Datei wird übernommen");
+  assert.ok(!("mail_worker/individual_reviews.json" in changes));
+});
+
+test("Migration: offer nur, wenn Windows neuer ist und genau CHF 150 / CHF 480 nennt", () => {
+  const old = { data: { offer: "alt", dryRun: false }, mtime: "2026-10-06T21:42:00Z" };
+  const neu = (offer, mtime = "2026-10-07T14:32:00Z") => ({ data: { offer, dryRun: true }, mtime });
+  assert.equal(offerDecision({ vps: old, win: neu("Check CHF 150 einmalig, Reparatur CHF 480 einmalig") }).take, true);
+  assert.equal(offerDecision({ vps: old, win: neu("Check CHF 150, Reparatur CHF 500") }).take, false, "kein CHF 480");
+  assert.equal(offerDecision({ vps: old, win: neu("CHF 150 / CHF 480 / Redesign CHF 2490") }).take, false, "drittes Angebot");
+  assert.equal(offerDecision({ vps: old, win: neu("CHF 150 und CHF 480", "2026-10-01T00:00:00Z") }).take, false, "Windows älter");
+  const { changes } = planMerge({ vps: { "mail_worker/config.json": old }, win: { "mail_worker/config.json": neu("CHF 150 und CHF 480") } });
+  assert.deepEqual(changes["mail_worker/config.json"], { offer: "CHF 150 und CHF 480", dryRun: false }, "nur offer, alle anderen VPS-Werte bleiben");
+});
+
+test("Migration: Secrets werden nie übertragen", () => {
+  const src = fs.readFileSync(path.join(ROOT, "scripts", "merge-state.mjs"), "utf8");
+  const files = src.match(/export const STATE_FILES = \[([^\]]+)\]/)[1];
+  assert.doesNotMatch(files, /gmail_token|gmail_credentials|\.env|vps_worker/);
+  assert.equal(additiveMerge(undefined, { a: 1 }, { added: 0, conflicts: 0 }).a, 1);
+});

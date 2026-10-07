@@ -12,8 +12,8 @@ verschlüsselt (Public Key auf VPS, Private Key nur bei Chris) in Netlify Blobs 
 Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Schreiber je JSON-Datei), Code `cloud-core.js`.
 | Phase | Inhalt | Status |
 |---|---|---|
-| A | Cloud Core: Schema v1 + Migrationen (fail closed bei neuerem Stand), Core-Status (Scheduler-Checkpoints, Discovery, Backup) im Heartbeat; Cloud übernimmt Business/Sales nur vom Core (Windows-Client nie mehr); `sync.lastCorePushAt`/`lastClientPushAt`; `scripts/secret-scan.mjs` | Code fertig, 247/247 |
-| B | Migration Windows → VPS (offer-Text CHF 150/480, 6 nur-Windows-Leads), fail closed | offen |
+| A | Cloud Core: Schema v1 + Migrationen (fail closed bei neuerem Stand), Core-Status (Scheduler-Checkpoints, Discovery, Backup) im Heartbeat; Cloud übernimmt Business/Sales nur vom Core (Windows-Client nie mehr); `sync.lastCorePushAt`/`lastClientPushAt`; `scripts/secret-scan.mjs` | ERLEDIGT 2d9a9f0, VPS live (schema v1 migriert 18:54 UTC, Core-Status in der Cloud sichtbar) |
+| B | Migration Windows → VPS mit `scripts/merge-state.mjs` (Dry-Run Standard; additiv, Einträge atomar, VPS gewinnt Konflikte, Suppression vereinigt, nur `offer` aus config, nie Secrets) | ERLEDIGT 18:58 UTC: +3 Leads, 9 Konflikte → VPS behalten, offer → CHF 150/480; Backup `/opt/jarvis-mail/backups/pre-merge-*.tgz` (600 root); 2. Dry-Run = 0 Änderungen; Authority unverändert |
 | C | Netlify/HUD: JARVIS CORE / LOCAL CLIENT / MAIL WORKER / AUTHORITY / QUEUE / AI SERVICE; System ONLINE ohne Windows | offen |
 | D | Windows = OPTIONAL_CLIENT | offen |
 | E | Backup (verschlüsselt, täglich, rotierend, Offsite) + Restore + `scripts/bootstrap-windows.ps1` | offen |
