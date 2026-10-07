@@ -126,6 +126,19 @@ der auch die HUD-Anzeige AI SERVICE enthält). Danach VPS neu deployen (`bash de
 - Meldung an Chris (Typ `ai_budget_exhausted`), Heartbeat-Feld `ai_paused` → HUD „AI SERVICE: PAUSED — CREDIT LIMIT“.
 - Kein Retry-Loop, kein zweiter Key, kein anderer Anbieter, kein Auto-Reload. Cloud-Aufträge (ohne KI), Heartbeat, Sync, Opt-out laufen weiter.
 
+## Diagnose-Stand 2026-10-07 nach Windows-Neustart (16:00 UTC)
+- Git: HEAD c445472 lokal, Push war wegen GitHub-500 gescheitert; `scripts/check-mail-auth.mjs` (nur lesend, gibt keine Tokens aus) mit diesem Stand committet.
+- Scheduled Tasks „Jarvis Local Core“ + „Jarvis Mail Worker“: Running (Start 15:44 UTC). Local Core `/api/health` ok.
+- Windows-Worker: läuft, Heartbeat frisch, `standby_no_send_authority` (holder=vps). Crash 15:40 UTC = Herunterfahren beim Neustart.
+- `node scripts/check-mail-auth.mjs`: Windows-Sync-Credential → HTTP 200, authority { dedicated: true, holder: vps, self: false };
+  VPS-Worker-Credential → HTTP 401. Lokaler VPS-Token: Länge 43, kein Whitespace, keine Anführungszeichen.
+- Lokaler Token = Token auf dem VPS (früher verglichen) → Ursache liegt bei Netlify Production (Env-Wert/Scope/Kontext), nicht Windows↔VPS.
+- VPS nach Neustart nicht direkt prüfbar: Windows-`ssh-agent` gestoppt, Key nicht geladen. Aus 401 folgt: VPS kann keine Authority haben → Standby.
+- Ergebnis: KEIN aktiver Gmail-Sender, kein Dual-Sender. Nichts gesendet. Authority bewusst nicht verändert.
+- Nächster Schritt (Chris, Netlify-UI): `JARVIS_MAIL_WORKER_TOKEN` prüfen – Scope „Functions“ aktiv, Wert für Kontext „Production“
+  (keine abweichenden Deploy-Context-/Branch-Werte), dann Production-Redeploy mit „Clear cache“; danach `node scripts/check-mail-auth.mjs`
+  → erwartet vps_worker 200. Erst dann `bash deploy/vps/deploy.sh fiverr` und Schritt 6.
+
 ## Offene Blocker
 - Stand 11:21 UTC: Netlify HAT `JARVIS_MAIL_WORKER_TOKEN` (Cloud meldet authority.dedicated=true), aber mit ANDEREM Wert als
   `.secrets/vps_worker.env` → VPS bekommt 401, bleibt Standby. Wahrscheinlich wurde ein alter Zwischenablage-Inhalt eingefügt
@@ -135,7 +148,7 @@ der auch die HUD-Anzeige AI SERVICE enthält). Danach VPS neu deployen (`bash de
 - 11:43 UTC: nach erneutem Einfügen per clip.exe + neuem Deploy (neues ETag) weiterhin 401, dedicated=true → Wert in Production
   stimmt immer noch nicht mit der lokalen Datei überein (z. B. kontextspezifischer Override, Team-Variable, Anführungszeichen).
 - Live-Netlify-Build enthält 138c460 noch nicht (HUD ohne „AI SERVICE“). VPS noch auf c4b9b2c (ohne AI-Fail-Closed).
-- Fix: Token mit `grep '^JARVIS_MAIL_WORKER_TOKEN=' .secrets/vps_worker.env | cut -d= -f2- | tr -d '
-
+- Fix: Token mit `grep '^JARVIS_MAIL_WORKER_TOKEN=' .secrets/vps_worker.env | cut -d= -f2- | tr -d '
 ' | clip.exe` kopieren,
   in Netlify ersetzen, Production neu deployen; dann `bash deploy/vps/deploy.sh fiverr` (ohne Flag), dann Schritt 6.
+- 2026-10-07 16:00 UTC: 401 weiterhin vorhanden (siehe Diagnose-Stand). Zusätzlich: GitHub lieferte beim Push HTTP 500.
