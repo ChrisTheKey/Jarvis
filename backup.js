@@ -98,15 +98,21 @@ export async function dailyBackup({ secretsDir, workerDir, publicKeyPem, now = n
   try { st = JSON.parse(fs.readFileSync(statusFile, "utf8")); } catch {}
   const day = zurichDay(now);
   const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Zurich", hour: "2-digit", hourCycle: "h23" }).format(now));
+  const write = (next) => { const tmp = `${statusFile}.tmp`; fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 }); fs.renameSync(tmp, statusFile); return next; };
+  // Offsite fehlgeschlagen: dasselbe lokale Backup höchstens stündlich erneut hochladen (kein neues Backup, keine Schleife).
+  if (st.day === day && !st.ok && st.local && upload && +now - Date.parse(st.attempt_at || st.last_at || 0) >= 60 * 60_000) {
+    let offsite;
+    try { offsite = await upload(JSON.parse(fs.readFileSync(path.join(secretsDir, "backups", st.local), "utf8"))); } catch (e) { offsite = { ok: false, error: e.message }; }
+    st = write({ ...st, ok: !!offsite.ok, attempt_at: now.toISOString(), offsite_error: offsite.ok ? null : String(offsite.error || "").slice(0, 120) });
+    log(offsite.ok ? "info" : "warn", "state_backup_offsite_retry", { offsite: !!offsite.ok });
+    return { skipped: false, retried: true, status: st };
+  }
   if (st.day === day || hour < 3) return { skipped: true, status: st };
   const env = createBackup({ secretsDir, publicKeyPem, now });
   const local = storeLocal(env, path.join(secretsDir, "backups"));
   let offsite = { ok: false, error: "kein Upload konfiguriert" };
   if (upload) { try { offsite = await upload(env); } catch (e) { offsite = { ok: false, error: e.message }; } }
-  st = { day, last_at: env.created_at, ok: !!offsite.ok, local: local.name, generations: local.generations, offsite_error: offsite.ok ? null : String(offsite.error || "").slice(0, 120), key_id: env.key_id, files: env.files.length };
-  const tmp = `${statusFile}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(st, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, statusFile);
+  st = write({ day, last_at: env.created_at, attempt_at: now.toISOString(), ok: !!offsite.ok, local: local.name, generations: local.generations, offsite_error: offsite.ok ? null : String(offsite.error || "").slice(0, 120), key_id: env.key_id, files: env.files.length });
   log(offsite.ok ? "info" : "warn", "state_backup", { local: local.name, generations: local.generations, offsite: !!offsite.ok, files: env.files.length });
   return { skipped: false, status: st };
 }

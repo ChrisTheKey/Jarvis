@@ -84,8 +84,14 @@ test("Tägliches Backup: einmal je Zürcher Tag ab 03:00; Offsite-Fehler → Sta
   const r1 = await dailyBackup({ secretsDir: d, workerDir: wd, publicKeyPem: publicKey, now: morning, zurichDay, upload: async () => { uploads++; return { ok: false, error: "HTTP 500" }; } });
   assert.equal(r1.skipped, false);
   assert.deepEqual([r1.status.ok, r1.status.generations], [false, 1]);
-  assert.equal((await dailyBackup({ secretsDir: d, workerDir: wd, publicKeyPem: publicKey, now: new Date("2026-10-07T20:00:00Z"), zurichDay, upload: async () => ({ ok: true }) })).skipped, true, "nur einmal pro Tag");
+  assert.equal((await dailyBackup({ secretsDir: d, workerDir: wd, publicKeyPem: publicKey, now: new Date("2026-10-07T02:40:00Z"), zurichDay, upload: async () => { uploads++; return { ok: true }; } })).skipped, true, "nur einmal pro Tag, Nachversuch erst nach 1 h");
   assert.equal(uploads, 1);
+  // Nachversuch: frühestens nach einer Stunde, mit demselben lokalen Backup.
+  const later = new Date("2026-10-07T03:20:00Z");
+  const r2 = await dailyBackup({ secretsDir: d, workerDir: wd, publicKeyPem: publicKey, now: later, zurichDay, upload: async (e) => { uploads++; assert.equal(e.created_at, r1.status.last_at); return { ok: true }; } });
+  assert.deepEqual([r2.retried, r2.status.ok, r2.status.generations], [true, true, 1]);
+  assert.equal((await dailyBackup({ secretsDir: d, workerDir: wd, publicKeyPem: publicKey, now: new Date("2026-10-07T05:00:00Z"), zurichDay, upload: async () => { uploads++; return { ok: true }; } })).skipped, true);
+  assert.equal(uploads, 2);
   assert.deepEqual(Object.keys(backupInfo(wd)).sort(), ["generations", "last_at", "ok"]);
   assert.equal(fs.statSync(path.join(wd, BACKUP_STATUS_FILE)).isFile(), true);
 });
