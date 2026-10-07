@@ -1,4 +1,4 @@
-# Neuer (oder neu aufgesetzter) Windows-PC als OPTIONALER Jarvis-Client – Cloud-First.
+﻿# Neuer (oder neu aufgesetzter) Windows-PC als OPTIONALER Jarvis-Client – Cloud-First.
 # Der Cloud-Jarvis (VPS + Netlify) läuft unabhängig davon weiter; dieses Skript verbindet den PC nur wieder als Client/Developer.
 #
 #   git clone https://github.com/ChrisTheKey/Jarvis.git; cd Jarvis
@@ -32,8 +32,9 @@ $branch = (git rev-parse --abbrev-ref HEAD) 2>$null
 Ok "Branch $branch @ $((git rev-parse --short HEAD) 2>$null)"
 foreach ($d in @(".secrets", ".secrets\local_core", ".secrets\mail_worker")) { if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null } }
 Ok ".secrets\ angelegt (gitignored)"
-if ((git check-ignore -q .secrets/x; $LASTEXITCODE) -ne 0) { throw ".secrets ist nicht gitignored – Abbruch." }
-if ($node -and -not (Test-Path "node_modules\@netlify\blobs")) { npm install --no-audit --no-fund --silent | Out-Null; Ok "npm install" } elseif ($node) { Ok "node_modules vorhanden" }
+git check-ignore -q .secrets/x
+if ($LASTEXITCODE -ne 0) { throw ".secrets ist nicht gitignored – Abbruch." }
+if ($node -and -not (Test-Path "node_modules\@netlify\blobs")) { npm install --no-audit --no-fund --no-package-lock --silent | Out-Null; Ok "npm install" } elseif ($node) { Ok "node_modules vorhanden" }
 
 Write-Host "`n[3] Secrets (nur Vorhandensein – Inhalte werden nie gelesen oder angezeigt)"
 $secrets = [ordered]@{
