@@ -16,7 +16,7 @@ Letzte Aktualisierung: 2026-10-07
 | 2 | VPS-Deploy nach `/opt/jarvis-mail` inkl. einmaliger Secret-Migration | ERLEDIGT (vom Benutzer ausgeführt, deployed Commit c4b9b2c) |
 | 3 | Docker Compose: Container RUNNING, unless-stopped, HEALTHY | ERLEDIGT |
 | 4 | VPS-Worker verifizieren (2-min-Polling, Heartbeat, kein Crash-Loop) | ERLEDIGT – Standby (Cloud antwortet 401, erwartet) |
-| 5 | Netlify `JARVIS_MAIL_WORKER_TOKEN` setzen + Production-Redeploy | offen – erst nach HEALTHY |
+| 5 | Netlify `JARVIS_MAIL_WORKER_TOKEN` setzen + Production-Redeploy | WARTET AUF BENUTZER (manuell im Netlify-UI) |
 | 6 | Send Authority VPS, Windows Standby | offen |
 | 7 | Windows-Task „Jarvis Mail Worker“ neu starten, Standby prüfen | offen |
 | 8–12 | Cloud/HUD, Offline-Szenario, Reply-Pipeline, Schedule, Security | offen |
@@ -39,4 +39,6 @@ Letzte Aktualisierung: 2026-10-07
 Schritt 5: Netlify `JARVIS_MAIL_WORKER_TOKEN` = Wert aus `.secrets/vps_worker.env` setzen, Production neu deployen.
 
 ## Offene Blocker
-keine
+- Netlify CLI auf diesem PC nicht installiert/angemeldet/verknüpft → Schritt 5 muss Chris im Netlify-UI machen:
+  Site chrisjarvis → Site configuration → Environment variables → `JARVIS_MAIL_WORKER_TOKEN` = Wert aus `.secrets/vps_worker.env`,
+  danach Deploys → Trigger deploy → Deploy site. Erst danach Schritte 6–13 fortsetzen (Claude prüft dann Authority etc.).
