@@ -95,20 +95,22 @@ Wirkt auf Windows erst nach Neustart von Jarvis Local Core + Mail-Worker; VPS br
 | 2 | VPS-Deploy nach `/opt/jarvis-mail` inkl. einmaliger Secret-Migration | ERLEDIGT (vom Benutzer ausgeführt, deployed Commit c4b9b2c) |
 | 3 | Docker Compose: Container RUNNING, unless-stopped, HEALTHY | ERLEDIGT |
 | 4 | VPS-Worker verifizieren (2-min-Polling, Heartbeat, kein Crash-Loop) | ERLEDIGT – Standby (Cloud antwortet 401, erwartet) |
-| 5 | Netlify `JARVIS_MAIL_WORKER_TOKEN` setzen + Production-Redeploy | WARTET AUF BENUTZER (manuell im Netlify-UI) |
-| 6 | Send Authority VPS, Windows Standby | offen |
-| 7 | Windows-Task „Jarvis Mail Worker“ neu starten, Standby prüfen | offen |
+| 5 | Netlify `JARVIS_MAIL_WORKER_TOKEN` setzen + Production-Redeploy | ERLEDIGT 2026-10-07 (Token rotiert, Production auf 36f4932) |
+| 6 | Send Authority VPS, Windows Standby | ERLEDIGT 2026-10-07 17:04 UTC |
+| 7 | Windows-Task „Jarvis Mail Worker“ neu starten, Standby prüfen | ERLEDIGT (Neustart 15:44 UTC, standby_no_send_authority) |
 | 8–12 | Cloud/HUD, Offline-Szenario, Reply-Pipeline, Schedule, Security | offen (Mock-Tests grün; Live erst nach Schritt 5) |
-| F4–F7 | Anthropic-Credit fail closed + HUD „AI SERVICE“ + Tests | Code ERLEDIGT; Deploy offen (VPS: `deploy/vps/deploy.sh fiverr` ohne Flag; Netlify: Production-Deploy) |
+| F4–F7 | Anthropic-Credit fail closed + HUD „AI SERVICE“ + Tests | ERLEDIGT (VPS 5cb78a3, Netlify 36f4932) |
 
-## Live-Zustand
-- VPS `ubuntu-4gb-fsn1-1` (SSH-Host `fiverr`, Windows-OpenSSH): erreichbar, sudo ok, Docker vorhanden
+## Live-Zustand (2026-10-07 17:11 UTC – Rollout 1–7 ERFOLGREICH)
+- VPS `ubuntu-4gb-fsn1-1` (SSH-Host `fiverr`, Windows-OpenSSH; Key passphrase-geschützt → nach Windows-Neustart `Start-Service ssh-agent; ssh-add`)
 - `/opt/fiverr`: bestehendes Projekt – NICHT anfassen
-- `/opt/jarvis-mail`: deployed. Container `jarvis-mail-mail-worker-1` running, healthy, restart=unless-stopped, 0 Restarts.
+- `/opt/jarvis-mail`: DEPLOYED_COMMIT 5cb78a3, Container `jarvis-mail-mail-worker-1` healthy, restart=unless-stopped, 0 Restarts.
   Rechte: `.env` 600 root, `secrets/` 700, Secret-Dateien 600. Worker-Log: `secrets/mail_worker/worker.log` (nicht `docker logs`).
-  Authority-Datei VPS: holder=local, self=false (Standby bis Netlify-Token gesetzt).
-- Aktueller Gmail-Sender: Windows-Worker
-- Netlify `JARVIS_MAIL_WORKER_TOKEN`: noch NICHT gesetzt (absichtlich, erst nach HEALTHY)
+- Netlify Production: Commit 36f4932, `JARVIS_MAIL_WORKER_TOKEN` rotiert (Länge 106, sha256_12 `11ea911ab60c`; lokal = VPS = Netlify).
+- check-mail-auth: VPS 200 / Windows 200, authority.dedicated=true, VPS self=true, Windows self=false.
+- **Aktiver Gmail-Sender: genau einer = VPS-Worker (ACTIVE).** Windows-Worker: STANDBY (`standby_no_send_authority`, holder=vps).
+- Bis hierhin keine echte Mail gesendet (sentToday=0, eligibleLeads=0).
+- Token-Werte stehen nie hier; nur Länge/Fingerprint.
 
 ## Sicherheitslogik (wichtig beim Fortsetzen)
 - VPS-Worker startet im Standby, solange Netlify seinen Token mit 401 ablehnt → kein Doppel-Sender vor Schritt 5.
@@ -116,8 +118,10 @@ Wirkt auf Windows erst nach Neustart von Jarvis Local Core + Mail-Worker; VPS br
   Bei erneutem Deploy ohne Secret-Änderung: `deploy/vps/deploy.sh fiverr` (ohne Flag).
 
 ## Nächster Schritt
-Schritt 5: Netlify `JARVIS_MAIL_WORKER_TOKEN` = Wert aus `.secrets/vps_worker.env` setzen, Production neu deployen (mit aktuellem Commit,
-der auch die HUD-Anzeige AI SERVICE enthält). Danach VPS neu deployen (`bash deploy/vps/deploy.sh fiverr`), dann Schritt 6.
+Rollout-Schritte 8–12 live verifizieren (Cloud/HUD, Offline-Szenario, Reply-Pipeline, Schedule, Security) – nur lesend/synthetisch.
+VPS bleibt ACTIVE, Windows bleibt STANDBY; Authority nicht verändern, solange kein Fehler vorliegt.
+Bei VPS-Redeploy: `bash deploy/vps/deploy.sh fiverr` (ohne Flag). Bei Token-Rotation: Netlify + `.secrets/vps_worker.env` + VPS `.env`
+gleichzeitig, danach `docker compose up -d --no-build --force-recreate mail-worker` (restart liest `.env` nicht neu) + Netlify-Redeploy.
 
 ## AI-Credit-Fail-Closed (Kurzbeschreibung)
 - Anthropic-Billing-Fehler (402, oder 400/403 mit Credit/Billing/Usage-Limit-Meldung) → `AiBudgetError` (AI_BUDGET_EXHAUSTED), genau ein Versuch.
@@ -156,7 +160,9 @@ der auch die HUD-Anzeige AI SERVICE enthält). Danach VPS neu deployen (`bash de
   sync 401 → `standby_no_send_authority`, authority.json holder=local self=false. Commit 5cb78a3 lokal, noch nicht gepusht.
 - Nächster Schritt: (c) Netlify-Token per Fingerprint prüfen/korrigieren + Production-Redeploy.
 
-## Offene Blocker
+## Offene Blocker (HISTORISCH – 401 am 2026-10-07 17:04 UTC GELÖST)
+- Ursache: Netlify-Production-Wert war kein Token (163 Zeichen Text mit Leerzeichen/Anführungszeichen). Behoben durch Rotation.
+- Netlify „Repository preparation failure“: Remote-Branch existierte; nach Push 36f4932 lief Production-Deploy durch.
 - Stand 11:21 UTC: Netlify HAT `JARVIS_MAIL_WORKER_TOKEN` (Cloud meldet authority.dedicated=true), aber mit ANDEREM Wert als
   `.secrets/vps_worker.env` → VPS bekommt 401, bleibt Standby. Wahrscheinlich wurde ein alter Zwischenablage-Inhalt eingefügt
   (der PowerShell-Kopierbefehl war fehlgeschlagen).
