@@ -149,3 +149,10 @@ test("Bootstrap/DR-Artefakte: keine Secrets, keine Token-Erzeugung, kein Übersc
   assert.match(docker, /COPY deploy\/vps\/backup-public\.pem \.\/backup-public\.pem/);
   assert.match(fs.readFileSync(path.join(ROOT, "docs", "DISASTER_RECOVERY.md"), "utf8"), /Secret-Recovery/);
 });
+
+test("DR-Probe ist nur lesend und nutzt keine PC-Credential (Windows darf aus sein)", () => {
+  const src = fs.readFileSync(path.join(ROOT, "scripts", "dr-probe.mjs"), "utf8");
+  assert.doesNotMatch(src, /method:\s*"POST"|jarvis_sync\.json|127\.0\.0\.1|localhost/);
+  assert.match(src, /x-jarvis-worker/);
+  assert.doesNotMatch(src, /console\.log\([^)]*token\b/);
+});

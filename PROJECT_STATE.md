@@ -17,7 +17,22 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
 | C | Netlify/HUD: System / Jarvis Core (CLOUD ONLINE) / Local Client / Mail Worker / Authority / Pending Queue / AI Service; Gesamtsystem ONLINE = Cloud Core + Mail-Worker, PC optional (Local Client OFFLINE ist gelb, kein Systemfehler); CLOUD-Modus begrüsst mit Cloud-Status | Code fertig, Tests grün |
 | D | Windows = OPTIONAL_CLIENT (`/api/health` role=optional_client; PC rechnet im Standby keine Sales; Cloud nimmt Business/Sales nur vom Core) | ERLEDIGT ed521f8; live 19:07 UTC: Cloud-Sales = VPS-Sales (gleicher Zeitstempel), lastCorePushAt/lastClientPushAt getrennt |
 | E | Backup `backup.js` (RSA-OAEP-256 + AES-256-GCM, Public Key `deploy/vps/backup-public.pem`, key_id f671042283a91eaf; täglich ab 03:00 Zürich; VPS `secrets/backups/` 14 Gen.; Netlify Blobs `jarvis-backups` via `/api/backup` 30 Gen.; nie Secrets) + `scripts/restore-state.mjs` (nur in leeres Verzeichnis) + `scripts/bootstrap-windows.ps1` + `docs/DISASTER_RECOVERY.md` (Secret-Recovery) | ERLEDIGT bc51524 (VPS live). 19:11 UTC erstes echtes Backup: lokal `secrets/backups/state-20261007T191157482Z.json` (600) + offsite `daily/2026-10-07` ok, 10 Dateien, key_id f671042283a91eaf. Restore-Test offsite→leeres Verzeichnis ok (64 Leads, Schema 1), zweiter Restore ins selbe Ziel verweigert. Bootstrap (Prüfmodus) auf diesem PC: 13 OK, Cloud verbunden, PC self=false. **Chris: `.secrets/backup_private.pem` in den Passwort-Manager kopieren.** |
-| F | Disaster-Tests A–E | offen |
+| F | Disaster-Tests A–E (`scripts/dr-probe.mjs`, nur lesend, nur Cloud-Core-Credential) | ERLEDIGT 2026-10-07 – alle PASS, siehe unten |
+
+### Disaster-Recovery-Test 2026-10-07 (keine echte Mail, Authority nie manuell geändert)
+- A Windows komplett offline (19:22–19:33 UTC): Local Core + Windows-Mail-Worker DOWN. Cloud-UI 200, System ONLINE, Jarvis Core CLOUD ONLINE,
+  VPS ACTIVE, Authority VPS, Heartbeat lief weiter, 64 Leads / 12 Gesprächsbeiträge / Queue 0 unverändert, Local Client + Windows OFFLINE. PASS.
+  LEKTION: `Stop-ScheduledTask "Jarvis Mail Worker"` beendet den Worker NICHT (Supervisor + Kind laufen weiter, PIDs im Lock) –
+  für einen echten Offline-Test die Prozesse aus `.secrets/mail_worker/worker.lock` (Worker) und dessen Supervisor beenden.
+- B neuer PC ohne Jarvis: Cloud-UI + APIs ohne PC nutzbar (= A). PASS.
+- C neuer PC + Bootstrap: `scripts/bootstrap-windows.ps1` (Prüfmodus) verbindet sich, PC self=false; Unit-Test: leerer Client überschreibt keinen Cloud-State. PASS.
+- D Container-Neustart: mehrfach (Deploys, Merge) – kommt healthy zurück, State erhalten. PASS.
+- E ECHTER VPS-REBOOT (von Chris angeordnet): `sync` + Reboot ausgelöst 19:30:30 UTC, gebootet 19:30:51, Jarvis-Container automatisch
+  gestartet 19:31:04 (healthy, 0 Restarts), SSH zurück 19:31:54. docker + containerd enabled/active, restart=unless-stopped.
+  Vorher/Nachher identisch: 64 Leads, Suppression 0, Registry 2/1, Schema 1, 12 Gesprächsbeiträge, Inbox/Queue 0, Authority vps/self=true,
+  Backup + Gmail-Secret-Dateien + `.env` (600 root) vorhanden. 0 Send-Events. PASS.
+- Danach Windows als OPTIONAL_CLIENT wieder gestartet (19:33 UTC): Local Core role=optional_client, Windows-Worker `standby_no_send_authority`.
+  check-mail-auth: Windows 200 self=false, VPS 200 self=true → genau ein Sender.
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
 
