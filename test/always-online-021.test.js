@@ -126,6 +126,14 @@ test("VPS-Worker: Start, Heartbeat, Docker-Healthcheck und restart: unless-stopp
   assert.match(docker, /JARVIS_WORKER_ROLE=vps/);
   assert.match(docker, /HEALTHCHECK .*--healthcheck/);
   assert.ok(!/\.secrets|gmail_token|gmail_credentials|\.env/.test(docker.replace(/^#.*$/gm, "")), "keine Secrets im Image");
+  // Jedes lokal (transitiv) importierte Modul muss im Image liegen – sonst Crash-Loop ERR_MODULE_NOT_FOUND auf dem VPS.
+  const copied = new Set(docker.match(/^COPY (.+) \.\/$/m)[1].split(/\s+/));
+  const seen = new Set(), todo = ["mail-worker.js"];
+  while (todo.length) {
+    const f = todo.pop(); if (seen.has(f)) continue; seen.add(f);
+    for (const [, dep] of read(f).matchAll(/(?:from|import\()\s*["']\.\/([\w.-]+\.js)["']/g)) todo.push(dep);
+  }
+  for (const f of seen) assert.ok(copied.has(f), `Dockerfile COPY fehlt ${f}`);
   assert.equal(pollMs({ pollMinutes: 5 }, { JARVIS_POLL_MINUTES: "2" }), 120_000, "VPS: alle 2 Minuten");
   assert.equal(pollMs({ pollMinutes: 0 }, { JARVIS_POLL_MINUTES: "0.1" }), 60_000, "nie aggressiver als 1 Minute");
 });
