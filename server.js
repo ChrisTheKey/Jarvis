@@ -15,18 +15,33 @@ if (process.argv.includes("--supervise")) {
 }
 loadEnv(path.join(ROOT, ".env"));
 // Gemeinsamer Jarvis-Zustand (nach loadEnv, damit JARVIS_SYNC_TOKEN aus .env gilt)
-const { createLocalState, syncWithCloud, cloudContextPrefix } = await import("./local-state.js");
+const { createLocalState, syncWithCloud, cloudContextPrefix, syncConfig } = await import("./local-state.js");
 const { personaVersion } = await import("./persona-version.js");
 const { EXIT_BUSY, EXIT_PORT_CONFLICT, SERVICE, probeCore } = await import("./local-core.js");
 const sales = await import("./sales.js");
 const swissRepair = await import("./swiss-repair.js");
-const { WORKER_DIR: MAIL_DIR, createStore: mailStore } = await import("./mail-worker.js");
+const { WORKER_DIR: MAIL_DIR, createStore: mailStore, healthy: mailWorkerAlive, AUTHORITY_FILE } = await import("./mail-worker.js");
+const { fetchMailService } = await import("./mail-requests.js");
 const gmailRegistry = async () => { try { return (await import("./gmail.js")).listOwned(); } catch { return { sent: {}, drafts: {} }; } };
 const local = createLocalState();
 // Vertriebskennzahlen lokal neu berechnen (nur Zahlen gehen in den gemeinsamen Zustand). Fehler sind unkritisch.
 const refreshSales = async () => { try { local.setSales(sales.persistMetrics({ registry: await gmailRegistry() })); } catch {} };
 const syncSoon = () => { syncWithCloud({ local, force: true }).catch(() => {}); };
 const STARTED_AT = new Date().toISOString();
+// Mail-Worker-Status fürs HUD: Cloud (Authority + Heartbeat des Zuständigen + Wartend) und der Windows-Worker auf diesem PC.
+// Höchstens alle 15 s eine Cloud-Abfrage (nur GET, übernimmt nichts); keine IDs, Adressen oder Tokens in der Antwort.
+let mailServiceCache = { at: 0, value: null };
+async function mailServiceStatus(now = Date.now()) {
+  if (mailServiceCache.value && now - mailServiceCache.at < 15_000) return mailServiceCache.value;
+  const cloud = await fetchMailService({ config: syncConfig() });
+  const saved = mailStore(MAIL_DIR).read(AUTHORITY_FILE, null);
+  const value = {
+    cloud: cloud.ok, service: cloud.service, authority: cloud.authority,
+    localWorker: { alive: mailWorkerAlive(MAIL_DIR), standby: saved ? saved.self === false : null },
+  };
+  mailServiceCache = { at: now, value };
+  return value;
+}
 
 const PORT = Number(process.env.PORT || 3000);
 const MODEL = process.env.JARVIS_MODEL || "sonnet";
@@ -224,7 +239,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, service: SERVICE, mode: "local", pid: process.pid, startedAt: STARTED_AT, supervised: process.env.JARVIS_CORE_SUPERVISED === "1" });
     }
     // Klassische HUD-Skripte (gleich wie auf Netlify): Local/Cloud-Erkennung und Texteingabe.
-    if (req.method === "GET" && ["/mode-detect.js", "/composer.js"].includes(url.pathname)) {
+    if (req.method === "GET" && ["/mode-detect.js", "/composer.js", "/mail-status.js"].includes(url.pathname)) {
       res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
       return fs.createReadStream(path.join(ROOT, "public", url.pathname.slice(1))).pipe(res);
     }
@@ -262,6 +277,9 @@ const server = http.createServer(async (req, res) => {
         notifications: s.notifications.map(({ threadId, excerpt, ...n }) => n), business: s.business, sales: s.sales || null,
         sync: s.syncStatus || {}, personaVersion: personaVersion(), mode: "local", localCore: { online: true, startedAt: STARTED_AT },
       });
+    }
+    if (req.method === "GET" && url.pathname === "/api/mail-service") {
+      return json(res, 200, await mailServiceStatus());
     }
     // Lead-Pipeline mit Befunden und Angebotsklasse – nur lokal (Leads gelangen nie in die Cloud).
     if (req.method === "GET" && url.pathname === "/api/leads") {

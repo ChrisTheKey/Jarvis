@@ -236,7 +236,8 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (req.method === "GET") {
       if (isWorker || isLocal) {
         const list = owner ? await queue.list() : [];
-        return reply(200, { authority, requests: list.filter((r) => r.status === "pending") });
+        // service: dieselben Zahlen wie für den Browser (MAIL SERVICE, Authority, Wartend) – der Local Core zeigt sie im HUD an.
+        return reply(200, { authority, requests: list.filter((r) => r.status === "pending"), service: await queue.status() });
       }
       return reply(200, { requests: (await queue.list()).map(publicView).slice(-20), service: await queue.status() });
     }
@@ -296,7 +297,7 @@ export async function pullMailRequests({ config, fetchFn = globalThis.fetch }) {
     const r = await fetchFn(endpoint(config.url), { headers: authHeaders(config), signal: AbortSignal.timeout(20_000) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json();
-    return { ok: true, authority: j.authority || null, requests: cleanList(j.requests).filter((x) => x.status === "pending") };
+    return { ok: true, authority: j.authority || null, service: j.service || null, requests: cleanList(j.requests).filter((x) => x.status === "pending") };
   } catch (e) { return { ok: false, error: e.message, requests: [] }; }
 }
 
@@ -316,6 +317,14 @@ export async function claimMailRequests({ config, fetchFn = globalThis.fetch }) 
 export async function fetchAuthority({ config, fetchFn = globalThis.fetch }) {
   const r = await pullMailRequests({ config, fetchFn });
   return r.ok ? r.authority : null;
+}
+
+// Für das HUD (Local Core): Authority-Sicht dieses Rechners + Service-Status der Cloud (Heartbeat des Zuständigen, Wartend).
+// Nur lesend – übernimmt nichts. null-Felder, wenn die Cloud nicht erreichbar ist.
+export async function fetchMailService({ config, fetchFn = globalThis.fetch }) {
+  if (!hasAuth(config)) return { ok: false, error: "kein Token", authority: null, service: null };
+  const r = await pullMailRequests({ config, fetchFn });
+  return r.ok ? { ok: true, authority: r.authority, service: r.service } : { ok: false, error: r.error, authority: null, service: null };
 }
 
 export async function pushMailResult({ config, fetchFn = globalThis.fetch, request_id, status, reason }) {

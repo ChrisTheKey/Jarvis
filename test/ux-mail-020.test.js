@@ -143,7 +143,7 @@ test("Composer sichtbar in LOCAL und CLOUD: gleiches Markup, nicht verdeckt, im 
   assert.match(html, /\.right \{[^}]*min-height: 0; overflow: hidden;/);
   assert.match(html, /@media \(max-width: 860px\)[\s\S]*\.left, \.right \{ display: none; \}/, "kleine Fenster: nur Kern und Eingabe");
   assert.ok(fs.existsSync(path.join(ROOT, "public", "composer.js")), "Netlify (Cloud) liefert public/ aus");
-  assert.match(read("server.js"), /\["\/mode-detect\.js", "\/composer\.js"\]/, "Local Core liefert dasselbe Skript");
+  assert.match(read("server.js"), /\["\/mode-detect\.js", "\/composer\.js", "\/mail-status\.js"\]/, "Local Core liefert dasselbe Skript");
   // Leertaste/Escape-Kurzbefehle greifen im Textfeld nicht
   assert.match(html, /if \(e\.target\.closest\("input, select, textarea, button"\)\) return;/);
 });

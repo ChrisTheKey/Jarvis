@@ -117,7 +117,7 @@ form.cmd button.stop { color: var(--red); }
 .alerts button:hover { border-color: var(--cyan); }
 #kAlerts.hot { color: var(--red); }
 .alerts li.seen { opacity: .65; }
-.on-ok { color: var(--green) !important; } .on-bad { color: var(--red) !important; }
+.on-ok { color: var(--green) !important; } .on-bad { color: var(--red) !important; } .on-idle { color: var(--amber) !important; }
 /* Vertrieb: zwei Angebote (CHF 150 / CHF 480), kompakt zweispaltig */
 .sales { flex: none !important; }
 /* Verkäufe: je Angebot Anzahl und Umsatz, darunter der Gesamtumsatz */
@@ -199,9 +199,11 @@ form.cmd button.stop { color: var(--red); }
         <span>Laufzeit</span><b id="kUptime">–</b>
         <span>Worker</span><b id="kWorker">–</b>
         <span>Mail Service</span><b id="kMailService" title="Always-on Mail-Worker (Heartbeat)">–</b>
-        <span>Mail Worker</span><b id="kMailWorker" title="send_authority">–</b>
+        <span>Mail Worker</span><b id="kMailWorker" title="Zuständiger Mail-Worker (VPS oder Windows)">–</b>
+        <span>Send Authority</span><b id="kAuthority" title="Wer Gmail senden darf (send_authority in der Cloud)">–</b>
+        <span>Windows Worker</span><b id="kWinWorker" title="Mail-Worker auf diesem PC">–</b>
         <span>AI Service</span><b id="kAiService" title="Anthropic-API des Mail-Workers">–</b>
-        <span>Wartend</span><b id="kMailPending">–</b>
+        <span>Pending Queue</span><b id="kMailPending">–</b>
         <span>Gesendet heute</span><b id="kMailSent">–</b>
         <span>Blockiert</span><b id="kMailBlocked">–</b>
         <span>Eskalationen</span><b id="kMailEsc">–</b>
@@ -301,6 +303,7 @@ form.cmd button.stop { color: var(--red); }
 </div>
 
 <script src="mode-detect.js"></script>
+<script src="mail-status.js"></script>
 <script src="composer.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -796,7 +799,7 @@ const cloudState = (body) => fetch("/api/state", body
   : { headers: { "x-jarvis-key": cloudKey } });
 async function loadShared() {
   try {
-    if (mode === "local") shared = await (await fetch(CORE + "/api/shared")).json();
+    if (mode === "local") { shared = await (await fetch(CORE + "/api/shared")).json(); loadMailService(); }
     else if (mode === "cloud" && cloudKey) {
       const r = await cloudState();
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -809,8 +812,6 @@ async function loadShared() {
 }
 function renderShared() {
   const s = shared || {}, w = s.business?.worker, d = s.business?.discovery, sync = s.sync || {};
-  const online = w?.lastCycle && Date.now() - Date.parse(w.lastCycle) < 15 * 60_000;
-  $("kWorker").textContent = w ? (online ? "ONLINE" : "OFFLINE") : "–";
   $("kMail").textContent = w ? `${w.todaySent} / ${w.limit}` : "–";
   for (const [id, el] of [["morning", "kMorning"], ["afternoon", "kAfternoon"]]) {
     const x = w?.windows?.[id];
@@ -820,7 +821,6 @@ function renderShared() {
   $("kDiscovery").textContent = d?.lastRunAt ? fmtTime(d.lastRunAt) : "–";
   $("kSync").textContent = sync.cloud ? `OK · PC zuletzt ${fmtTime(sync.lastSuccessAt)}` : sync.ok ? `OK ${fmtTime(sync.lastSuccessAt)}` : sync.error ? `FEHLER ${fmtTime(sync.lastErrorAt)}` : "–";
   $("kSync").className = sync.ok ? "on-ok" : sync.error ? "on-bad" : "";
-  $("kWorker").className = w ? (online ? "on-ok" : "on-bad") : "";
   const isContact = (n) => n.type === "human_contact_requested" || n.type === "call_requested";
   const all = s.notifications || [];
   const unread = all.filter((n) => n.status === "unread");
@@ -864,19 +864,36 @@ function renderShared() {
 // Cloud: Ergebnis der Mailaufträge vom Mail-Worker (PENDING / PROCESSING / SENT / BLOCKED / FAILED) und MAIL SERVICE ONLINE/OFFLINE.
 const mailSeen = store.get("mailSeen", {});
 const MAIL_STATUS = { pending: "wartet auf Mail-Worker", processing: "wird verarbeitet", accepted_local: "geprüft, wird gesendet", blocked: "blockiert", sent: "gesendet", failed: "fehlgeschlagen", expired: "abgelaufen" };
-function renderMailService(svc) {
+// Worker / Mail Service / Mail Worker / Send Authority / Pending Queue kommen aus der Cloud (send_authority + Heartbeat),
+// unabhängig vom UI-Modus: LOCAL oben rechts = Local Core erreichbar; gesendet wird vom Inhaber der Authority (z. B. VPS).
+let mailHud = null;
+function renderMailService(svc, localWorker = null) {
   const set = (id, v, cls = "") => { $(id).textContent = v; $(id).className = cls; };
+  mailHud = JarvisMailStatus.summarizeMail({ service: svc, localWorker });
+  const m = mailHud, tone = (ok, idle) => (ok ? "on-ok" : idle ? "on-idle" : "on-bad");
+  set("kWorker", m.worker, tone(m.worker === "ONLINE"));
+  set("kMailService", m.mailService, tone(m.healthy));
+  set("kMailWorker", m.mailWorker, tone(m.healthy, m.mailWorker === "STANDBY"));
+  set("kAuthority", m.authority, m.authority === "VPS" || m.authority === "WINDOWS" ? "on-ok" : "on-bad");
+  set("kWinWorker", m.windows || "–", m.windows === "ACTIVE" ? "on-ok" : m.windows === "STANDBY" ? "on-idle" : m.windows ? "on-bad" : "");
+  set("kMailPending", m.pending === null ? "–" : String(m.pending));
   if (!svc) return;
-  set("kMailService", svc.online ? "ONLINE" : "OFFLINE", svc.online ? "on-ok" : "on-bad");
-  set("kMailWorker", `${svc.authority === "vps" ? "VPS" : "LOKAL"} ${svc.online ? "ONLINE" : "OFFLINE"}`, svc.online ? "on-ok" : "on-bad");
   set("kAiService", svc.ai === "paused_credit" ? "PAUSED — CREDIT LIMIT" : svc.ai === "online" ? "ONLINE" : "–", svc.ai === "paused_credit" ? "on-bad" : svc.ai === "online" ? "on-ok" : "");
-  set("kMailPending", String(svc.pending));
   set("kMailSent", String(svc.sent_today));
   set("kMailBlocked", String(svc.blocked_today));
   set("kMailEsc", String(svc.escalations_today), svc.escalations_today ? "on-bad" : "");
   $("kMorning").textContent = `${svc.sales.morning} / ${svc.sales.window_limit}`;
   $("kAfternoon").textContent = `${svc.sales.afternoon} / ${svc.sales.window_limit}`;
   $("kSales").textContent = `${svc.sales.today} / ${svc.sales.daily_limit}`;
+}
+// LOCAL-Modus: der Local Core liest den Cloud-Status mit seinem Sync-Token (nur GET) und kennt den Windows-Worker.
+async function loadMailService() {
+  try {
+    const r = await fetch(CORE + "/api/mail-service", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    renderMailService(j.service, j.localWorker);
+  } catch { renderMailService(null, null); }
 }
 async function loadMailRequests() {
   try {
@@ -1134,7 +1151,10 @@ async function boot() {
   if (mode === "cloud") await loadCloudConversation(); // zuerst den neuesten gemeinsamen Stand lesen
   await loadShared();
   await line("> Gemeinsamer Zustand ................... " + (shared ? "OK" : "NICHT VERFÜGBAR"));
-  await line("> Alle Systeme online.", 500);
+  if (mode === "local") await loadMailService(); else if (mode === "cloud") await loadMailRequests();
+  await line("> Mail-Worker .......................... " + (mailHud ? `${mailHud.mailWorker} · AUTHORITY ${mailHud.authority}` : "UNBEKANNT"));
+  const allOnline = JarvisMailStatus.allSystemsOnline({ core: mode === "cloud" || !!status.claude, mail: mailHud });
+  await line(allOnline ? "> Alle Systeme online." : "> Eingeschränkt: Mail-Worker nicht online.", 500);
   $("boot").hidden = true;
   booted = true;
   if (mode === "local") poll();
@@ -1145,7 +1165,7 @@ async function boot() {
   const msg = mode === "cloud"
     ? `${greet} Wie kann ich helfen?`
     : status.claude
-      ? `${greet} Alle Systeme sind online. ${call}`
+      ? `${greet} ${allOnline ? "Alle Systeme sind online." : `Achtung: Kein aktiver Mail-Worker (${mailHud ? mailHud.mailWorker : "Status unbekannt"}).`} ${call}`
       : `${greet} Ich kann Claude Code nicht finden. Bitte installieren Sie es und melden Sie sich einmal im Terminal an.`;
   $("say").textContent = msg;
   log("SYSTEM", mode === "cloud" ? "Cloud-Modus: Gespräch ohne PC-Zugriff." : "Online. " + (SR ? "Sprachsteuerung bereit." : "Keine Spracherkennung – bitte Chrome oder Edge nutzen."), mode === "local" && !status.claude ? "red" : "green");
