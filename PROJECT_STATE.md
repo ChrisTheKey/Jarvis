@@ -117,6 +117,17 @@ Wirkt auf Windows erst nach Neustart von Jarvis Local Core + Mail-Worker; VPS br
 - `deploy/vps/deploy.sh fiverr --with-secrets` überschreibt bestehende VPS-Secrets nie (VPS ist dann führend).
   Bei erneutem Deploy ohne Secret-Änderung: `deploy/vps/deploy.sh fiverr` (ohne Flag).
 
+## HUD Mail-Status (2026-10-07, Commit cc7be49, Netlify Production live)
+- Fehler vorher: HUD „Worker OFFLINE“ (las nur `business.worker.lastCycle` des Windows-Workers, der im Standby nicht tickt),
+  „Mail Service/Mail Worker –“ (Mail-Status wurde nur im CLOUD-Modus mit Passwort geladen), „Alle Systeme sind online“ ungeprüft.
+- Jetzt: Worker / Mail Service / Mail Worker / Send Authority / Windows Worker / Pending Queue aus der Cloud (send_authority + Heartbeat
+  des Zuständigen), unabhängig vom UI-Modus. LOCAL: Local Core `/api/mail-service` (nur GET mit Sync-Token, 15-s-Cache, keine IDs/Tokens);
+  CLOUD: wie bisher `/api/mail-requests` mit Passwort. Logik in `public/mail-status.js` (Tests: `test/hud-mail-status.test.js`, 6).
+- „Alle Systeme sind online“ nur bei Kern ok UND aktivem Mail-Worker; sonst „Achtung: Kein aktiver Mail-Worker (…)“.
+- Live 17:29 UTC: Worker ONLINE, Mail Service VPS, Mail Worker VPS ACTIVE, Authority VPS, Windows Worker STANDBY, Pending 0,
+  VPS-Heartbeat in der Cloud frisch (online=true). 240/240 Tests grün. Authority unverändert, keine Mail gesendet.
+- Betriebshinweis: Local-Core-Task nach Stop/Start ggf. ein zweites Mal starten (alter Supervisor hält kurz das Lock).
+
 ## Verifikation Rollout 8–12 (2026-10-07 17:15 UTC, nur lesend/synthetisch, keine echte Mail)
 - Cloud: `/api/state` 200, Sync aktiv (lastLocalPushAt 17:12 UTC); keine sensiblen Schlüssel, keiner von 7 bekannten Secret-Werten im
   Cloud-Zustand. `/api/mail-requests`: VPS 200 self=true, Windows 200 self=false, pending 0.
@@ -126,11 +137,10 @@ Wirkt auf Windows erst nach Neustart von Jarvis Local Core + Mail-Worker; VPS br
 - Synthetisch (234/234): Offline-Szenarien (Local Core/VPS/Windows aus, Absturz nach Lease, Neustarts), Lease, Send-Lock, Dual-Worker-Lock,
   Reply-Pipeline (eigener Thread, sichere Antwort, Risiko-Eskalation, Opt-out dauerhaft, fremder Thread unberührt), Fenster 09:30/14:30
   Europe/Zurich je 50, 100/Tag, 0 eligible = 0 Send, TF-024-Gate direkt vor Send, TF-025 Cold-Draft nie sendbar (gmail.js, Worker, Queue).
-- Offen (nicht blockierend): HUD-Anzeige „MAIL SERVICE ONLINE / Authority VPS“ braucht JARVIS_PASSWORD (lokal nicht gespeichert) → Chris
-  prüft visuell. Heartbeat-Erfolg wird vom Worker nicht geloggt.
+- Erledigt mit HUD-Fix cc7be49: HUD zeigt VPS/Authority auch im LOCAL-Modus; VPS-Heartbeat in der Cloud bestätigt.
 
 ## Nächster Schritt
-Betrieb: VPS bleibt ACTIVE, Windows bleibt STANDBY; Authority nicht verändern, solange kein Fehler vorliegt. Chris bestätigt HUD visuell.
+Betrieb: VPS bleibt ACTIVE, Windows bleibt STANDBY; Authority nicht verändern, solange kein Fehler vorliegt. HUD nach Neuladen prüfen.
 Bei VPS-Redeploy: `bash deploy/vps/deploy.sh fiverr` (ohne Flag). Bei Token-Rotation: Netlify + `.secrets/vps_worker.env` + VPS `.env`
 gleichzeitig, danach `docker compose up -d --no-build --force-recreate mail-worker` (restart liest `.env` nicht neu) + Netlify-Redeploy.
 
