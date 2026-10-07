@@ -13,9 +13,9 @@ Letzte Aktualisierung: 2026-10-07
 | # | Schritt | Status |
 |---|---------|--------|
 | 1 | Zustand prüfen (Git, `.secrets/vps_worker.env` mit beiden Werten, SSH `fiverr`) | ERLEDIGT |
-| 2 | VPS-Deploy nach `/opt/jarvis-mail` inkl. einmaliger Secret-Migration | offen |
-| 3 | Docker Compose: Container RUNNING, unless-stopped, HEALTHY | offen |
-| 4 | VPS-Worker verifizieren (2-min-Polling, Heartbeat, kein Crash-Loop) | offen |
+| 2 | VPS-Deploy nach `/opt/jarvis-mail` inkl. einmaliger Secret-Migration | ERLEDIGT (vom Benutzer ausgeführt, deployed Commit c4b9b2c) |
+| 3 | Docker Compose: Container RUNNING, unless-stopped, HEALTHY | ERLEDIGT |
+| 4 | VPS-Worker verifizieren (2-min-Polling, Heartbeat, kein Crash-Loop) | ERLEDIGT – Standby (Cloud antwortet 401, erwartet) |
 | 5 | Netlify `JARVIS_MAIL_WORKER_TOKEN` setzen + Production-Redeploy | offen – erst nach HEALTHY |
 | 6 | Send Authority VPS, Windows Standby | offen |
 | 7 | Windows-Task „Jarvis Mail Worker“ neu starten, Standby prüfen | offen |
@@ -24,7 +24,9 @@ Letzte Aktualisierung: 2026-10-07
 ## Live-Zustand
 - VPS `ubuntu-4gb-fsn1-1` (SSH-Host `fiverr`, Windows-OpenSSH): erreichbar, sudo ok, Docker vorhanden
 - `/opt/fiverr`: bestehendes Projekt – NICHT anfassen
-- `/opt/jarvis-mail`: noch nicht vorhanden
+- `/opt/jarvis-mail`: deployed. Container `jarvis-mail-mail-worker-1` running, healthy, restart=unless-stopped, 0 Restarts.
+  Rechte: `.env` 600 root, `secrets/` 700, Secret-Dateien 600. Worker-Log: `secrets/mail_worker/worker.log` (nicht `docker logs`).
+  Authority-Datei VPS: holder=local, self=false (Standby bis Netlify-Token gesetzt).
 - Aktueller Gmail-Sender: Windows-Worker
 - Netlify `JARVIS_MAIL_WORKER_TOKEN`: noch NICHT gesetzt (absichtlich, erst nach HEALTHY)
 
@@ -34,7 +36,7 @@ Letzte Aktualisierung: 2026-10-07
   Bei erneutem Deploy ohne Secret-Änderung: `deploy/vps/deploy.sh fiverr` (ohne Flag).
 
 ## Nächster Schritt
-Schritt 2: `bash deploy/vps/deploy.sh fiverr --with-secrets` (im Repo-Ordner `Documents/Chris/Jarvis`, in Git Bash)
+Schritt 5: Netlify `JARVIS_MAIL_WORKER_TOKEN` = Wert aus `.secrets/vps_worker.env` setzen, Production neu deployen.
 
 ## Offene Blocker
-- Schritt 2 noch nicht ausgeführt: Der Deploy-Befehl wurde in der Claude-Code-Session vom Auto-Mode-Berechtigungsfilter (Production Deploy) blockiert. Benutzer muss ihn selbst ausführen oder eine Bash-Erlaubnisregel dafür hinzufügen.
+keine
