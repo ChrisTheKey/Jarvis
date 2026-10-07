@@ -49,7 +49,12 @@ der auch die HUD-Anzeige AI SERVICE enthält). Danach VPS neu deployen (`bash de
 - Kein Retry-Loop, kein zweiter Key, kein anderer Anbieter, kein Auto-Reload. Cloud-Aufträge (ohne KI), Heartbeat, Sync, Opt-out laufen weiter.
 
 ## Offene Blocker
-- Cloud lehnt Worker-Token weiter mit HTTP 401 ab (Stand 10:52 UTC) → Netlify-Variable fehlt, hat anderen Wert oder ist noch nicht deployed.
-- `npx netlify-cli login` stürzte ab (TypeError in der CLI unter Node v24), keine Anmeldung gespeichert.
-  Alternative: Personal Access Token in Netlify erstellen (User settings → Applications) und lokal als `NETLIFY_AUTH_TOKEN` in `.secrets/` ablegen,
-  oder Variable im UI setzen + Production-Deploy.
+- Stand 11:21 UTC: Netlify HAT `JARVIS_MAIL_WORKER_TOKEN` (Cloud meldet authority.dedicated=true), aber mit ANDEREM Wert als
+  `.secrets/vps_worker.env` → VPS bekommt 401, bleibt Standby. Wahrscheinlich wurde ein alter Zwischenablage-Inhalt eingefügt
+  (der PowerShell-Kopierbefehl war fehlgeschlagen).
+- Folge bis zur Korrektur: Cloud-Mailaufträge (Handy) werden von niemandem übernommen (bleiben pending, gehen nicht verloren).
+  Der laufende Windows-Worker-Prozess tickt weiter (alter Code ohne authority.json) – weiterhin genau ein Gmail-Sender.
+- Live-Netlify-Build enthält 138c460 noch nicht (HUD ohne „AI SERVICE“). VPS noch auf c4b9b2c (ohne AI-Fail-Closed).
+- Fix: Token mit `grep '^JARVIS_MAIL_WORKER_TOKEN=' .secrets/vps_worker.env | cut -d= -f2- | tr -d '
+' | clip.exe` kopieren,
+  in Netlify ersetzen, Production neu deployen; dann `bash deploy/vps/deploy.sh fiverr` (ohne Flag), dann Schritt 6.
