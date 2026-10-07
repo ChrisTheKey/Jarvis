@@ -5,11 +5,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createWorker, workerIteration, resolveAuthority, healthy, heartbeat, pollMs, apiCompose, mailClassOf, createStore, zurichDay, CLOUD_INBOX, AUTHORITY_FILE } from "../mail-worker.js";
+import { createWorker, workerIteration, resolveAuthority, healthy, heartbeat, pollMs, apiCompose, mailClassOf, createStore, zurichDay, CLOUD_INBOX, AUTHORITY_FILE, AiBudgetError, AI_BUDGET_EXHAUSTED, AI_BUDGET_FILE } from "../mail-worker.js";
 import * as mailRequests from "../mail-requests.js";
 import { createMailRequestHandler, createMailQueue, cloudSendGuard, acquireSendLock, finishSendLock, refHash, HEARTBEAT_STALE_MS, LEASE_MS } from "../mail-requests.js";
 import { memoryStore, createStateHandler, findSensitiveKeys, sanitizeState } from "../shared-state.js";
-import { createEscalationNotifier, createLocalState } from "../local-state.js";
+import { createEscalationNotifier, createAiBudgetNotifier, createLocalState } from "../local-state.js";
 
 const ROOT = decodeURIComponent(new URL("..", import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1");
 const read = (f) => fs.readFileSync(path.join(ROOT, f), "utf8");
@@ -78,8 +78,8 @@ const autoConfig = (dir) => write(dir, "config.json", { dryRun: false, sendMode:
 const createRequest = async (input = MAIL) => (await (await handler(req("POST", { op: "create", ...input }, asUser))).json()).request;
 const cloudList = async () => (await (await handler(req("GET", null, asUser))).json());
 let escalated;
-function makeWorker(dir, config, { compose } = {}) {
-  return createWorker({ dir, gmail: g, now: () => clock, log: () => {}, escalate: async (e) => { escalated.push(e); },
+function makeWorker(dir, config, { compose, aiPaused = async () => {} } = {}) {
+  return createWorker({ dir, gmail: g, now: () => clock, log: () => {}, escalate: async (e) => { escalated.push(e); }, aiPaused,
     compose: compose || (async () => ({ decision: "draft", reason: "", subject: "Re", body: "Guten Tag, gerne beantworte ich Ihre Frage.\n\nChris Muster" })),
     sendGuard: cloudSendGuard({ config, fetchFn: viaHandler(handler) }) });
 }
@@ -364,7 +364,7 @@ test("Keine Secrets in der Cloud: Blob ohne Gmail-IDs, Adressen in Locks oder To
   assert.match(lock.lock_key, /^[a-f0-9]{24}$/);
   assert.match(lock.thread_ref, /^[a-f0-9]{12}$/);
   assert.equal(lock.status, "SENT");
-  assert.deepEqual(Object.keys(blob.peek().workers.vps.stats).sort(), ["blocked_today", "campaign_afternoon", "campaign_morning", "campaign_today", "escalations_today", "manual_today", "replies_today", "sent_today"]);
+  assert.deepEqual(Object.keys(blob.peek().workers.vps.stats).sort(), ["ai_paused", "blocked_today", "campaign_afternoon", "campaign_morning", "campaign_today", "escalations_today", "manual_today", "replies_today", "sent_today"]);
   // Browser-Antwort enthält weder Lease-Inhaber noch Tokens
   const pub = JSON.stringify(await cloudList());
   assert.ok(!/lease_owner|token|fingerprint/.test(pub));
@@ -405,4 +405,79 @@ test("Two-Offer-Pipeline unverändert und keine Preisangebote im neuen Code", as
   const { OFFER_CLASSES, OFFERS } = await import("../sales.js");
   assert.deepEqual(OFFER_CLASSES.map((c) => OFFERS[c].price), [150, 500]);
   for (const f of ["deploy/vps/docker-compose.yml", "deploy/vps/Dockerfile", "mail-requests.js", "public/index.html"]) assert.doesNotMatch(read(f), /2['’]?490|Redesign-Angebot|Neubau-Angebot/i, f);
+});
+
+// ---------- Anthropic-API-Guthaben: fail closed (Billing-Fehler gemockt, keine echte API-Belastung) ----------
+
+const apiError = (status, type, message) => async () => new Response(JSON.stringify({ type: "error", error: { type, message } }), { status });
+
+test("Anthropic-Guthaben leer: genau ein Versuch, AI_BUDGET_EXHAUSTED, kein Retry/kein anderer Schlüssel/kein anderer Anbieter", async () => {
+  let calls = 0;
+  const count = (f) => async (...a) => { calls++; return f(...a); };
+  const low = apiError(400, "invalid_request_error", "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.");
+  await assert.rejects(apiCompose({ apiKey: "k", system: "x", fetchFn: count(low) })({}), (e) => e.code === AI_BUDGET_EXHAUSTED && !/429|5\d\d|rate|quota|network/i.test(e.message));
+  assert.equal(calls, 1, "kein Retry");
+  await assert.rejects(apiCompose({ apiKey: "k", system: "x", fetchFn: apiError(402, "billing_error", "Payment required") })({}), (e) => e.code === AI_BUDGET_EXHAUSTED);
+  await assert.rejects(apiCompose({ apiKey: "k", system: "x", fetchFn: apiError(400, "invalid_request_error", "You have reached your specified API usage limits.") })({}), (e) => e.code === AI_BUDGET_EXHAUSTED);
+  // Rate-Limit und Serverfehler sind keine Guthabenfrage; andere 400er auch nicht.
+  await assert.rejects(apiCompose({ apiKey: "k", system: "x", fetchFn: apiError(429, "rate_limit_error", "Number of requests has exceeded your rate limit") })({}), (e) => !e.code && /HTTP 429/.test(e.message));
+  await assert.rejects(apiCompose({ apiKey: "k", system: "x", fetchFn: apiError(400, "invalid_request_error", "max_tokens: too large") })({}), (e) => !e.code);
+  // Genau ein Anbieter, ein Schlüssel aus der Umgebung, kein Fallback, keine Guthaben-Aufladung.
+  const src = read("mail-worker.js");
+  assert.equal(src.match(/https:\/\/api\.[a-z.]+\//g).length, 1);
+  assert.deepEqual([...new Set(src.match(/process\.env\.[A-Z_]*(KEY|TOKEN)[A-Z_]*/g))], ["process.env.ANTHROPIC_API_KEY"]);
+  assert.ok(!/openai|gemini|mistral|auto[-_ ]?reload|top[-_ ]?up/i.test(src.replace(/^\s*\/\/.*$/gm, "")));
+});
+
+test("AI_BUDGET_EXHAUSTED im Worker: keine zweite Anfrage, nichts gesendet, Aufträge bleiben, Meldung, Heartbeat läuft, Wiederaufnahme", async () => {
+  ownThread("t1", { reply: "Danke! Was umfasst der Website-Check genau?" });
+  ownThread("t2", { to: "b@firma.ch", reply: "Wann hätten Sie Zeit für den Check?" });
+  write(vpsDir, "state.json", { compliantThreads: { t1: { basis: "opt_in" }, t2: { basis: "opt_in" } } });
+  write(vpsDir, "leads.json", [{ email: MAIL.recipient, language: "de", ...OPTIN }]);
+  let aiCalls = 0, credit = false;
+  const paused = [];
+  const compose = async () => { aiCalls++; if (!credit) throw new AiBudgetError("HTTP 400"); return { decision: "draft", reason: "", body: "Guten Tag, gerne.\n\nChris Muster" }; };
+  const opts = { compose, aiPaused: async (x) => { paused.push(x); } };
+
+  let it = await iterate("vps", vpsDir, vpsConfig, opts);
+  assert.equal(aiCalls, 1, "nach dem ersten Guthabenfehler keine weitere KI-Anfrage");
+  assert.deepEqual(sends(), [], "keine Mail ohne KI-Antwort");
+  assert.deepEqual(Object.keys(g.reg.drafts), [], "kein Platzhalter-Entwurf");
+  const b = readJson(vpsDir, AI_BUDGET_FILE);
+  assert.equal(b.paused, true);
+  assert.deepEqual(Object.values(b.deferred).map((d) => d.status), [AI_BUDGET_EXHAUSTED, AI_BUDGET_EXHAUSTED], "beide Antworten als AI_BUDGET_EXHAUSTED erhalten");
+  assert.ok(!readJson(vpsDir, "state.json").handled?.["in-t1"], "Kundenantwort bleibt offen");
+  assert.equal(paused.length, 1, "Chris wird benachrichtigt");
+  assert.equal(it.heartbeat, true, "Heartbeat läuft weiter");
+  assert.equal((await cloudList()).service.ai, "paused_credit", "HUD: AI SERVICE PAUSED — CREDIT LIMIT");
+
+  // Nicht-KI-Funktionen laufen weiter: manueller Cloud-Auftrag (Text von Chris) wird gesendet.
+  clock = new Date(+NIGHT + 2 * 60_000);
+  const request = await createRequest();
+  it = await iterate("vps", vpsDir, vpsConfig, opts);
+  assert.equal(aiCalls, 1, "auch im nächsten Durchlauf keine KI-Anfrage");
+  assert.equal(paused.length, 1, "Meldung nur einmal je Pause");
+  assert.equal((await cloudList()).requests.find((r) => r.request_id === request.request_id).status, "sent");
+
+  // Guthaben wieder da: ein Prüfversuch nach der Wartezeit, dann werden die offenen Antworten verarbeitet – je genau einmal.
+  credit = true;
+  clock = new Date(+NIGHT + 61 * 60_000);
+  it = await iterate("vps", vpsDir, vpsConfig, opts);
+  assert.equal(readJson(vpsDir, AI_BUDGET_FILE).paused, false);
+  assert.deepEqual(readJson(vpsDir, AI_BUDGET_FILE).deferred, {});
+  assert.equal(sends().length, 3, "Cloud-Auftrag + zwei Antworten");
+  assert.equal((await cloudList()).service.ai, "online");
+  clock = new Date(+NIGHT + 63 * 60_000);
+  await iterate("vps", vpsDir, vpsConfig, opts);
+  assert.equal(sends().length, 3, "keine Duplikate");
+});
+
+test("AI-Pause-Meldung für Chris: lokal und Cloud-sicher, einmal je Pause", async () => {
+  const local = createLocalState({ file: path.join(vpsDir, "mirror.json"), now: () => clock });
+  const notify = createAiBudgetNotifier({ local, toast: async () => ({ ok: false }), sync: async () => ({ ok: true }) });
+  await notify({ since: "2026-10-06T20:00:00.000Z" });
+  assert.equal((await notify({ since: "2026-10-06T20:00:00.000Z" })).duplicate, true);
+  const n = sanitizeState(local.read()).notifications;
+  assert.deepEqual([n.length, n[0].type, n[0].priority, n[0].summary], [1, "ai_budget_exhausted", "high", "Anthropic API-Guthaben aufgebraucht – Jarvis AI pausiert."]);
+  assert.deepEqual(findSensitiveKeys(sanitizeState(local.read())), []);
 });

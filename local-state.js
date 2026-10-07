@@ -227,6 +227,24 @@ export function createEscalationNotifier({ local = createLocalState(), toast = s
   };
 }
 
+// Anthropic-API-Guthaben aufgebraucht: eine Meldung je Pause, Toast wo möglich, sofort in die Cloud. Wirft nie.
+export function createAiBudgetNotifier({ local = createLocalState(), toast = showToast, sync = (o) => syncWithCloud({ local, ...o }), log = () => {} } = {}) {
+  return async ({ since }) => {
+    try {
+      const summary = "Anthropic API-Guthaben aufgebraucht – Jarvis AI pausiert.";
+      const r = local.addNotification({ sourceId: "ai-budget:" + since, type: "ai_budget_exhausted", kind: null, summary });
+      if (!r.created) return { ...r, duplicate: true };
+      log("info", "ai_budget_notification", { id: r.id });
+      const shown = await toast({ title: "Jarvis – AI pausiert", body: summary }).catch((e) => ({ ok: false, error: e.message }));
+      await Promise.resolve(sync({ force: true })).catch(() => {});
+      return { ...r, toast: shown.ok };
+    } catch (e) {
+      log("error", "notify_failed", { error: e.message });
+      return { created: false, error: e.message };
+    }
+  };
+}
+
 // Alarm „Kunde möchte persönlichen Kontakt“: persistent speichern, Toast zeigen, sofort synchronisieren. Wirft nie.
 export function createHumanContactNotifier({ local = createLocalState(), toast = showToast, sync = (o) => syncWithCloud({ local, ...o }), log = () => {} } = {}) {
   return async ({ messageId, threadId, company, contactName, kind, sentence }) => {

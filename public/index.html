@@ -191,6 +191,7 @@ form.cmd button.stop { color: var(--red); }
         <span>Worker</span><b id="kWorker">–</b>
         <span>Mail Service</span><b id="kMailService" title="Always-on Mail-Worker (Heartbeat)">–</b>
         <span>Mail Worker</span><b id="kMailWorker" title="send_authority">–</b>
+        <span>AI Service</span><b id="kAiService" title="Anthropic-API des Mail-Workers">–</b>
         <span>Wartend</span><b id="kMailPending">–</b>
         <span>Gesendet heute</span><b id="kMailSent">–</b>
         <span>Blockiert</span><b id="kMailBlocked">–</b>
@@ -817,7 +818,7 @@ function renderShared() {
     const li = document.createElement("li");
     li.className = (n.priority === "high" ? "high" : "") + (n.status === "read" ? " seen" : "");
     const el = (tag, cls, text) => { const x = document.createElement(tag); x.className = cls; x.textContent = text; return x; };
-    if (n.priority === "high") li.append(el("div", "prio", n.type === "human_contact_requested" || n.type === "call_requested" ? "PRIORITÄT – Persönlicher Kontakt" : n.type === "mail_escalation" ? "PRIORITÄT – Antwort prüfen" : "PRIORITÄT"));
+    if (n.priority === "high") li.append(el("div", "prio", n.type === "human_contact_requested" || n.type === "call_requested" ? "PRIORITÄT – Persönlicher Kontakt" : n.type === "mail_escalation" ? "PRIORITÄT – Antwort prüfen" : n.type === "ai_budget_exhausted" ? "PRIORITÄT – AI pausiert" : "PRIORITÄT"));
     li.append(el("div", "who", n.company || n.contactName || "Kunde"), el("div", "sum", n.summary), el("time", "", fmtTime(n.createdAt)));
     const acts = el("div", "acts", "");
     const read = el("button", "", "Gelesen"); read.type = "button"; read.onclick = () => markRead(n.id);
@@ -833,7 +834,7 @@ function renderShared() {
   if ("Notification" in window && Notification.permission === "granted") {
     const done = new Set(store.get("notified", []));
     for (const n of unread.filter((x) => x.priority === "high" && !done.has(x.id))) {
-      try { new Notification(n.type === "mail_escalation" ? "Jarvis – Antwort braucht Prüfung" : "Jarvis – Kunde möchte persönlichen Kontakt", { body: n.summary, tag: n.id }); } catch {}
+      try { new Notification(n.type === "mail_escalation" ? "Jarvis – Antwort braucht Prüfung" : n.type === "ai_budget_exhausted" ? "Jarvis – AI pausiert" : "Jarvis – Kunde möchte persönlichen Kontakt", { body: n.summary, tag: n.id }); } catch {}
       done.add(n.id);
       log("ALARM", n.summary, "red");
     }
@@ -848,6 +849,7 @@ function renderMailService(svc) {
   if (!svc) return;
   set("kMailService", svc.online ? "ONLINE" : "OFFLINE", svc.online ? "on-ok" : "on-bad");
   set("kMailWorker", `${svc.authority === "vps" ? "VPS" : "LOKAL"} ${svc.online ? "ONLINE" : "OFFLINE"}`, svc.online ? "on-ok" : "on-bad");
+  set("kAiService", svc.ai === "paused_credit" ? "PAUSED — CREDIT LIMIT" : svc.ai === "online" ? "ONLINE" : "–", svc.ai === "paused_credit" ? "on-bad" : svc.ai === "online" ? "on-ok" : "");
   set("kMailPending", String(svc.pending));
   set("kMailSent", String(svc.sent_today));
   set("kMailBlocked", String(svc.blocked_today));

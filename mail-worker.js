@@ -181,11 +181,42 @@ export function releaseLock(dir, pid = process.pid, name = "worker.lock") {
 const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, compliantThreads: {}, windows: {}, lastPacedAt: 0, lastSendAt: 0, failures: 0, backoffUntil: 0 };
 // Cloud-Mailaufträge (lokale Ablage): request_id -> { request, status, reason, synced }
 export const CLOUD_INBOX = "cloud_requests.json";
+// KI-Budget-Sperre: { paused, since, checkedAt, deferred: { key: { status: AI_BUDGET_EXHAUSTED, kind, at } } }
+export const AI_BUDGET_FILE = "ai_budget.json";
 
 // sendGuard: serverseitiges Send-Lock vor jedem Gmail-Send (VPS/Windows können nie dieselbe Mail senden).
 // escalate: Meldung an Chris, wenn eine Antwort nicht automatisch gesendet werden darf.
-export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, sendGuard = ALLOW_ALL }) {
+// aiPaused: Meldung an Chris, wenn das Anthropic-Guthaben aufgebraucht ist (einmal je Pause).
+export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, aiPaused = async () => {}, sendGuard = ALLOW_ALL }) {
   const store = createStore(dir);
+  // KI-Budget-Sperre (fail closed, persistiert): nach einem Guthabenfehler keine weiteren KI-Aufrufe. Höchstens ein Prüfversuch
+  // je aiRecheckMinutes (von Anthropic abgelehnte Aufrufe kosten nichts); gelingt er, ist die KI wieder frei.
+  const aiBudget = () => ({ paused: false, deferred: {}, ...store.read(AI_BUDGET_FILE, {}) });
+  const aiRecheckMs = () => Math.max(15, Number(config().aiRecheckMinutes) || 60) * 60_000;
+  async function composeGuarded(task) {
+    const b = aiBudget();
+    if (b.paused && +now() - Date.parse(b.checkedAt || b.since || 0) < aiRecheckMs()) throw new AiBudgetError("pausiert");
+    try {
+      const r = await compose(task);
+      if (b.paused) { store.write(AI_BUDGET_FILE, { paused: false, resumedAt: now().toISOString(), deferred: {} }); log("info", "ai_budget_resumed", { deferred: Object.keys(b.deferred).length }); }
+      return r;
+    } catch (e) {
+      if (!isAiBudgetError(e)) throw e;
+      const t = now().toISOString();
+      store.write(AI_BUDGET_FILE, { ...b, paused: true, since: b.paused ? b.since : t, checkedAt: t });
+      if (!b.paused) {
+        log("warn", "ai_budget_exhausted", {});
+        try { await aiPaused({ since: t }); } catch (err) { log("error", "notify_failed", { error: err.message }); }
+      }
+      throw e;
+    }
+  }
+  // Auftrag, der KI braucht, bleibt offen (kein Entwurf, nichts gesendet) und wird nach der Pause erneut verarbeitet.
+  const deferAi = (key, kind) => {
+    const b = aiBudget();
+    b.deferred[key] ||= { status: AI_BUDGET_EXHAUSTED, kind, at: now().toISOString() };
+    store.write(AI_BUDGET_FILE, b);
+  };
   // Firma zu einer Absenderadresse – nur aus der Lead-Liste von Chris bzw. den gefundenen Leads, nie geraten.
   const companyFor = (email) => {
     const e = normEmail(email), domain = e.split("@")[1] || "";
@@ -254,7 +285,14 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     async function prepare(key, info, make) {
       if (state.actions[key]) return; // schon erledigt oder in Arbeit → keine Doppelentwürfe
       if (dry) { plan.push({ ...info, sourceMessageId: undefined, autoSend: !!info.autoSend && cfg.sendMode === "compliant_auto" && !info.escalate }); used++; return; }
-      const result = await compose(info.task);
+      let result;
+      try { result = await composeGuarded(info.task); }
+      catch (e) {
+        if (!isAiBudgetError(e)) throw e;
+        deferAi(key, info.kind);
+        log("warn", "ai_budget_deferred", { kind: info.kind, threadId: info.threadId });
+        return AI_BUDGET_EXHAUSTED;
+      }
       if (info.commercial && result.body) result.body = finalizeCommercial(result.body, cfg.sender, info.lang);
       if (result.decision === "optout") { suppress([info.to], "opt-out (erkannt beim Schreiben)", info.threadId); return "optout"; }
       if (result.decision === "ignore") { state.actions[key] = { status: "ignored", at: t.toISOString(), reason: result.reason }; return "ignore"; }
@@ -354,7 +392,8 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
             if (isPending(pendingDraft)) return { ...(await gmail.updateDraft(pendingDraft, { body: r.body })), draftId: pendingDraft, isNew: false };
             return gmail.replyToThread(threadId, { body: r.body });
           });
-          if (!dry) for (const x of ext) state.handled[x.messageId] ||= res === "optout" ? "optout" : "answered";
+          // Ohne KI-Budget bleibt die Kundenantwort unbearbeitet und wird nach der Pause beantwortet.
+          if (!dry && res !== AI_BUDGET_EXHAUSTED) for (const x of ext) state.handled[x.messageId] ||= res === "optout" ? "optout" : "answered";
           continue;
         }
 
@@ -598,6 +637,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       manual_today: acts.filter((a) => a.status === "sent" && a.kind === "cloud-auftrag" && today(a.sentAt)).length,
       blocked_today: acts.filter((a) => today(a.blockedAt)).length + Object.values(store.read(CLOUD_INBOX, {})).filter((e) => e.status === "blocked" && today(e.updatedAt)).length,
       escalations_today: acts.filter((a) => a.kind === "antwort" && a.review && today(a.at)).length,
+      ai_paused: aiBudget().paused ? 1 : 0,
     };
 
     save();
@@ -620,6 +660,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
 
   return {
     config,
+    aiStatus: () => { const b = aiBudget(); return { paused: b.paused, since: b.since || null, deferred: Object.keys(b.deferred).length }; },
     plan: async () => { const r = await cycle({ dry: true, readOnly: true }); r.report = await report(r); return r; },
     async tick() {
       const state = { ...STATE, ...store.read("state.json", STATE) };
@@ -671,8 +712,20 @@ export function claudeCompose({ model = "sonnet" } = {}) {
   });
 }
 
+// Anthropic-API-Guthaben aufgebraucht (Credit/Billing/Spend-Limit): fail closed. Kein Retry, kein anderer Schlüssel,
+// kein anderes Modell oder Anbieter – die KI-Verarbeitung pausiert, bis wieder Guthaben da ist. Jarvis kauft nie Guthaben.
+// Die Meldung enthält bewusst keine Wörter aus TRANSIENT_RE (sonst würde der ganze Durchlauf als Netzstörung wiederholt).
+export const AI_BUDGET_EXHAUSTED = "AI_BUDGET_EXHAUSTED";
+export class AiBudgetError extends Error {
+  constructor(detail = "") { super(`${AI_BUDGET_EXHAUSTED}: Anthropic API-Guthaben aufgebraucht${detail ? ` (${detail})` : ""}`); this.code = AI_BUDGET_EXHAUSTED; }
+}
+export const isAiBudgetError = (e) => e?.code === AI_BUDGET_EXHAUSTED;
+const BILLING_RE = /credit balance|insufficient (credit|funds|balance)|billing|payment required|purchase credits|credits? (exhausted|depleted)|out of credits|spend(ing)? limit|usage limits?/i;
+// 402 ist immer Billing; 400/403 nur mit eindeutiger Billing-Meldung. 429 (Rate-Limit) und 5xx sind keine Guthabenfrage.
+export const isBillingFailure = (status, message = "") => status === 402 || ((status === 400 || status === 403) && BILLING_RE.test(message));
+
 // Dieselbe Schreibanweisung (mail-writer.md) über die Anthropic-API – für den VPS, wo kein Claude Code angemeldet ist.
-// Der Schlüssel kommt nur aus der Umgebung (ANTHROPIC_API_KEY) und wird nie geloggt.
+// Der Schlüssel kommt nur aus der Umgebung (ANTHROPIC_API_KEY) und wird nie geloggt. Genau ein Versuch je Aufruf.
 export function apiCompose({ apiKey = process.env.ANTHROPIC_API_KEY, model = process.env.JARVIS_MAIL_MODEL || "claude-sonnet-5-5", fetchFn = globalThis.fetch, system = null } = {}) {
   return async (task) => {
     if (!apiKey) throw new Error("Textgenerator: ANTHROPIC_API_KEY fehlt");
@@ -681,7 +734,12 @@ export function apiCompose({ apiKey = process.env.ANTHROPIC_API_KEY, model = pro
       headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
       body: JSON.stringify({ model, max_tokens: 2000, system: system ?? fs.readFileSync(WRITER_PROMPT, "utf8"), messages: [{ role: "user", content: JSON.stringify(task) }] }),
     });
-    if (!r.ok) throw new Error(`Textgenerator: HTTP ${r.status}`);
+    if (!r.ok) {
+      let message = "";
+      try { const j = await r.json(); message = String(j?.error?.message || j?.error?.type || ""); } catch {}
+      if (isBillingFailure(r.status, message)) throw new AiBudgetError(`HTTP ${r.status}`);
+      throw new Error(`Textgenerator: HTTP ${r.status}`);
+    }
     const text = ((await r.json()).content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
     // Unlesbare Ausgabe → nie raten: Entwurf zur Prüfung markieren.
     try { return { decision: "escalate", reason: "", ...JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) }; }
@@ -789,11 +847,12 @@ async function loop() {
   const local = shared.createLocalState();
   const notify = shared.createHumanContactNotifier({ local, log });
   const escalate = shared.createEscalationNotifier({ local, log });
+  const aiPaused = shared.createAiBudgetNotifier({ local, log });
   // Ohne Cloud-Zugang (kein Token) gibt es keinen zweiten Sender – dann genügt das lokale Lock.
   const sendGuard = shared.syncConfig().token || shared.syncConfig().workerToken ? mailRequests.cloudSendGuard({ config: shared.syncConfig() }) : undefined;
   // VPS: Anthropic-API (kein Claude Code angemeldet); Windows: wie bisher Claude Code.
   const compose = role === "vps" || process.env.JARVIS_COMPOSE === "api" ? apiCompose() : (task) => claudeCompose({ model: worker.config().model })(task);
-  const worker = createWorker({ gmail, compose, log, notify, escalate, sendGuard });
+  const worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard });
   const startedAt = new Date().toISOString();
   log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
   // Herzschlag auch während langer Durchläufe, damit kein zweiter Worker das Lock für verwaist hält.

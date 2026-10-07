@@ -7,7 +7,7 @@
 // Alles wird über eine Whitelist neu aufgebaut – unbekannte Felder fallen weg, sensible Feldnamen werden abgelehnt.
 
 export const LIMITS = { notifications: 50, tombstones: 500, tombstoneDays: 180, turns: 12, turnChars: 600, summaryChars: 200, nameChars: 80, notesChars: 2000, turnsPerWrite: 4, bodyBytes: 64_000 };
-export const NOTIFICATION_TYPES = ["human_contact_requested", "call_requested", "mail_escalation", "info"];
+export const NOTIFICATION_TYPES = ["human_contact_requested", "call_requested", "mail_escalation", "ai_budget_exhausted", "info"];
 
 // Feldnamen, die nie in den gemeinsamen Zustand gehören.
 const SENSITIVE_KEY = /token|secret|passw|kennwort|credential|api[-_]?key|private[-_]?key|refresh|authori[sz]ation|cookie|oauth|client[-_]?id|^(thread|message)[-_]?id$|^(rfc)?message[-_]?id$|registry|^suppression$|^leads$|^drafts$|^sent$|^path$|^file$/i;
