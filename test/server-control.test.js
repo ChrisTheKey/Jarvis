@@ -183,6 +183,13 @@ test("Auth: falscher/fremder Token → 401; Worker-, Sync- und Anthropic-Credent
   const r = await off.call("GET", null, USER);
   assert.equal(r.status, 503);
   assert.equal(r.body.configured, false);
+  // Probe ohne Auth: nur konfiguriert/Länge, nie der Wert.
+  const pr = await s.call("GET", null, {}, "?probe=1");
+  assert.deepEqual(pr.body, { configured: true, length: CONTROL.length });
+  assert.equal((await off.call("GET", null, {}, "?probe=1")).body.configured, false);
+  // Rand-Leerzeichen in der Netlify-Variable stören nicht.
+  const ws = setup({ env: { ...ENV, JARVIS_SERVER_CONTROL_TOKEN: CONTROL + "\n" } });
+  assert.equal((await ws.call("POST", { op: "pull" }, AGENT)).status, 200);
   // Agent ohne eigenen Token startet gar nicht (kein Fallback auf den Worker-Token).
   assert.equal(createControlAgent({ dir: tmp(), config: { url: "https://x.test", controlToken: "" }, actions: {}, snapshot: () => ({}) }), null);
 });

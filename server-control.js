@@ -179,7 +179,10 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
   });
 
   return async (req) => {
-    const controlToken = env("JARVIS_SERVER_CONTROL_TOKEN"), password = env("JARVIS_PASSWORD");
+    // Einfügefehler (Leerzeichen/Zeilenumbruch am Rand) in der Netlify-Variable tolerieren – der Vergleich selbst bleibt exakt.
+    const controlToken = String(env("JARVIS_SERVER_CONTROL_TOKEN") || "").trim(), password = env("JARVIS_PASSWORD");
+    // Diagnose ohne Auth: nur ob konfiguriert und wie lang – nie der Wert, kein Fingerabdruck.
+    if (req.method === "GET" && new URL(req.url).searchParams.has("probe")) return reply(200, { configured: controlToken.length >= 32, length: controlToken.length });
     // Getrennte Credentials: Worker-/Sync-Token gelten hier nicht. Fehlt der eigene Token in Netlify → alles gesperrt.
     const isAgent = !!controlToken && controlToken.length >= 32 && safeEqual(req.headers.get("x-jarvis-control"), controlToken);
     const isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
