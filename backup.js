@@ -117,6 +117,20 @@ export async function dailyBackup({ secretsDir, workerDir, publicKeyPem, now = n
   return { skipped: false, status: st };
 }
 
+// Manuell (Server Control „Backup jetzt“): sofort ein neues Backup, lokal + offsite, Status wie beim Tageslauf. Löscht nie mehr als die Rotation.
+export async function backupNow({ secretsDir, workerDir, publicKeyPem, now = new Date(), zurichDay, upload = null, log = () => {} }) {
+  const statusFile = path.join(workerDir, BACKUP_STATUS_FILE);
+  const env = createBackup({ secretsDir, publicKeyPem, now });
+  const local = storeLocal(env, path.join(secretsDir, "backups"));
+  let offsite = { ok: false, error: "kein Upload konfiguriert" };
+  if (upload) { try { offsite = await upload(env); } catch (e) { offsite = { ok: false, error: e.message }; } }
+  const st = { day: zurichDay(now), last_at: env.created_at, attempt_at: now.toISOString(), ok: !!offsite.ok, local: local.name, generations: local.generations,
+    offsite_error: offsite.ok ? null : String(offsite.error || "").slice(0, 120), key_id: env.key_id, files: env.files.length, manual: true };
+  const tmp = `${statusFile}.tmp`; fs.writeFileSync(tmp, JSON.stringify(st, null, 2), { mode: 0o600 }); fs.renameSync(tmp, statusFile);
+  log(offsite.ok ? "info" : "warn", "state_backup_manual", { generations: local.generations, offsite: !!offsite.ok, files: env.files.length });
+  return { ok: !!offsite.ok, local_ok: true, offsite_ok: !!offsite.ok, generations: local.generations, files: env.files.length, created_at: env.created_at };
+}
+
 export function backupInfo(workerDir) {
   try { const st = JSON.parse(fs.readFileSync(path.join(workerDir, BACKUP_STATUS_FILE), "utf8")); return { last_at: st.last_at, ok: st.ok, generations: st.generations }; }
   catch { return null; }

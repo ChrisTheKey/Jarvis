@@ -2,7 +2,7 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-07
+Letzte Aktualisierung: 2026-10-08
 
 ## CLOUD-FIRST (Rollout ab 2026-10-07) – Zielbild: VPS = Gehirn/24-7-Runtime, Netlify = UI, GitHub = Code, Windows = optionaler Client
 Entscheidungen Chris (2026-10-07): (1) VPS nur AUSGEHEND, kein offener Port – Netlify-Functions sind das authentifizierte Gateway;
@@ -35,6 +35,26 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
   check-mail-auth: Windows 200 self=false, VPS 200 self=true → genau ein Sender.
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
+
+## SERVER CONTROL (2026-10-08) – Cloud-Jarvis steuert den VPS sicher, ohne Shell
+Weg: Browser (`x-jarvis-key` = JARVIS_PASSWORD) → Netlify `/api/server-control` (`netlify/functions/server-control.mjs`,
+Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur ausgehend, `x-jarvis-control`). Code: `server-control.js`
+(Allowlist `ACTIONS`, `DANGEROUS`, `validateAction`, Redaction, Snapshot-Whitelist, Handler mit Rate Limit + Audit) und `server-agent.js`
+(VPS: `safePath`, `readLogs`, `collectSnapshot`, `createVpsActions`, `createControlAgent`, `startServerControl`); HUD `public/server-status.js` + Panel SERVER.
+- Auth: eigenes Secret `JARVIS_SERVER_CONTROL_TOKEN` (64 Zeichen, Fingerprint 762125d5f799) – nur `.secrets/vps_worker.env`, VPS `/opt/jarvis-mail/.env`
+  (600 root) und Netlify-Env. Worker-/Sync-Token, Anthropic-Key, Gmail-Token gelten dort NICHT. Timing-safe Vergleich, deny by default.
+  Fehlt der Token in Netlify → 503 „nicht konfiguriert“ (fail closed), Agent fragt dann nur alle 5 min.
+- READ (sofort aus dem VPS-Status, ≤3 min alt, sonst SERVER_OFFLINE): system.health/uptime/resources, docker/jarvis/mail/scheduler/queue/backup/deploy.status;
+  service.logs (Auftrag; Quelle nur core|mail|scheduler|backup|deploy, ≤100 Zeilen, nur ts/level/event + Zahlen + bereinigte Felder).
+- CONTROL (Auftrag → VPS, TTL 3 min, Lease 2 min, Cooldowns Cloud + VPS, max. 6 je 10 min): runHealthCheck, runSafeDiagnostics, runBackup (`backupNow`),
+  restartScheduler / restartMailWorker (im Prozess), restartCore (sauberes Prozessende nach dem laufenden Durchlauf → Docker `unless-stopped`
+  startet neu; erst NACH bestätigter Rückmeldung, sonst kein Neustart).
+- DANGEROUS (immer 403): reboot, shutdown, upgrade/packages, firewall, ssh, state/backup delete, secrets.rotate, docker prune/exec, shell.exec.
+- Pfade: nur `/data/secrets/mail_worker` (= `/opt/jarvis-mail/secrets/mail_worker`); gesperrt u. a. fiverr, .ssh, /root, /etc/shadow|passwd, .env, .pem,
+  Gmail-/Sync-/Worker-Dateien. `/opt/fiverr` ist im Container gar nicht eingebunden. Kein exec/spawn/Docker-Socket.
+- Audit: Cloud (300 Einträge: ts, request_id, action, tier, source, outcome, reason) + VPS `mail_worker/control_audit.jsonl`. Keine Secrets.
+- Takt: Panel „Server Control“ offen → Agent alle 5 s, sonst 60 s. Deploy-Stand: `deploy.sh` setzt Build-Args JARVIS_COMMIT/JARVIS_DEPLOYED_AT.
+- Tests: `test/server-control.test.js` (16).
 
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in

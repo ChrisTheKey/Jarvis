@@ -937,22 +937,35 @@ async function loop() {
   const sendGuard = shared.syncConfig().token || shared.syncConfig().workerToken ? mailRequests.cloudSendGuard({ config: shared.syncConfig() }) : undefined;
   // VPS: Anthropic-API (kein Claude Code angemeldet); Windows: wie bisher Claude Code.
   const compose = role === "vps" || process.env.JARVIS_COMPOSE === "api" ? apiCompose() : (task) => claudeCompose({ model: worker.config().model })(task);
-  const worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard });
+  let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard });
   const startedAt = new Date().toISOString();
+  // Server Control (nur VPS): Pause zwischen Durchläufen ist weckbar; Neustart des Cores = sauberes Ende nach dem Durchlauf,
+  // Docker (restart: unless-stopped) startet den Container-Prozess neu. Nie mitten in einem Gmail-Durchlauf.
+  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false;
+  const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
+  const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
+  if (role === "vps") (await import("./server-agent.js")).startServerControl({
+    dir: WORKER_DIR, secretsDir: SECRETS, startedAt, log, core, zurichDay, backupPublicKey, healthy: () => healthy(WORKER_DIR),
+    syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
+    queue: () => { const inbox = createStore(WORKER_DIR).read(CLOUD_INBOX, {}); const st = Object.values(inbox).map((e) => e.status); return { pending: st.filter((x) => x === "pending").length, processing: st.filter((x) => x === "accepted_local").length }; },
+    restartCore: () => { restartRequested = true; wake(); },
+    restartMailWorker: () => { worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard }); standbyLogged = false; wake(); },
+    restartScheduler: () => wake(),
+  });
   log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
   // Herzschlag auch während langer Durchläufe, damit kein zweiter Worker das Lock für verwaist hält.
   setInterval(() => heartbeat(WORKER_DIR), 60_000);
   const finder = await import("./lead-finder.js");
   await shared.syncWithCloud({ local, log, force: true }); // beim Start: neuesten Cloud-Stand übernehmen
-  let standbyLogged = false;
   for (;;) {
+    if (restartRequested) { log("info", "core_restart_requested", { source: "server_control" }); return 0; }
     heartbeat(WORKER_DIR);
-    const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
     const it = await workerIteration({ role, store: createStore(WORKER_DIR), worker, config: shared.syncConfig(), mailRequests, startedAt, log, core });
+    lastIt = { at: new Date().toISOString(), standby: !!it.standby, holder: it.authority?.holder || null, self: it.authority?.self === true };
     if (it.standby) {
       if (!standbyLogged) { log("info", "standby_no_send_authority", { holder: it.authority.holder }); standbyLogged = true; }
       try { await shared.syncWithCloud({ local, log }); } catch (e) { log("error", "shared_state_failed", { error: e.message }); }
-      await sleep(pollMs(worker.config()));
+      await nap(pollMs(worker.config()));
       continue;
     }
     standbyLogged = false;
@@ -977,7 +990,7 @@ async function loop() {
           upload: (await import("./backup-api.js")).backupUploader({ config: shared.syncConfig() }) });
       } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
     }
-    await sleep(pollMs(worker.config()));
+    await nap(pollMs(worker.config()));
   }
 }
 

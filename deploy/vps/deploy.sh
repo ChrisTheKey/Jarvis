@@ -45,7 +45,7 @@ fi
 sudo chown root:root "$R/.env" && sudo chmod 600 "$R/.env"
 sudo chown -R 1000:1000 "$R/secrets" && sudo chmod 700 "$R/secrets"
 sudo find "$R/secrets" -type d -exec chmod 700 {} + && sudo find "$R/secrets" -type f -exec chmod 600 {} +
-cd "$R" && sudo docker compose up -d --build
+cd "$R" && sudo JARVIS_COMMIT="$COMMIT" JARVIS_DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" docker compose up -d --build
 sleep 5
 sudo docker compose ps --format 'table {{.Name}}\t{{.Status}}'
 sudo docker inspect -f 'restart={{.HostConfig.RestartPolicy.Name}}' jarvis-mail-mail-worker-1

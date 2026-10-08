@@ -243,7 +243,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, service: SERVICE, mode: "local", role: "optional_client", pid: process.pid, startedAt: STARTED_AT, supervised: process.env.JARVIS_CORE_SUPERVISED === "1" });
     }
     // Klassische HUD-Skripte (gleich wie auf Netlify): Local/Cloud-Erkennung und Texteingabe.
-    if (req.method === "GET" && ["/mode-detect.js", "/composer.js", "/mail-status.js"].includes(url.pathname)) {
+    if (req.method === "GET" && ["/mode-detect.js", "/composer.js", "/mail-status.js", "/server-status.js"].includes(url.pathname)) {
       res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
       return fs.createReadStream(path.join(ROOT, "public", url.pathname.slice(1))).pipe(res);
     }

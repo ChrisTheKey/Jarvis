@@ -86,7 +86,7 @@ test("LOCAL-UI-Modus + VPS-Mail-Worker gleichzeitig: Worker kommt aus der Cloud,
   for (const id of ["kWorker", "kMailService", "kMailWorker", "kAuthority", "kWinWorker", "kMailPending"]) assert.match(html, new RegExp(`id="${id}"`));
   const server = read("server.js");
   assert.match(server, /url\.pathname === "\/api\/mail-service"/);
-  assert.match(server, /"\/mail-status\.js"\]\.includes\(url\.pathname\)/);
+  assert.match(server, /"\/mail-status\.js", "\/server-status\.js"\]\.includes\(url\.pathname\)/);
   // Local Core (Windows, Sync-Token) liest Cloud-Status: VPS hat Authority und frischen Heartbeat.
   const blob = memoryStore(), now = new Date("2026-10-07T17:00:00Z");
   const handler = createMailRequestHandler({ getStore: async () => blob, env: (k) => ENV[k], now: () => now });

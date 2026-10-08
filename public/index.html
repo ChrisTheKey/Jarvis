@@ -117,6 +117,13 @@ form.cmd button.stop { color: var(--red); }
 .alerts button:hover { border-color: var(--cyan); }
 #kAlerts.hot { color: var(--red); }
 .alerts li.seen { opacity: .65; }
+.srv-ctl { margin-top: 12px; font: 12px var(--mono); color: var(--muted); }
+.srv-ctl summary { cursor: pointer; letter-spacing: .16em; text-transform: uppercase; font-size: 11px; }
+.srv-ctl .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.srv-ctl button { background: none; border: 1px solid var(--line); color: var(--cyan); font: 11px var(--mono); letter-spacing: .06em; padding: 3px 8px; cursor: pointer; }
+.srv-ctl button.warn { color: var(--amber); }
+.srv-ctl button:disabled { color: var(--muted); cursor: not-allowed; }
+.srv-ctl .res { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .on-ok { color: var(--green) !important; } .on-bad { color: var(--red) !important; } .on-idle { color: var(--amber) !important; }
 /* Vertrieb: zwei Angebote (CHF 150 / CHF 480), kompakt zweispaltig */
 .sales { flex: none !important; }
@@ -218,6 +225,32 @@ form.cmd button.stop { color: var(--red); }
         <span>Sync</span><b id="kSync">–</b>
       </div>
     </section>
+    <section class="panel" id="serverPanel">
+      <h2>Server <span id="srvSeen"></span></h2>
+      <div class="kv">
+        <span>Server</span><b id="srvState" title="Jarvis-VPS – Status kommt vom Cloud Core, der PC ist nicht nötig">–</b>
+        <span>Host Uptime</span><b id="srvUptime">–</b>
+        <span>CPU</span><b id="srvCpu" title="Last (1 min) je CPU-Kern">–</b>
+        <span>RAM</span><b id="srvRam">–</b>
+        <span>Disk</span><b id="srvDisk">–</b>
+        <span>Docker</span><b id="srvDocker">–</b>
+        <span>Jarvis Core</span><b id="srvCore">–</b>
+        <span>Mail Worker</span><b id="srvMail">–</b>
+        <span>Scheduler</span><b id="srvScheduler">–</b>
+        <span>Backup</span><b id="srvBackup">–</b>
+        <span>Last Deploy</span><b id="srvDeploy">–</b>
+      </div>
+      <details class="srv-ctl" id="srvControl">
+        <summary>Server Control</summary>
+        <div class="btns">
+          <button type="button" data-action="jarvis.runHealthCheck">Health Check</button>
+          <button type="button" data-action="jarvis.runBackup">Run Backup</button>
+          <button type="button" class="warn" data-action="jarvis.restartMailWorker" data-confirm="Mail-Worker auf dem VPS neu starten?">Restart Mail Worker</button>
+          <button type="button" class="warn" data-action="jarvis.restartCore" data-confirm="Jarvis Core auf dem VPS neu starten? Der Container-Prozess startet nach dem laufenden Durchlauf neu.">Restart Jarvis Core</button>
+        </div>
+        <p class="res" id="srvResult" aria-live="polite"></p>
+      </details>
+    </section>
   </div>
 
   <div></div>
@@ -306,6 +339,7 @@ form.cmd button.stop { color: var(--red); }
 
 <script src="mode-detect.js"></script>
 <script src="mail-status.js"></script>
+<script src="server-status.js"></script>
 <script src="composer.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -1178,6 +1212,55 @@ async function boot() {
   log("SYSTEM", mode === "cloud" ? "Cloud-Modus: Gespräch ohne PC-Zugriff." : "Online. " + (SR ? "Sprachsteuerung bereit." : "Keine Spracherkennung – bitte Chrome oder Edge nutzen."), mode === "local" && !status.claude ? "red" : "green");
   speak(msg);
 }
+// ---------- SERVER: Status und feste Aktionen des Jarvis-VPS über /api/server-control (nur Action-IDs, keine Befehle) ----------
+async function serverFetch(opts = {}, query = "") {
+  if (!HOSTED || !cloudKey) return { status: 0, body: null };
+  const r = await fetch("/api/server-control" + query, { cache: "no-store", ...opts, headers: { "x-jarvis-key": cloudKey, ...(opts.body ? { "content-type": "application/json" } : {}) } });
+  return { status: r.status, body: await r.json().catch(() => null) };
+}
+function renderServer(data, note = "") {
+  const m = JarvisServerStatus.summarizeServer(data);
+  const set = (id, v, ok) => { $(id).textContent = v ?? "–"; $(id).className = ok === undefined || v === "–" ? "" : ok ? "on-ok" : "on-bad"; };
+  set("srvState", note || m.server, note ? undefined : m.online);
+  const r = m.rows, ok = m.ok || {};
+  set("srvUptime", r.uptime); set("srvCpu", r.cpu, ok.cpu); set("srvRam", r.ram, ok.ram); set("srvDisk", r.disk, ok.disk);
+  set("srvDocker", r.docker, ok.docker); set("srvCore", r.core, ok.core); set("srvMail", r.mail, ok.mail); set("srvScheduler", r.scheduler, ok.scheduler);
+  set("srvBackup", r.backup, ok.backup); set("srvDeploy", r.deploy);
+  $("srvSeen").textContent = m.seen ? new Date(m.seen).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" }) : "";
+}
+let srvPending = null;
+async function loadServer() {
+  const watch = $("srvControl").open && document.visibilityState === "visible";
+  try {
+    const { status, body } = await serverFetch({}, watch ? "?watch=1" : "");
+    if (!status) return renderServer(null, HOSTED ? "CLOUD-PASSWORT FEHLT" : "NUR ÜBER CLOUD");
+    if (status === 401) return renderServer(null, "NICHT BERECHTIGT");
+    if (status === 503 && body?.configured === false) return renderServer({ configured: false });
+    if (status !== 200) return renderServer(null, "FEHLER " + status);
+    renderServer(body);
+    const q = srvPending && (body.requests || []).find((x) => x.request_id === srvPending);
+    if (q && !["pending", "running"].includes(q.status)) { srvPending = null; showServerResult(q); }
+  } catch { renderServer(null, "NICHT ERREICHBAR"); }
+}
+function showServerResult(q) {
+  const label = q.action.replace(/^jarvis\./, "");
+  const r = q.result || {};
+  const detail = r.checks ? Object.entries(r.checks).map(([k, v]) => `${v ? "✓" : "✗"} ${k}`).join("  ") : r.restarted ? `neu gestartet: ${r.restarted}` : r.generations !== undefined ? `Generationen ${r.generations} · offsite ${r.offsite_ok ? "OK" : "FEHLER"}` : "";
+  $("srvResult").textContent = `${label}: ${q.status === "done" ? "OK" : q.status.toUpperCase()}${q.error ? " – " + q.error : ""}${detail ? "\n" + detail : ""}`;
+  log("SERVER", `${label}: ${q.status === "done" ? "erledigt" : q.status}${q.error ? " – " + q.error : ""}`, q.status === "done" ? "green" : "red");
+}
+document.querySelectorAll("#srvControl button[data-action]").forEach((b) => b.addEventListener("click", async () => {
+  if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
+  $("srvResult").textContent = "Auftrag wird gesendet …";
+  try {
+    const { status, body } = await serverFetch({ method: "POST", body: JSON.stringify({ action: b.dataset.action }) });
+    if (status === 202) { srvPending = body.request.request_id; $("srvResult").textContent = "Wartet auf den VPS …"; for (let i = 0; i < 24 && srvPending; i++) { await sleep(5000); await loadServer(); } if (srvPending) $("srvResult").textContent = "Noch kein Ergebnis vom VPS."; }
+    else $("srvResult").textContent = body?.error || "Fehler " + status;
+  } catch { $("srvResult").textContent = "Cloud nicht erreichbar."; }
+}));
+$("srvControl").addEventListener("toggle", () => { if ($("srvControl").open) loadServer(); });
+setInterval(loadServer, 30_000); loadServer();
+
 $("bootBtn").addEventListener("click", boot);
 $("pwForm").addEventListener("submit", (e) => {
   e.preventDefault();

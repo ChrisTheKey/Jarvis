@@ -8,9 +8,13 @@ services:
     build:
       context: ./app
       dockerfile: deploy/vps/Dockerfile
+      # Von deploy.sh gesetzt (Commit + Zeitpunkt) – nur für die Anzeige LAST DEPLOY, keine Secrets.
+      args:
+        JARVIS_COMMIT: ${JARVIS_COMMIT:-unknown}
+        JARVIS_DEPLOYED_AT: ${JARVIS_DEPLOYED_AT:-}
     image: jarvis-mail-worker:latest
     restart: unless-stopped
-    # Nur: JARVIS_MAIL_WORKER_TOKEN, ANTHROPIC_API_KEY, optional JARVIS_SYNC_URL / JARVIS_MAIL_MODEL. Datei mit Rechten 600.
+    # Nur: JARVIS_MAIL_WORKER_TOKEN, ANTHROPIC_API_KEY, JARVIS_SERVER_CONTROL_TOKEN (Server Control), optional JARVIS_SYNC_URL / JARVIS_MAIL_MODEL. Datei mit Rechten 600.
     env_file: ./.env
     volumes:
       # Gmail-Credentials, Token, Register, Leads, Suppression, Worker-Zustand – nur hier, Verzeichnis 700, Dateien 600.
