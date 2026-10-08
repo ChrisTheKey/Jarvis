@@ -93,6 +93,21 @@ Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur 
   request_id/action/source/outcome/reason, keine Secrets). check-mail-auth: VPS self=true, Windows self=false.
   READ 10/10 über die Cloud weiterhin NICHT erneut ausgeführt: Der Nutzerpfad von `/api/server-control` akzeptiert nur `x-jarvis-key`
   (= JARVIS_PASSWORD), der Agent-Token nur pull/result – ohne Passwort gibt es keinen anderen READ-Weg.
+- **LIVE-TEST ABGESCHLOSSEN 2026-10-08 16:02–16:04 UTC** (Passwort von Chris im Playwright-Fenster eingegeben, nie ausgelesen, danach
+  aus Seite und localStorage gelöscht; da der Local Core lief = LOCAL-Modus, wurde nur das Passwortfeld im DOM eingeblendet, kein Code geändert):
+  READ 10/10 HTTP 200 done, Snapshot frisch (16:02:06): ONLINE, Host-Uptime 20h31m, 2 CPUs 0.5 %, RAM 28 % von 3.7 GB, Disk 23 % (28.6 GB frei),
+  Docker ONLINE / Container HEALTHY, Core HEALTHY (vps, schema 1, node v22.23.3), Mail VPS ACTIVE (Authority VPS, self=true),
+  Scheduler ONLINE (09:30/14:30 je 50 ausgeführt, Discovery 15:32), Queue 0/0, Backup OK (2 Gen., offsite ok), Deploy fb17e16 / 10:42:09 UTC.
+  HUD-Panel SERVER: alle 11 Werte gefüllt/grün, 0 Eingabefelder.
+  Security hinter gültigem Login: system.format / foo.bar / Injection → 400 UNKNOWN_ACTION; shell.exec, docker.exec, system.reboot,
+  secrets.rotate → 403 DANGEROUS_BLOCKED; {command}-Parameter, service.logs mit /opt/fiverr, ../../root/.ssh, /etc/shadow,
+  Private-Key-Pfad, .env, gmail_token → 400 BAD_PARAMS; nichts eingereiht. Antworten, Audit und HUD-DOM: kein Passwort, kein 64-Hex-Token,
+  keine Key-/OAuth-/PEM-Muster, keine ENV-Namen, keine Mailadressen.
+  Audit (Cloud, 30 Einträge): ts, request_id, action, tier, source, outcome, reason vollständig; READ success, Ablehnungen denied + Grund.
+  EINE Control-Aktion: jarvis.runHealthCheck 16:02:50 queued → 16:03:08 success (8/8 Checks ok), VPS control_audit.jsonl success.
+  Danach: Container healthy, 0 Restarts (Start 10:42 UTC), authority holder=vps self=true, Windows self=false/STANDBY, genau ein Sender,
+  Queue 0, Scheduler ONLINE, 0 Send-Events, kein 401 seit 11:37 UTC. Einmalig 16:03:23 `control_pull_failed` „fetch failed“ (Netzwerk,
+  kein Auth-Fehler; nächste Abholung ~16:08 UTC ohne Fehler, bis 16:09 keine weitere). Server-Control-Tests 16/16. Kein Restart, kein Reboot, keine Mail.
 
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
