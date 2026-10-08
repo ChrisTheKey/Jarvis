@@ -85,6 +85,14 @@ Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur 
   → Chris: HUD-Panel SERVER einmal öffnen (READ-Werte grün) – oder Freigabe für den Lauf mit Passwort im Browserfenster.
   Tests: HEAD 279/279 grün (sauberer Worktree); Working Tree 278/280 – die 2 Fehler stammen aus fremden, nicht committeten
   Entwurfs-Änderungen (delivery "draft", Cloud-Prompt), unangetastet. Authority unverändert, keine Mail gesendet, kein Restart/Reboot.
+- **Agent-Verifikation per SSH 2026-10-08 15:49 UTC** (Windows-`ssh-agent` war nach dem Neustart nur gestoppt; `Start-Service ssh-agent`
+  genügte, der Key war noch geladen): Container running/healthy, 0 Restarts, Start 10:42 UTC; `server_control_started` 10:42:12 UTC;
+  letzte `control_pull_refused` (401) 11:37:23 UTC, danach keine 401 und nie `control_pull_failed` → Agent holt seit dem Token-Fix
+  erfolgreich ab. JARVIS_SERVER_CONTROL_TOKEN im Container vorhanden (Länge 64, Wert nicht ausgegeben). authority.json holder=vps self=true,
+  0 Send-Events im Worker-Log, Ticks alle 2 min. VPS control_audit.jsonl: letzter Eintrag = runHealthCheck 12:08:20 success (Felder ts/
+  request_id/action/source/outcome/reason, keine Secrets). check-mail-auth: VPS self=true, Windows self=false.
+  READ 10/10 über die Cloud weiterhin NICHT erneut ausgeführt: Der Nutzerpfad von `/api/server-control` akzeptiert nur `x-jarvis-key`
+  (= JARVIS_PASSWORD), der Agent-Token nur pull/result – ohne Passwort gibt es keinen anderen READ-Weg.
 
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
