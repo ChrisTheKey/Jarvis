@@ -73,6 +73,18 @@ Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur 
   EINE Control-Aktion: jarvis.runHealthCheck (12:07:57 → done 12:08:20, 8/8 Checks ok; Audit queued → success, VPS control_audit.jsonl success).
   Keine Restart-/Backup-Aktion, kein Reboot, kein Docker-Exec. Danach: VPS healthy, 0 Restarts, VPS ACTIVE self=true, Windows STANDBY self=false,
   genau ein Sender, 0 Send-Events.
+- **Re-Check nach PC-Neustart 2026-10-08 15:22–15:30 UTC** (Netlify Production laut Chris neu deployt):
+  Probe `configured=true, length=64`. check-mail-auth: VPS 200 self=true, Windows 200 self=false, holder=vps, pending 0.
+  dr-probe: HUD System ONLINE, Jarvis Core CLOUD ONLINE, Local Client ONLINE, Mail Worker VPS ACTIVE, Authority VPS, Windows STANDBY,
+  Queue 0, AI ONLINE; Core-Heartbeat frisch, Core-Start 10:42 UTC (kein Container-Neustart), Schema 1, Scheduler 09:30/14:30 je 50 ausgeführt,
+  Backup OK (2 Gen., offsite 2). Windows-Tasks „Jarvis Local Core“ + „Jarvis Mail Worker“ Running (Optional Client), kein Eingriff nötig.
+  Security live (ohne Credential): zufälliger Control-Token / falsches Passwort / ohne Header → 401; Worker-Token als x-jarvis-control
+  bzw. x-jarvis-key → 401; shell.exec und service.logs(/opt/fiverr) ohne gültige Auth → 401.
+  NICHT erneut live: READ 10/10, Audit, Gates 400/403 und jarvis.runHealthCheck – brauchen JARVIS_PASSWORD (lokal nicht vorhanden,
+  bewusst nicht erfragt); SSH zum VPS im Agent-Modus gesperrt. Agent-Auth daher nur indirekt (Token-Länge 64 unverändert, Test 12:00 UTC grün).
+  → Chris: HUD-Panel SERVER einmal öffnen (READ-Werte grün) – oder Freigabe für den Lauf mit Passwort im Browserfenster.
+  Tests: HEAD 279/279 grün (sauberer Worktree); Working Tree 278/280 – die 2 Fehler stammen aus fremden, nicht committeten
+  Entwurfs-Änderungen (delivery "draft", Cloud-Prompt), unangetastet. Authority unverändert, keine Mail gesendet, kein Restart/Reboot.
 
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
