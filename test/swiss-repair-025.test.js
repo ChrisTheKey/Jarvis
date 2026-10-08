@@ -131,7 +131,7 @@ test("benannter geschäftlicher Kontakt → bevorzugt (Web/Marketing/IT > Gesch�
   const q = qualifyRepairLead(lead({ email: c.business_email, contact_name: c.contact_name, contact_role: c.contact_role }), { now: T0 });
   assert.equal(q.draft_creation_eligible, true);
   const d = buildColdDraft(lead({ email: c.business_email }), q, SENDER);
-  assert.match(d.body, /^Guten Tag Beat Beispiel\n/);
+  assert.match(d.body, /^Hallo Beat Beispiel,\n/);
   assert.doesNotMatch(d.body, /Frau|Herr/, "kein geratenes Geschlecht");
 });
 
@@ -187,17 +187,17 @@ test("Duplikate: offener Entwurf, gleiche Firma/Adresse, bereits kontaktiert, Sp
 
 test("Entwurf: konkreter Befund, richtiges Angebot (CHF 150/500), kein Redesign, nichts erfunden, Footer, Absender", () => {
   const r = createColdDraft(lead(), { sender: SENDER, now: T0 });
-  assert.ok(r.body.includes(BROKEN.url) && r.body.includes("HTTP 404"), "tatsächlicher Befund");
-  assert.equal(r.offer_class, "REPAIR_FIX_500");
-  assert.ok(r.body.includes(OFFERS.REPAIR_FIX_500.label), "Angebot aus OFFERS (Label/Preis von Chris)");
-  const c150 = createColdDraft(lead({ websiteIssues: [issue("slow_response", "medium", "Ladezeit der Startseite 7.2 s")] }), { sender: SENDER, now: T0 });
-  assert.equal(c150.offer_class, "REPAIR_CHECK_150");
-  assert.ok(c150.body.includes(OFFERS.REPAIR_CHECK_150.label));
-  for (const b of [r.body, c150.body]) {
+  assert.match(r.body, /der Link zur Seite «Team alt» auf eine Fehlerseite führt/, "tatsächlicher Befund, einfach beschrieben");
+  assert.equal(r.offer_class, "REPAIR_FIX_500", "Angebotsklasse bleibt intern erhalten");
+  // Nur eine allgemeine Ladezeit-Vermutung: intern weiterhin CHECK_150, aber kein für Besucher sichtbarer Fehler → kein Cold-Entwurf.
+  const slow = lead({ websiteIssues: [issue("slow_response", "medium", "Ladezeit der Startseite 7.2 s")] });
+  assert.equal(qualifyRepairLead(slow, { now: T0 }).offer.offer_class, "REPAIR_CHECK_150");
+  assert.throws(() => createColdDraft(slow, { sender: SENDER, now: T0 }), /Nur für COLD_LEAD_DRAFT_ONLY/);
+  for (const b of [r.body]) {
     assert.doesNotMatch(b, /redesign|neue website|neubau anbieten|komplettwebsite|2['’]?490|veraltet|dringend|sofort handeln|gefährlich|hacker/i);
     const prices = Object.values(OFFERS).map((o) => o.price).join("|");
     assert.doesNotMatch(b, new RegExp(`CHF (?!(?:${prices})\\b)\\d`), "nur die zwei Angebotspreise");
-    assert.match(b, /ohne die Website neu aufzubauen/);
+    assert.match(b, /Ich behebe solche kleineren Website-Probleme für Schweizer Unternehmen\./);
     assert.ok(b.includes(COLD_FOOTER), "sachliche Abmeldemöglichkeit");
     assert.match(b, /Chris Kälin/);
   }
@@ -463,7 +463,10 @@ test("Discovery: Schweizer Repair-Lead → Kontakt aus Team-Seite, lokaler Cold-
   assert.deepEqual([l.approved, l.consentBasis], [false, null]);
   const d = cold();
   assert.deepEqual([d.status, d.recipient, d.draft_mode, d.legal_basis], ["queued", "beat.beispiel@muster.ch", COLD_MODE, "NONE"]);
-  assert.ok(d.body.includes("https://muster.ch/alt"));
+  // Vom echten Auditor: Linktext «Alt» → einfache, prüfbare Aussage; die technische Ziel-URL bleibt intern.
+  assert.match(d.body, /auf Ihrer Startseite der Link «Alt» auf eine Fehlerseite führt/);
+  assert.ok(!d.body.includes("https://muster.ch/alt") && !/404/.test(d.body));
+  assert.ok(d.issue_evidence.some((e) => e.url === "https://muster.ch/alt" && /HTTP 404/.test(e.evidence)));
   assert.deepEqual(g.calls, [], "Discovery fasst Gmail nie an");
 });
 

@@ -50,7 +50,8 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
   async function audit(website) {
     let requests = 0, last = 0;
     const issues = [];
-    const add = (type, url, evidence, severity) => issues.push({ type, url, evidence, severity, detectedAt: now().toISOString() });
+    // extra (optional, nur intern): page = Seite, auf der der Fehler sichtbar ist; label = sichtbarer Linktext – für den einfachen Kundentext.
+    const add = (type, url, evidence, severity, extra = {}) => issues.push({ type, url, evidence, severity, detectedAt: now().toISOString(), ...extra });
 
     // Höchstens eine Anfrage je delayMs an dieselbe Website.
     async function get(url, { redirect = "manual", body = true } = {}) {
@@ -157,10 +158,17 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     const badMail = tags(html, "a").map((t) => attr(t, "href") || "").filter((h) => /^mailto:/i.test(h))
       .map((h) => { try { return decodeURIComponent(h.slice(7).split("?")[0]).trim(); } catch { return h.slice(7); } })
       .filter((m) => !/^[^\s@<>(),;:]+@[^\s@<>(),;:]+\.[a-z]{2,}$/i.test(m));
-    if (badMail.length) add("broken_mailto", page.url, `Ungültige mailto-Adresse im Link: ${[...new Set(badMail)].slice(0, 2).map((m) => `"${m || "(leer)"}"`).join(", ")}`, "medium");
+    if (badMail.length) add("broken_mailto", page.url, `Ungültige mailto-Adresse im Link: ${[...new Set(badMail)].slice(0, 2).map((m) => `"${m || "(leer)"}"`).join(", ")}`, "medium", { page: page.url });
 
     // 3) Interne Links und Bilder – nur echte HTTP-Fehler zählen, Netzaussetzer nicht.
     const links = [];
+    // Sichtbarer Linktext je Ziel (erster Treffer) – damit der Kundentext sagen kann, WELCHER Link nicht funktioniert.
+    const linkText = new Map();
+    for (const a of html.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) || []) {
+      const href = attr(a, "href"), label = text(a).trim();
+      if (!href || !label) continue;
+      try { const u = new URL(href, page.url); u.hash = ""; if (!linkText.has(u.href)) linkText.set(u.href, label.slice(0, 60)); } catch {}
+    }
     for (const t of tags(html, "a")) {
       const href = attr(t, "href");
       if (!href || /^(mailto|tel|javascript|data):|^#/i.test(href)) continue;
@@ -187,7 +195,8 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
       if (r.error) continue;
       if (BROKEN(r.status)) {
         const isContact = u === contactUrl;
-        add(isContact ? "contact_page_broken" : "broken_link", u, `HTTP ${r.status} (verlinkt auf ${page.url})`, isContact ? "high" : "medium");
+        add(isContact ? "contact_page_broken" : "broken_link", u, `HTTP ${r.status} (verlinkt auf ${page.url})`, isContact ? "high" : "medium",
+          { page: page.url, ...(linkText.get(u) ? { label: linkText.get(u) } : {}) });
       } else if (r.status < 400) {
         if (u === contactUrl) pages.contact = r.html;
         if (u === impressumUrl) pages.impressum = r.html;
@@ -198,7 +207,7 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     for (const u of imgUrls.slice(0, maxImages)) {
       if (new URL(u).hostname === new URL(page.url).hostname && !allowed(new URL(u).pathname)) continue;
       const r = await get(u, { redirect: "follow", body: false });
-      if (!r.error && BROKEN(r.status)) add("broken_image", u, `Bild liefert HTTP ${r.status} (eingebunden auf ${page.url})`, "medium");
+      if (!r.error && BROKEN(r.status)) add("broken_image", u, `Bild liefert HTTP ${r.status} (eingebunden auf ${page.url})`, "medium", { page: page.url });
     }
 
     return result(true, { finalUrl: page.url, title, pages, contactUrl, impressumUrl, teamUrl });

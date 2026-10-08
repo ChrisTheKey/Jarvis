@@ -109,6 +109,24 @@ Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur 
   Queue 0, Scheduler ONLINE, 0 Send-Events, kein 401 seit 11:37 UTC. Einmalig 16:03:23 `control_pull_failed` „fetch failed“ (Netzwerk,
   kein Auth-Fehler; nächste Abholung ~16:08 UTC ohne Fehler, bis 16:09 keine weitere). Server-Control-Tests 16/16. Kein Restart, kein Reboot, keine Mail.
 
+## GMAIL DRAFT MODE + EINFACHE KUNDENSPRACHE (2026-10-08, abgeschlossen; Tests `test/cold-customer-text-026.test.js` (16) + Erweiterungen)
+- Cloud-Mailauftrag `delivery: "draft" | "send"` (`mail-requests.js`, Status `drafted`): Der Mail-Worker legt NUR einen Gmail-Entwurf an,
+  neu wie im bestehenden Jarvis-Thread immer mit mode=COLD_LEAD_DRAFT_ONLY → `gmail.sendDraft` verweigert ihn, kein `state.actions`-Eintrag,
+  nie in der Send-Queue. Suppression/Opt-out sperren auch Entwürfe. Cloud-Werkzeug `mail_request`: `delivery` ist Pflichtfeld; fehlt es → Entwurf
+  (nie stillschweigend Versand). „Schreib eine Mail“ ohne Sendebefehl = Entwurf. HUD zeigt „Entwurf in Gmail“.
+- Cold Leads bleiben COLD_LEAD_DRAFT_ONLY (TF-025 unverändert): kein Force-Send, kein Approval→Auto-Send, keine Queue, kein VPS-Send, kein Follow-up.
+- Kundentext (`swiss-repair.js`: `customerFindings`, `buildColdDraft`): höchstens 2 Probleme (`MAX_CUSTOMER_FINDINGS`), nur für Besucher
+  sichtbare, reproduzierbare, konkret prüfbare Fehler in Alltagssprache (Link → Fehlerseite, Kontaktseite/-formular, Bild fehlt, E-Mail-Link,
+  Browser-Warnung, Seite lädt nicht; Handy: Text überlappt / Bereich abgeschnitten, Button, sichtbarer Darstellungsfehler – letztere nur mit
+  reproducible=true + Bereich). Gleiche sichtbare Ursache → eine Aussage. Nie im Kundentext: Statuscodes, URLs der Befunde, CLS/LCP/Lighthouse,
+  Ladezeit, Titel/SEO, HTTPS-Details, Technik/„altes Design“, Druck-/Angstsprache, Preise (`CUSTOMER_JARGON_RE`/`CUSTOMER_PRESSURE_RE`, fail closed).
+  Ohne solchen Befund: KEIN Cold-Entwurf (Stufe `no_visible_issue`), nichts wird erfunden. Struktur: „Hallo …, ich habe mir Ihre Website kurz
+  angesehen …“, Auswirkung in einem Satz, „Ich behebe solche kleineren Website-Probleme für Schweizer Unternehmen.“, CTA + Landingpage, Grüsse, Abmeldesatz.
+- Intern unverändert: `issue_evidence` (Typ, URL, technische Evidence, Zeitpunkt, Schwere), `evidence_hash`, `offer_class` (CHF 150/480),
+  neu `customer_findings` mit internen Referenzen. Auditor speichert zusätzlich Seite + Linktext (nur intern, für die einfache Formulierung).
+- Tests 296/296 grün (TF-024, TF-025, Foreign-Gmail-Schutz, Suppression unverändert). Keine echte Mail gesendet (nur Attrappen/Mocks).
+- Wirkt auf VPS/Windows erst nach Deploy bzw. Neustart (noch NICHT deployt).
+
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
 `legalBasis` bzw. Cold-Send-Sperre macht Tests rot. (TF-023 existiert nicht.)

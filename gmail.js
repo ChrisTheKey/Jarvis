@@ -393,7 +393,7 @@ export async function readThread(threadId) {
 }
 
 // Legt nur einen Antwort-ENTWURF im selben Thread an – gesendet wird ausschließlich über sendDraft.
-export async function replyToThread(threadId, { body } = {}) {
+export async function replyToThread(threadId, { body, mode } = {}) {
   if (!body) throw new Error("Antworttext (--body) fehlt.");
   const { own, messages } = await fetchOwnedThread(threadId, loadRegistry());
   const mails = messages.filter((m) => !m.draft);
@@ -404,7 +404,7 @@ export async function replyToThread(threadId, { body } = {}) {
   const to = external ? external.replyTo || external.from : own.at(-1).to;
   const subject = last?.subject || own.at(-1).subject || "";
   const draft = await createDraft({
-    to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId,
+    to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId, ...(mode ? { mode } : {}),
     inReplyTo: last?.rfcMessageId || "", references: [last?.references, last?.rfcMessageId].filter(Boolean).join(" "),
   });
   return { ...draft, to };

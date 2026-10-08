@@ -185,7 +185,7 @@ export function releaseLock(dir, pid = process.pid, name = "worker.lock") {
 
 // ---------- Worker ----------
 
-const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, compliantThreads: {}, windows: {}, lastPacedAt: 0, lastSendAt: 0, failures: 0, backoffUntil: 0 };
+const STATE = { actions: {}, handled: {}, threadDrafts: {}, prepared: {}, compliantThreads: {}, cloudDrafts: {}, windows: {}, lastPacedAt: 0, lastSendAt: 0, failures: 0, backoffUntil: 0 };
 // Cloud-Mailaufträge (lokale Ablage): request_id -> { request, status, reason, synced }
 export const CLOUD_INBOX = "cloud_requests.json";
 // KI-Budget-Sperre: { paused, since, checkedAt, deferred: { key: { status: AI_BUDGET_EXHAUSTED, kind, at } } }
@@ -533,6 +533,24 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         if (!rq.expires_at || Date.parse(rq.expires_at) <= +t) { cloudSet(id, "expired", "Abgelaufen, bevor der lokale Worker ihn prüfen konnte."); continue; }
         if (!EMAIL_RE.test(to) || !rq.subject || !rq.body) { cloudSet(id, "blocked", "Empfänger, Betreff oder Text ungültig."); continue; }
         if (supp[to] || exclude.has(to)) { cloudSet(id, "blocked", "Empfänger ist gesperrt (Abmeldung/Suppression)."); continue; }
+        // delivery "draft": nur ein Gmail-Entwurf, nie gesendet (kein state.actions-Eintrag, also nie in der Send-Queue).
+        // Neue Mails als COLD_LEAD_DRAFT_ONLY (gmail.js verweigert jeden Jarvis-Send); Chris prüft und sendet selbst in Gmail.
+        if (rq.delivery === "draft") {
+          const key = "cloud-draft:" + id;
+          if (state.cloudDrafts[key]) { cloudSet(id, "drafted", "Entwurf liegt bereits in Gmail."); continue; }
+          let threadId = null;
+          if (rq.optional_thread_reference) {
+            threadId = [...new Set(Object.values(reg.sent || {}).map((x) => x.threadId))].find((tid) => threadRef(tid) === rq.optional_thread_reference) || null;
+            if (!threadId) { cloudSet(id, "blocked", "Thread unbekannt oder nicht von Jarvis begonnen."); continue; }
+          }
+          const lang = (Array.isArray(leads) ? leads : []).find((l) => normEmail(l?.email) === to)?.language || "de";
+          const body = finalizeCommercial(rq.body, cfg.sender, lang);
+          const d = threadId ? await gmail.replyToThread(threadId, { body, mode: COLD_MODE }) : await gmail.createDraft({ to, subject: rq.subject, body, mode: COLD_MODE });
+          state.cloudDrafts[key] = { draftId: d.draftId, threadId: d.threadId, at: t.toISOString() };
+          save();
+          cloudSet(id, "drafted", "Entwurf liegt in Gmail – senden nur durch Chris.");
+          continue;
+        }
         if (!auto) { cloudSet(id, "blocked", "Automatischer Versand ist lokal nicht aktiv (sendMode/dryRun/sender)."); continue; }
         if (text.length > 6000 || ESCALATE_RE.test(text) || AI_RE.test(text)) {
           cloudSet(id, "blocked", "Inhalt braucht persönliche Prüfung (Vertrag, Zahlung, Preis, KI-Hinweis o. ä.) – bitte lokal schreiben."); continue;

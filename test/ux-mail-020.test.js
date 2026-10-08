@@ -423,11 +423,14 @@ test("Cloud-Jarvis: Werkzeug mail_request legt nur einen strukturierten Auftrag 
   process.env.ANTHROPIC_API_KEY ||= "";
   const { createCloudHandler, MAIL_TOOL, statusBlock } = await import("../netlify/edge-functions/cloud.js");
   assert.equal(MAIL_TOOL.name, "mail_request");
+  // Ausdrücklicher Sendebefehl → das Modell setzt delivery "send" (Pflichtfeld); fehlt es, wird nur ein Entwurf angelegt.
+  assert.ok(MAIL_TOOL.input_schema.required.includes("delivery"));
+  const SEND = { ...MAIL, delivery: "send" };
   const ev = (o) => `event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`;
   const sse = ev({ type: "content_block_delta", delta: { type: "text_delta", text: "Gerne, Chris, ich gebe den Auftrag weiter. " } }) +
     ev({ type: "content_block_start", content_block: { type: "tool_use", name: "mail_request", id: "tu1" } }) +
-    ev({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: JSON.stringify(MAIL).slice(0, 20) } }) +
-    ev({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: JSON.stringify(MAIL).slice(20) } }) +
+    ev({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: JSON.stringify(SEND).slice(0, 20) } }) +
+    ev({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: JSON.stringify(SEND).slice(20) } }) +
     ev({ type: "content_block_stop" });
   const queued = [];
   let upstreamBody;
@@ -441,7 +444,7 @@ test("Cloud-Jarvis: Werkzeug mail_request legt nur einen strukturierten Auftrag 
   const out = await res.text();
   assert.deepEqual(upstreamBody.tools.map((t) => t.name), ["mail_request"]);
   assert.match(upstreamBody.system[1].text, /keine Freigabe/);
-  assert.deepEqual(queued, [{ ...MAIL, intent: undefined }]);
+  assert.deepEqual(queued, [{ ...MAIL, intent: undefined, delivery: "send" }]);
   assert.match(out, /"type":"mail_request","ok":true/);
   assert.match(statusBlock({ business: { worker: { todaySent: 7, limit: 100, windows: { morning: { count: 7, limit: 50 } } } }, mailRequests: [{ recipient: "a@b.ch", status: "blocked", reason: "Keine Versandgrundlage" }] }), /7 von 100 \(Morgenfenster 09:30: 7 von 50.*Letzte Mailaufträge: a@b\.ch – blocked \(Keine Versandgrundlage\)/s);
 });

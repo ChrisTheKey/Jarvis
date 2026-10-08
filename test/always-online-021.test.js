@@ -38,16 +38,16 @@ function fakeGmail() {
       if (!Object.values(f.reg.sent).some((s) => s.threadId === threadId)) throw new Error(`Thread ${threadId} wurde nicht von Jarvis begonnen – Zugriff verweigert.`);
       return { threadId, messages: structuredClone(f.threads[threadId] || []) };
     },
-    async replyToThread(threadId, { body }) {
+    async replyToThread(threadId, { body, mode }) {
       f.calls.push("reply " + threadId);
       const id = "dr" + ++f.n, ext = (f.threads[threadId] || []).filter((m) => !m.sent).at(-1);
-      f.reg.drafts[id] = { threadId, to: ext ? ext.from : Object.values(f.reg.sent).find((s) => s.threadId === threadId).to, body, createdAt: clock.toISOString() };
+      f.reg.drafts[id] = { threadId, to: ext ? ext.from : Object.values(f.reg.sent).find((s) => s.threadId === threadId).to, body, ...(mode ? { mode } : {}), createdAt: clock.toISOString() };
       return { draftId: id, threadId };
     },
-    async createDraft({ to, subject, body }) {
+    async createDraft({ to, subject, body, mode }) {
       f.calls.push("create " + to);
       const id = "dr" + ++f.n;
-      f.reg.drafts[id] = { threadId: "new" + id, to, subject, body, createdAt: clock.toISOString() };
+      f.reg.drafts[id] = { threadId: "new" + id, to, subject, body, ...(mode ? { mode } : {}), createdAt: clock.toISOString() };
       return { draftId: id, threadId: "new" + id };
     },
     async updateDraft(id, { body }) { f.reg.drafts[id].body = body; return { draftId: id, threadId: f.reg.drafts[id].threadId }; },
@@ -238,6 +238,34 @@ test("Manueller Auftrag ohne Versandgrundlage bleibt blockiert – keine neue Co
   await iterate("vps", vpsDir, vpsConfig);
   assert.deepEqual(sends(), []);
   assert.match((await cloudList()).requests[0].reason, /Keine Versandgrundlage/);
+});
+
+test("Cloud-Entwurf (delivery draft): nur Gmail-Entwurf, nie gesendet, Status DRAFTED – auch ohne Versandgrundlage", async () => {
+  const request = await createRequest({ ...MAIL, recipient: "info@gefunden.ch", delivery: "draft" });
+  assert.equal(request.delivery, "draft");
+  await iterate("vps", vpsDir, vpsConfig);
+  assert.deepEqual(g.calls, ["create info@gefunden.ch"], "genau ein Entwurf, kein Send");
+  assert.equal(Object.values(g.reg.drafts)[0].to, "info@gefunden.ch");
+  assert.equal(Object.values(g.reg.drafts)[0].mode, "COLD_LEAD_DRAFT_ONLY", "Entwurf ist für Jarvis nie sendbar (gmail.sendDraft verweigert)");
+  const r = (await cloudList()).requests[0];
+  assert.equal(r.status, "drafted");
+  await iterate("vps", vpsDir, vpsConfig);
+  assert.deepEqual(sends(), [], "auch im nächsten Durchlauf nicht gesendet");
+  assert.equal(g.calls.filter((c) => c.startsWith("create")).length, 1, "kein zweiter Entwurf");
+  // Gesperrte Empfänger bekommen auch keinen Entwurf.
+  write(vpsDir, "suppression.json", { "weg@laden.ch": { reason: "opt-out" } });
+  const blocked = await createRequest({ ...MAIL, recipient: "weg@laden.ch", delivery: "draft" });
+  await iterate("vps", vpsDir, vpsConfig);
+  assert.equal((await cloudList()).requests.find((x) => x.request_id === blocked.request_id).status, "blocked");
+  assert.equal((await (await handler(req("POST", { op: "create", ...MAIL, delivery: "irgendwas" }, asUser))).status), 400);
+  // Entwurf im bestehenden Jarvis-Thread: ebenfalls nur als nie sendbarer Entwurf (COLD_LEAD_DRAFT_ONLY), kein Send.
+  g.reg.sent.m1 = { threadId: "t1", to: "kunde@laden.ch", sentAt: clock.toISOString() };
+  const ref = (await import("node:crypto")).createHash("sha256").update("t1").digest("hex").slice(0, 12);
+  const inThread = await createRequest({ ...MAIL, recipient: "kunde@laden.ch", subject: "Re: Website", delivery: "draft", optional_thread_reference: ref });
+  await iterate("vps", vpsDir, vpsConfig);
+  assert.equal((await cloudList()).requests.find((x) => x.request_id === inThread.request_id).status, "drafted");
+  assert.equal(Object.values(g.reg.drafts).find((d) => d.threadId === "t1").mode, "COLD_LEAD_DRAFT_ONLY");
+  assert.deepEqual(sends(), [], "nie gesendet");
 });
 
 // ---------- Kampagnen bleiben an die Fenster gebunden ----------

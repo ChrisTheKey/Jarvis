@@ -778,7 +778,9 @@ async function run(text, { typed = false } = {}) {
         } else if (ev.type === "mail_request") {
           // Cloud-Mailauftrag: nur in die Warteschlange gelegt – der Mail-Worker auf dem Server prüft und sendet zeitnah.
           const msg = ev.ok
-            ? `Mailauftrag an ${ev.request.recipient} übergeben${ev.duplicate ? " (bereits vorhanden)" : ""}. Der Mail-Worker prüft ihn und sendet ihn zeitnah, sofern alle Regeln erfüllt sind.`
+            ? ev.request.delivery === "draft"
+              ? `Entwurf an ${ev.request.recipient} übergeben${ev.duplicate ? " (bereits vorhanden)" : ""}. Der Mail-Worker legt ihn in Gmail ab – gesendet wird nur durch Sie.`
+              : `Mailauftrag an ${ev.request.recipient} übergeben${ev.duplicate ? " (bereits vorhanden)" : ""}. Der Mail-Worker prüft ihn und sendet ihn zeitnah, sofern alle Regeln erfüllt sind.`
             : `Mailauftrag abgelehnt: ${ev.error}`;
           log("MAIL", msg, ev.ok ? "amber" : "red");
           said += (said ? "\n\n" : "") + msg;
@@ -899,7 +901,7 @@ function renderShared() {
 }
 // Cloud: Ergebnis der Mailaufträge vom Mail-Worker (PENDING / PROCESSING / SENT / BLOCKED / FAILED) und MAIL SERVICE ONLINE/OFFLINE.
 const mailSeen = store.get("mailSeen", {});
-const MAIL_STATUS = { pending: "wartet auf Mail-Worker", processing: "wird verarbeitet", accepted_local: "geprüft, wird gesendet", blocked: "blockiert", sent: "gesendet", failed: "fehlgeschlagen", expired: "abgelaufen" };
+const MAIL_STATUS = { pending: "wartet auf Mail-Worker", processing: "wird verarbeitet", accepted_local: "geprüft, wird gesendet", blocked: "blockiert", sent: "gesendet", drafted: "Entwurf in Gmail", failed: "fehlgeschlagen", expired: "abgelaufen" };
 // Worker / Mail Service / Mail Worker / Send Authority / Pending Queue kommen aus der Cloud (send_authority + Heartbeat),
 // unabhängig vom UI-Modus: LOCAL oben rechts = Local Core erreichbar; gesendet wird vom Inhaber der Authority (z. B. VPS).
 let mailHud = null;

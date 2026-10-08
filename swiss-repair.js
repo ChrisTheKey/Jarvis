@@ -32,7 +32,7 @@ export const CONTACT_BASIS = Object.freeze({
 const AUTO_BASIS = { opt_in: "EXPLICIT_OPT_IN", existing_customer: "EXISTING_CUSTOMER_SIMILAR_SERVICE", requested_contact: "REQUESTED_CONTACT", active_rfp: "ACTIVE_RFP_RESPONSE" };
 const MARKETING_BASIS = new Set(["opt_in", "existing_customer"]);
 export const SITE_CONDITIONS = Object.freeze(["modern_maintainable", "repairable", "unclear", "redesign_likely"]);
-export const REPAIR_LIFECYCLE = Object.freeze(["discovered", "audited", "swiss_verified", "modern_repair_fit", "repair_candidate", "blocked_no_contact_basis",
+export const REPAIR_LIFECYCLE = Object.freeze(["discovered", "audited", "swiss_verified", "modern_repair_fit", "repair_candidate", "blocked_no_contact_basis", "no_visible_issue",
   "cold_lead_draft_only", "draft_created", "contacted", "replied", "customer", "not_interested", "do_not_contact"]);
 
 // ---------- 1) Schweiz-Signale ----------
@@ -100,14 +100,20 @@ export const isRepairFit = (c) => c === "modern_maintainable" || c === "repairab
 export const REPAIR_TYPES = Object.freeze({
   broken_link: "fix", contact_page_broken: "fix", broken_image: "fix", broken_mailto: "fix", https_certificate: "fix", redirect_loop: "fix",
   missing_title: "fix", no_https: "fix", mixed_content: "check", slow_response: "check", no_https_redirect: "check",
+  // Sichtbare Darstellungs-/Bedienfehler (z. B. aus einer Handy-Prüfung): zählen nur mit reproducible=true und benanntem Bereich (location).
+  mobile_text_overlap: "fix", mobile_content_cut_off: "fix", contact_form_broken: "fix", button_broken: "fix", visible_layout_error: "fix",
 });
 const REPRODUCIBLE = new Set(["broken_link", "contact_page_broken", "broken_image", "broken_mailto", "https_certificate", "redirect_loop", "missing_title", "no_https", "mixed_content", "no_https_redirect"]);
+export const VISUAL_TYPES = Object.freeze(["mobile_text_overlap", "mobile_content_cut_off", "contact_form_broken", "button_broken", "visible_layout_error"]);
+const VISUAL = new Set(VISUAL_TYPES);
+// Ein sichtbarer Fehler ohne bestätigte Reproduktion oder ohne konkreten Bereich ist nicht belegt → wird verworfen.
+const visualOk = (i) => !VISUAL.has(i.type) || (i.reproducible === true && typeof i.location === "string" && !!i.location.trim());
 const SEVERITY = ["low", "medium", "high"];
 
 export function repairEvidence(issues = []) {
   return (Array.isArray(issues) ? issues : []).filter((i) => i && REPAIR_TYPES[i.type] && typeof i.url === "string" && /^https?:\/\//i.test(i.url)
-    && typeof i.evidence === "string" && i.evidence.trim() && SEVERITY.includes(i.severity) && !Number.isNaN(Date.parse(i.detectedAt)))
-    .map((i) => ({ issue_type: i.type, url: i.url, evidence: i.evidence, observed_at: i.detectedAt, reproducible: REPRODUCIBLE.has(i.type), severity: i.severity }));
+    && typeof i.evidence === "string" && i.evidence.trim() && SEVERITY.includes(i.severity) && !Number.isNaN(Date.parse(i.detectedAt)) && visualOk(i))
+    .map((i) => ({ issue_type: i.type, url: i.url, evidence: i.evidence, observed_at: i.detectedAt, reproducible: REPRODUCIBLE.has(i.type) || VISUAL.has(i.type), severity: i.severity }));
 }
 
 // ---------- 4) Angebot (nur zwei Klassen oder NONE) ----------
@@ -230,7 +236,12 @@ export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, 
   const offer = classifyRepairOffer(lead, swiss, condition);
   const candidate = offer.offer_class !== NONE;
   const blocked = suppressed || ["do_not_contact"].includes(base);
-  const contact = contactBasis(lead, { candidate, now, suppressed: blocked });
+  const customer_findings = customerFindings(lead.websiteIssues);
+  let contact = contactBasis(lead, { candidate, now, suppressed: blocked });
+  // Cold-Entwurf nur mit mindestens einem für Besucher sichtbaren, belegten Fehler – sonst kein Entwurf (nichts wird erfunden).
+  if (contact.contact_basis === CONTACT_BASIS.COLD_LEAD_DRAFT_ONLY && !customer_findings.length)
+    contact = { ...contact, contact_basis: CONTACT_BASIS.NONE, draft_creation_eligible: false, individual_review_required: false, message_class: null,
+      cold_block_reason: "NO_VISIBLE_ISSUE" };
   const score = repairFitScore({ swiss, condition, evidence: offer.evidence, lead });
   let stage = "discovered";
   if (lead.auditedAt || lead.websiteIssues?.length) stage = "audited";
@@ -238,7 +249,7 @@ export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, 
   if (stage === "swiss_verified" && isRepairFit(condition.site_condition)) stage = "modern_repair_fit";
   if (stage === "modern_repair_fit" && candidate) {
     stage = contact.automatic_send_eligible ? "repair_candidate" : contact.draft_creation_eligible
-      ? (review?.status === "draft_created" ? "draft_created" : "cold_lead_draft_only") : "blocked_no_contact_basis";
+      ? (review?.status === "draft_created" ? "draft_created" : "cold_lead_draft_only") : contact.cold_block_reason ? "no_visible_issue" : "blocked_no_contact_basis";
   }
   // Spätere Pipeline-Stufen (kontaktiert, Antwort, Kunde, Sperre) aus dem bestehenden Lebenszyklus haben Vorrang.
   if (["contacted", "replied", "customer", "not_interested", "do_not_contact"].includes(base)) stage = base;
@@ -246,7 +257,7 @@ export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, 
   return {
     country: swiss.country, swiss_evidence: swiss.swiss_evidence, swiss_confidence: swiss.swiss_confidence,
     site_condition: condition.site_condition, site_condition_reasons: condition.reasons,
-    repair_evidence: offer.evidence, offer, ...contact, ...score, stage,
+    repair_evidence: offer.evidence, offer, customer_findings, ...contact, ...score, stage,
     contact_name: lead.contact_name || null, contact_role: lead.contact_role || null, business_email: contact.draft_creation_eligible || contact.automatic_send_eligible ? normEmail(lead.email || "") : null,
     contact_source: lead.contact_source || lead.emailSource || null, source_url: lead.source_url || null, collected_at: lead.collected_at || lead.auditedAt || null,
     contact_confidence: lead.contact_confidence || (lead.email ? "medium" : "none"),
@@ -257,57 +268,91 @@ export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, 
 
 // ---------- 8) Individueller Entwurf ----------
 
-const fmtDate = (iso) => { const d = new Date(iso); return Number.isNaN(+d) ? "" : d.toLocaleDateString("de-CH", { timeZone: "Europe/Zurich" }); };
-const ISSUE_TEXT = {
-  broken_link: (e) => `Der interne Link ${e.url} liefert eine Fehlerseite (${e.evidence}).`,
-  contact_page_broken: (e) => `Die verlinkte Kontaktseite ${e.url} ist nicht erreichbar (${e.evidence}).`,
-  broken_image: (e) => `Ein eingebundenes Bild wird nicht geladen: ${e.url} (${e.evidence}).`,
-  broken_mailto: (e) => `Ein E-Mail-Link auf ${e.url} ist fehlerhaft (${e.evidence}).`,
-  https_certificate: (e) => `Beim Aufruf von ${e.url} meldet der Browser ein Zertifikatsproblem (${e.evidence}).`,
-  redirect_loop: (e) => `Der Aufruf von ${e.url} endet in einer Weiterleitungsschleife (${e.evidence}).`,
-  missing_title: (e) => `Die Startseite ${e.url} hat keinen Seitentitel (${e.evidence}).`,
-  no_https: (e) => `Die Website ist unter ${e.url} nicht verschlüsselt erreichbar (${e.evidence}).`,
-  mixed_content: (e) => `Auf ${e.url} werden Inhalte unverschlüsselt eingebunden (${e.evidence}).`,
-  slow_response: (e) => `Die Startseite ${e.url} lädt auffällig langsam (${e.evidence}).`,
-  no_https_redirect: (e) => `${e.url} leitet nicht automatisch auf HTTPS weiter (${e.evidence}).`,
+// Kundentext: Der Empfänger ist Inhaber/Mitarbeiter, kein Entwickler. Intern bleibt die technische Evidence (issue_evidence),
+// nach aussen gehen nur höchstens zwei einfache, sichtbare Probleme – ohne Statuscodes, Messwerte, Fachbegriffe oder Druck.
+// Evidence-Gate je Befund: (A) auf dieser Website beobachtet, (B) reproduzierbar, (C) für Besucher sichtbar, (D) in einem Satz
+// erklärbar (Vorlage existiert), (E) konkret prüfbar (Seite bzw. Bereich bekannt). Sonst wird der Befund nicht verwendet.
+// Nur intern (nie im Kundentext): missing_title, no_https, no_https_redirect, mixed_content, slow_response sowie alle Typen ohne
+// Vorlage (z. B. veraltete Technik, „altes Design“, Barrierefreiheits-/SEO-Details).
+export const MAX_CUSTOMER_FINDINGS = 2;
+const pageName = (u) => {
+  let p; try { p = new URL(u).pathname; } catch { return null; }
+  let seg = p.split("/").filter(Boolean).pop() || "";
+  try { seg = decodeURIComponent(seg); } catch {}
+  seg = seg.replace(/\.[a-z0-9]{2,5}$/i, "").replace(/[-_]+/g, " ").trim();
+  if (!seg) return "Ihrer Startseite";
+  return `der Seite «${seg.charAt(0).toUpperCase() + seg.slice(1)}»`;
 };
-const SUBJECT_TEXT = { broken_link: "defekter Link", contact_page_broken: "Kontaktseite nicht erreichbar", broken_image: "fehlendes Bild", broken_mailto: "fehlerhafter E-Mail-Link",
-  https_certificate: "Zertifikatsproblem", redirect_loop: "Weiterleitungsfehler", missing_title: "fehlender Seitentitel", no_https: "HTTPS", mixed_content: "unverschlüsselte Inhalte",
-  slow_response: "Ladezeit", no_https_redirect: "HTTPS-Weiterleitung" };
+const toPage = (u) => { const n = pageName(u); return n?.startsWith("der ") ? `zur ${n.slice(4)}` : `zu ${n}`; };
+// Seite, auf der der Fehler sichtbar ist: strukturiert vom Audit (page) oder – für ältere Leads – aus der Evidence gelesen.
+const pageOf = (i) => i.page || i.evidence?.match(/\((?:verlinkt|eingebunden) auf (https?:\/\/[^\s)]+)\)/)?.[1] || null;
+const cleanLabel = (l) => (typeof l === "string" && l.trim() && l.trim().length <= 40 && !/https?:|www\.|[<>{}«»]/i.test(l) ? l.trim() : null);
+const CUSTOMER_TEXT = {
+  contact_page_broken: () => ({ key: "contact", text: "der Link zu Ihrer Kontaktseite auf eine Fehlerseite führt", impact: "Besucher können Sie dadurch nicht wie vorgesehen über die Kontaktseite erreichen." }),
+  broken_link: (i, page) => ({ key: `link:${i.url}`, text: `auf ${pageName(page)} der Link ${cleanLabel(i.label) ? `«${cleanLabel(i.label)}»` : toPage(i.url)} auf eine Fehlerseite führt`,
+    impact: "Besucher landen dadurch auf einer Fehlerseite statt beim gewünschten Inhalt." }),
+  broken_image: (i, page) => ({ key: `image:${page}`, text: `auf ${pageName(page)} ein Bild nicht angezeigt wird`, impact: "An dieser Stelle sehen Besucher nur eine leere Fläche." }),
+  broken_mailto: (i, page) => ({ key: `mailto:${page}`, text: `auf ${pageName(page)} ein E-Mail-Link nicht funktioniert`, impact: "Wer darauf klickt, kann Ihnen so keine E-Mail schreiben." }),
+  https_certificate: () => ({ key: "warning", text: "der Browser beim Öffnen Ihrer Website zuerst eine Warnmeldung anzeigt", impact: "Besucher müssen diese Meldung wegklicken, bevor sie Ihre Seite sehen." }),
+  redirect_loop: () => ({ key: "noload", text: "Ihre Website beim Aufruf nicht lädt und der Browser stattdessen eine Fehlermeldung zeigt", impact: "Besucher sehen Ihre Seite dadurch gar nicht." }),
+  mobile_text_overlap: (i) => ({ key: `area:${i.location}`, text: `auf dem Handy im Bereich «${i.location}» Text teilweise übereinander liegt`, impact: "Der Text ist dadurch schwer lesbar." }),
+  mobile_content_cut_off: (i) => ({ key: `area:${i.location}`, text: `auf dem Handy der Bereich «${i.location}» abgeschnitten ist`, impact: "Besucher sehen dadurch nicht den ganzen Inhalt." }),
+  contact_form_broken: () => ({ key: "contact", text: "sich das Kontaktformular derzeit nicht absenden lässt", impact: "Besucher können Ihnen über das Formular so keine Nachricht schicken." }),
+  button_broken: (i) => ({ key: `area:${i.location}`, text: `der Button «${i.location}» derzeit nicht funktioniert`, impact: "Besucher kommen an dieser Stelle nicht weiter." }),
+  visible_layout_error: (i) => ({ key: `area:${i.location}`, text: `im Bereich «${i.location}» die Seite sichtbar verschoben dargestellt wird`, impact: "Der Inhalt ist an dieser Stelle schwer zu erfassen." }),
+};
+const NEEDS_PAGE = new Set(["broken_link", "broken_image", "broken_mailto"]);
+// Fachbegriffe, Messwerte und Druck-/Angstsprache – dürfen nie in einer Kundenaussage stehen.
+export const CUSTOMER_JARGON_RE = /\bHTTPS?\b|\b[1-5]\d\d\b|Statuscode|\bCLS\b|\bLCP\b|\bFCP\b|Lighthouse|\bDOM\b|\bTLS\b|\bSSL\b|Zertifikat|Redirect|Weiterleitung|\bmeta\b|viewport|\bCTA\b|Endpunkt|Overflow|mailto|JavaScript|\bSEO\b|Ladezeit|Performance|<\/?[a-z]+>|Framework|Header/i;
+export const CUSTOMER_PRESSURE_RE = /kaputt|verlier|Umsatz|veraltet|unsicher|schlecht|dringend|sofort|gefährlich|Hacker|Risiko|Kunden kosten/i;
+const unsafe = (t) => CUSTOMER_JARGON_RE.test(t) || CUSTOMER_PRESSURE_RE.test(t);
+
+// Befunde → höchstens zwei einfache Aussagen. Mehrere technische Befunde derselben sichtbaren Ursache werden zu einer zusammengeführt.
+export function customerFindings(issues = []) {
+  const valid = new Set(repairEvidence(issues).filter((e) => e.reproducible && e.severity !== "low").map((e) => `${e.issue_type}|${e.url}|${e.observed_at}`));
+  const out = new Map();
+  for (const i of Array.isArray(issues) ? issues : []) {
+    if (!i || !CUSTOMER_TEXT[i.type] || !valid.has(`${i.type}|${i.url}|${i.detectedAt}`)) continue;
+    const page = pageOf(i);
+    if (NEEDS_PAGE.has(i.type) && !page) continue; // (E) nicht konkret prüfbar
+    const f = CUSTOMER_TEXT[i.type](i, page);
+    if (unsafe(`${f.text} ${f.impact}`)) continue; // (D) nicht einfach erklärbar (z. B. Fachbegriff im Bereichsnamen)
+    const prev = out.get(f.key);
+    if (prev) { prev.internal_refs.push({ issue_type: i.type, url: i.url }); continue; }
+    out.set(f.key, { key: f.key, text: f.text, impact: f.impact, internal_refs: [{ issue_type: i.type, url: i.url }],
+      rank: { contact_page_broken: 0, contact_form_broken: 0, redirect_loop: 1, https_certificate: 1 }[i.type] ?? 2 });
+  }
+  return [...out.values()].sort((a, b) => a.rank - b.rank).slice(0, MAX_CUSTOMER_FINDINGS).map(({ rank, ...f }) => f);
+}
 
 export const COLD_FOOTER = "Falls solche Hinweise für Sie nicht relevant sind, genügt eine kurze Antwort und ich melde mich diesbezüglich nicht erneut.";
 
 export function buildColdDraft(lead = {}, q = qualifyRepairLead(lead), sender = {}) {
-  const ev = q.offer.evidence.slice(0, 3);
-  if (!ev.length || q.offer.offer_class === NONE) throw new Error("Kein belegter Reparaturbefund – kein Entwurf.");
+  const findings = q.customer_findings || customerFindings(lead.websiteIssues);
+  if (!findings.length || q.offer.offer_class === NONE) throw new Error("Kein belegter Reparaturbefund – kein Entwurf.");
+  // Letzte Sicherung: Fachbegriffe/Druck in einer Aussage → kein Entwurf (fail closed).
+  if (findings.some((f) => unsafe(`${f.text} ${f.impact}`))) throw new Error("Kundentext enthält Fachbegriffe oder Drucksprache – kein Entwurf.");
   const site = (lead.domain || "").replace(/^www\./, "");
-  const o = OFFERS[q.offer.offer_class];
-  // Anrede nur mit sicher bekanntem Namen – ohne Annahmen über Geschlecht („Guten Tag Vorname Nachname“).
-  const hello = q.contact_name ? `Guten Tag ${q.contact_name}` : "Guten Tag";
-  const lines = ev.map((e) => `- ${ISSUE_TEXT[e.issue_type](e)} Beobachtet am ${fmtDate(e.observed_at)}.`);
+  // Anrede nur mit sicher bekanntem Namen – ohne Annahmen über Geschlecht; sonst die Firma.
+  const who = q.contact_name || lead.company || "";
+  const [first, second] = findings;
   const signature = sender.signature?.trim() || [sender.name, sender.company, sender.email].filter(Boolean).join("\n");
   const body = [
-    hello,
+    who ? `Hallo ${who},` : "Guten Tag,",
     "",
-    `bei der Durchsicht der Website von ${lead.company || site} (${site}) ist mir Folgendes aufgefallen:`,
+    `ich habe mir Ihre Website kurz angesehen und dabei ist mir aufgefallen, dass ${first.text}. ${first.impact}`,
+    ...(second ? ["", `Ausserdem ist mir aufgefallen, dass ${second.text}. ${second.impact}`] : []),
     "",
-    ...lines,
+    "Ich behebe solche kleineren Website-Probleme für Schweizer Unternehmen.",
     "",
-    "Ihre bestehende Website wirkt grundsätzlich weiterverwendbar. Der Punkt lässt sich voraussichtlich gezielt beheben, ohne die Website neu aufzubauen.",
-    "",
-    `Für solche Fälle biete ich «${o.label}» an: ${o.scope}`,
-    "",
-    `Ablauf und Angebote im Überblick: ${LANDING_PAGE_URL}`,
-    "",
-    "Wenn das für Sie interessant ist, genügt eine kurze Antwort.",
+    `Wenn Sie möchten, schaue ich mir das gerne genauer an – eine kurze Antwort genügt. Mehr dazu: ${LANDING_PAGE_URL}`,
     "",
     "Freundliche Grüsse",
     signature,
     "",
     COLD_FOOTER,
   ].join("\n");
-  const subject = `${lead.company || site}: ${SUBJECT_TEXT[ev[0].issue_type]} auf ${site}`;
-  return { subject, body };
+  return { subject: `Kurzer Hinweis zu Ihrer Website ${site}`, body };
 }
 // TF-022-Name bleibt als Alias erhalten.
 export const buildIndividualDraft = buildColdDraft;
@@ -332,6 +377,7 @@ export function createColdDraft(lead, { sender = {}, now = new Date(), q = quali
     recipient: normEmail(lead.email), contact_name: q.contact_name, contact_role: q.contact_role, business_email: normEmail(lead.email),
     contact_source: q.contact_source, source_url: q.source_url, collected_at: q.collected_at, contact_confidence: q.contact_confidence,
     offer_class: q.offer.offer_class, issue_evidence, evidence_hash: evidenceHash(issue_evidence), repair_fit_score: q.repair_fit_score,
+    customer_findings: q.customer_findings.map(({ key, text, internal_refs }) => ({ key, text, internal_refs })),
     subject, body, draft_hash: draftHash(subject, body),
     status: "queued", gmail_draft_id: null, message_id: null, thread_id: null,
     manual_send_detected: false, manual_send_at: null, gmail_message_id: null, created_at: now.toISOString(), updated_at: now.toISOString(),

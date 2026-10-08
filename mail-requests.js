@@ -9,9 +9,11 @@ import { cleanCore } from "./cloud-core.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
   ttlHours: 24, maxTtlHours: 72, duplicateHours: 24, bodyBytes: 16_000 };
-export const REQUEST_STATUSES = ["pending", "processing", "accepted_local", "blocked", "sent", "failed", "expired"];
-export const FINAL_STATUSES = ["blocked", "sent", "failed", "expired"];
+export const REQUEST_STATUSES = ["pending", "processing", "accepted_local", "blocked", "sent", "drafted", "failed", "expired"];
+export const FINAL_STATUSES = ["blocked", "sent", "drafted", "failed", "expired"];
 export const INTENTS = ["sales", "follow_up", "reply", "info"];
+// delivery "draft": der Worker legt nur einen Gmail-Entwurf an (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie, Chris entscheidet in Gmail.
+export const DELIVERIES = ["send", "draft"];
 // Mailklassen: A/B nur in den Versandfenstern 09:30/14:30, C/D zeitnah (24/7) – immer nach allen Schutzregeln.
 export const MAIL_CLASSES = ["automatic_sales_outreach", "sales_followup", "conversation_reply", "manual_chris_mail"];
 // Lease eines übernommenen Auftrags bzw. Send-Locks; ein Heartbeat älter als HEARTBEAT_STALE_MS = MAIL SERVICE OFFLINE.
@@ -19,7 +21,7 @@ export const LEASE_MS = 10 * 60_000;
 export const HEARTBEAT_STALE_MS = 5 * 60_000;
 const LOCK_LIMIT = 2000, LOCK_DAYS = 30, CLAIM_MAX = 10;
 const REF_RE = /^[a-f0-9]{12,32}$/;
-const FIELDS = ["request_id", "recipient", "subject", "body", "optional_thread_reference", "intent", "ttl_hours"];
+const FIELDS = ["request_id", "recipient", "subject", "body", "optional_thread_reference", "intent", "ttl_hours", "delivery"];
 const ID_RE = /^[a-z0-9][a-z0-9-]{7,63}$/;
 const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i;
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
@@ -50,6 +52,8 @@ export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "ch
   const ref = input.optional_thread_reference ?? null;
   if (ref !== null && !(typeof ref === "string" && /^[a-f0-9]{12}$/.test(ref))) return { error: "Thread-Referenz ungültig." };
   if (input.request_id !== undefined && !(typeof input.request_id === "string" && ID_RE.test(input.request_id))) return { error: "request_id ungültig." };
+  if (input.delivery !== undefined && !DELIVERIES.includes(input.delivery)) return { error: "delivery ungültig (send oder draft)." };
+  const delivery = input.delivery === "draft" ? "draft" : "send";
   const ttl = Math.min(L.maxTtlHours, Math.max(1, Number(input.ttl_hours) || L.ttlHours));
   const created = now.toISOString();
   return {
@@ -57,7 +61,8 @@ export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "ch
       request_id: input.request_id || newId(), created_at: created, expires_at: new Date(+now + ttl * 3_600_000).toISOString(),
       requested_by: requestedBy, recipient, subject, body, optional_thread_reference: ref,
       intent: INTENTS.includes(input.intent) ? input.intent : "sales", status: "pending", reason: null, updated_at: created,
-      fingerprint: fingerprint(recipient, subject.toLowerCase(), body), mail_class: "manual_chris_mail", lease_owner: null, lease_expires_at: null, attempts: 0,
+      fingerprint: fingerprint(recipient, subject.toLowerCase(), body, ...(delivery === "draft" ? ["draft"] : [])), mail_class: "manual_chris_mail", delivery,
+      lease_owner: null, lease_expires_at: null, attempts: 0,
     },
   };
 }
@@ -72,7 +77,7 @@ function clean(r) {
     optional_thread_reference: typeof r.optional_thread_reference === "string" && /^[a-f0-9]{12}$/.test(r.optional_thread_reference) ? r.optional_thread_reference : null,
     intent: INTENTS.includes(r.intent) ? r.intent : "sales", status: REQUEST_STATUSES.includes(r.status) ? r.status : "pending",
     reason: s(r.reason, MAIL_REQUEST_LIMITS.reasonChars), updated_at: s(r.updated_at, 40), fingerprint: s(r.fingerprint, 16),
-    mail_class: "manual_chris_mail", lease_owner: s(r.lease_owner, 20), lease_expires_at: s(r.lease_expires_at, 40), attempts: Number.isFinite(r.attempts) ? r.attempts : 0,
+    mail_class: "manual_chris_mail", delivery: r.delivery === "draft" ? "draft" : "send", lease_owner: s(r.lease_owner, 20), lease_expires_at: s(r.lease_expires_at, 40), attempts: Number.isFinite(r.attempts) ? r.attempts : 0,
   };
 }
 export const cleanList = (list) => (Array.isArray(list) ? list : []).map(clean).filter(Boolean);
@@ -98,13 +103,13 @@ export function addRequest(list, input, { now = new Date(), requestedBy } = {}) 
   const same = current.find((r) => r.request_id === request.request_id);
   if (same) return same.fingerprint === request.fingerprint ? { status: 200, list: current, request: same, duplicate: true } : { status: 409, error: "request_id bereits mit anderem Inhalt vergeben." };
   const since = new Date(+now - MAIL_REQUEST_LIMITS.duplicateHours * 3_600_000).toISOString();
-  const dup = current.find((r) => r.fingerprint === request.fingerprint && r.created_at >= since && ["pending", "processing", "accepted_local", "sent"].includes(r.status));
+  const dup = current.find((r) => r.fingerprint === request.fingerprint && r.created_at >= since && ["pending", "processing", "accepted_local", "sent", "drafted"].includes(r.status));
   if (dup) return { status: 200, list: current, request: dup, duplicate: true };
   if (current.filter((r) => r.status === "pending").length >= MAIL_REQUEST_LIMITS.pending) return { status: 429, error: "Zu viele offene Mailaufträge – erst den lokalen Worker abarbeiten lassen." };
   return { status: 201, list: trim([...current, request]), request, duplicate: false };
 }
 
-const ALLOWED_TRANSITIONS = { pending: ["processing", "accepted_local", "blocked", "sent", "failed", "expired"], processing: ["accepted_local", "blocked", "sent", "failed", "expired"],
+const ALLOWED_TRANSITIONS = { pending: ["processing", "accepted_local", "blocked", "sent", "drafted", "failed", "expired"], processing: ["accepted_local", "blocked", "sent", "drafted", "failed", "expired"],
   accepted_local: ["sent", "failed", "blocked", "expired"] };
 // Ergebnis vom Mail-Worker übernehmen. Endzustände sind unveränderlich; ein übernommener Auftrag gehört seinem Lease-Inhaber.
 export function applyResult(list, { request_id, status, reason, owner = null }, now = new Date()) {
@@ -190,7 +195,7 @@ export function serviceStatus(state, now = new Date(), dedicated = false) {
 
 // Sicht für den Browser: kein Fingerabdruck, kein Lease-Inhaber, Text gekürzt.
 export const publicView = (r) => ({ request_id: r.request_id, created_at: r.created_at, expires_at: r.expires_at, recipient: r.recipient, subject: r.subject,
-  intent: r.intent, mail_class: r.mail_class || "manual_chris_mail", status: r.status, reason: r.reason, updated_at: r.updated_at, optional_thread_reference: r.optional_thread_reference });
+  intent: r.intent, mail_class: r.mail_class || "manual_chris_mail", delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at, optional_thread_reference: r.optional_thread_reference });
 
 // Ein Blob { requests, locks, workers } mit bedingtem Schreiben (ETag) – gleichzeitige Worker überholen sich nie.
 export function createMailQueue(store, { now = () => new Date(), dedicated = false } = {}) {
@@ -260,7 +265,7 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (!owner) return reply(403, { error: "Kein send_authority: nur der zuständige Mail-Worker darf das.", authority });
     let r;
     if (body.op === "result") {
-      if (!["processing", "accepted_local", "blocked", "sent", "failed", "expired"].includes(body.status) || typeof body.request_id !== "string") return reply(400, { error: "Ungültiges Ergebnis." });
+      if (!["processing", "accepted_local", "blocked", "sent", "drafted", "failed", "expired"].includes(body.status) || typeof body.request_id !== "string") return reply(400, { error: "Ungültiges Ergebnis." });
       r = await queue.result({ request_id: body.request_id, status: body.status, reason: body.reason, owner });
       return r.status >= 400 ? reply(r.status, { error: r.error }) : reply(r.status, { request: publicView(r.request) });
     }

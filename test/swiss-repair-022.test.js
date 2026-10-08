@@ -150,18 +150,20 @@ test("broken link evidence preserved: issue_type, url, evidence, observed_at, re
   const q = qualifyRepairLead(lead(), { now: T0 });
   assert.deepEqual(q.offer.evidence, [e]);
   const r = createColdDraft(lead(), { sender: SENDER, now: T0 });
-  assert.deepEqual(r.issue_evidence, [e]);
-  assert.ok(r.body.includes(BROKEN.url) && r.body.includes("HTTP 404"));
+  assert.deepEqual(r.issue_evidence, [e], "technische Evidence bleibt intern vollständig erhalten");
+  // Nach aussen nur die einfache Aussage – keine Ziel-URL, kein Statuscode.
+  assert.ok(!r.body.includes(BROKEN.url) && !r.body.includes("HTTP 404"));
+  assert.match(r.body, /auf Ihrer Startseite der Link zur Seite «Team» auf eine Fehlerseite führt/);
 });
 
 test("no invented issue: Entwurf nennt nur beobachtete Befunde, keine Abwertung, kein Neubau", () => {
   const { subject, body } = buildColdDraft(lead(), qualifyRepairLead(lead(), { now: T0 }), SENDER);
   const urls = body.match(/https?:\/\/[^\s)]+/g) || [];
-  // Nur beobachtete URLs plus die Landingpage von Chris – keine weiteren Links.
-  assert.deepEqual([...new Set(urls)], [BROKEN.url, "https://muster.ch/", LANDING_PAGE_URL].filter((u) => body.includes(u)));
+  // Nur die Landingpage von Chris – keine technischen URLs im Kundentext.
+  assert.deepEqual([...new Set(urls)], [LANDING_PAGE_URL]);
   assert.doesNotMatch(subject + body, /veraltet|neue website|neubau anbieten|redesign|jahre alt|outdated/i);
-  assert.match(body, /grundsätzlich weiterverwendbar.*ohne die Website neu aufzubauen/s);
-  assert.match(body, /Check & Reparatur für CHF 480/);
+  assert.match(body, /Ich behebe solche kleineren Website-Probleme für Schweizer Unternehmen\./);
+  assert.doesNotMatch(body, /CHF/, "der Entwurf verkauft nicht über den Preis");
   assert.ok(body.includes(LANDING_PAGE_URL), "Landingpage verlinkt");
   assert.match(body, /Chris Kälin/, "klare Absenderidentität");
   assert.match(body, /nicht relevant sind, genügt eine kurze Antwort/, "einfache Ablehnungsmöglichkeit");

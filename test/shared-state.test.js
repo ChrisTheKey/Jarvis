@@ -289,7 +289,8 @@ test("Lokal offline: Cloud-Jarvis spricht weiter, mit derselben Persona und dem 
   assert.equal(sent.system[0].text, PERSONA);
   assert.match(sent.system[1].text, /offline – kein PC-Zugriff/);
   assert.match(sent.system[1].text, /PRIORITÄT: Muster AG möchte telefonieren/);
-  assert.match(sent.system[1].text, /kein Gmail/);
+  // Kein direkter Gmail-Zugriff aus der Cloud – nur Aufträge über das Werkzeug mail_request.
+  assert.match(sent.system[1].text, /Gmail nur über das Werkzeug mail_request/);
   assert.equal((await (await h(new Request("https://jarvis.test/api/cloud"))).json()).personaVersion, PERSONA_VERSION);
   assert.match(statusBlock(null), /nicht verfügbar/);
 });
