@@ -60,6 +60,10 @@ Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur 
   **OFFEN (Chris): `JARVIS_SERVER_CONTROL_TOKEN` in Netlify setzen (Site settings → Environment variables, Scope Functions; Wert = Zeile in
   `.secrets/vps_worker.env`, Fingerprint 762125d5f799) und danach „Trigger deploy“.** Bis dahin antwortet die Cloud dem Agenten 401 (fail closed),
   der Agent fragt nur alle 5 min, das HUD zeigt SERVER „NICHT KONFIGURIERT“ bzw. keinen Status. Danach Live-Read-Test (health, uptime, docker, Jarvis-Status, backup).
+- 2026-10-08 11:0x UTC: Chris hat den Token in Netlify gesetzt + neu deployt, Agent weiter 401. Diagnose-Probe (e7ade22, `GET /api/server-control?probe=1`,
+  ohne Auth, nur configured/Länge): Netlify-Wert hat **106 Zeichen**, erwartet **64** (auch nach Trim) → falscher Wert eingefügt (Zwischenablage).
+  **OFFEN: Chris setzt den Wert neu (64 Zeichen, Fingerprint 762125d5f799) + Trigger deploy; Probe muss length 64 zeigen.** Live-READ-Tests über die
+  Browser-Credential brauchen JARVIS_PASSWORD (lokal nicht vorhanden) – entweder Chris prüft im HUD oder legt es gitignored ab. Keine Control-Aktion ausgeführt.
 
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
