@@ -90,6 +90,10 @@ test("valid READ action: Status sofort aus dem VPS-Snapshot (Cloud), ohne Window
   assert.equal(g.body.online, true);
   assert.equal(g.body.snapshot.mail.worker, "VPS ACTIVE");
   assert.equal(g.body.snapshot.deploy.commit, "abc1234");
+  // READ erzeugt einen Audit-Eintrag mit request_id, Zeit, Aktion und Ergebnis.
+  const ra = g.body.audit.find((a) => a.request_id === r.body.request_id);
+  assert.deepEqual({ action: ra.action, tier: ra.tier, outcome: ra.outcome, source: ra.source }, { action: "system.resources", tier: "read", outcome: "success", source: "cloud-ui" });
+  assert.ok(Date.parse(ra.ts));
   // Status veraltet → kein Raten.
   s.advance(4 * 60_000);
   assert.equal((await s.call("POST", { action: "docker.status" }, USER)).body.code, "SERVER_OFFLINE");

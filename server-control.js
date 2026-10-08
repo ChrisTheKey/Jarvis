@@ -253,6 +253,8 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
       // READ aus dem letzten VPS-Status: sofort, ohne Auftrag. Ist der Status veraltet → kein Raten, sondern 503.
       if (def.snapshot) {
         const fresh = !!cur.snapshot_at && +t - Date.parse(cur.snapshot_at) < SNAPSHOT_STALE_MS;
+        // Auch READ wird auditiert (ohne Inhalt – nur Aktion, Ergebnis, request_id).
+        cur.audit.push(auditEntry(t, { request_id: rid, ...v, outcome: fresh ? "success" : "failure", reason: fresh ? null : "SERVER_OFFLINE" }));
         if (!fresh) return { status: 503, body: { error: "VPS meldet sich nicht – Status unbekannt.", code: "SERVER_OFFLINE", request_id: rid } };
         return { status: 200, body: { request_id: rid, action: v.action, tier: v.tier, status: "done", snapshot_at: cur.snapshot_at, result: cur.snapshot?.[def.snapshot] ?? null } };
       }
