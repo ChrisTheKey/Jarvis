@@ -57,13 +57,22 @@ Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur 
 - Tests: `test/server-control.test.js` (16).
 - Live 2026-10-08 (Commit fb17e16): Netlify-Funktion live (ohne Auth 401); VPS deployt (fb17e16, healthy, 0 Restarts, `server_control_started`,
   Token im Container vorhanden, JARVIS_COMMIT/JARVIS_DEPLOYED_AT gesetzt). Worker-Token als Control-Credential → 401 (keine Wiederverwendung).
-  **OFFEN (Chris): `JARVIS_SERVER_CONTROL_TOKEN` in Netlify setzen (Site settings → Environment variables, Scope Functions; Wert = Zeile in
+  ERLEDIGT 2026-10-08 (früher offen): **`JARVIS_SERVER_CONTROL_TOKEN` in Netlify setzen (Site settings → Environment variables, Scope Functions; Wert = Zeile in
   `.secrets/vps_worker.env`, Fingerprint 762125d5f799) und danach „Trigger deploy“.** Bis dahin antwortet die Cloud dem Agenten 401 (fail closed),
   der Agent fragt nur alle 5 min, das HUD zeigt SERVER „NICHT KONFIGURIERT“ bzw. keinen Status. Danach Live-Read-Test (health, uptime, docker, Jarvis-Status, backup).
-- 2026-10-08 11:0x UTC: Chris hat den Token in Netlify gesetzt + neu deployt, Agent weiter 401. Diagnose-Probe (e7ade22, `GET /api/server-control?probe=1`,
-  ohne Auth, nur configured/Länge): Netlify-Wert hat **106 Zeichen**, erwartet **64** (auch nach Trim) → falscher Wert eingefügt (Zwischenablage).
-  **OFFEN: Chris setzt den Wert neu (64 Zeichen, Fingerprint 762125d5f799) + Trigger deploy; Probe muss length 64 zeigen.** Live-READ-Tests über die
-  Browser-Credential brauchen JARVIS_PASSWORD (lokal nicht vorhanden) – entweder Chris prüft im HUD oder legt es gitignored ab. Keine Control-Aktion ausgeführt.
+- Token-Panne 2026-10-08 vormittags: Netlify hatte zunächst einen 106-Zeichen-Wert (falsche Zwischenablage); per Probe (e7ade22,
+  `GET /api/server-control?probe=1`, nur configured/Länge) erkannt, Chris hat 64 Zeichen gesetzt. Letzte 401 des Agenten 11:37 UTC.
+- **LIVE-TEST BESTANDEN 2026-10-08 12:00–12:08 UTC** (Browser-Credential im Playwright-Fenster von Chris eingegeben, danach gelöscht):
+  READ 10/10 grün aus dem VPS-Status: Host-Uptime 16h, 2 CPUs ~3 %, RAM 27 % von 3.7 GB, Disk 23 % (28.6 GB frei), Docker ONLINE,
+  Container HEALTHY, Core HEALTHY (schema 1, node v22), Mail VPS ACTIVE (Authority VPS, self=true), Scheduler ONLINE (09:30/14:30 je 50),
+  Queue 0/0, Backup OK (2 Gen., offsite ok), Deploy fb17e16. HUD-Panel SERVER: alle Werte grün, keine Eingabefelder, kein Token im DOM.
+  Security live: falscher Control-Token / Worker-Token / Anthropic-Key / x-jarvis-worker → 401; system.format, Injection, {command} → 400;
+  shell.exec, system.reboot → 403 DANGEROUS_BLOCKED; service.logs mit /opt/fiverr, ../../root/.ssh, path/file-Parametern → 400 BAD_PARAMS;
+  nichts in die Warteschlange; keine Secrets/ENV-Werte/Adressen in Antworten, Audit oder HUD.
+  Audit: READ wird seit 5ea98c2 ebenfalls auditiert (live geprüft: ts, request_id, action, tier, outcome). Abgelehnte Versuche als „denied“ mit Grund.
+  EINE Control-Aktion: jarvis.runHealthCheck (12:07:57 → done 12:08:20, 8/8 Checks ok; Audit queued → success, VPS control_audit.jsonl success).
+  Keine Restart-/Backup-Aktion, kein Reboot, kein Docker-Exec. Danach: VPS healthy, 0 Restarts, VPS ACTIVE self=true, Windows STANDBY self=false,
+  genau ein Sender, 0 Send-Events.
 
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
