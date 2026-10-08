@@ -125,7 +125,22 @@ Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur 
 - Intern unverändert: `issue_evidence` (Typ, URL, technische Evidence, Zeitpunkt, Schwere), `evidence_hash`, `offer_class` (CHF 150/480),
   neu `customer_findings` mit internen Referenzen. Auditor speichert zusätzlich Seite + Linktext (nur intern, für die einfache Formulierung).
 - Tests 296/296 grün (TF-024, TF-025, Foreign-Gmail-Schutz, Suppression unverändert). Keine echte Mail gesendet (nur Attrappen/Mocks).
-- Wirkt auf VPS/Windows erst nach Deploy bzw. Neustart (noch NICHT deployt).
+- **PRODUKTIV DEPLOYT 2026-10-08 20:43 UTC (Commit 4eff23c):** VPS `bash deploy/vps/deploy.sh fiverr` (ohne `--with-secrets`, Secrets
+  unverändert: `.env` 600 root, `secrets/mail_worker/` vollständig, Gmail-/Backup-Dateien vorhanden). DEPLOYED_COMMIT 4eff23c, Container
+  running/healthy, 0 Restarts, `server_control_started` + `worker_started role=vps` 20:43:48 UTC, JARVIS_COMMIT=4eff23c im Container,
+  Control-Token Länge 64 / Worker-Token Länge 106 (Werte nicht ausgegeben). Vorher: Tests 296/296, Secret-Scan 0 Treffer; nachher erneut 296/296 + 0 Treffer.
+  Netlify Production hatte 4eff23c bereits automatisch per Git-Push deployt (HUD-String „Entwurf in Gmail“ live, Site 200) – kein erneuter Deploy.
+  Probe `/api/server-control?probe=1` → configured=true, length=64. check-mail-auth: VPS 200 self=true, Windows 200 self=false, holder=vps, pending 0.
+  dr-probe: System ONLINE, Jarvis Core CLOUD ONLINE, Mail Worker VPS ACTIVE, Authority VPS, Windows STANDBY (Lock frisch), Queue 0, AI ONLINE,
+  Scheduler 09:30/14:30 je 50 ausgeführt, Backup OK (2 Gen., offsite 2), Heartbeat frisch. Keine `control_pull_refused`/401 seit 11:37 UTC;
+  vereinzelte `fetch failed` (tick/sync/control_pull/Overpass 504) vor dem Deploy = Netzwerk, kein Auth-Fehler. 0 Send-Events VPS und Windows.
+  `/opt/fiverr`-Container unberührt. Kein Restart/Reboot/Control-Aktion, keine echte Mail.
+  Synthetisch (nur Testdaten, Scratch-Skript): A kaputter Link → „auf Ihrer Startseite der Link «Unser Angebot» auf eine Fehlerseite führt“ (kein 404/URL,
+  Evidence intern erhalten); B fehlendes Bild → „ein Bild nicht angezeigt wird“ ohne Bild-URL; C Handy-Overlap → „im Bereich «Über uns» Text teilweise
+  übereinander liegt“, ohne reproducible/Bereich KEIN Entwurf; D Ladezeit/LCP/CLS/Titel/HTTPS allein → KEIN Entwurf; E „altes Design“/UX → KEIN Entwurf;
+  F kein Befund → KEIN Entwurf (draft_creation_eligible=false); G 3 kaputte Bilder gleiche Seite → 1 Aussage, 3 interne Referenzen; H 5 Befunde → 2 Aussagen,
+  keine Preise im Kundentext. Angebote REPAIR_CHECK_150 = 150 / REPAIR_FIX_500 = 480, genau zwei Klassen. TF-024: öffentliche Adresse → BLOCKED/NONE;
+  TF-025: contact_basis COLD_LEAD_DRAFT_ONLY, automatic_send_eligible=false; COLD_MODE identisch mit gmail.js. Foreign-Gmail/Suppression/Opt-out-Tests grün.
 
 ## TF-024 SWISS STRICT EMAIL COMPLIANCE (dauerhaft; Code: `email-permission.js`, `legalBasis()` in `mail-worker.js`)
 Tests: `test/swiss-compliance-024.test.js` (16). Gegencheck: Entfernen von HIGH-Pflicht, Public-Source-Sperre, Engine-Delegation in
