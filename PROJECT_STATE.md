@@ -56,6 +56,12 @@ VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC 
 - Tests: `test/discovery-247-030.test.js` (13): 24/7-Intervall, sichtbarer Fehler → Draft / keiner → kein Draft, Duplikate, kontaktiert, Suppression,
   Opt-out, Sperrfrist, Tages-/Stunden-/Website-Limits, Worker-Limit + Send-Versuch blockiert, 429-Backoff, Netzfehler, Lock-Recovery, Pause/Resume,
   Server-Control-Whitelist, Mock-E2E Handy→VPS, Dashboard. Gesamt 331/331, Secret-Scan 0 Treffer. Keine echte Mail.
+- **LIVE 2026-10-09 21:02 UTC (Commit 7a08879):** VPS `deploy/vps/deploy.sh fiverr` (ohne Secrets), Container healthy, 0 Restarts, `worker_started role=vps`.
+  VPS `config.json` → `discovery` von Chris’ alten Werten (60 min / 3 Sites / 40 pro Tag) auf die 24/7-Werte gesetzt (20 min / 4 / 12 pro h / 60 pro Tag /
+  5 bzw. 20 Entwürfe) – Datei bleibt 600. Live-Status im Container: ACTIVE, 39 heute geprüft, 4 Entwürfe heute, Queue 0, nächster Lauf 21:21 UTC, kein Fehler.
+  Netlify Production hat 7a08879 per Push deployt (Panel „24/7 Discovery“ + discovery.pause/resume im HUD). check-mail-auth VPS self=true /
+  Windows self=false; dr-probe System ONLINE, VPS ACTIVE, Authority VPS, Windows STANDBY, Queue 0, AI ONLINE, Backup OK (3 Gen.). 0 Send-Events,
+  heute keine `control_pull_refused`. Kein Restart/Reboot, keine Control-Aktion live ausgeführt, /opt/fiverr unberührt.
 
 ## COLD-OUTREACH-STANDARDVORLAGE: VOLLSTÄNDIGER WEBSEITEN-CHECK (2026-10-09, Tests 318/318)
 - `swiss-repair.js` `buildColdDraft`: Struktur jetzt Anrede → 1 belegtes, einfach erklärtes Problem (optional 2.) → `FULL_CHECK_TEXT`
