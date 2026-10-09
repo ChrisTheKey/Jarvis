@@ -326,6 +326,13 @@ export function customerFindings(issues = []) {
 }
 
 export const COLD_FOOTER = "Falls solche Hinweise für Sie nicht relevant sind, genügt eine kurze Antwort und ich melde mich diesbezüglich nicht erneut.";
+// Standardvorlage (seit 2026-10-09): Der belegte Befund ist nur der „erste Blick“ – das Angebot ist der VOLLSTÄNDIGE Webseiten-Check.
+// Nie behaupten, die ganze Website sei schon geprüft. Preise ausschliesslich aus OFFERS (genau zwei Angebote, nichts erfinden).
+export const FULL_CHECK_TEXT = "Das ist nur der Punkt, der mir beim ersten Blick direkt aufgefallen ist. Mein Angebot umfasst einen vollständigen Webseiten-Check: Ich prüfe Ihre gesamte Website auf sichtbare Fehler, defekte Links sowie die Darstellung auf Smartphone und Desktop und fasse alle gefundenen Punkte verständlich zusammen.";
+// Als Funktionen (nicht als Modul-Konstanten): sales.js und swiss-repair.js importieren sich gegenseitig – OFFERS ist beim Laden
+// über server.js/sales.js noch nicht initialisiert. Beim Aufruf (Entwurf bauen) ist es das immer.
+export const offer150Text = () => `«Check & Anleitung» kostet CHF ${OFFERS.REPAIR_CHECK_150.price}: vollständiger Webseiten-Check plus verständliche Schritt-für-Schritt-Anleitung.`;
+export const offer480Text = () => `«Check & Reparatur» kostet CHF ${OFFERS.REPAIR_FIX_500.price}: vollständiger Webseiten-Check, Reparatur der im Rahmen des Angebots behebbaren gefundenen Fehler und anschliessender Test auf Smartphone und Desktop.`;
 
 export function buildColdDraft(lead = {}, q = qualifyRepairLead(lead), sender = {}) {
   const findings = q.customer_findings || customerFindings(lead.websiteIssues);
@@ -343,9 +350,14 @@ export function buildColdDraft(lead = {}, q = qualifyRepairLead(lead), sender = 
     `ich habe mir Ihre Website kurz angesehen und dabei ist mir aufgefallen, dass ${first.text}. ${first.impact}`,
     ...(second ? ["", `Ausserdem ist mir aufgefallen, dass ${second.text}. ${second.impact}`] : []),
     "",
-    "Ich behebe solche kleineren Website-Probleme für Schweizer Unternehmen.",
+    // Erster Blick ≠ vollständige Prüfung: der gefundene Punkt ist nur der Einstieg, das Angebot ist der vollständige Webseiten-Check.
+    second ? FULL_CHECK_TEXT.replace("nur der Punkt, der", "nur das, was") : FULL_CHECK_TEXT,
     "",
-    `Wenn Sie möchten, schaue ich mir das gerne genauer an – eine kurze Antwort genügt. Mehr dazu: ${LANDING_PAGE_URL}`,
+    offer150Text(),
+    "",
+    offer480Text(),
+    "",
+    `Wenn das für Sie interessant ist, genügt eine kurze Antwort. Details: ${LANDING_PAGE_URL}`,
     "",
     "Freundliche Grüsse",
     signature,

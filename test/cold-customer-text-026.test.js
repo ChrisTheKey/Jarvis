@@ -70,7 +70,8 @@ test("kein technischer Jargon, kein Statuscode, keine Messwerte im Kundentext", 
   const issues = [BROKEN_LINK, OVERLAP, BROKEN_IMG(1), issue("slow_response", "medium", "Ladezeit der Startseite 7.2 s (LCP 6.1 s, CLS 0.4, Lighthouse 41)"),
     issue("mixed_content", "medium", "Unverschlüsselt eingebunden auf HTTPS-Seite: http://cdn.x/a.js"), issue("missing_title", "medium", "Kein oder leerer <title> im HTML")];
   const { subject, body } = draft(issues);
-  const text = customerPart(subject + "\n" + body);
+  // Preise der zwei Angebote (CHF 150/480) sind keine Statuscodes – vor der Jargon-Prüfung entfernen.
+  const text = customerPart(subject + "\n" + body).replace(/CHF \d+/g, "");
   assert.doesNotMatch(text, CUSTOMER_JARGON_RE);
   assert.doesNotMatch(text, /\b404\b|HTTP|CLS|LCP|FCP|Lighthouse|DOM|px|<title>|Ladezeit|unverschlüsselt|https?:\/\//i);
   assert.ok(!text.includes("https://muster.ch/angebot"), "keine technische Ziel-URL");
@@ -141,12 +142,15 @@ test("keine erfundenen Probleme: jede Aussage geht auf einen beobachteten Befund
 test("keine Angst-/Druck-Verkaufssprache, kein Preisverkauf, Struktur wie vorgegeben", () => {
   const { subject, body } = draft([BROKEN_LINK, OVERLAP], { contact_name: "Anna Muster" });
   assert.doesNotMatch(customerPart(subject + body), CUSTOMER_PRESSURE_RE);
-  assert.doesNotMatch(body, /kaputt|verlieren|Umsatz|veraltet|unsicher|schlecht|dringend|Redesign|neue Website|CHF/i);
+  assert.doesNotMatch(body, /kaputt|verlieren|Umsatz|veraltet|unsicher|schlecht|dringend|Redesign|neue Website/i);
   assert.match(body, /^Hallo Anna Muster,\n\nich habe mir Ihre Website kurz angesehen und dabei ist mir aufgefallen, dass /);
-  assert.match(body, /\n\nIch behebe solche kleineren Website-Probleme für Schweizer Unternehmen\.\n/);
+  // Standardvorlage: erster Blick → vollständiger Webseiten-Check → genau zwei Angebote (Preise nur aus OFFERS) → kurze Antwort genügt.
+  assert.match(body, /\n\nDas ist nur das, was mir beim ersten Blick direkt aufgefallen ist\. Mein Angebot umfasst einen vollständigen Webseiten-Check: /);
+  assert.match(body, /\n\n«Check & Anleitung» kostet CHF 150: [^\n]*\n\n«Check & Reparatur» kostet CHF 480: /);
+  assert.doesNotMatch(body, /CHF (?!(?:150|480)\b)\d/, "keine anderen Preise");
   assert.match(body, /Freundliche Grüsse\nChris Kälin/);
   assert.ok(body.includes(COLD_FOOTER), "Abmeldemöglichkeit bleibt");
-  assert.ok(body.split(/\s+/).length < 140, "kurz");
+  assert.ok(body.split(/\s+/).length < 240, "kurz");
   assert.equal(subject, "Kurzer Hinweis zu Ihrer Website muster.ch");
 });
 

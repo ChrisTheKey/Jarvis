@@ -36,6 +36,19 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
 
+## COLD-OUTREACH-STANDARDVORLAGE: VOLLSTÄNDIGER WEBSEITEN-CHECK (2026-10-09, Tests 318/318)
+- `swiss-repair.js` `buildColdDraft`: Struktur jetzt Anrede → 1 belegtes, einfach erklärtes Problem (optional 2.) → `FULL_CHECK_TEXT`
+  („Das ist nur der Punkt, der mir beim ersten Blick direkt aufgefallen ist. Mein Angebot umfasst einen vollständigen Webseiten-Check: …
+  gesamte Website … sichtbare Fehler, defekte Links … Smartphone und Desktop … verständlich zusammen.“; bei zwei Befunden „nur das, was …“)
+  → `offer150Text()` («Check & Anleitung» CHF 150: Check + Schritt-für-Schritt-Anleitung) → `offer480Text()` («Check & Reparatur» CHF 480:
+  Check + Reparatur der im Angebot behebbaren Fehler + Test Smartphone/Desktop) → „Wenn das für Sie interessant ist, genügt eine kurze
+  Antwort. Details: Landingpage“ → Signatur → `COLD_FOOTER`. Preise ausschliesslich aus `OFFERS` (Funktionen statt Konstanten wegen des
+  Zirkular-Imports sales.js ↔ swiss-repair.js). Nie „Website bereits geprüft“ – erster Blick ≠ Check. Betreff unverändert.
+- Unverändert: max. 2 Kundenaussagen, nur belegte sichtbare Fehler, ohne Befund kein Entwurf, Evidence intern, Jargon-/Druck-Sperre für die
+  Befundtexte (Preise sind keine Statuscodes – Tests entfernen `CHF d+` vor der Jargon-Prüfung), COLD_LEAD_DRAFT_ONLY, legal_basis NONE, kein Auto-Send.
+- Tests: neu `test/cold-template-029.test.js` (6); angepasst 022/025/026 (Preise jetzt erlaubt, alter Satz „Ich behebe solche kleineren
+  Website-Probleme“ ersetzt). Vorhandene Gmail-Entwürfe bleiben unberührt (extern bereits angepasst); keine Mail gesendet.
+
 ## JARVIS MOBILE CLOUD READY — END-TO-END VERIFIED (2026-10-09 19:50–19:55 UTC)
 - Echter Production-Mobile-Test bestanden (390×844, Local Core blockiert, Passwort von Chris im Browser eingegeben, nie ausgelesen, danach entfernt).
 - Echter Gmail-Draft über Production-UI → /api/cloud (mail_request, delivery=draft) → Cloud-Queue → VPS Cloud Core/Mail-Worker → Gmail API:
@@ -205,7 +218,7 @@ Blobs `jarvis-server-control`) ← VPS-Agent im Cloud-Core-Prozess holt ab (nur 
   Browser-Warnung, Seite lädt nicht; Handy: Text überlappt / Bereich abgeschnitten, Button, sichtbarer Darstellungsfehler – letztere nur mit
   reproducible=true + Bereich). Gleiche sichtbare Ursache → eine Aussage. Nie im Kundentext: Statuscodes, URLs der Befunde, CLS/LCP/Lighthouse,
   Ladezeit, Titel/SEO, HTTPS-Details, Technik/„altes Design“, Druck-/Angstsprache, Preise (`CUSTOMER_JARGON_RE`/`CUSTOMER_PRESSURE_RE`, fail closed).
-  Ohne solchen Befund: KEIN Cold-Entwurf (Stufe `no_visible_issue`), nichts wird erfunden. Struktur: „Hallo …, ich habe mir Ihre Website kurz
+  Ohne solchen Befund: KEIN Cold-Entwurf (Stufe `no_visible_issue`), nichts wird erfunden. Struktur (bis 2026-10-09, danach siehe Standardvorlage oben): „Hallo …, ich habe mir Ihre Website kurz
   angesehen …“, Auswirkung in einem Satz, „Ich behebe solche kleineren Website-Probleme für Schweizer Unternehmen.“, CTA + Landingpage, Grüsse, Abmeldesatz.
 - Intern unverändert: `issue_evidence` (Typ, URL, technische Evidence, Zeitpunkt, Schwere), `evidence_hash`, `offer_class` (CHF 150/480),
   neu `customer_findings` mit internen Referenzen. Auditor speichert zusätzlich Seite + Linktext (nur intern, für die einfache Formulierung).

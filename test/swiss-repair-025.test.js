@@ -197,7 +197,7 @@ test("Entwurf: konkreter Befund, richtiges Angebot (CHF 150/500), kein Redesign,
     assert.doesNotMatch(b, /redesign|neue website|neubau anbieten|komplettwebsite|2['’]?490|veraltet|dringend|sofort handeln|gefährlich|hacker/i);
     const prices = Object.values(OFFERS).map((o) => o.price).join("|");
     assert.doesNotMatch(b, new RegExp(`CHF (?!(?:${prices})\\b)\\d`), "nur die zwei Angebotspreise");
-    assert.match(b, /Ich behebe solche kleineren Website-Probleme für Schweizer Unternehmen\./);
+    assert.match(b, /vollständigen Webseiten-Check/, "Angebot = vollständiger Webseiten-Check");
     assert.ok(b.includes(COLD_FOOTER), "sachliche Abmeldemöglichkeit");
     assert.match(b, /Chris Kälin/);
   }
