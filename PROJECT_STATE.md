@@ -58,6 +58,11 @@ VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC 
   nie in state.actions. Tests: `test/discovery-1500-031.test.js` (7) + angepasste 030; gesamt 338/338, Secret-Scan 0 Treffer, 0 Send-Events.
 - Performance: 21 Audits je Lauf sequentiell mit 1,5 s Mindestabstand je Website (site-auditor) ≈ 2–6 min je Lauf < 20-min-Intervall; keine
   Parallelität nötig. Gmail: 25 Entwürfe je 2-min-Durchlauf ≈ bis 750/h technisch möglich.
+- **LIVE 2026-10-09 21:30 UTC (Commit 60bed54):** VPS `deploy/vps/deploy.sh fiverr` (ohne Secrets), Container healthy, 0 Restarts, `worker_started role=vps`.
+  VPS `config.json` → `discovery`: intervalMinutes 20, sitesPerRun 21, maxSitesPerHour 63, maxSitesPerDay 1500, maxDraftsPerHour null, maxDraftsPerDay null
+  (null = kein Business-Cap), Datei 600. Live-Status: ACTIVE, Websites 44/1500 heute, 7 qualifizierte Leads (alle 7 von Chris manuell versendet →
+  0 offen, 0 wartend), Draft-Worker ACTIVE, nächster Lauf 21:43 UTC. Netlify Production hat 60bed54 deployt (neue Panel-Zeilen live).
+  dr-probe: System ONLINE, VPS ACTIVE, Authority VPS, Windows STANDBY, Queue 0. 0 Send-Events. /opt/fiverr unberührt.
 
 ## JARVIS 24/7 CLOUD LEAD DISCOVERY (2026-10-09, Code fertig, Tests 331/331)
 - VPS 24/7, Windows optional: `lead-finder.js` läuft im VPS-Worker-Loop in jedem Durchlauf; `DEFAULT_DISCOVERY` jetzt intervalMinutes 20, sitesPerRun 4,
