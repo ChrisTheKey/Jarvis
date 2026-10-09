@@ -55,7 +55,15 @@ VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC 
 - Echter Gmail-Draft-E2E-Test (Cloud → VPS → Gmail): NICHT ausgeführt – im Projekt ist kein sicherer Testempfänger dokumentiert
   (TESTEMPFAENGER_FEHLT). Chris: Testadresse in PROJECT_STATE unter „Testempfänger“ eintragen, dann genau ein Draft-Test.
 - Echter Mobile-Test auf Production braucht das Cloud-Passwort (lokal nicht vorhanden) – ohne Passwort nur Login-Screen prüfbar.
-- Deploy: siehe Live-Stand unten (VPS-Redeploy nötig, da Backend geändert: server-control.js, server-agent.js, mail-worker.js, sales.js, cloud-leads.js).
+- **LIVE 2026-10-09 18:40 UTC (Commit a7ede6a):** VPS `bash deploy/vps/deploy.sh fiverr` (ohne `--with-secrets`): DEPLOYED_COMMIT a7ede6a, Container
+  healthy, 0 Restarts, `server_control_started` + `worker_started role=vps` 18:40:48 UTC; kein `control_leads_failed`/401/`control_pull_failed`
+  (einziger Fehler im Log: alter Overpass-504 der Discovery 13:56 UTC). Live-Lead-Liste im Container (nur Zähler ausgegeben): 24 Leads,
+  7 „Entwurf in Gmail“, 1 erstellbar, 0 gesperrt, 16 mit Problemtext, 20 Allowlist-Felder, ~16 KB. Netlify Production hat a7ede6a per Git-Push
+  deployt (HUD enthält `openCloudLeads`); `?leads=1` ohne Passwort → 401; Server-Control-Probe configured/64. check-mail-auth: VPS self=true,
+  Windows self=false, pending 0. dr-probe: System ONLINE, Core CLOUD ONLINE, VPS ACTIVE, Authority VPS, Windows STANDBY, Queue 0, AI ONLINE.
+  Production-Mobile-Check 390×844 (Local Core blockiert, ohne Passwort): Modus CLOUD, Boot „CLOUD (VPS – PC OPTIONAL)“, Passwortabfrage mit
+  Cloud-Hinweis sichtbar, kein horizontaler Overflow; Chat/Leads/Draft live nur mit JARVIS_PASSWORD prüfbar (nicht vorhanden, nicht erfragt).
+  Keine echte Mail, kein Restart/Reboot, keine Control-Aktion ausgeführt, /opt/fiverr unberührt.
 
 ## MOBILE + CLOUD PARITY (2026-10-09, Code fertig, Tests 302/302) – Jarvis vom Handy, PC optional
 - Bestandsaufnahme: Cloud Core/VPS live (Heartbeat frisch, Start 2026-10-08 20:43 UTC = 4eff23c, 0 Restarts), Netlify Production 200
