@@ -145,8 +145,15 @@ form.cmd button.stop { color: var(--red); }
 .leads-box h2 { align-items: center; }
 .lead-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font: 13px var(--mono); }
 .lead-list li { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 8px; border-left: 2px solid var(--line); cursor: pointer; }
+@media (max-width: 860px) { .lead-list li { padding: 10px 8px; min-height: 44px; } }
 .lead-list li:hover, .lead-list li.sel { border-left-color: var(--cyan); background: rgba(63,216,255,.06); }
 .lead-list .o { color: var(--amber); } .lead-list .o.none { color: var(--muted); }
+.lead-list li small { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.lead-list .o.ok { color: var(--green); } .lead-list .o.bad { color: var(--red); }
+.lead-detail .acts2 { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.lead-detail .acts2 a { color: var(--cyan); text-decoration: none; border: 1px solid var(--line); font: 11px var(--mono); letter-spacing: .08em; padding: 2px 8px; }
+.lead-detail .note { color: var(--muted); margin-top: 8px; }
+.lead-detail .msg { color: var(--text); margin-top: 8px; overflow-wrap: anywhere; }
 .lead-detail { font: 13px/1.5 var(--mono); }
 .lead-detail h3 { margin: 0 0 8px; font: 600 18px var(--ui); color: var(--cyan-2); overflow-wrap: anywhere; }
 .lead-detail .kv { margin-bottom: 12px; }
@@ -208,10 +215,11 @@ form.cmd button.stop { color: var(--red); }
   .panel h2::after { content: "−"; color: var(--muted); margin-left: 8px; }
   .panel.collapsed h2::after { content: "+"; }
   .panel.collapsed > :not(h2) { display: none; }
+  .leads-box .panel h2 { cursor: default; } .leads-box .panel h2::after { content: none; }
   .right .panel { max-height: none; }
   .log { max-height: 50vh; }
   .alerts ul, .mail ul { max-height: none; }
-  .alerts button, .srv-ctl button, .panel h2 button, .leads-box button, .mail h2 a { min-height: 40px; padding: 8px 12px; font-size: 12px; display: inline-flex; align-items: center; }
+  .alerts button, .srv-ctl button, .panel h2 button, .leads-box button, .mail h2 a, .lead-detail .acts2 a { min-height: 40px; padding: 8px 12px; font-size: 12px; display: inline-flex; align-items: center; }
   .alerts .acts, .srv-ctl .btns { gap: 8px; flex-wrap: wrap; }
   .kv b { white-space: normal; }
   .leads { padding: 8px; align-items: stretch; }
@@ -333,7 +341,7 @@ form.cmd button.stop { color: var(--red); }
       <div class="total"><span>UMSATZ TOTAL</span><b id="sRevenue">–</b></div>
     </section>
     <section class="panel sales" id="salesPanel">
-      <h2>Vertrieb <button type="button" id="leadsBtn" title="Lead-Details nur im LOCAL-Modus – Leads bleiben auf VPS/PC, in der Cloud nur Zähler">LEADS</button></h2>
+      <h2>Vertrieb <button type="button" id="leadsBtn" title="Lead-Liste: LOCAL mit allen Details, CLOUD/Handy als sichere Kurzliste vom VPS (Firma, Problem, Kontakt, Draft-Status)">LEADS</button></h2>
       <div class="kv two">
         <span>Gefunden</span><b id="sDiscovered">–</b><span>CH verifiziert</span><b id="sSwiss">–</b>
         <span>Geprüft</span><b id="sAudited">–</b><span>Repair Fit</span><b id="sFit" title="modern/weiterverwendbar">–</b>
@@ -1073,15 +1081,18 @@ function renderSales(m) {
   set("sContacted", m?.contacted); set("sReplies", m?.replies); set("sCustomers", m?.customers);
   set("s150", m?.sales_150 ?? 0); set("s500", m?.sales_500 ?? 0);
   set("sRev150", chf(m?.revenue_150)); set("sRev500", chf(m?.revenue_500)); set("sRevenue", chf(m?.total_revenue));
-  $("leadsBtn").disabled = mode !== "local";
+  $("leadsBtn").disabled = !leadsAvailable();
 }
+// Leads: LOCAL vom Local Core (Details, Evidence), CLOUD als READ-only-Liste vom VPS über /api/server-control (Allowlist, kein Local Core nötig).
+const leadsAvailable = () => mode === "local" || (mode === "cloud" && HOSTED && !!cloudKey);
 const OFFER_LABEL = { REPAIR_CHECK_150: "CHF 150", REPAIR_FIX_500: "CHF 480", NONE: "NONE" };
 const STAGE_LABEL = { discovered: "gefunden", audited: "geprüft", repair_candidate: "Repair-Kandidat", blocked_no_legal_basis: "blockiert – keine Versandgrundlage",
   approved: "versandberechtigt", contacted: "kontaktiert", swiss_verified: "Schweiz verifiziert", modern_repair_fit: "Modern/Repair Fit",
   blocked_no_contact_basis: "blockiert – keine Kontaktgrundlage", cold_lead_draft_only: "Cold Lead – Entwurf wird erstellt", draft_created: "Entwurf erstellt – wartet auf Chris", replied: "geantwortet", customer: "Kunde", not_interested: "kein Interesse", do_not_contact: "nicht kontaktieren" };
 let leadData = [];
 async function openLeads() {
-  if (mode !== "local") return;
+  if (!leadsAvailable()) return;
+  if (mode === "cloud") return openCloudLeads();
   $("leads").hidden = false;
   $("leadList").replaceChildren(); $("leadDetail").textContent = "Lade …";
   try {
@@ -1100,7 +1111,88 @@ async function openLeads() {
       return li;
     }));
     if (leadData.length) showLead(0); else $("leadDetail").textContent = "Noch keine Leads.";
-  } catch { $("leadDetail").textContent = "Lead-Daten nicht erreichbar (nur im Local-Modus verfügbar)."; }
+  } catch { $("leadDetail").textContent = "Lead-Daten vom Local Core nicht erreichbar."; }
+}
+// ---------- Cloud/Handy: Lead-Liste (READ-only, Felder per Allowlist vom Server) + Cold-Entwurf je genau EINEM Lead ----------
+// Keine Roh-Evidence, keine Befund-URLs, keine Gmail-IDs. Aktionen: nur „Gmail-Entwurf erstellen“ (COLD_LEAD_DRAFT_ONLY) und „verwerfen“.
+const DRAFT_LABEL = { none: "kein Entwurf", queued: "Entwurf wird angelegt", draft_created: "Entwurf in Gmail", manually_sent: "manuell versendet", sent: "versendet", discarded: "verworfen", blocked: "blockiert" };
+let cloudLeads = [];
+async function openCloudLeads({ select = null, note = null } = {}) {
+  $("leads").hidden = false;
+  $("leadList").replaceChildren(); $("leadDetail").textContent = "Lade Leads vom VPS …";
+  try {
+    const { status, body } = await serverFetch({}, "?leads=1");
+    if (status !== 200) throw new Error(status === 401 ? "nicht berechtigt" : status === 503 ? "Server Control nicht konfiguriert" : "Cloud nicht erreichbar");
+    cloudLeads = Array.isArray(body.leads) ? body.leads : [];
+    $("leadsCount").textContent = String(cloudLeads.length) + (body.leads_at ? " · VPS " + fmtTime(body.leads_at) : "");
+    const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text !== undefined) x.textContent = text; return x; };
+    $("leadList").replaceChildren(...cloudLeads.map((l, i) => {
+      const li = document.createElement("li");
+      const left = el("span", "");
+      left.append(el("b", "", l.company || l.lead_id), el("small", "", (l.problems?.[0] || "kein sichtbares Problem").slice(0, 110)),
+        el("small", "", [l.contact_name, l.business_email].filter(Boolean).join(" · ") || "kein geschäftlicher Kontakt"));
+      const st = l.suppressed || l.opted_out ? "gesperrt" : DRAFT_LABEL[l.draft_status] || l.draft_status;
+      const o = el("span", "o" + (l.suppressed || l.opted_out ? " bad" : l.draft_status === "draft_created" ? " ok" : l.draft_status === "none" ? " none" : ""), st);
+      li.append(left, o); li.tabIndex = 0;
+      li.onclick = li.onkeydown = (e) => { if (e.type === "click" || e.key === "Enter") showCloudLead(i); };
+      return li;
+    }));
+    const idx = select ? Math.max(0, cloudLeads.findIndex((x) => x.lead_id === select)) : 0;
+    if (cloudLeads.length) { showCloudLead(idx); if (note) { const m = $("leadDetail").querySelector(".msg"); if (m) m.textContent = note; } } else $("leadDetail").textContent = "Noch keine Leads vom VPS (die Liste kommt mit dem nächsten Status-Abgleich).";
+  } catch (e) { $("leadDetail").textContent = "Lead-Liste nicht verfügbar (" + e.message + ")."; }
+}
+function showCloudLead(i) {
+  const l = cloudLeads[i], box = $("leadDetail");
+  if (!l) return;
+  [...$("leadList").children].forEach((li, j) => li.classList.toggle("sel", j === i));
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text !== undefined) x.textContent = text; return x; };
+  const kv = (rows) => { const d = el("div", "kv"); for (const [k, v] of rows) { const b = el("b"); if (v instanceof Node) b.append(v); else b.textContent = v ?? "–"; d.append(el("span", "", k), b); } return d; };
+  const site = el("a", "", l.website || l.lead_id); if (l.website) { site.href = l.website; site.target = "_blank"; site.rel = "noopener"; }
+  const blocked = l.suppressed || l.opted_out;
+  const out = [el("h3", "", l.company || l.lead_id)];
+  out.push(el("div", "block", blocked ? "GESPERRT — SUPPRESSION / OPT-OUT" : l.draft_status === "draft_created" ? "ENTWURF ERSTELLT — NICHT AUTOMATISCH VERSANDBERECHTIGT" : "COLD LEAD — NUR ENTWURF, NICHT AUTOMATISCH VERSANDBERECHTIGT"));
+  out.push(kv([
+    ["Website", site], ["Kontakt", l.contact_name || "–"], ["Rolle", l.contact_role || "–"], ["Geschäftliche E-Mail", l.business_email || "–"],
+    ["Draft Status", DRAFT_LABEL[l.draft_status] || l.draft_status], ["Entwurf in Gmail", l.draft_in_gmail ? "ja" : "nein"], ["Draft-Modus", l.draft_mode || "COLD_LEAD_DRAFT_ONLY"],
+    ["Suppression", l.suppressed ? "gesperrt" : "nicht gesperrt"], ["Opt-out", l.opted_out ? "abgemeldet" : "kein Opt-out"],
+    ["Status", STAGE_LABEL[l.stage] || l.stage], ["Angebot", OFFER_LABEL[l.offer_class] || l.offer_class], ["Letzter Kontakt", fmtTime(l.last_contact_at)], ["Antwort", l.replied ? "ja" : "nein"],
+  ]));
+  out.push(el("div", "", "SICHTBARES PROBLEM (in Kundensprache)"));
+  const ul = el("ul");
+  for (const p of l.problems || []) ul.append(el("li", "", p));
+  if (!(l.problems || []).length) ul.append(el("li", "", "Kein sichtbares, reproduzierbares Problem – darum kein Entwurf."));
+  out.push(ul);
+  const msg = el("div", "msg");
+  const acts = el("div", "acts2");
+  const btn = (label, enabled, fn) => { const b = el("button", "", label); b.type = "button"; b.disabled = !enabled; b.onclick = fn; return b; };
+  acts.append(btn("GMAIL-ENTWURF ERSTELLEN", !!l.draft_eligible && !blocked, () => cloudLeadAction("leads.createDraft", l, msg)));
+  acts.append(btn("ENTWURF VERWERFEN", ["queued", "draft_created"].includes(l.draft_status), () => cloudLeadAction("leads.discardDraft", l, msg)));
+  if (l.draft_in_gmail) { const a = el("a", "", "IN GMAIL ÖFFNEN"); a.href = "https://mail.google.com/mail/u/0/#drafts"; a.target = "_blank"; a.rel = "noopener"; acts.append(a); }
+  out.push(acts, msg);
+  out.push(el("div", "note", blocked ? "Gesperrt (Suppression/Opt-out) – kein Entwurf möglich." : "Nur Entwurf (COLD_LEAD_DRAFT_ONLY, Legal Basis NONE). Versand nur durch Chris direkt in Gmail. Jarvis sendet diesen Entwurf nie, es gibt keinen Sende-Knopf."));
+  box.replaceChildren(...out);
+}
+async function cloudLeadAction(action, l, msg) {
+  if (action === "leads.discardDraft" && !confirm("Cold-Entwurf verwerfen?")) return;
+  msg.textContent = "Auftrag wird an den VPS übergeben …";
+  try {
+    const { status, body } = await serverFetch({ method: "POST", body: JSON.stringify({ action, params: { lead_id: l.lead_id } }) });
+    if (status !== 202) { msg.textContent = body?.error || "Fehler " + status; return; }
+    const rid = body.request.request_id;
+    for (let i = 0; i < 24; i++) {
+      await sleep(5000);
+      const r = await serverFetch({}, "?watch=1");
+      const q = (r.body?.requests || []).find((x) => x.request_id === rid);
+      if (!q || ["pending", "running"].includes(q.status)) continue;
+      const res = q.result || {};
+      const ok = q.status === "done";
+      msg.textContent = ok ? `OK: ${DRAFT_LABEL[res.review?.status] || res.review?.status || "angelegt"} – ${res.note || "Entwurf wird in Gmail angelegt, nie gesendet."}` : `Abgelehnt: ${res.error || q.error || q.status}`;
+      log("LEADS", `${l.company || l.lead_id}: ${ok ? "Cold-Entwurf " + (action === "leads.discardDraft" ? "verworfen" : "wird in Gmail angelegt (nie gesendet)") : "abgelehnt – " + (res.error || q.error || q.status)}`, ok ? "green" : "red");
+      if (ok) { await sleep(6000); await openCloudLeads({ select: l.lead_id, note: msg.textContent }); } // Liste neu laden: der VPS schickt die Änderung mit dem nächsten Status-Pull
+      return;
+    }
+    msg.textContent = "Noch kein Ergebnis vom VPS.";
+  } catch { msg.textContent = "Cloud nicht erreichbar."; }
 }
 function showLead(i) {
   const l = leadData[i], box = $("leadDetail");
@@ -1234,7 +1326,7 @@ function renderMode() {
   $("kLocal").className = mode === "local" ? "on-ok" : "on-idle"; // optionaler Client – offline ist kein Systemfehler
   $("modePill").textContent = mode === "local" ? "LOCAL" : mode === "cloud" ? "CLOUD" : "OFFLINE";
   $("modePill").classList.toggle("cloud", mode !== "local");
-  $("leadsBtn").disabled = mode !== "local";
+  $("leadsBtn").disabled = !leadsAvailable();
   if (mode !== "local") { for (const k of ["cpu", "mem"]) { $(k).textContent = "–"; $(k + "Bar").style.width = "0"; } $("host").textContent = mode === "cloud" ? "CLOUD" : ""; }
   renderQuick();
 }

@@ -8,6 +8,7 @@
 // Eigenes Secret: JARVIS_SERVER_CONTROL_TOKEN (nie Worker-/Sync-Token, Anthropic-Key oder Gmail-Token wiederverwenden).
 // Der Token liegt nur in Netlify (Server-Funktion) und in /opt/jarvis-mail/.env – nie im Browser, in Git, Logs oder PROJECT_STATE.
 import { safeEqual } from "./shared-state.js";
+import { LEAD_ID_RE, cleanLeads } from "./cloud-leads.js";
 
 export const TIERS = ["read", "control", "dangerous"];
 export const LOG_SOURCES = ["core", "mail", "scheduler", "backup", "deploy"];
@@ -33,6 +34,9 @@ export const ACTIONS = {
   "jarvis.restartScheduler": { tier: "control", label: "Scheduler neu starten", cooldownMs: 2 * 60_000 },
   "jarvis.restartMailWorker": { tier: "control", label: "Mail-Worker neu starten", cooldownMs: 5 * 60_000 },
   "jarvis.restartCore":      { tier: "control", label: "Jarvis Core neu starten", cooldownMs: 10 * 60_000 },
+  // Cold-Lead-Entwürfe vom Handy: nur ENTWURF in Gmail (COLD_LEAD_DRAFT_ONLY, legal_basis NONE) bzw. Verwerfen – es gibt keine Send-Aktion.
+  "leads.createDraft":       { tier: "control", label: "Gmail-Entwurf erstellen (Cold Lead, nie senden)", params: { lead_id: LEAD_ID_RE } },
+  "leads.discardDraft":      { tier: "control", label: "Cold-Entwurf verwerfen", params: { lead_id: LEAD_ID_RE } },
 };
 // DANGEROUS: bekannt, aber aus der Cloud-UI immer gesperrt (Reboot, Pakete, Firewall, SSH, Löschen, Secret-Rotation).
 export const DANGEROUS = ["system.reboot", "system.shutdown", "system.upgrade", "system.packages", "firewall.change", "ssh.change",
@@ -57,10 +61,12 @@ export function validateAction(input) {
   for (const [k, v] of Object.entries(raw)) {
     const rule = spec[k];
     if (!rule) return deny(400, "BAD_PARAMS", `Parameter ${String(k).slice(0, 20)} ist nicht erlaubt.`);
-    if (typeof rule[0] === "string") { if (!rule.includes(v)) return deny(400, "BAD_PARAMS", `${k}: nur ${rule.join(", ")}.`); params[k] = v; }
+    if (rule instanceof RegExp) { if (typeof v !== "string" || v.length > 253 || !rule.test(v)) return deny(400, "BAD_PARAMS", `${k}: ungültig.`); params[k] = v; }
+    else if (typeof rule[0] === "string") { if (!rule.includes(v)) return deny(400, "BAD_PARAMS", `${k}: nur ${rule.join(", ")}.`); params[k] = v; }
     else { if (!Number.isInteger(v) || v < rule[0] || v > rule[1]) return deny(400, "BAD_PARAMS", `${k}: ganze Zahl ${rule[0]}–${rule[1]}.`); params[k] = v; }
   }
   if (action === "service.logs" && !params.source) return deny(400, "BAD_PARAMS", "source fehlt.");
+  if (action.startsWith("leads.") && !params.lead_id) return deny(400, "BAD_PARAMS", "lead_id fehlt (genau ein Lead, keine Sammelaktion).");
   return { ok: true, action, tier: def.tier, params };
 }
 
@@ -155,7 +161,7 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
     for (let i = 0; i < 6; i++) {
       const { state, etag } = await store.get();
       const t = now();
-      const cur = { requests: [], audit: [], rate: [], snapshot: null, snapshot_at: null, watch_at: null, ...(state || {}) };
+      const cur = { requests: [], audit: [], rate: [], snapshot: null, snapshot_at: null, watch_at: null, leads: null, leads_at: null, ...(state || {}) };
       const before = cur.requests.filter((r) => ["pending", "running"].includes(r.status)).map((r) => r.request_id);
       cur.requests = expire(cur.requests, t);
       // Abgelaufene Aufträge ebenfalls ins Audit.
@@ -170,12 +176,14 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
     }
     return { status: 409, body: { error: "Gleichzeitige Änderung – bitte erneut versuchen." } };
   }
-  const view = (cur, t) => ({
+  const view = (cur, t, { leads = false } = {}) => ({
     configured: true,
     snapshot: cur.snapshot, snapshot_at: cur.snapshot_at, online: !!cur.snapshot_at && +t - Date.parse(cur.snapshot_at) < SNAPSHOT_STALE_MS,
     requests: cur.requests.slice(-15).map(publicRequest),
     audit: cur.audit.slice(-30),
     actions: Object.fromEntries(Object.entries(ACTIONS).map(([id, a]) => [id, { tier: a.tier, label: a.label }])),
+    // Lead-Liste (nur auf Anfrage ?leads=1): bereits beim Empfang auf die Allowlist gebracht (cleanLeads), hier nur ausgeliefert.
+    ...(leads ? { leads: cur.leads || [], leads_at: cur.leads_at || null } : {}),
   });
 
   return async (req) => {
@@ -199,6 +207,8 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
       if (body.op === "pull") {
         const r = await mutate((cur, t) => {
           if (body.snapshot) { cur.snapshot = cleanSnapshot(body.snapshot); cur.snapshot_at = t.toISOString(); }
+          // Lead-Liste vom VPS (nur bei Änderung mitgeschickt): Allowlist erzwingen, nie Rohdaten speichern.
+          if (Array.isArray(body.leads)) { cur.leads = cleanLeads(body.leads); cur.leads_at = t.toISOString(); }
           const due = cur.requests.filter((x) => x.status === "pending");
           for (const x of due) { x.status = "running"; x.claimed_at = t.toISOString(); x.lease_until = new Date(+t + LEASE_MS).toISOString(); }
           const hot = due.length > 0 || (!!cur.watch_at && +t - Date.parse(cur.watch_at) < WATCH_MS) || cur.requests.some((x) => x.status === "running");
@@ -226,8 +236,8 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
 
     // ----- Chris im Browser -----
     if (req.method === "GET") {
-      const watch = new URL(req.url).searchParams.get("watch") === "1";
-      const r = await mutate((cur, t) => { if (watch) cur.watch_at = t.toISOString(); return { status: 200, body: view(cur, t), readOnly: !watch }; });
+      const q = new URL(req.url).searchParams, watch = q.get("watch") === "1", leads = q.get("leads") === "1";
+      const r = await mutate((cur, t) => { if (watch) cur.watch_at = t.toISOString(); return { status: 200, body: view(cur, t, { leads }), readOnly: !watch }; });
       return reply(r.status, r.body);
     }
     const v = validateAction(body);

@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ACTIONS, MAX_LOG_LINES, validateAction, redact, cleanResult } from "./server-control.js";
+import { leadsFingerprint } from "./cloud-leads.js";
 
 // ---------- Pfad-Schutz ----------
 export const BLOCKED_PATH_RE = /(^|[\\/])(fiverr|\.ssh|ssh_host_[^\\/]*|shadow|gshadow|sudoers|passwd)([\\/]|$)|\/root([\\/]|$)|\.env$|\.pem$|id_(rsa|ecdsa|ed25519)|gmail_token|gmail_credentials|gmail_jarvis|jarvis_sync|vps_worker|server_control/i;
@@ -140,14 +141,30 @@ export function createVpsActions({ dir, roots = [dir], deps, now = () => new Dat
     "jarvis.restartScheduler": () => deps.restartScheduler(),
     "jarvis.restartMailWorker": () => deps.restartMailWorker(),
     "jarvis.restartCore": () => deps.restartCore(),
+    // Cold-Lead-Entwürfe (TF-025): genau EIN Lead je Aufruf, nur Entwurf/Verwerfen – deps.coldDraft kennt keinen Sendepfad.
+    "leads.createDraft": ({ lead_id }) => (typeof deps.coldDraft === "function" ? deps.coldDraft("create", lead_id) : { ok: false, error: "NOT_IMPLEMENTED" }),
+    "leads.discardDraft": ({ lead_id }) => (typeof deps.coldDraft === "function" ? deps.coldDraft("discard", lead_id) : { ok: false, error: "NOT_IMPLEMENTED" }),
   };
 }
 
 // ---------- Agent: abholen → prüfen → ausführen → melden ----------
 // config: { url (…/api/state oder Origin), controlToken }. Ohne eigenen Token läuft der Agent nicht (kein Fallback auf andere Tokens).
-export function createControlAgent({ dir, config, actions, snapshot, fetchFn = globalThis.fetch, log = () => {}, now = () => new Date(), timeoutMs = 60_000 }) {
+export function createControlAgent({ dir, config, actions, snapshot, leads = null, fetchFn = globalThis.fetch, log = () => {}, now = () => new Date(), timeoutMs = 60_000 }) {
   if (!config?.controlToken || config.controlToken.length < 32) return null;
   const endpoint = config.url.replace(/\/api\/state$/, "").replace(/\/+$/, "") + "/api/server-control";
+  // Lead-Liste (Allowlist, cloud-leads.js) nur mitschicken, wenn sie sich geändert hat oder die letzte Übertragung > 10 min zurückliegt.
+  let leadsSent = { fp: null, at: 0 };
+  const leadsPayload = () => {
+    if (typeof leads !== "function") return {};
+    try {
+      const list = leads();
+      if (!Array.isArray(list)) return {};
+      const fp = leadsFingerprint(list);
+      if (fp === leadsSent.fp && +now() - leadsSent.at < 10 * 60_000) return {};
+      leadsSent = { fp, at: +now() };
+      return { leads: list };
+    } catch (e) { log("warn", "control_leads_failed", { error: e.message }); return {}; }
+  };
   const post = async (body) => {
     const r = await fetchFn(endpoint, { method: "POST", headers: { "content-type": "application/json", "x-jarvis-control": config.controlToken }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
     const j = await r.json().catch(() => ({}));
@@ -178,7 +195,7 @@ export function createControlAgent({ dir, config, actions, snapshot, fetchFn = g
   // Ein Durchlauf. Rückgabe { hot, handled, status }. Wirft nie.
   async function pollOnce() {
     let pulled;
-    try { pulled = await post({ op: "pull", snapshot: snapshot() }); }
+    try { pulled = await post({ op: "pull", snapshot: snapshot(), ...leadsPayload() }); }
     catch (e) { log("warn", "control_pull_failed", { error: e.message }); return { hot: false, handled: 0, status: 0 }; }
     if (pulled.status !== 200) { if (pulled.status !== 503) log("warn", "control_pull_refused", { status: pulled.status }); return { hot: false, handled: 0, status: pulled.status }; }
     let handled = 0;
@@ -226,8 +243,11 @@ export function startServerControl(o) {
     restartScheduler: () => ({ ok: true, restarted: "scheduler", after: () => o.restartScheduler() }),
     restartMailWorker: () => ({ ok: true, restarted: "mail_worker", after: () => o.restartMailWorker() }),
     restartCore: () => ({ ok: true, restarted: "core", note: "Container-Prozess startet nach dem laufenden Durchlauf neu (Docker).", after: () => o.restartCore() }),
+    // Cold-Lead-Entwurf vom Handy: der Worker-Prozess legt nur den lokalen Entwurf an (queued) und wird geweckt, damit der Gmail-Entwurf
+    // sofort entsteht. Senden kann dieser Pfad nicht (COLD_LEAD_DRAFT_ONLY, gmail.sendDraft verweigert).
+    coldDraft: (op, leadId) => (typeof o.coldDraft === "function" ? o.coldDraft(op, leadId) : { ok: false, error: "NOT_IMPLEMENTED" }),
   };
-  const agent = createControlAgent({ dir: o.dir, config, actions: createVpsActions({ dir: o.dir, deps }), snapshot, log: o.log });
+  const agent = createControlAgent({ dir: o.dir, config, actions: createVpsActions({ dir: o.dir, deps }), snapshot, leads: o.leads || null, log: o.log });
   if (!agent) { o.log("info", "server_control_disabled", { reason: "JARVIS_SERVER_CONTROL_TOKEN fehlt" }); return null; }
   o.log("info", "server_control_started", {});
   const loop = async () => {

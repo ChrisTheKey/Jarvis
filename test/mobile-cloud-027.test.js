@@ -19,7 +19,7 @@ test("Handy-Layout: eine Spalte, Panels sichtbar und scrollbar, Composer unten f
   assert.match(mobile, /\.bottom \{ order: 4; margin-top: auto; position: sticky; bottom: 0;/, "Composer bleibt unten erreichbar");
   assert.match(mobile, /form\.cmd textarea \{ font-size: 16px;/, "16 px: iOS zoomt nicht in das Feld");
   assert.match(mobile, /\.mic \{ width: 48px; height: 48px; \}/, "grosse Touch-Fläche Mikrofon");
-  assert.match(mobile, /\.alerts button, \.srv-ctl button, \.panel h2 button, \.leads-box button, \.mail h2 a \{ min-height: 40px;/, "grosse Touch-Flächen für Aktionen");
+  assert.match(mobile, /\.alerts button, \.srv-ctl button, \.panel h2 button, \.leads-box button, \.mail h2 a, \.lead-detail \.acts2 a \{ min-height: 40px;/, "grosse Touch-Flächen für Aktionen");
   assert.match(mobile, /\.panel\.collapsed > :not\(h2\) \{ display: none; \}/, "Panels per Tipp auf den Titel auf-/zuklappbar");
   assert.match(html, /const MOBILE = matchMedia\("\(max-width: 860px\)"\);/);
   assert.match(html, /if \(!MOBILE\.matches \|\| e\.target\.closest\("button, a"\)\) return;/, "Desktop: Klick auf den Titel klappt nichts zu; Buttons im Titel bleiben Buttons");

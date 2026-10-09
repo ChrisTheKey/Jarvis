@@ -24,7 +24,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { detectHumanContact } from "./human-contact.js";
-import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend } from "./swiss-repair.js";
+import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend, ensureColdDraft, coldDraftAction } from "./swiss-repair.js";
+import { publicLeads } from "./cloud-leads.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -962,6 +963,7 @@ async function loop() {
   let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false;
   const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
   const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
+  const salesMod = await import("./sales.js");
   if (role === "vps") (await import("./server-agent.js")).startServerControl({
     dir: WORKER_DIR, secretsDir: SECRETS, startedAt, log, core, zurichDay, backupPublicKey, healthy: () => healthy(WORKER_DIR),
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
@@ -969,6 +971,9 @@ async function loop() {
     restartCore: () => { restartRequested = true; wake(); },
     restartMailWorker: () => { worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard }); standbyLogged = false; wake(); },
     restartScheduler: () => wake(),
+    // Cloud/Handy: Lead-Liste (Allowlist) und Cold-Entwurf je genau einem Lead – nur Entwurf, nie Versand.
+    leads: () => publicLeads(salesMod.loadPipeline({ dir: WORKER_DIR, registry: gmail.listOwned() }).leads),
+    coldDraft: (op, leadId) => coldDraftFromCloud({ op, leadId, gmail, dir: WORKER_DIR, wake: () => wake() }),
   });
   log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
   // Herzschlag auch während langer Durchläufe, damit kein zweiter Worker das Lock für verwaist hält.
@@ -1010,6 +1015,40 @@ async function loop() {
     }
     await nap(pollMs(worker.config()));
   }
+}
+
+// Cold-Lead-Entwurf auf Anweisung aus der Cloud (Server Control, genau EIN Lead): legt nur den lokalen Entwurf an (queued, COLD_LEAD_DRAFT_ONLY,
+// legal_basis NONE) bzw. verwirft ihn – der Gmail-Entwurf entsteht im nächsten Worker-Durchlauf wie bei der Discovery. Es gibt hier keinen
+// Sendepfad: kein state.actions-Eintrag, keine Send-Queue; gmail.sendDraft verweigert COLD_LEAD_DRAFT_ONLY ohnehin. Suppression/Opt-out blockieren.
+export async function coldDraftFromCloud({ op, leadId, gmail, dir = WORKER_DIR, wake = () => {}, now = new Date() }) {
+  const store = createStore(dir);
+  const id = String(leadId || "").trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9.-]{2,252}$/.test(id)) return { ok: false, error: "lead_id ungültig." };
+  const summary = (r) => ({ lead_id: r.lead_id, status: r.status, draft_mode: r.draft_mode, legal_basis: r.legal_basis, message_class: r.message_class,
+    automatic_send_allowed: r.automatic_send_allowed === true, manual_send_decision_required: r.manual_send_decision_required === true });
+  if (op === "discard") {
+    try { return { ok: true, review: summary(coldDraftAction(store, "discard", { lead_id: id }, now)) }; } catch (e) { return { ok: false, error: e.message }; }
+  }
+  if (op !== "create") return { ok: false, error: "Unbekannte Aktion." };
+  const { findRawLead } = await import("./sales.js");
+  const lead = findRawLead(dir, id);
+  if (!lead) return { ok: false, error: "Lead unbekannt." };
+  const supp = store.read("suppression.json", {});
+  const to = normEmail(lead.email || "");
+  if (!to) return { ok: false, error: "Keine geschäftliche Adresse." };
+  if (supp[to]) return { ok: false, error: /opt-?out/i.test(supp[to]?.reason || "") ? "Empfänger hat sich abgemeldet (Opt-out)." : "Empfänger ist gesperrt (Suppression)." };
+  const domainSuppressed = Object.keys(supp).some((a) => a.split("@")[1] === lead.domain && !FREEMAIL_RE.test(a));
+  if (domainSuppressed) return { ok: false, error: "Firma ist gesperrt (Suppression auf der Domain)." };
+  const sender = store.read("config.json", {}).sender;
+  if (!sender?.name) return { ok: false, error: "Absender nicht konfiguriert." };
+  const reg = gmail?.listOwned ? gmail.listOwned() : { sent: {}, drafts: {} };
+  const contacted = new Set([...Object.values(reg.sent || {}), ...Object.values(reg.drafts || {})].map((s) => normEmail(s.to || "")).filter(Boolean));
+  try {
+    const r = ensureColdDraft(store, lead, { sender, now, contacted, suppression: supp });
+    if (r.blocked) return { ok: false, error: "Blockiert: " + r.blocked, review: r.existing ? summary(r.existing) : null };
+    wake();
+    return { ok: true, review: summary(r), note: "Lokaler Entwurf angelegt – der Gmail-Entwurf entsteht im nächsten Durchlauf. Jarvis sendet ihn nie." };
+  } catch (e) { return { ok: false, error: e.message }; }
 }
 
 // Docker-Healthcheck: gesund, solange der Worker-Prozess sein Lock in den letzten 5 Minuten erneuert hat.

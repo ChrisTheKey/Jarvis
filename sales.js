@@ -172,6 +172,14 @@ export function loadPipeline({ dir = WORKER_DIR, registry = { sent: {}, drafts: 
   const optOuts = Object.values(suppression).filter((x) => /opt-out/i.test(x?.reason || "")).length;
   return { leads, records, optOuts };
 }
+// Roh-Lead zu einer lead_id (= Domain) aus den lokalen Quellen – für den Cold-Entwurf auf Anweisung aus der Cloud. Nie in die Cloud.
+export function findRawLead(dir = WORKER_DIR, id = "") {
+  const store = createStore(dir), key = String(id || "").toLowerCase();
+  if (!key) return null;
+  for (const l of Array.isArray(store.read("leads.json", [])) ? store.read("leads.json", []) : []) if (l && keyOf(l) === key) return { ...l, domain: key };
+  for (const l of Object.values(store.read("discovered.json", { leads: {} }).leads || {})) if (l && keyOf(l) === key) return { ...l, domain: key };
+  return null;
+}
 function lastSent(registry, email) {
   if (!email) return null;
   return Object.values(registry.sent || {}).filter((x) => normEmail(x.to || "") === email).map((x) => x.sentAt).filter(Boolean).sort().at(-1) || null;

@@ -36,6 +36,27 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
 
+## CLOUD LEADS + MOBILE COLD-DRAFT (2026-10-09, Code fertig, Tests 312/312) – Lead-Liste/Details/Entwurf vom Handy, ohne PC
+- Neu `cloud-leads.js` (Allowlist `CLOUD_LEAD_FIELDS`: lead_id, Firma, Website, Problem in Kundensprache, Kontakt, Business-E-Mail, Stage,
+  Offer, Draft-Status, Entwurf-in-Gmail ja/nein, Suppression, Opt-out, draft_eligible, Draft-Modus, letzter Kontakt, Antwort, Kunde).
+  Nie dabei: Roh-Evidence, Befund-URLs, Gmail-/Thread-/Message-IDs, Hashes, Pfade. `publicLeads` (VPS) + `cleanLeads` (Cloud erzwingt die
+  Allowlist erneut), max. 150 Leads, nur relevante (Cold/Entwurf/Kandidat/kontaktiert).
+- Server Control: VPS-Agent schickt die Liste mit dem Status-Pull nur bei Änderung (Fingerabdruck) oder alle 10 min; Browser liest sie per
+  `GET /api/server-control?leads=1` (nur Cloud-Passwort). Neue CONTROL-Aktionen `leads.createDraft` / `leads.discardDraft` mit genau einem
+  `lead_id` (Regex, keine Sammelaktion); VPS `coldDraftFromCloud` (mail-worker.js) → `ensureColdDraft` (queued, COLD_LEAD_DRAFT_ONLY,
+  legal_basis NONE) + Worker-Weckruf → Gmail-Entwurf im nächsten Durchlauf. Suppression/Opt-out/Domain-Sperre/Duplikat/fehlender Absender →
+  abgelehnt. Keine Send-Aktion existiert (auch nicht als Action-ID); DANGEROUS unverändert. `sales.findRawLead` (nur lokal). Dockerfile kopiert cloud-leads.js.
+- HUD: LEADS-Button auch im CLOUD-Modus (mit Passwort) → touch-geeignete Liste (Firma, Problem, Kontakt, Draft-Status) + Detail mit
+  „GMAIL-ENTWURF ERSTELLEN“ / „ENTWURF VERWERFEN“ / „IN GMAIL ÖFFNEN“; gesperrte Leads „GESPERRT — SUPPRESSION / OPT-OUT“, Button inaktiv.
+  LOCAL-Modus unverändert (volle Details, Edit). Playwright (gemockte Cloud, Local Core blockiert) 390×844 + 430×932: Liste 3 Leads,
+  Detail, Aktion → `leads.createDraft {lead_id}` → Status „Entwurf wird angelegt“, gesperrter Lead blockiert, kein horizontaler Overflow.
+- Tests: `test/cloud-leads-028.test.js` (10): Allowlist, cleanLeads, Suppression/Opt-out, Aktion validiert, VPS-Entwurf queued, Cloud↔VPS-
+  Mock-E2E, Cold Send unmöglich, HUD, Dockerfile. Gesamt 312/312, Secret-Scan 0 Treffer.
+- Echter Gmail-Draft-E2E-Test (Cloud → VPS → Gmail): NICHT ausgeführt – im Projekt ist kein sicherer Testempfänger dokumentiert
+  (TESTEMPFAENGER_FEHLT). Chris: Testadresse in PROJECT_STATE unter „Testempfänger“ eintragen, dann genau ein Draft-Test.
+- Echter Mobile-Test auf Production braucht das Cloud-Passwort (lokal nicht vorhanden) – ohne Passwort nur Login-Screen prüfbar.
+- Deploy: siehe Live-Stand unten (VPS-Redeploy nötig, da Backend geändert: server-control.js, server-agent.js, mail-worker.js, sales.js, cloud-leads.js).
+
 ## MOBILE + CLOUD PARITY (2026-10-09, Code fertig, Tests 302/302) – Jarvis vom Handy, PC optional
 - Bestandsaufnahme: Cloud Core/VPS live (Heartbeat frisch, Start 2026-10-08 20:43 UTC = 4eff23c, 0 Restarts), Netlify Production 200
   (`/api/cloud` configured, Server-Control-Probe length 64), check-mail-auth VPS self=true / Windows self=false, dr-probe: System ONLINE,

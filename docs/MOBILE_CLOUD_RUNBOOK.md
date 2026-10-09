@@ -26,7 +26,10 @@ Stand: 2026-10-09. Gilt für den CLOUD-Modus: der Windows-PC ist aus, kaputt ode
 - Meldungen: „Gelesen“, „Erledigt“ (bleibt erledigt, Tombstone), „Mit Jarvis besprechen“ füllt den Composer.
 - Server: Werte aus dem VPS-Snapshot (≤ 3 min alt). Unter „Server Control“: Health Check, Run Backup, Restart Mail Worker, Restart
   Jarvis Core (Restarts fragen nach). Mehr gibt es nicht – bewusst.
-- Vertrieb/LEADS: in der Cloud nur Zähler; der LEADS-Dialog mit Details ist nur im LOCAL-Modus (Leads bleiben auf VPS/PC).
+- Vertrieb → LEADS: Kurzliste vom VPS (Firma, sichtbares Problem in Kundensprache, Kontakt, Draft-Status). Lead antippen → Details
+  (Website, Kontakt, Business-E-Mail, Draft-Status, Suppression/Opt-out, Status) → „GMAIL-ENTWURF ERSTELLEN“ bzw. „ENTWURF VERWERFEN“.
+  Der Button ist nur aktiv, wenn der Lead ein Cold Lead mit sichtbarem Problem und geschäftlicher Adresse ist und nicht gesperrt.
+  Gesperrte Leads (Suppression/Opt-out) zeigen „GESPERRT“ – keine Aktion möglich. Es gibt keinen Sende-Knopf.
 
 ## 4. Gmail-Draft-Workflow
 1. Im Chat: „Schreib eine Mail an name@firma.ch, Betreff …, Inhalt …“ (oder Jarvis den Text formulieren lassen und bestätigen).
@@ -41,13 +44,21 @@ Stand: 2026-10-09. Gilt für den CLOUD-Modus: der Windows-PC ist aus, kaputt ode
   TF-024 Legal Gate; ohne Grundlage: `blockiert` mit Grund. Jarvis behauptet nie, eine Mail sei gesendet.
 - Mögliche Status: wartet auf Mail-Worker · wird verarbeitet · Entwurf in Gmail · gesendet · blockiert · fehlgeschlagen · abgelaufen (24 h).
 
+## 4b. Cold-Lead-Entwurf vom Handy (LEADS → Lead → „GMAIL-ENTWURF ERSTELLEN“)
+1. Aktion geht als `leads.createDraft` mit genau einer `lead_id` an `/api/server-control` (Cloud-Passwort, CONTROL-Tier, Rate Limit, Audit).
+2. Der VPS-Agent holt sie ab (5 s, Panel offen), prüft Suppression/Opt-out/Domain-Sperre/Duplikat/Absender und legt nur den lokalen
+   Entwurf an (`individual_reviews.json`, Status „queued“, COLD_LEAD_DRAFT_ONLY, legal_basis NONE) und weckt den Worker.
+3. Der Worker legt daraus den Gmail-Entwurf an (Label JARVIS) – Status „Entwurf in Gmail“, Link „IN GMAIL ÖFFNEN“.
+4. Chris entscheidet allein in Gmail. Jarvis sendet nie; `gmail.sendDraft` verweigert COLD_LEAD_DRAFT_ONLY auf unterster Ebene.
+- Antworten des VPS im HUD: „OK: Entwurf wird angelegt …“ oder „Abgelehnt: Empfänger hat sich abgemeldet (Opt-out).“ usw.
+
 ## 5. Was ohne PC funktioniert
-Chat und Gesprächsverlauf, Gmail-Entwürfe und Reply-Entwürfe, sichere Sends mit Grundlage, Mail-Queue und Status, Cold-Lead-Discovery
-und Cold-Entwürfe (VPS), Suppression/Opt-out, Meldungen und Eskalationen, Scheduler (09:30/14:30, Discovery, Backup 03:00),
+Chat und Gesprächsverlauf, Gmail-Entwürfe und Reply-Entwürfe, sichere Sends mit Grundlage, Mail-Queue und Status, Lead-Liste und
+Lead-Details, Cold-Entwurf erstellen/verwerfen, Cold-Lead-Discovery (VPS), Suppression/Opt-out, Meldungen und Eskalationen, Scheduler (09:30/14:30, Discovery, Backup 03:00),
 VPS-Status, Server Control, Backups (lokal + offsite), Shared State, AI-Status. Prüfbar ohne Passwort: `node scripts/dr-probe.mjs`.
 
 ## 6. Was optional lokal bleibt
-Claude Code mit PC-Zugriff (Dateien, Programme, Web-Recherche mit Tools), Lead-Detailansicht und Cold-Draft-Buttons im HUD,
+Claude Code mit PC-Zugriff (Dateien, Programme, Web-Recherche mit Tools), Lead-Detailansicht mit technischer Evidence und Entwurfstext-Edit im HUD,
 ElevenLabs-Stimme, Systemwerte des PCs, Entwicklung/Deploy (`deploy/vps/deploy.sh`, SSH). Der PC ist `role=optional_client`;
 sein Mail-Worker steht im Standby (`standby_no_send_authority`). Details: `docs/JARVIS_CAPABILITY_MATRIX.md`.
 

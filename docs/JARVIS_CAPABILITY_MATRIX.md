@@ -1,6 +1,6 @@
 # Jarvis – Capability Matrix: Local vs. Cloud vs. Mobile
 
-Stand: 2026-10-09. Zielbild (Cloud-first seit 2026-10-07): **VPS = Gehirn und 24/7-Runtime (authoritative), Netlify = UI + authentifiziertes
+Stand: 2026-10-09 (Update: Cloud-Leads + Mobile Cold-Draft-Aktion). Zielbild (Cloud-first seit 2026-10-07): **VPS = Gehirn und 24/7-Runtime (authoritative), Netlify = UI + authentifiziertes
 Gateway, GitHub = Code, Windows-PC = OPTIONAL_CLIENT.** Ist der PC aus, ist das Gesamtsystem ONLINE; nur „Local Client“ ist OFFLINE.
 
 Spalten:
@@ -25,9 +25,9 @@ Legende Mobile: ✅ voll nutzbar · 🟡 nur Zähler/Anzeige · ❌ nicht verfü
 | Gmail Reply Draft erstellen | – | wie oben mit `optional_thread_reference` (nur eigene Jarvis-Threads); eingehende Antworten → Reply-ENTWURF durch den Worker | ✅ | VPS Mail-Worker | OK |
 | Sichere Mail senden (manual_chris_mail) | – (Windows hat keine Send Authority) | `delivery: "send"` nur auf ausdrücklichen Sendebefehl → Worker prüft TF-024 Legal Gate, Suppression, Opt-out, Limits, Send-Lock | ✅ | VPS Mail-Worker | OK (Cold Leads: nie) |
 | Cold Lead Draft | Discovery auf dem PC nur im Standby ohne Gmail-Schreibzugriff | Discovery + `individual_reviews` + Gmail-Entwurf durch den VPS-Worker, Label JARVIS, mode=COLD_LEAD_DRAFT_ONLY | ✅ Zähler (Cold Leads, Drafts erstellt/offen/manuell) + Entwürfe direkt in der Gmail-App | VPS `.secrets/mail_worker/` | OK – **immer COLD_LEAD_DRAFT_ONLY** |
-| Leads anzeigen (Liste/Details) | LEADS-Dialog (`/api/leads`, Befunde, Evidence) | nur Zähler (Vertrieb-Panel) | 🟡 Zähler | Lead-Datenbank bleibt auf VPS/PC (Datenminimierung TF-022) | LOCAL_ONLY (Details) / SAFE_CLOUD_EQUIVALENT = Zähler; Detail-Liste über Server-Control-READ wäre ein möglicher nächster Schritt |
-| Lead Status (Stage, Draft-Status) | Detailansicht | Zähler: Repair-Kandidaten, Blocked, Drafts offen, Kontaktiert, Antworten, Kunden | 🟡 | VPS Cloud Core → `sales` im Shared State | TEILWEISE (Zähler) |
-| Cold-Draft-Aktionen (Edit/Discard/Mark manually sent) | `/api/cold-drafts/*` (Local Core, je genau ein Entwurf) | – (Entwurf wird in Gmail selbst bearbeitet/verworfen/gesendet; `syncColdDrafts` erkennt manuellen Versand) | 🟡 via Gmail-App | VPS Worker erkennt Versand | SAFE_CLOUD_EQUIVALENT (Gmail) |
+| Leads anzeigen (Liste/Details) | LEADS-Dialog (`/api/leads`, alle Befunde, technische Evidence) | LEADS-Dialog als READ-only-Kurzliste vom VPS (`/api/server-control?leads=1`, Allowlist `cloud-leads.js`: Firma, Website, Problem in Kundensprache, Kontakt, Business-E-Mail, Draft-Status, Suppression/Opt-out, Status) | ✅ touch-geeignete Liste + Detail | VPS-Agent schickt die bereinigte Liste nur bei Änderung mit dem Status-Pull; Cloud erzwingt die Allowlist erneut | OK – SAFE_CLOUD_EQUIVALENT (keine Roh-Evidence, keine Befund-URLs, keine Gmail-IDs) |
+| Lead Status (Stage, Draft-Status) | Detailansicht | je Lead: Stage, Draft-Status (kein Entwurf / wird angelegt / Entwurf in Gmail / manuell versendet / verworfen), Suppression, Opt-out, letzter Kontakt, Antwort | ✅ | VPS → Server-Control-Blob | OK |
+| Cold-Draft-Aktionen | `/api/cold-drafts/*` (Edit/Discard/Mark manually sent, Local Core) | „Gmail-Entwurf erstellen“ (`leads.createDraft`) und „Entwurf verwerfen“ (`leads.discardDraft`) über Server Control – je genau EIN Lead, CONTROL-Tier mit Rate Limit + Audit; Text bearbeiten direkt in Gmail; manueller Versand wird vom Worker erkannt | ✅ Buttons ≥ 40 px im Lead-Detail | VPS: `coldDraftFromCloud` → `ensureColdDraft` (queued) → Worker legt Gmail-Entwurf an (COLD_LEAD_DRAFT_ONLY, legal_basis NONE); Suppression/Opt-out/Duplikat → blockiert | OK – es gibt keine Send-Aktion (auch nicht als Action-ID) |
 | Suppression | Worker-Datei, gilt vor jedem Entwurf/Send | identisch (VPS-Worker) – auch für Cloud-Entwürfe | ✅ (wirkt automatisch; Zähler Opt-outs) | VPS `suppression.json` | OK |
 | Opt-out | Erkennung in Antworten, dauerhaft | identisch (VPS) | ✅ Zähler | VPS | OK |
 | Mail Queue | Anzeige Pending (Cloud) | `/api/mail-requests`: anlegen (nur Chris), Status lesen; Worker: claim/result/lock/heartbeat | ✅ Mail-Panel (letzte 12 Aufträge, Status, Grund) + QUEUE im Quick-Status | Netlify Blobs `jarvis-mail-requests` | OK |
@@ -58,9 +58,13 @@ Legende Mobile: ✅ voll nutzbar · 🟡 nur Zähler/Anzeige · ❌ nicht verfü
 | Gmail-Token, Anthropic-Key, Worker-/Sync-/Control-Token | nur `.secrets/` bzw. VPS `.env` (600 root) | nie im Browser, nie im Shared State (Whitelist + Redaction) | LOCAL_ONLY | – |
 
 ## Was ohne Windows funktioniert (verifiziert 2026-10-07 DR-Test A, 2026-10-09 dr-probe)
-Chat, Conversation, Gmail-Drafts, Replies (Entwürfe), Queue, Leads (Zähler), Scheduler, Notifications, Server Control, Backups,
-State, AI, Mail-Worker – alles auf dem VPS bzw. in Netlify. Windows liefert nur: Claude Code mit PC-Zugriff, Lead-Detailansicht,
-Cold-Draft-Buttons, ElevenLabs-Stimme, lokale Dateien.
+Chat, Conversation, Gmail-Drafts, Replies (Entwürfe), Queue, Leads (Liste + Details + Cold-Entwurf erstellen/verwerfen), Scheduler,
+Notifications, Server Control, Backups, State, AI, Mail-Worker – alles auf dem VPS bzw. in Netlify. Windows liefert nur: Claude Code
+mit PC-Zugriff, Lead-Detailansicht mit technischer Evidence, Edit des Entwurfstexts im HUD, ElevenLabs-Stimme, lokale Dateien.
+
+**LOCAL_ONLY verbleibt ausschliesslich für echte lokale Fähigkeiten:** lokale Dateien, Mikrofon/Hardware, Claude Code auf Windows,
+lokale Entwicklungswerkzeuge, SSH/Admin. Alle Business-Funktionen (Leads, Lead Details, Gmail Draft, Mail Status, Queue, Scheduler,
+Notifications, Server Status) sind CLOUD/MOBILE-fähig.
 
 ## Authority
 - `send_authority`: VPS (`JARVIS_MAIL_WORKER_TOKEN` in Netlify gesetzt → `dedicated=true`, `holder=vps`). Windows-Worker: `standby_no_send_authority`.
