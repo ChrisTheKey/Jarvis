@@ -36,6 +36,20 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
 
+## JARVIS MOBILE CLOUD READY — END-TO-END VERIFIED (2026-10-09 19:50–19:55 UTC)
+- Echter Production-Mobile-Test bestanden (390×844, Local Core blockiert, Passwort von Chris im Browser eingegeben, nie ausgelesen, danach entfernt).
+- Echter Gmail-Draft über Production-UI → /api/cloud (mail_request, delivery=draft) → Cloud-Queue → VPS Cloud Core/Mail-Worker → Gmail API:
+  Auftrag 19:51 UTC übergeben („WARTET AUF MAIL-WORKER“, Queue 1), VPS `cloud_request_drafted` 19:52:46 UTC, HUD/Mail-Panel „ENTWURF IN GMAIL“
+  nach 90 s, Queue 0. Gmail (read-only geprüft, assertOwnedDraft): Entwurf existiert, Labels DRAFT + JARVIS, kein SENT; Empfänger = von Chris
+  kontrollierter Plus-Alias seiner eigenen Adresse (nicht hier gespeichert), Betreff „Jarvis Mobile Cloud Test“, Text exakt wie vorgegeben,
+  Register mode=COLD_LEAD_DRAFT_ONLY. Draft NICHT gesendet: 0 Send-Events, kein state.actions-Eintrag, sent-Register leer.
+  Erster Versuch an die Hauptadresse wurde vom VPS korrekt blockiert (excludeAddresses) – Schutz eigener Adressen bestätigt.
+- Windows für den Betrieb nicht erforderlich (Local Client OFFLINE, Windows-Worker STANDBY self=false); VPS authoritative (holder=vps self=true), genau ein Sender.
+- Cloud Leads verfügbar (24 Leads live, Allowlist), Cloud Draft Button verfügbar (bei vorhandenem Entwurf inaktiv), Gmail-Link statisch ohne Token.
+- TF-024 unverändert, TF-025 unverändert, Suppression/Opt-out aktiv, Server Control aktiv (ONLINE, Audit), keine Secrets in DOM/Storage/Audit.
+- Teststand: 312/312 grün, Secret-Scan 0 Treffer. Live-Stand: VPS a7ede6a healthy 0 Restarts, Netlify Production 770da3e+, Scheduler ONLINE
+  (09:30/14:30 ausgeführt), Backup OK (3 Gen.), Queue 0, AI ONLINE. /opt/fiverr unberührt. Chris kann den Testentwurf in Gmail löschen.
+
 ## MOBILE CLOUD LIVE-ABNAHME 2026-10-09 19:15–19:25 UTC (Production, 390×844, Local Core blockiert) – TEILWEISE BESTANDEN
 - Login: Chris hat JARVIS_PASSWORD selbst im Playwright-Fenster eingegeben (nie ausgelesen/geloggt; danach aus localStorage entfernt, Fenster geschlossen).
 - PASS live hinter Login: Modus CLOUD; Quick-Status JARVIS CLOUD ONLINE / VPS CORE ONLINE / MAIL WORKER VPS ACTIVE / AUTHORITY VPS /
