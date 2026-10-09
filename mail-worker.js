@@ -601,6 +601,12 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const coldPatch = {};
     const suppAll = { ...store.read("suppression.json", {}), ...supp };
     const domainSuppressed = (d) => Object.keys(suppAll).some((a) => a.split("@")[1] === d && !FREEMAIL_RE.test(a));
+    // Zentrale 24/7-Limits (config.discovery, Default 5/h, 20/Tag): höchstens so viele Gmail-Entwürfe je Stunde/Tag anlegen –
+    // weitere bleiben „queued“ und kommen im nächsten Durchlauf dran. Keine Entwurfsflut, auch nicht bei vielen Kandidaten.
+    const dl = { maxDraftsPerHour: 5, maxDraftsPerDay: 20, ...(store.read("config.json", {}).discovery || {}) };
+    const createdAll = Object.values(coldData.reviews || {}).map((r) => r?.draft_created_at).filter(Boolean);
+    let gmailDraftsDay = createdAll.filter((x) => zurichDay(new Date(x)) === day).length;
+    let gmailDraftsHour = createdAll.filter((x) => +t - Date.parse(x) < 3_600_000).length;
     for (const [id, rv] of Object.entries(coldData.reviews || {})) {
       if (!rv || rv.draft_mode !== COLD_MODE && rv.status !== "queued") continue;
       const to = normEmail(rv.recipient || "");
@@ -610,8 +616,10 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           if (suppAll[to] || exclude.has(to) || domainSuppressed(rv.domain)) { coldPatch[id] = { status: "blocked", blocked_reason: "suppression" }; continue; }
           if (!EMAIL_RE.test(to) || FREEMAIL_RE.test(to)) { coldPatch[id] = { status: "blocked", blocked_reason: "keine geschäftliche Adresse" }; continue; }
           if (contacted.has(to)) { coldPatch[id] = { status: "blocked", blocked_reason: "bereits kontaktiert/Entwurf vorhanden" }; continue; }
+          if (gmailDraftsDay >= dl.maxDraftsPerDay || gmailDraftsHour >= dl.maxDraftsPerHour) { log("info", "cold_draft_deferred", { lead_id: id, reason: gmailDraftsDay >= dl.maxDraftsPerDay ? "Tageslimit" : "Stundenlimit" }); continue; }
           const d = await gmail.createDraft({ to, subject: rv.subject, body: rv.body, mode: COLD_MODE, leadId: id, draftHash: rv.draft_hash });
           contacted.add(to);
+          gmailDraftsDay++; gmailDraftsHour++;
           coldPatch[id] = { status: "draft_created", gmail_draft_id: d.draftId, message_id: d.messageId || null, thread_id: d.threadId, draft_created_at: t.toISOString() };
           log("info", "cold_draft_created", { lead_id: id, draftId: d.draftId });
         } else if (rv.status === "draft_created" && rv.discard_requested) {
@@ -964,6 +972,7 @@ async function loop() {
   const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
   const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
   const salesMod = await import("./sales.js");
+  const finderMod = await import("./lead-finder.js");
   if (role === "vps") (await import("./server-agent.js")).startServerControl({
     dir: WORKER_DIR, secretsDir: SECRETS, startedAt, log, core, zurichDay, backupPublicKey, healthy: () => healthy(WORKER_DIR),
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
@@ -974,6 +983,9 @@ async function loop() {
     // Cloud/Handy: Lead-Liste (Allowlist) und Cold-Entwurf je genau einem Lead – nur Entwurf, nie Versand.
     leads: () => publicLeads(salesMod.loadPipeline({ dir: WORKER_DIR, registry: gmail.listOwned() }).leads),
     coldDraft: (op, leadId) => coldDraftFromCloud({ op, leadId, gmail, dir: WORKER_DIR, wake: () => wake() }),
+    // 24/7-Discovery: Status fürs Dashboard und Pause/Fortsetzen (nur ein Flag in discovered.json, nichts wird gelöscht).
+    discovery: () => finderMod.discoveryStatus(WORKER_DIR),
+    setDiscovery: (op) => { const r = finderMod.setDiscoveryPaused(WORKER_DIR, op === "pause"); wake(); return { ok: true, ...r, status: r.paused ? "PAUSED" : "ACTIVE" }; },
   });
   log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
   // Herzschlag auch während langer Durchläufe, damit kein zweiter Worker das Lock für verwaist hält.

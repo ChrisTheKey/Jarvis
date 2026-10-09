@@ -37,6 +37,9 @@ export const ACTIONS = {
   // Cold-Lead-Entwürfe vom Handy: nur ENTWURF in Gmail (COLD_LEAD_DRAFT_ONLY, legal_basis NONE) bzw. Verwerfen – es gibt keine Send-Aktion.
   "leads.createDraft":       { tier: "control", label: "Gmail-Entwurf erstellen (Cold Lead, nie senden)", params: { lead_id: LEAD_ID_RE } },
   "leads.discardDraft":      { tier: "control", label: "Cold-Entwurf verwerfen", params: { lead_id: LEAD_ID_RE } },
+  // 24/7-Discovery vom Handy pausieren/fortsetzen: nur ein Flag auf dem VPS, keine Scheduler-Befehle, nichts wird gelöscht.
+  "discovery.pause":         { tier: "control", label: "24/7-Discovery pausieren", cooldownMs: 10_000 },
+  "discovery.resume":        { tier: "control", label: "24/7-Discovery fortsetzen", cooldownMs: 10_000 },
 };
 // DANGEROUS: bekannt, aber aus der Cloud-UI immer gesperrt (Reboot, Pakete, Firewall, SSH, Löschen, Secret-Rotation).
 export const DANGEROUS = ["system.reboot", "system.shutdown", "system.upgrade", "system.packages", "firewall.change", "ssh.change",
@@ -127,6 +130,22 @@ export function cleanSnapshot(s) {
     queue: { pending: num(q.pending, 1e6), processing: num(q.processing, 1e6) },
     backup: { status: word(b.status, ["OK", "FAILED", "NONE"]), last_at: iso(b.last_at), generations: num(b.generations, 1000), offsite_ok: bool(b.offsite_ok) },
     deploy: { commit: typeof dp.commit === "string" && /^[0-9a-f]{7,40}$/.test(dp.commit) ? dp.commit : null, deployed_at: iso(dp.deployed_at), container_started_at: iso(dp.container_started_at) },
+    discovery: cleanDiscovery(s.discovery),
+  };
+}
+// 24/7-Discovery (VPS): nur Zähler, Zeitpunkte, feste Wörter; Fehlertext bereinigt und gekürzt.
+export function cleanDiscovery(d) {
+  if (!d || typeof d !== "object") return null;
+  const n = (v, max = 1e6) => num(v, max);
+  const lim = d.limits || {};
+  return {
+    status: word(d.status, ["ACTIVE", "PAUSED", "BACKOFF", "DISABLED"]), paused: bool(d.paused), paused_at: iso(d.paused_at),
+    audited_today: n(d.audited_today), new_leads_today: n(d.new_leads_today), qualified_today: n(d.qualified_today), drafts_today: n(d.drafts_today), drafts_hour: n(d.drafts_hour),
+    blocked_today: n(d.blocked_today), errors_today: n(d.errors_today), audited_hour: n(d.audited_hour), queue: n(d.queue),
+    last_run_at: iso(d.last_run_at), next_run_at: iso(d.next_run_at), backoff_until: iso(d.backoff_until), backoff_count: n(d.backoff_count, 1000),
+    last_error: d.last_error && typeof d.last_error === "object" ? { at: iso(d.last_error.at), stage: word(d.last_error.stage, ["search", "audit", "draft"]), message: redact(String(d.last_error.message || ""), 160) } : null,
+    limits: { interval_minutes: n(lim.interval_minutes, 1440), sites_per_run: n(lim.sites_per_run, 1000), max_sites_per_hour: n(lim.max_sites_per_hour, 10_000), max_sites_per_day: n(lim.max_sites_per_day, 100_000),
+      max_drafts_per_hour: n(lim.max_drafts_per_hour, 10_000), max_drafts_per_day: n(lim.max_drafts_per_day, 100_000) },
   };
 }
 

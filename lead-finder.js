@@ -11,17 +11,24 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuditor } from "./site-auditor.js";
-import { swissSignals, qualifyRepairLead, ensureColdDraft, discoverBusinessContact, PLACEHOLDER_RE } from "./swiss-repair.js";
+import { swissSignals, qualifyRepairLead, ensureColdDraft, discoverBusinessContact, PLACEHOLDER_RE, REVIEWS_FILE } from "./swiss-repair.js";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock, heartbeat, legalBasis, normEmail, zurichDay } from "./mail-worker.js";
 
 export const DISCOVERY_LOCK = "discovery.lock";
 // Overpass verlangt eine erkennbare Anwendung als User-Agent (generische Browser-Kennungen werden mit 406 abgelehnt).
 const OVERPASS_UA = "JarvisLeadFinder/1.0 (Helvetic Webdesign; https://helvetic-webdesign.ch)";
+// 24/7-Discovery (VPS): kleiner Lauf alle intervalMinutes, rund um die Uhr, mit zentralen Sicherheitslimits (Websites je Stunde/Tag,
+// Gmail-Entwürfe je Stunde/Tag) und Backoff bei 429/5xx/Netzwerkfehlern der Datenquelle. Alle Werte per config.json → discovery überschreibbar.
 export const DEFAULT_DISCOVERY = {
   enabled: true,
-  intervalMinutes: 60, // höchstens ein Lauf pro Stunde
-  sitesPerRun: 3,
-  maxSitesPerDay: 40,
+  intervalMinutes: 20, // ein kleiner Lauf alle 20 Minuten (24/7), nie eine Endlosschleife
+  sitesPerRun: 4,
+  maxSitesPerHour: 12,
+  maxSitesPerDay: 60,
+  maxDraftsPerHour: 5,  // neue lokale Cold-Entwürfe (und Gmail-Entwürfe) je Stunde
+  maxDraftsPerDay: 20,  // … je Tag – keine Entwurfsflut
+  backoffMinutes: 15,   // nach Quellenfehler: 15 → 30 → 60 … bis backoffMaxMinutes
+  backoffMaxMinutes: 360,
   minScore: 6,
   areas: ["Winterthur", "St. Gallen", "Luzern", "Thun", "Aarau", "Chur", "Schaffhausen", "Frauenfeld", "Zug", "Solothurn", "Baden", "Uster", "Wil (SG)", "Rapperswil-Jona"],
   categories: [
@@ -106,20 +113,76 @@ export function scoreLead({ issues = [], identity = {}, company, reachable }) {
 
 // ---------- Lauf ----------
 
+// ---------- 24/7-Steuerung: Pause/Fortsetzen, Backoff, Stundenbudget, Status fürs Dashboard ----------
+export const discoveryConfig = (store) => ({ ...DEFAULT_DISCOVERY, ...(store.read("config.json", {}).discovery || {}) });
+const hourKey = (t) => new Date(t).toISOString().slice(0, 13); // UTC-Stunde als Schlüssel
+const SOURCE_ERROR_RE = /HTTP (429|5\d\d)|fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|timeout|TimeoutError|aborted|network/i;
+// Pause/Fortsetzen (Server Control discovery.pause / discovery.resume): nur ein Flag, keine Daten werden gelöscht.
+export function setDiscoveryPaused(dir, paused, { now = new Date(), reason = "server_control" } = {}) {
+  const store = createStore(dir);
+  const data = { leads: {}, cursor: 0, lastRunAt: null, stats: {}, ...store.read("discovered.json", {}) };
+  data.paused = !!paused;
+  data.pausedAt = paused ? now.toISOString() : null;
+  data.pausedBy = paused ? reason : null;
+  store.write("discovered.json", data);
+  return { paused: data.paused, pausedAt: data.pausedAt };
+}
+// Status für HUD/Mobile (nur Zahlen, Zeitpunkte, feste Wörter, bereinigter Fehlertext).
+export function discoveryStatus(dir = WORKER_DIR, now = new Date()) {
+  const store = createStore(dir);
+  const cfg = discoveryConfig(store);
+  const data = { leads: {}, stats: {}, ...store.read("discovered.json", {}) };
+  const reviews = Object.values(store.read(REVIEWS_FILE, { reviews: {} }).reviews || {});
+  const today = data.stats?.[zurichDay(now)] || {};
+  const h = data.hourly?.[hourKey(now)] || {};
+  const backoffActive = !!data.backoffUntil && Date.parse(data.backoffUntil) > +now;
+  const lastRun = data.lastRunAt ? Date.parse(data.lastRunAt) : null;
+  const next = data.paused ? null : backoffActive ? data.backoffUntil : new Date(Math.max(+now, (lastRun || 0) + cfg.intervalMinutes * 60_000)).toISOString();
+  const dayStart = zurichDay(now);
+  const draftsToday = reviews.filter((r) => r.created_at && zurichDay(new Date(r.created_at)) === dayStart).length;
+  const draftsHour = reviews.filter((r) => r.created_at && +now - Date.parse(r.created_at) < 3_600_000).length;
+  return {
+    status: !cfg.enabled ? "DISABLED" : data.paused ? "PAUSED" : backoffActive ? "BACKOFF" : "ACTIVE",
+    paused: !!data.paused, paused_at: data.pausedAt || null,
+    audited_today: today.audited || 0, new_leads_today: today.found || 0, qualified_today: today.qualified || 0,
+    drafts_today: draftsToday, drafts_hour: draftsHour, blocked_today: today.blocked || 0, errors_today: today.errors || 0,
+    audited_hour: h.audited || 0,
+    last_run_at: data.lastRunAt || null, next_run_at: next, backoff_until: backoffActive ? data.backoffUntil : null, backoff_count: data.backoffCount || 0,
+    queue: reviews.filter((r) => r.status === "queued").length, // lokale Entwürfe, die der Worker noch in Gmail anlegt
+    last_error: data.lastError ? { at: data.lastError.at, stage: data.lastError.stage, message: String(data.lastError.message || "").slice(0, 160) } : null,
+    limits: { interval_minutes: cfg.intervalMinutes, sites_per_run: cfg.sitesPerRun, max_sites_per_hour: cfg.maxSitesPerHour, max_sites_per_day: cfg.maxSitesPerDay,
+      max_drafts_per_hour: cfg.maxDraftsPerHour, max_drafts_per_day: cfg.maxDraftsPerDay },
+  };
+}
+
 export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, now = () => new Date(), log = createLogger(dir), pid = process.pid, force = false } = {}) {
   const store = createStore(dir);
-  const cfg = { ...DEFAULT_DISCOVERY, ...(store.read("config.json", {}).discovery || {}) };
+  const cfg = discoveryConfig(store);
   if (!cfg.enabled && !force) return { skipped: "disabled" };
-  const data = { leads: {}, cursor: 0, lastRunAt: null, stats: {}, ...store.read("discovered.json", {}) };
-  const t = now(), day = zurichDay(t);
+  const data = { leads: {}, cursor: 0, lastRunAt: null, stats: {}, hourly: {}, ...store.read("discovered.json", {}) };
+  const t = now(), day = zurichDay(t), hk = hourKey(t);
+  if (data.paused && !force) return { skipped: "paused" };
+  if (!force && data.backoffUntil && Date.parse(data.backoffUntil) > +t) return { skipped: "backoff", until: data.backoffUntil };
   if (!force && data.lastRunAt && +t - Date.parse(data.lastRunAt) < cfg.intervalMinutes * 60_000) return { skipped: "not_due" };
+  data.hourly = Object.fromEntries(Object.entries(data.hourly || {}).filter(([k]) => +t - Date.parse(k + ":00:00Z") < 2 * 3_600_000)); // nur aktuelle Stunden
+  const hour = (data.hourly[hk] ||= { audited: 0, drafts: 0 });
+  if (!force && hour.audited >= cfg.maxSitesPerHour) return { skipped: "hour_limit" };
   if (!acquireLock(dir, { pid, name: DISCOVERY_LOCK })) return { busy: true };
-  const stats = (data.stats[day] ||= { found: 0, audited: 0, withIssues: 0, qualified: 0, errors: 0 });
+  const stats = (data.stats[day] ||= { found: 0, audited: 0, withIssues: 0, qualified: 0, errors: 0, blocked: 0, drafts: 0 });
+  stats.blocked ??= 0; stats.drafts ??= 0;
   const save = () => {
     // nur die letzten 14 Tage Statistik behalten
     for (const d of Object.keys(data.stats).sort().slice(0, -14)) delete data.stats[d];
     store.write("discovered.json", data);
     heartbeat(dir, pid, DISCOVERY_LOCK);
+  };
+  // Backoff bei Quellenfehlern (429/5xx/Netz): 15 → 30 → 60 … min, gedeckelt; ein erfolgreicher Lauf setzt zurück.
+  const backoff = (stage, e) => {
+    data.backoffCount = (data.backoffCount || 0) + 1;
+    const minutes = Math.min(cfg.backoffMaxMinutes, cfg.backoffMinutes * 2 ** (data.backoffCount - 1));
+    data.backoffUntil = new Date(+t + minutes * 60_000).toISOString();
+    data.lastError = { at: t.toISOString(), stage, message: String(e.message || e).slice(0, 160) };
+    log("warn", "discovery_backoff", { stage, minutes, count: data.backoffCount });
   };
   const out = { day, query: null, found: [], errors: [] };
   try {
@@ -132,8 +195,15 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
     data.lastRunAt = t.toISOString();
     out.query = `${pair.area} / ${pair.category.key}${pair.category.value ? "=" + pair.category.value : ""}`;
     let candidates = [];
-    try { candidates = await search(pair); }
-    catch (e) { stats.errors++; out.errors.push({ stage: "search", error: e.message }); log("error", "discovery_search_failed", { query: out.query, error: e.message }); save(); return out; }
+    try { candidates = await search(pair); data.backoffCount = 0; data.backoffUntil = null; }
+    catch (e) { stats.errors++; out.errors.push({ stage: "search", error: e.message }); log("error", "discovery_search_failed", { query: out.query, error: e.message }); backoff("search", e); save(); return out; }
+    const draftBudget = () => {
+      const reviews = Object.values(store.read(REVIEWS_FILE, { reviews: {} }).reviews || {});
+      const dayN = reviews.filter((r) => r.created_at && zurichDay(new Date(r.created_at)) === day).length;
+      const hourN = reviews.filter((r) => r.created_at && +t - Date.parse(r.created_at) < 3_600_000).length;
+      return dayN < cfg.maxDraftsPerDay && hourN < cfg.maxDraftsPerHour ? null : dayN >= cfg.maxDraftsPerDay ? "Tageslimit Entwürfe" : "Stundenlimit Entwürfe";
+    };
+    let networkFailures = 0;
 
     // Bekanntes: gefundene Leads, Chris’ Lead-Liste, eigene Jarvis-Threads, Suppression (hat immer Vorrang)
     const leadsFile = store.read("leads.json", []);
@@ -152,7 +222,7 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
 
     let audited = 0;
     for (const c of candidates) {
-      if (audited >= cfg.sitesPerRun || stats.audited >= cfg.maxSitesPerDay) break;
+      if (audited >= cfg.sitesPerRun || stats.audited >= cfg.maxSitesPerDay || hour.audited >= cfg.maxSitesPerHour) break;
       const domain = normDomain(c.website);
       if (!domain || c.chain || exclude.has(domain) || FREEMAIL.test(domain)) continue;
       if (known.domains.has(domain) || (c.company && known.companies.has(normCompany(c.company)))) continue; // Duplikat
@@ -168,6 +238,7 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
         const a = await auditor.audit(c.website);
         audited++;
         stats.audited++;
+        hour.audited++;
         const id = extractIdentity(a.pages, domain);
         const osmEmail = c.email && emailDomain(c.email) === domain ? normEmail(c.email) : null;
         // TF-025: geschäftlicher Kontakt nur von den öffentlichen Firmenseiten (Team, Impressum, Kontakt, Startseite) bzw. OSM.
@@ -214,16 +285,25 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
         // TF-025 COLD_LEAD_DRAFT_ONLY: höchstens EIN lokaler Cold-Entwurf je Firma (Gmail-Entwurf legt der Mail-Worker an). Nie gesendet.
         const sender = store.read("config.json", {}).sender;
         if (lead.status === "blocked_no_legal_basis" && q.stage === "cold_lead_draft_only" && sender?.name) {
-          try {
-            const r = ensureColdDraft(store, lead, { sender, now: t, contacted, suppression: supp });
-            if (r.blocked) log("info", "cold_draft_skipped", { domain, reason: r.blocked });
-          } catch (e) { log("error", "cold_draft_failed", { domain, error: e.message }); }
+          // Zentrale Limits: höchstens maxDraftsPerHour / maxDraftsPerDay neue Cold-Entwürfe – darüber hinaus wird der Lead nur gespeichert
+          // (status bleibt, kein Entwurf; ein späterer Lauf legt ihn nicht nach, Chris sieht ihn als Kandidat im Dashboard).
+          const over = draftBudget();
+          if (over) { stats.blocked++; lead.draft_blocked_reason = over; log("info", "cold_draft_limited", { domain, reason: over }); }
+          else {
+            try {
+              const r = ensureColdDraft(store, lead, { sender, now: t, contacted, suppression: supp });
+              if (r.blocked) { stats.blocked++; lead.draft_blocked_reason = r.blocked; log("info", "cold_draft_skipped", { domain, reason: r.blocked }); }
+              else { stats.drafts++; hour.drafts++; }
+            } catch (e) { log("error", "cold_draft_failed", { domain, error: e.message }); }
+          }
         }
         log("info", "lead_discovered", { domain, status: lead.status, score, issues: a.issues.length, repair_stage: lead.repair_stage });
       } catch (e) {
         stats.errors++;
         lead.status = "audit_error";
         lead.error = e.message;
+        if (SOURCE_ERROR_RE.test(e.message)) networkFailures++;
+        data.lastError = { at: t.toISOString(), stage: "audit", message: String(e.message).slice(0, 160) };
         out.errors.push({ domain, error: e.message });
         log("error", "audit_failed", { domain, error: e.message }); // eine Website stoppt nie den ganzen Lauf
       }
@@ -232,6 +312,8 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
       out.found.push(lead);
       save();
     }
+    // Nur Netzwerkfehler und kein einziges erfolgreiches Audit → Quelle/Netz gestört → Backoff statt aggressiver Wiederholung.
+    if (networkFailures && out.found.every((l) => l.status === "audit_error")) backoff("audit", new Error("Netzwerk: " + networkFailures + " Websites nicht erreichbar"));
     save();
     return out;
   } finally {

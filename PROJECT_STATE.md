@@ -36,6 +36,27 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
 
+## JARVIS 24/7 CLOUD LEAD DISCOVERY (2026-10-09, Code fertig, Tests 331/331)
+- VPS 24/7, Windows optional: `lead-finder.js` läuft im VPS-Worker-Loop in jedem Durchlauf; `DEFAULT_DISCOVERY` jetzt intervalMinutes 20, sitesPerRun 4,
+  maxSitesPerHour 12, maxSitesPerDay 60, maxDraftsPerHour 5, maxDraftsPerDay 20, backoffMinutes 15 / backoffMaxMinutes 360 (alles per
+  `config.json` → `discovery` überschreibbar). Discovery kennt weder Local Core noch Versandfenster (Versandfenster 09:30/14:30 bleiben nur für erlaubte Auto-Sends).
+- Ablauf: DISCOVER (OSM) → WEBSITE AUDIT → SWISS CHECK → BUSINESS CONTACT → DEDUPE → CUSTOMER-VISIBLE ISSUE CHECK → QUALIFY → BUILD DRAFT
+  (Standardvorlage) → GMAIL DRAFT (Worker 3b, COLD_LEAD_DRAFT_ONLY) → REGISTER STATUS. Eine Firma stoppt nie den Lauf.
+- Limits/Backoff: Stundenzähler `hourly` in `discovered.json`; Entwurfs-Budget vor `ensureColdDraft` (Lead wird gespeichert, `draft_blocked_reason`,
+  Zähler `blocked`), Worker legt höchstens maxDraftsPerHour/Tag Gmail-Entwürfe je Durchlauf an (Rest bleibt queued, `cold_draft_deferred`).
+  Quellenfehler 429/5xx/Netz → `backoffUntil` exponentiell (15→30→…→360 min), `lastError`; nur Netzfehler ohne jedes Audit → Backoff; Erfolg setzt zurück.
+- Dedupe unverändert + geprüft: Domain/Firma/E-Mail bekannt, offener Entwurf, kontaktiert (Gmail-Register), Suppression/Opt-out (auch domainweit), Sperrfrist 180 Tage.
+- Pause/Resume: `setDiscoveryPaused` (Flag `paused` in discovered.json, nichts gelöscht); Server-Control-Aktionen `discovery.pause` / `discovery.resume`
+  (CONTROL, ohne Parameter, Cooldown 10 s, Audit); VPS-Agent `deps.setDiscovery` + Weckruf. DANGEROUS unverändert; keine Scheduler-/Shell-Befehle.
+- Dashboard/Mobile: Snapshot-Abschnitt `discovery` (`cleanDiscovery` Whitelist, Fehlertext redacted) → HUD-Panel „24/7 Discovery“ (ACTIVE/PAUSED/BACKOFF,
+  Heute geprüft, Neue Leads, Qualifiziert, Gmail-Entwürfe mit Limit, Blockiert, Letzter Lauf, Nächster Zyklus, Queue, Letzter Fehler, Pausieren/Fortsetzen)
+  + Quick-Status-Kacheln „24/7 Discovery“ und „Entwürfe heute“; auf dem Handy standardmässig offen. Playwright 390×844 (Mock): Panel korrekt,
+  Pause → PAUSED, Buttons 40 px, kein Overflow.
+- Recovery: Docker restart unless-stopped, Zustand in Dateien, verwaistes Discovery-Lock (toter PID) wird übernommen – getestet.
+- Tests: `test/discovery-247-030.test.js` (13): 24/7-Intervall, sichtbarer Fehler → Draft / keiner → kein Draft, Duplikate, kontaktiert, Suppression,
+  Opt-out, Sperrfrist, Tages-/Stunden-/Website-Limits, Worker-Limit + Send-Versuch blockiert, 429-Backoff, Netzfehler, Lock-Recovery, Pause/Resume,
+  Server-Control-Whitelist, Mock-E2E Handy→VPS, Dashboard. Gesamt 331/331, Secret-Scan 0 Treffer. Keine echte Mail.
+
 ## COLD-OUTREACH-STANDARDVORLAGE: VOLLSTÄNDIGER WEBSEITEN-CHECK (2026-10-09, Tests 318/318)
 - `swiss-repair.js` `buildColdDraft`: Struktur jetzt Anrede → 1 belegtes, einfach erklärtes Problem (optional 2.) → `FULL_CHECK_TEXT`
   („Das ist nur der Punkt, der mir beim ersten Blick direkt aufgefallen ist. Mein Angebot umfasst einen vollständigen Webseiten-Check: …

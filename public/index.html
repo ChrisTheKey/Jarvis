@@ -248,6 +248,8 @@ form.cmd button.stop { color: var(--red); }
       <div><span>Queue</span><b id="qQueue">–</b></div>
       <div><span>AI Service</span><b id="qAi">–</b></div>
       <div><span>Server Control</span><b id="qSrv">–</b></div>
+      <div><span>24/7 Discovery</span><b id="qDisc">–</b></div>
+      <div><span>Entwürfe heute</span><b id="qDiscDrafts">–</b></div>
     </div>
   </section>
 
@@ -318,6 +320,28 @@ form.cmd button.stop { color: var(--red); }
         </div>
         <p class="res" id="srvResult" aria-live="polite"></p>
       </details>
+    </section>
+    <section class="panel" id="discPanel">
+      <h2>24/7 Discovery <span id="discSeen"></span></h2>
+      <div class="kv">
+        <span>Discovery</span><b id="dState" title="Lead-Suche auf dem VPS, rund um die Uhr – der PC ist nicht nötig">–</b>
+        <span>Heute geprüft</span><b id="dAudited">–</b>
+        <span>Neue Leads</span><b id="dNew">–</b>
+        <span>Qualifiziert</span><b id="dQualified">–</b>
+        <span>Gmail-Entwürfe</span><b id="dDrafts" title="Neue Cold-Entwürfe heute (Stunde / Tag gegen Limit)">–</b>
+        <span>Blockiert</span><b id="dBlocked" title="Suppression, Duplikat oder Limit">–</b>
+        <span>Letzter Lauf</span><b id="dLast">–</b>
+        <span>Nächster Zyklus</span><b id="dNext">–</b>
+        <span>Queue</span><b id="dQueue" title="Lokale Entwürfe, die der Worker noch in Gmail anlegt">–</b>
+        <span>Letzter Fehler</span><b id="dError">–</b>
+      </div>
+      <div class="srv-ctl">
+        <div class="btns">
+          <button type="button" data-action="discovery.pause" data-confirm="24/7-Discovery pausieren? Bestehende Leads und Entwürfe bleiben erhalten.">Pausieren</button>
+          <button type="button" data-action="discovery.resume">Fortsetzen</button>
+        </div>
+        <p class="res" id="discResult" aria-live="polite"></p>
+      </div>
     </section>
   </div>
 
@@ -1016,6 +1040,9 @@ function renderQuick() {
   set("qQueue", m && m.pending !== null ? String(m.pending) : "–", m?.pending ? idle : "");
   set("qAi", m?.ai || "–", m ? (m.ai === "ONLINE" ? "on-ok" : String(m.ai).startsWith("PAUSED") ? "on-bad" : "") : "");
   set("qSrv", s?.server || "–", s ? (s.online ? "on-ok" : ["NICHT KONFIGURIERT", "UNBEKANNT", "CLOUD-PASSWORT FEHLT", "NUR ÜBER CLOUD"].includes(s.server) ? idle : "on-bad") : "");
+  const d = typeof discHud !== "undefined" ? discHud : null;
+  set("qDisc", d ? d.status : "–", d ? (d.status === "ACTIVE" ? "on-ok" : d.status === "PAUSED" ? idle : "on-bad") : "");
+  set("qDiscDrafts", d ? `${d.drafts_today ?? 0} · Queue ${d.queue ?? 0}` : "–");
 }
 // Mail-Panel: letzte Aufträge der Cloud-Warteschlange mit Ergebnis des Mail-Workers (Entwurf in Gmail, gesendet, blockiert …).
 function renderMailList(requests) {
@@ -1423,10 +1450,30 @@ function renderServer(data, note = "") {
   set("srvDocker", r.docker, ok.docker); set("srvCore", r.core, ok.core); set("srvMail", r.mail, ok.mail); set("srvScheduler", r.scheduler, ok.scheduler);
   set("srvBackup", r.backup, ok.backup); set("srvDeploy", r.deploy);
   $("srvSeen").textContent = m.seen ? new Date(m.seen).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" }) : "";
+  renderDiscovery(m.online ? data?.snapshot?.discovery : null, m.online ? "" : note || m.server);
+}
+// 24/7-Discovery (VPS): ACTIVE / PAUSED / BACKOFF, Tageszähler, letzter und nächster Lauf, Queue, letzter Fehler – Quelle ist der VPS-Snapshot.
+let discHud = null;
+function renderDiscovery(d, note = "") {
+  const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
+  discHud = d || null;
+  if (!d) { for (const id of ["dAudited", "dNew", "dQualified", "dDrafts", "dBlocked", "dLast", "dNext", "dQueue", "dError"]) set(id, "–"); set("dState", note || "–", note ? "on-idle" : ""); renderQuick(); return; }
+  const tone = d.status === "ACTIVE" ? "on-ok" : d.status === "PAUSED" ? "on-idle" : "on-bad";
+  set("dState", d.status === "ACTIVE" ? "ACTIVE" : d.status === "PAUSED" ? "PAUSED" : d.status === "BACKOFF" ? "BACKOFF (Quelle gestört)" : d.status || "–", tone);
+  set("dAudited", `${d.audited_today ?? 0} / ${d.limits?.max_sites_per_day ?? "–"}`);
+  set("dNew", String(d.new_leads_today ?? 0)); set("dQualified", String(d.qualified_today ?? 0));
+  set("dDrafts", `${d.drafts_today ?? 0} (${d.drafts_hour ?? 0}/h · Limit ${d.limits?.max_drafts_per_hour ?? "–"}/h, ${d.limits?.max_drafts_per_day ?? "–"}/Tag)`);
+  set("dBlocked", String(d.blocked_today ?? 0), d.blocked_today ? "on-idle" : "");
+  set("dLast", fmtTime(d.last_run_at)); set("dNext", d.status === "PAUSED" ? "pausiert" : fmtTime(d.next_run_at));
+  set("dQueue", String(d.queue ?? 0));
+  set("dError", d.last_error ? `${fmtTime(d.last_error.at)} ${d.last_error.stage || ""}: ${d.last_error.message}` : "keiner", d.last_error ? "on-idle" : "on-ok");
+  $("discPanel").querySelector('[data-action="discovery.pause"]').disabled = d.status === "PAUSED";
+  $("discPanel").querySelector('[data-action="discovery.resume"]').disabled = d.status !== "PAUSED";
+  renderQuick();
 }
 let srvPending = null;
-async function loadServer() {
-  const watch = $("srvControl").open && document.visibilityState === "visible";
+async function loadServer({ watch: force = false } = {}) {
+  const watch = force || ($("srvControl").open && document.visibilityState === "visible");
   try {
     const { status, body } = await serverFetch({}, watch ? "?watch=1" : "");
     if (!status) return renderServer(null, HOSTED ? "CLOUD-PASSWORT FEHLT" : "NUR ÜBER CLOUD");
@@ -1441,18 +1488,19 @@ async function loadServer() {
 function showServerResult(q) {
   const label = q.action.replace(/^jarvis\./, "");
   const r = q.result || {};
-  const detail = r.checks ? Object.entries(r.checks).map(([k, v]) => `${v ? "✓" : "✗"} ${k}`).join("  ") : r.restarted ? `neu gestartet: ${r.restarted}` : r.generations !== undefined ? `Generationen ${r.generations} · offsite ${r.offsite_ok ? "OK" : "FEHLER"}` : "";
-  $("srvResult").textContent = `${label}: ${q.status === "done" ? "OK" : q.status.toUpperCase()}${q.error ? " – " + q.error : ""}${detail ? "\n" + detail : ""}`;
+  const detail = r.checks ? Object.entries(r.checks).map(([k, v]) => `${v ? "✓" : "✗"} ${k}`).join("  ") : r.restarted ? `neu gestartet: ${r.restarted}` : r.generations !== undefined ? `Generationen ${r.generations} · offsite ${r.offsite_ok ? "OK" : "FEHLER"}` : r.status === "PAUSED" || r.status === "ACTIVE" ? `Discovery ${r.status}` : "";
+  (q.action.startsWith("discovery.") ? $("discResult") : $("srvResult")).textContent = `${label}: ${q.status === "done" ? "OK" : q.status.toUpperCase()}${q.error ? " – " + q.error : ""}${detail ? "\n" + detail : ""}`;
   log("SERVER", `${label}: ${q.status === "done" ? "erledigt" : q.status}${q.error ? " – " + q.error : ""}`, q.status === "done" ? "green" : "red");
 }
-document.querySelectorAll("#srvControl button[data-action]").forEach((b) => b.addEventListener("click", async () => {
+document.querySelectorAll("#srvControl button[data-action], #discPanel button[data-action]").forEach((b) => b.addEventListener("click", async () => {
   if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
-  $("srvResult").textContent = "Auftrag wird gesendet …";
+  const out = b.closest("#discPanel") ? $("discResult") : $("srvResult");
+  out.textContent = "Auftrag wird gesendet …";
   try {
     const { status, body } = await serverFetch({ method: "POST", body: JSON.stringify({ action: b.dataset.action }) });
-    if (status === 202) { srvPending = body.request.request_id; $("srvResult").textContent = "Wartet auf den VPS …"; for (let i = 0; i < 24 && srvPending; i++) { await sleep(5000); await loadServer(); } if (srvPending) $("srvResult").textContent = "Noch kein Ergebnis vom VPS."; }
-    else $("srvResult").textContent = body?.error || "Fehler " + status;
-  } catch { $("srvResult").textContent = "Cloud nicht erreichbar."; }
+    if (status === 202) { srvPending = body.request.request_id; out.textContent = "Wartet auf den VPS …"; for (let i = 0; i < 24 && srvPending; i++) { await sleep(5000); await loadServer({ watch: true }); } if (srvPending) out.textContent = "Noch kein Ergebnis vom VPS."; }
+    else out.textContent = body?.error || "Fehler " + status;
+  } catch { out.textContent = "Cloud nicht erreichbar."; }
 }));
 $("srvControl").addEventListener("toggle", () => { if ($("srvControl").open) loadServer(); });
 setInterval(loadServer, 30_000); loadServer();
@@ -1463,7 +1511,7 @@ document.querySelectorAll(".left .panel, .right .panel").forEach((p) => p.queryS
   if (!MOBILE.matches || e.target.closest("button, a")) return;
   p.classList.toggle("collapsed");
 }));
-for (const id of ["statusPanel", "serverPanel", "soldPanel", "salesPanel", "logPanel"]) $(id).classList.add("collapsed");
+for (const id of ["statusPanel", "serverPanel", "soldPanel", "salesPanel", "logPanel"]) $(id).classList.add("collapsed"); // discPanel bleibt offen
 if (MOBILE.matches) $("cmdInput").placeholder = "Befehl an Jarvis …"; // kurz, damit das Feld einzeilig bleibt
 
 $("bootBtn").addEventListener("click", boot);

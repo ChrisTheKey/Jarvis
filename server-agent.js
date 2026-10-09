@@ -144,6 +144,9 @@ export function createVpsActions({ dir, roots = [dir], deps, now = () => new Dat
     // Cold-Lead-Entwürfe (TF-025): genau EIN Lead je Aufruf, nur Entwurf/Verwerfen – deps.coldDraft kennt keinen Sendepfad.
     "leads.createDraft": ({ lead_id }) => (typeof deps.coldDraft === "function" ? deps.coldDraft("create", lead_id) : { ok: false, error: "NOT_IMPLEMENTED" }),
     "leads.discardDraft": ({ lead_id }) => (typeof deps.coldDraft === "function" ? deps.coldDraft("discard", lead_id) : { ok: false, error: "NOT_IMPLEMENTED" }),
+    // 24/7-Discovery: Pause/Fortsetzen – nur ein Flag, keine Scheduler-Befehle, keine Daten löschen.
+    "discovery.pause": () => (typeof deps.setDiscovery === "function" ? deps.setDiscovery("pause") : { ok: false, error: "NOT_IMPLEMENTED" }),
+    "discovery.resume": () => (typeof deps.setDiscovery === "function" ? deps.setDiscovery("resume") : { ok: false, error: "NOT_IMPLEMENTED" }),
   };
 }
 
@@ -226,11 +229,12 @@ export function startServerControl(o) {
   const snapshot = () => {
     const it = o.lastIteration();
     const mail = it ? { worker: it.standby ? "STANDBY" : it.holder === "vps" && it.self ? "VPS ACTIVE" : "UNKNOWN", authority: it.holder === "vps" ? "VPS" : it.holder === "local" ? "WINDOWS" : "UNKNOWN", self: it.self, last_iteration_at: it.at } : null;
-    let core = null, queue = null, backup = null;
+    let core = null, queue = null, backup = null, discovery = null;
     try { core = o.core(); } catch {}
     try { queue = o.queue(); } catch {}
+    try { discovery = typeof o.discovery === "function" ? o.discovery() : null; } catch {}
     backup = core?.backup || null;
-    return collectSnapshot({ dir: o.dir, startedAt: o.startedAt, core, mail, queue, backup, healthy: o.healthy, lastIterationAt: it?.at || null, pollMs: o.pollMs() });
+    return { ...collectSnapshot({ dir: o.dir, startedAt: o.startedAt, core, mail, queue, backup, healthy: o.healthy, lastIterationAt: it?.at || null, pollMs: o.pollMs() }), discovery };
   };
   const deps = {
     snapshot,
@@ -246,6 +250,7 @@ export function startServerControl(o) {
     // Cold-Lead-Entwurf vom Handy: der Worker-Prozess legt nur den lokalen Entwurf an (queued) und wird geweckt, damit der Gmail-Entwurf
     // sofort entsteht. Senden kann dieser Pfad nicht (COLD_LEAD_DRAFT_ONLY, gmail.sendDraft verweigert).
     coldDraft: (op, leadId) => (typeof o.coldDraft === "function" ? o.coldDraft(op, leadId) : { ok: false, error: "NOT_IMPLEMENTED" }),
+    setDiscovery: (op) => (typeof o.setDiscovery === "function" ? o.setDiscovery(op) : { ok: false, error: "NOT_IMPLEMENTED" }),
   };
   const agent = createControlAgent({ dir: o.dir, config, actions: createVpsActions({ dir: o.dir, deps }), snapshot, leads: o.leads || null, log: o.log });
   if (!agent) { o.log("info", "server_control_disabled", { reason: "JARVIS_SERVER_CONTROL_TOKEN fehlt" }); return null; }

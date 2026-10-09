@@ -52,6 +52,17 @@ Stand: 2026-10-09. Gilt für den CLOUD-Modus: der Windows-PC ist aus, kaputt ode
 4. Chris entscheidet allein in Gmail. Jarvis sendet nie; `gmail.sendDraft` verweigert COLD_LEAD_DRAFT_ONLY auf unterster Ebene.
 - Antworten des VPS im HUD: „OK: Entwurf wird angelegt …“ oder „Abgelehnt: Empfänger hat sich abgemeldet (Opt-out).“ usw.
 
+## 4c. 24/7 Lead Discovery (VPS, ohne PC)
+- Läuft im VPS-Worker rund um die Uhr: alle 20 Minuten ein kleiner Lauf (4 Websites), Limits 12 Websites/h, 60/Tag, 5 neue Cold-Entwürfe/h, 20/Tag
+  (zentral in `config.json` → `discovery` überschreibbar). Bei 429/5xx/Netzfehlern der Quelle: Backoff 15 → 30 → 60 … max. 360 min, dann automatisch weiter.
+- Ablauf je Firma: OSM-Suche → Website-Audit → Schweiz-Check → geschäftlicher Kontakt → Dedupe (Domain, Firma, E-Mail, offener Entwurf, kontaktiert,
+  Suppression/Opt-out, Kunde, Sperrfrist 180 Tage) → nur bei sichtbarem, belegtem Problem → Cold-Entwurf (Standardvorlage: erster Blick +
+  vollständiger Webseiten-Check, CHF 150/480) → Gmail-Entwurf (Label JARVIS, COLD_LEAD_DRAFT_ONLY). Nie Versand.
+- Panel „24/7 Discovery“ (Handy: standardmässig offen): ACTIVE/PAUSED/BACKOFF, Heute geprüft, Neue Leads, Qualifiziert, Gmail-Entwürfe (Stunde/Tag
+  gegen Limit), Blockiert, Letzter Lauf, Nächster Zyklus, Queue, Letzter Fehler. Quick-Status: „24/7 Discovery“ und „Entwürfe heute“.
+- Pausieren/Fortsetzen: Buttons im Panel → `discovery.pause` / `discovery.resume` (nur ein Flag auf dem VPS, Daten bleiben). Keine anderen Scheduler-Befehle.
+- Nach VPS-Reboot/Container-Neustart/Netzunterbruch läuft die Discovery von selbst weiter (Docker restart unless-stopped, Zustand in Dateien, verwaistes Lock wird erkannt).
+
 ## 5. Was ohne PC funktioniert
 Chat und Gesprächsverlauf, Gmail-Entwürfe und Reply-Entwürfe, sichere Sends mit Grundlage, Mail-Queue und Status, Lead-Liste und
 Lead-Details, Cold-Entwurf erstellen/verwerfen, Cold-Lead-Discovery (VPS), Suppression/Opt-out, Meldungen und Eskalationen, Scheduler (09:30/14:30, Discovery, Backup 03:00),

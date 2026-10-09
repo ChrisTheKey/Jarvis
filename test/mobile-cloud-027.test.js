@@ -74,8 +74,8 @@ test("Sicherheitsmodell unverändert: keine Shell, kein Dateizugriff, keine Secr
     assert.doesNotMatch(src, /shell\.exec|docker\.exec|child_process|readFile\(|JARVIS_SERVER_CONTROL_TOKEN|x-jarvis-control|x-jarvis-worker|x-jarvis-sync/, f);
   }
   // Server-Panel: nur feste Action-IDs, keine freien Befehle; gefährliche Aktionen bleiben serverseitig 403.
-  const actions = [...html.matchAll(/data-action="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(actions, ["jarvis.runHealthCheck", "jarvis.runBackup", "jarvis.restartMailWorker", "jarvis.restartCore"]);
+  const actions = [...html.matchAll(/<button[^>]*data-action="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(actions, ["jarvis.runHealthCheck", "jarvis.runBackup", "jarvis.restartMailWorker", "jarvis.restartCore", "discovery.pause", "discovery.resume"]);
   assert.doesNotMatch(html, /name="command"|id="shell"|data-command/);
   const sc = read("server-control.js");
   assert.match(sc, /shell\.exec/, "shell.exec ist als DANGEROUS gelistet (immer 403)");
