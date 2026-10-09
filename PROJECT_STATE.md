@@ -36,6 +36,26 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
 
+## MOBILE CLOUD LIVE-ABNAHME 2026-10-09 19:15–19:25 UTC (Production, 390×844, Local Core blockiert) – TEILWEISE BESTANDEN
+- Login: Chris hat JARVIS_PASSWORD selbst im Playwright-Fenster eingegeben (nie ausgelesen/geloggt; danach aus localStorage entfernt, Fenster geschlossen).
+- PASS live hinter Login: Modus CLOUD; Quick-Status JARVIS CLOUD ONLINE / VPS CORE ONLINE / MAIL WORKER VPS ACTIVE / AUTHORITY VPS /
+  WINDOWS CLIENT OFFLINE / QUEUE 0 / AI SERVICE ONLINE / SERVER CONTROL ONLINE; Server-Panel HEALTHY, VPS ACTIVE, Scheduler ONLINE, Backup OK,
+  Deploy a7ede6a; kein horizontaler Overflow (scrollWidth 390); Composer sichtbar/bedienbar (46 px); Chat live über /api/cloud (Antwort in 5 s).
+  LEADS live: 24 Leads vom VPS (7 „Entwurf in Gmail“, 17 „kein Entwurf“), Zeilen 94 px, Detail mit Problem in Kundensprache, Business-E-Mail,
+  Draft-Status, COLD_LEAD_DRAFT_ONLY, Suppression/Opt-out-Zeilen; Buttons 40 px: „GMAIL-ENTWURF ERSTELLEN“ bei vorhandenem Entwurf korrekt
+  inaktiv, „ENTWURF VERWERFEN“/„IN GMAIL ÖFFNEN“ aktiv; keine Roh-Evidence/IDs im Detail; Tap auf zweiten Lead funktioniert. Kein Cold-Entwurf
+  an eine reale Firma ausgelöst. Gmail-Link = statisches https://mail.google.com/mail/u/0/#drafts (rel=noopener, kein Token/Deep-Link).
+- Security live: DOM + localStorage ohne sk-ant/ya29/PEM/64-Hex/ENV-Namen/Gmail-Credentials/Worker-/Control-Header; Passwortfeld leer.
+- Echter Gmail-Draft-E2E: Production-UI → /api/cloud → mail_request delivery=draft → Cloud-Queue (Queue 1, „WARTET AUF MAIL-WORKER“) → VPS hat
+  den Auftrag nach 50 s verarbeitet → **blockiert**: der von Chris genannte Testempfänger ist seine eigene Adresse und steht auf dem VPS in
+  `excludeAddresses` (bewusst: für eigene Adressen nie Entwürfe). HUD/Mail-Panel: „ENTWURF · BLOCKIERT – Empfänger ist gesperrt“, Queue 0,
+  kein state.actions-Eintrag, kein cloudDrafts-Eintrag, 0 Send-Events, kein Gmail-Entwurf. Pfad bis Gmail-Gate real verifiziert; Gmail-Draft selbst
+  NICHT erzeugt. Chris hatte keine zweite Adresse → offen: TESTEMPFAENGER_FEHLT (Adresse nicht in PROJECT_STATE).
+- Danach: VPS healthy, 0 Restarts, authority holder=vps self=true, Windows self=false, genau ein Sender, Scheduler 09:30/14:30 ausgeführt,
+  Backup OK (3 Gen.), Queue 0, 0 Send-Events; Tests 312/312, Secret-Scan 0 Treffer. TF-024/025 unverändert, /opt/fiverr unberührt.
+- JARVIS MOBILE CLOUD READY — END-TO-END VERIFIED wird erst gesetzt, wenn genau ein echter Gmail-Draft (an eine nicht ausgeschlossene,
+  von Chris kontrollierte Adresse) über Cloud→VPS→Gmail entstanden ist.
+
 ## CLOUD LEADS + MOBILE COLD-DRAFT (2026-10-09, Code fertig, Tests 312/312) – Lead-Liste/Details/Entwurf vom Handy, ohne PC
 - Neu `cloud-leads.js` (Allowlist `CLOUD_LEAD_FIELDS`: lead_id, Firma, Website, Problem in Kundensprache, Kontakt, Business-E-Mail, Stage,
   Offer, Draft-Status, Entwurf-in-Gmail ja/nein, Suppression, Opt-out, draft_eligible, Draft-Modus, letzter Kontakt, Antwort, Kunde).
