@@ -48,6 +48,9 @@ VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC 
   Befundtexte (Preise sind keine Statuscodes – Tests entfernen `CHF d+` vor der Jargon-Prüfung), COLD_LEAD_DRAFT_ONLY, legal_basis NONE, kein Auto-Send.
 - Tests: neu `test/cold-template-029.test.js` (6); angepasst 022/025/026 (Preise jetzt erlaubt, alter Satz „Ich behebe solche kleineren
   Website-Probleme“ ersetzt). Vorhandene Gmail-Entwürfe bleiben unberührt (extern bereits angepasst); keine Mail gesendet.
+- **LIVE 2026-10-09 20:28 UTC (Commit 7fec90e):** VPS `deploy/vps/deploy.sh fiverr` (ohne Secrets), Container healthy, 0 Restarts, `worker_started role=vps`,
+  neue Vorlage im Container geladen (FULL_CHECK_TEXT, CHF 150/480 aus OFFERS). Netlify: kein Frontend-/Cloud-Code geändert (Autodeploy 200).
+  Danach: VPS self=true, Windows self=false, Authority VPS, Queue 0, AI ONLINE, 0 Send-Events. Secret-Scan 0 Treffer.
 
 ## JARVIS MOBILE CLOUD READY — END-TO-END VERIFIED (2026-10-09 19:50–19:55 UTC)
 - Echter Production-Mobile-Test bestanden (390×844, Local Core blockiert, Passwort von Chris im Browser eingegeben, nie ausgelesen, danach entfernt).
