@@ -36,6 +36,29 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
 
+## JARVIS 1500/DAY DISCOVERY — UNLIMITED QUALIFIED DRAFT QUEUE (2026-10-09, Tests 338/338)
+- Website-Deckel (hart, technisch): intervalMinutes 20, sitesPerRun 21, maxSitesPerHour 63, maxSitesPerDay 1500 (`DEFAULT_DISCOVERY`, per
+  `config.json` → `discovery` überschreibbar). Test: 4 × 400 Kandidaten → genau 1500 Audits, danach bis zum nächsten Tag keines mehr.
+- KEINE Business-Obergrenze für Cold-Gmail-Entwürfe: `maxDraftsPerHour` / `maxDraftsPerDay` = **null = kein Business-Cap** (Felder bleiben zur
+  Kompatibilität). `draftBudget` in der Discovery entfernt, Tages-/Stundenzähler im Worker entfernt. Jeder qualifizierte Lead (alle bestehenden
+  Qualitätsregeln: CH belegt, geschäftliche Adresse, sichtbares belegtes Problem, verständlich formulierbar, kein Duplikat, nicht kontaktiert,
+  kein offener Entwurf, keine Suppression/Opt-out/Sperrfrist/Ausschluss) wird persistent in die Draft-Queue aufgenommen:
+  `individual_reviews.json` queued → (Worker) → draft_created | blocked. 10 → 10, 100 → 100, 500 → 500 Entwürfe (Tests).
+- Technisches Pacing (verschiebt nur, verwirft nie): `draftsPerPass` 25 je Worker-Durchlauf (alle 2 min), `draftPaceMs` 1500 zwischen zwei
+  Entwürfen, bei Gmail 429/5xx/Netz exponentieller Backoff 1 → 2 → 4 … max 60 min, persistiert in `individual_reviews.json.draft_worker`
+  (überlebt Neustart); im Backoff bleibt alles queued. Draft-Worker läuft 24/7, Versandfenster gelten nicht für Cold-Entwürfe.
+- Dedupe direkt vor Gmail (Worker 3b): Suppression/Opt-out (auch Domain), Ausschlussadressen, geschäftliche Adresse, bereits kontaktiert /
+  Gmail-Entwurf vorhanden (Register sent+drafts), bestehender Kunde (`sales.json`) → Queue-Eintrag BLOCKED mit Grund, kein Entwurf.
+- Entkopplung: DISCOVERY QUEUE (Websites prüfen) läuft als Hintergrund-Promise (`discoveryRunning`, eigenes Lock → nie doppelt) und blockiert
+  weder Mail-Takt noch Draft-Worker; DRAFT QUEUE wird in jedem 2-min-Durchlauf abgearbeitet. Keine doppelten Leads/Entwürfe (Dedupe + Register).
+- Dashboard/Mobile: Websites heute X / 1500, Neue Leads, Qualifizierte Leads (gesamt/heute), Warten auf Gmail-Draft, Gmail-Drafts heute erstellt,
+  Gesamt offene Gmail-Drafts, Blockiert, Draft Worker ACTIVE/BACKOFF, Letzter Draft, Letzter/Nächster Discovery-Lauf, Letzter Fehler; Quick-Status
+  „Websites / Drafts heute“. Keine „X / 20“-Anzeige mehr. Snapshot-Whitelist `cleanDiscovery` erweitert (max_drafts_* immer null).
+- Unverändert: COLD_LEAD_DRAFT_ONLY, legal_basis NONE, automatic_send_allowed false, delivery draft; `gmail.sendDraft` verweigert Cold-Entwürfe;
+  nie in state.actions. Tests: `test/discovery-1500-031.test.js` (7) + angepasste 030; gesamt 338/338, Secret-Scan 0 Treffer, 0 Send-Events.
+- Performance: 21 Audits je Lauf sequentiell mit 1,5 s Mindestabstand je Website (site-auditor) ≈ 2–6 min je Lauf < 20-min-Intervall; keine
+  Parallelität nötig. Gmail: 25 Entwürfe je 2-min-Durchlauf ≈ bis 750/h technisch möglich.
+
 ## JARVIS 24/7 CLOUD LEAD DISCOVERY (2026-10-09, Code fertig, Tests 331/331)
 - VPS 24/7, Windows optional: `lead-finder.js` läuft im VPS-Worker-Loop in jedem Durchlauf; `DEFAULT_DISCOVERY` jetzt intervalMinutes 20, sitesPerRun 4,
   maxSitesPerHour 12, maxSitesPerDay 60, maxDraftsPerHour 5, maxDraftsPerDay 20, backoffMinutes 15 / backoffMaxMinutes 360 (alles per

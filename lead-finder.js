@@ -21,12 +21,16 @@ const OVERPASS_UA = "JarvisLeadFinder/1.0 (Helvetic Webdesign; https://helvetic-
 // Gmail-Entwürfe je Stunde/Tag) und Backoff bei 429/5xx/Netzwerkfehlern der Datenquelle. Alle Werte per config.json → discovery überschreibbar.
 export const DEFAULT_DISCOVERY = {
   enabled: true,
-  intervalMinutes: 20, // ein kleiner Lauf alle 20 Minuten (24/7), nie eine Endlosschleife
-  sitesPerRun: 4,
-  maxSitesPerHour: 12,
-  maxSitesPerDay: 60,
-  maxDraftsPerHour: 5,  // neue lokale Cold-Entwürfe (und Gmail-Entwürfe) je Stunde
-  maxDraftsPerDay: 20,  // … je Tag – keine Entwurfsflut
+  intervalMinutes: 20, // ein Lauf alle 20 Minuten (24/7), nie eine Endlosschleife
+  sitesPerRun: 21,     // 21 × 3 Läufe = 63 je Stunde
+  maxSitesPerHour: 63,
+  maxSitesPerDay: 1500, // harter Prüfdeckel: 1500 unterschiedliche Websites pro Tag
+  // KEIN geschäftliches Maximum für Cold-Entwürfe: null = unbegrenzt. Jeder qualifizierte Lead wird persistent zur Entwurfserstellung
+  // vorgemerkt (individual_reviews.json, Status queued → draft_created). Nur technisches Pacing gegenüber der Gmail-API (unten).
+  maxDraftsPerHour: null,
+  maxDraftsPerDay: null,
+  draftPaceMs: 1500,    // technische Pause zwischen zwei Gmail-Entwürfen (API-Schonung) – verschiebt nur, verwirft nie
+  draftsPerPass: 25,    // technisch je Worker-Durchlauf (alle 2 min) – Rest bleibt in der Queue, nichts geht verloren
   backoffMinutes: 15,   // nach Quellenfehler: 15 → 30 → 60 … bis backoffMaxMinutes
   backoffMaxMinutes: 360,
   minScore: 6,
@@ -141,17 +145,27 @@ export function discoveryStatus(dir = WORKER_DIR, now = new Date()) {
   const dayStart = zurichDay(now);
   const draftsToday = reviews.filter((r) => r.created_at && zurichDay(new Date(r.created_at)) === dayStart).length;
   const draftsHour = reviews.filter((r) => r.created_at && +now - Date.parse(r.created_at) < 3_600_000).length;
+  const dw = store.read(REVIEWS_FILE, { reviews: {} }).draft_worker || {};
+  const dwBackoff = !!dw.backoffUntil && Date.parse(dw.backoffUntil) > +now;
+  const gmailToday = reviews.filter((r) => r.draft_created_at && zurichDay(new Date(r.draft_created_at)) === dayStart).length;
   return {
     status: !cfg.enabled ? "DISABLED" : data.paused ? "PAUSED" : backoffActive ? "BACKOFF" : "ACTIVE",
     paused: !!data.paused, paused_at: data.pausedAt || null,
-    audited_today: today.audited || 0, new_leads_today: today.found || 0, qualified_today: today.qualified || 0,
+    // Websites: harter Prüfdeckel je Tag; Leads: qualifiziert = persistent zur Entwurfserstellung vorgemerkt (kein Business-Cap).
+    audited_today: today.audited || 0, websites_limit: cfg.maxSitesPerDay, new_leads_today: today.found || 0, qualified_today: today.qualified || 0,
+    qualified_total: reviews.length,
     drafts_today: draftsToday, drafts_hour: draftsHour, blocked_today: today.blocked || 0, errors_today: today.errors || 0,
     audited_hour: h.audited || 0,
     last_run_at: data.lastRunAt || null, next_run_at: next, backoff_until: backoffActive ? data.backoffUntil : null, backoff_count: data.backoffCount || 0,
-    queue: reviews.filter((r) => r.status === "queued").length, // lokale Entwürfe, die der Worker noch in Gmail anlegt
+    queue: reviews.filter((r) => r.status === "queued").length, // = waiting_for_draft
+    waiting_for_draft: reviews.filter((r) => r.status === "queued").length,
+    gmail_drafts_today: gmailToday,
+    open_drafts_total: reviews.filter((r) => r.status === "draft_created").length,
+    draft_worker: { status: dwBackoff ? "BACKOFF" : "ACTIVE", backoff_until: dwBackoff ? dw.backoffUntil : null, backoff_count: dw.backoffCount || 0, last_draft_at: dw.lastDraftAt || null,
+      last_error: dw.lastError ? { at: dw.lastError.at, message: String(dw.lastError.message || "").slice(0, 160) } : null },
     last_error: data.lastError ? { at: data.lastError.at, stage: data.lastError.stage, message: String(data.lastError.message || "").slice(0, 160) } : null,
     limits: { interval_minutes: cfg.intervalMinutes, sites_per_run: cfg.sitesPerRun, max_sites_per_hour: cfg.maxSitesPerHour, max_sites_per_day: cfg.maxSitesPerDay,
-      max_drafts_per_hour: cfg.maxDraftsPerHour, max_drafts_per_day: cfg.maxDraftsPerDay },
+      max_drafts_per_hour: null, max_drafts_per_day: null, draft_pace_ms: cfg.draftPaceMs, drafts_per_pass: cfg.draftsPerPass }, // null = kein Business-Cap
   };
 }
 
@@ -197,12 +211,6 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
     let candidates = [];
     try { candidates = await search(pair); data.backoffCount = 0; data.backoffUntil = null; }
     catch (e) { stats.errors++; out.errors.push({ stage: "search", error: e.message }); log("error", "discovery_search_failed", { query: out.query, error: e.message }); backoff("search", e); save(); return out; }
-    const draftBudget = () => {
-      const reviews = Object.values(store.read(REVIEWS_FILE, { reviews: {} }).reviews || {});
-      const dayN = reviews.filter((r) => r.created_at && zurichDay(new Date(r.created_at)) === day).length;
-      const hourN = reviews.filter((r) => r.created_at && +t - Date.parse(r.created_at) < 3_600_000).length;
-      return dayN < cfg.maxDraftsPerDay && hourN < cfg.maxDraftsPerHour ? null : dayN >= cfg.maxDraftsPerDay ? "Tageslimit Entwürfe" : "Stundenlimit Entwürfe";
-    };
     let networkFailures = 0;
 
     // Bekanntes: gefundene Leads, Chris’ Lead-Liste, eigene Jarvis-Threads, Suppression (hat immer Vorrang)
@@ -285,17 +293,13 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
         // TF-025 COLD_LEAD_DRAFT_ONLY: höchstens EIN lokaler Cold-Entwurf je Firma (Gmail-Entwurf legt der Mail-Worker an). Nie gesendet.
         const sender = store.read("config.json", {}).sender;
         if (lead.status === "blocked_no_legal_basis" && q.stage === "cold_lead_draft_only" && sender?.name) {
-          // Zentrale Limits: höchstens maxDraftsPerHour / maxDraftsPerDay neue Cold-Entwürfe – darüber hinaus wird der Lead nur gespeichert
-          // (status bleibt, kein Entwurf; ein späterer Lauf legt ihn nicht nach, Chris sieht ihn als Kandidat im Dashboard).
-          const over = draftBudget();
-          if (over) { stats.blocked++; lead.draft_blocked_reason = over; log("info", "cold_draft_limited", { domain, reason: over }); }
-          else {
-            try {
-              const r = ensureColdDraft(store, lead, { sender, now: t, contacted, suppression: supp });
-              if (r.blocked) { stats.blocked++; lead.draft_blocked_reason = r.blocked; log("info", "cold_draft_skipped", { domain, reason: r.blocked }); }
-              else { stats.drafts++; hour.drafts++; }
-            } catch (e) { log("error", "cold_draft_failed", { domain, error: e.message }); }
-          }
+          // Kein geschäftliches Entwurfs-Limit: JEDER qualifizierte Lead wird persistent in die Draft-Queue aufgenommen (queued) –
+          // den Gmail-Entwurf legt der Draft-Worker mit technischem Pacing an. Blockiert nur durch Dedupe/Suppression/Sperrfrist.
+          try {
+            const r = ensureColdDraft(store, lead, { sender, now: t, contacted, suppression: supp });
+            if (r.blocked) { stats.blocked++; lead.draft_blocked_reason = r.blocked; log("info", "cold_draft_skipped", { domain, reason: r.blocked }); }
+            else { stats.drafts++; hour.drafts++; }
+          } catch (e) { log("error", "cold_draft_failed", { domain, error: e.message }); }
         }
         log("info", "lead_discovered", { domain, status: lead.status, score, issues: a.issues.length, repair_stage: lead.repair_stage });
       } catch (e) {

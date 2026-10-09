@@ -61,7 +61,7 @@ test("24/7: kleiner Lauf alle intervalMinutes (Default 20) rund um die Uhr, unab
   clock = new Date("2026-10-10T20:30:00Z"); // 22:30 Zürich – auch nachts
   assert.equal((await run([cand("drei.ch")], fakeAuditor({ "drei.ch": audit("drei.ch") }))).found.length, 1);
   assert.doesNotMatch(read("lead-finder.js").replace(/\/\/.*$/gm, ""), /localhost|127\.0\.0\.1|server\.js|sendWindow/, "Discovery kennt weder Local Core noch Versandfenster");
-  assert.match(read("mail-worker.js"), /const d = await finder\.runDiscovery\(\{ gmail, log \}\);/, "im VPS-Worker-Loop in jedem Durchlauf");
+  assert.match(read("mail-worker.js"), /discoveryRunning = finder\.runDiscovery\(\{ gmail, log \}\)/, "im VPS-Worker-Loop in jedem Durchlauf (entkoppelt, nie doppelt)");
   assert.match(read("deploy/vps/docker-compose.yml"), /restart: unless-stopped/, "nach VPS-Reboot automatisch wieder da");
 });
 
@@ -116,32 +116,26 @@ test("Suppression und Opt-out → blockiert (kein Lead-Entwurf, auch domainweit)
 });
 
 // ---------- Limits ----------
-test("Tageslimit und Stundenlimit für neue Entwürfe greifen zentral (config.discovery); Websites je Stunde begrenzt", async () => {
-  write("config.json", { sender: SENDER, discovery: { maxDraftsPerDay: 1, maxDraftsPerHour: 5, intervalMinutes: 1 } });
-  await run([cand("eins.ch"), cand("zwei.ch")], fakeAuditor({ "eins.ch": audit("eins.ch"), "zwei.ch": audit("zwei.ch") }));
-  assert.deepEqual(Object.keys(reviews()), ["eins.ch"], "zweiter Entwurf über dem Tageslimit");
-  assert.equal(readJ("discovered.json").leads["zwei.ch"].draft_blocked_reason, "Tageslimit Entwürfe");
+test("Website-Deckel greifen zentral (Stunde/Tag); für Entwürfe gibt es KEIN Business-Limit mehr (maxDraftsPerHour/Day = null)", async () => {
+  assert.equal(DEFAULT_DISCOVERY.maxDraftsPerHour, null); assert.equal(DEFAULT_DISCOVERY.maxDraftsPerDay, null);
+  // Alte Limit-Werte in einer Konfiguration haben keine Wirkung mehr: drei qualifizierte Firmen → drei Entwürfe.
+  write("config.json", { sender: SENDER, discovery: { maxDraftsPerDay: 1, maxDraftsPerHour: 1, intervalMinutes: 1 } });
+  await run([cand("eins.ch"), cand("zwei.ch"), cand("drei.ch")], fakeAuditor({ "eins.ch": audit("eins.ch"), "zwei.ch": audit("zwei.ch"), "drei.ch": audit("drei.ch") }));
+  assert.deepEqual(Object.keys(reviews()).sort(), ["drei.ch", "eins.ch", "zwei.ch"]);
   const s = discoveryStatus(dir, clock);
-  assert.equal(s.drafts_today, 1); assert.equal(s.blocked_today, 1); assert.equal(s.limits.max_drafts_per_day, 1);
-  // Stundenlimit
-  write("config.json", { sender: SENDER, discovery: { maxDraftsPerDay: 50, maxDraftsPerHour: 1, intervalMinutes: 1 } });
-  clock = new Date(+clock + 2 * MIN);
-  await run([cand("drei.ch")], fakeAuditor({ "drei.ch": audit("drei.ch") }));
-  assert.ok(!reviews()["drei.ch"], "Stundenlimit: eins.ch zählt noch");
-  clock = new Date(+clock + 61 * MIN);
-  await run([cand("vier.ch")], fakeAuditor({ "vier.ch": audit("vier.ch") }));
-  assert.equal(reviews()["vier.ch"].status, "queued", "nach einer Stunde wieder frei");
-  // Websites je Stunde
+  assert.equal(s.waiting_for_draft, 3); assert.equal(s.qualified_total, 3); assert.equal(s.limits.max_drafts_per_day, null); assert.equal(s.limits.max_drafts_per_hour, null);
+  assert.equal(s.blocked_today, 0, "nichts wegen eines Limits blockiert");
+  // Websites je Stunde bleiben ein harter technischer Deckel
   write("config.json", { sender: SENDER, discovery: { maxSitesPerHour: 1, sitesPerRun: 3, intervalMinutes: 1 } });
-  clock = new Date(+clock + 61 * MIN); // neue Stunde (vier.ch zählte in der vorigen)
+  clock = new Date(+clock + 61 * MIN);
   const r = await run([cand("a.ch"), cand("b.ch")], fakeAuditor({ "a.ch": audit("a.ch"), "b.ch": audit("b.ch") }));
   assert.equal(r.found.length, 1, "nur eine Website in dieser Stunde");
   clock = new Date(+clock + 2 * MIN);
   assert.equal((await run([cand("b.ch")], fakeAuditor({ "b.ch": audit("b.ch") }))).skipped, "hour_limit");
 });
 
-test("Worker: höchstens maxDraftsPerHour/Tag Gmail-Entwürfe je Durchlauf anlegen, Rest bleibt queued – und nie senden", async () => {
-  write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: SENDER, discovery: { maxDraftsPerHour: 2, maxDraftsPerDay: 20 } });
+test("Draft-Worker: technisches Pacing je Durchlauf (draftsPerPass), Rest bleibt in der Queue und wird im nächsten Durchlauf erstellt – nie gesendet", async () => {
+  write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: SENDER, discovery: { draftsPerPass: 2, draftPaceMs: 0 } });
   write("suppression.json", {});
   const rv = {};
   for (const h of ["a.ch", "b.ch", "c.ch"]) rv[h] = { lead_id: h, domain: h, company: h, recipient: `info@${h}`, subject: "Hinweis", body: "Guten Tag", draft_hash: "h", status: "queued", draft_mode: COLD_MODE, legal_basis: "NONE", message_class: "DRAFT_ONLY", automatic_send_allowed: false, manual_send_decision_required: true, created_at: T0.toISOString(), updated_at: T0.toISOString() };
@@ -149,13 +143,12 @@ test("Worker: höchstens maxDraftsPerHour/Tag Gmail-Entwürfe je Durchlauf anleg
   await worker().tick();
   const after = reviews();
   assert.equal(Object.values(after).filter((r) => r.status === "draft_created").length, 2);
-  assert.equal(Object.values(after).filter((r) => r.status === "queued").length, 1, "dritter wartet auf die nächste Stunde");
+  assert.equal(Object.values(after).filter((r) => r.status === "queued").length, 1, "dritter wartet auf den nächsten Durchlauf (2 min), kein Tages-/Stundenlimit");
   assert.equal(g.calls.filter((c) => c.startsWith("SEND")).length, 0, "nie gesendet");
-  clock = new Date(+T0 + 61 * MIN);
+  clock = new Date(+T0 + 2 * MIN);
   await worker().tick();
-  assert.equal(Object.values(reviews()).filter((r) => r.status === "draft_created").length, 3);
+  assert.equal(Object.values(reviews()).filter((r) => r.status === "draft_created").length, 3, "im nächsten Durchlauf erledigt – keine Stunde warten");
   assert.equal(g.calls.filter((c) => c.startsWith("SEND")).length, 0);
-  // Send-Versuch auf einen Cold-Entwurf scheitert auf Gmail-Ebene
   await assert.rejects(() => g.sendDraft("dr1"), /COLD_LEAD_DRAFT_ONLY/);
 });
 
@@ -231,7 +224,7 @@ test("Server Control: discovery.pause/resume sind feste CONTROL-Aktionen ohne Pa
   const d = cleanDiscovery({ status: "ACTIVE", paused: false, audited_today: 7, new_leads_today: 7, qualified_today: 2, drafts_today: 1, drafts_hour: 1, blocked_today: 1, errors_today: 0, queue: 1,
     last_run_at: T0.toISOString(), next_run_at: new Date(+T0 + 20 * MIN).toISOString(), last_error: { at: T0.toISOString(), stage: "search", message: "Overpass HTTP 504 token=abc sk-ant-xyz123456789 /opt/fiverr/x" },
     limits: { interval_minutes: 20, max_drafts_per_hour: 5, max_drafts_per_day: 20 }, secret: "x", cmd: "rm -rf" });
-  assert.equal(d.status, "ACTIVE"); assert.equal(d.drafts_today, 1); assert.equal(d.limits.max_drafts_per_day, 20);
+  assert.equal(d.status, "ACTIVE"); assert.equal(d.drafts_today, 1); assert.equal(d.limits.max_drafts_per_day, null, "null = kein Business-Cap");
   assert.doesNotMatch(JSON.stringify(d), /sk-ant-xyz|rm -rf|"secret"|"cmd"|\/opt\/fiverr/);
   assert.equal(cleanSnapshot({ discovery: { status: "PAUSED" } }).discovery.status, "PAUSED");
   assert.equal(cleanSnapshot({}).discovery, null);

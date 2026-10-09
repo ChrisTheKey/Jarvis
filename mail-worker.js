@@ -601,25 +601,47 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const coldPatch = {};
     const suppAll = { ...store.read("suppression.json", {}), ...supp };
     const domainSuppressed = (d) => Object.keys(suppAll).some((a) => a.split("@")[1] === d && !FREEMAIL_RE.test(a));
-    // Zentrale 24/7-Limits (config.discovery, Default 5/h, 20/Tag): höchstens so viele Gmail-Entwürfe je Stunde/Tag anlegen –
-    // weitere bleiben „queued“ und kommen im nächsten Durchlauf dran. Keine Entwurfsflut, auch nicht bei vielen Kandidaten.
-    const dl = { maxDraftsPerHour: 5, maxDraftsPerDay: 20, ...(store.read("config.json", {}).discovery || {}) };
-    const createdAll = Object.values(coldData.reviews || {}).map((r) => r?.draft_created_at).filter(Boolean);
-    let gmailDraftsDay = createdAll.filter((x) => zurichDay(new Date(x)) === day).length;
-    let gmailDraftsHour = createdAll.filter((x) => +t - Date.parse(x) < 3_600_000).length;
-    for (const [id, rv] of Object.entries(coldData.reviews || {})) {
+    // DRAFT-WORKER (24/7, auch ausserhalb der Versandfenster): KEIN geschäftliches Maximum – jeder queued-Eintrag wird früher oder später
+    // zum Gmail-Entwurf. Nur technisches Pacing (config.discovery: draftPaceMs zwischen zwei Entwürfen, draftsPerPass je Durchlauf) und
+    // exponentieller Backoff bei 429/5xx/Netzfehlern der Gmail-API (persistiert in draft_worker; verschiebt nur, verwirft nie).
+    const dl = { draftPaceMs: 1500, draftsPerPass: 25, ...(store.read("config.json", {}).discovery || {}) };
+    const dw = { ...(coldData.draft_worker || {}) };
+    const dwBackoff = !!dw.backoffUntil && Date.parse(dw.backoffUntil) > +t;
+    if (dwBackoff && !dry && !readOnly) log("info", "draft_worker_backoff_wait", { until: dw.backoffUntil });
+    // Kunden werden nie als Cold Lead angeschrieben – frisch gelesen direkt vor dem Gmail-Entwurf.
+    const salesRecords = store.read("sales.json", { records: {} }).records || {};
+    const isCustomer = (domain) => !!salesRecords[domain]?.sale?.selected_offer;
+    let createdThisPass = 0, dwChanged = false;
+    const queuedInOrder = Object.entries(coldData.reviews || {}).sort(([, a], [, b]) => String(a?.created_at || "").localeCompare(String(b?.created_at || "")));
+    for (const [id, rv] of queuedInOrder) {
       if (!rv || rv.draft_mode !== COLD_MODE && rv.status !== "queued") continue;
       const to = normEmail(rv.recipient || "");
       if (dry || readOnly) { if (rv.status === "queued") plan.push({ kind: "cold-entwurf", to, subject: rv.subject, autoSend: false, review: true }); continue; }
       try {
         if (rv.status === "queued") {
+          // DEDUPE DIREKT VOR GMAIL: Suppression/Opt-out (auch Domain), Ausschluss, Adresse, bereits kontaktiert/Entwurf vorhanden, Kunde.
           if (suppAll[to] || exclude.has(to) || domainSuppressed(rv.domain)) { coldPatch[id] = { status: "blocked", blocked_reason: "suppression" }; continue; }
           if (!EMAIL_RE.test(to) || FREEMAIL_RE.test(to)) { coldPatch[id] = { status: "blocked", blocked_reason: "keine geschäftliche Adresse" }; continue; }
           if (contacted.has(to)) { coldPatch[id] = { status: "blocked", blocked_reason: "bereits kontaktiert/Entwurf vorhanden" }; continue; }
-          if (gmailDraftsDay >= dl.maxDraftsPerDay || gmailDraftsHour >= dl.maxDraftsPerHour) { log("info", "cold_draft_deferred", { lead_id: id, reason: gmailDraftsDay >= dl.maxDraftsPerDay ? "Tageslimit" : "Stundenlimit" }); continue; }
-          const d = await gmail.createDraft({ to, subject: rv.subject, body: rv.body, mode: COLD_MODE, leadId: id, draftHash: rv.draft_hash });
+          if (isCustomer(rv.domain)) { coldPatch[id] = { status: "blocked", blocked_reason: "bestehender Kunde" }; continue; }
+          if (dwBackoff) continue; // Gmail-API im Backoff: Eintrag bleibt queued, nächster Durchlauf
+          if (createdThisPass >= dl.draftsPerPass) continue; // technisches Pacing je Durchlauf – Rest bleibt in der Queue
+          if (createdThisPass > 0 && dl.draftPaceMs > 0) await sleep(dl.draftPaceMs);
+          let d;
+          try { d = await gmail.createDraft({ to, subject: rv.subject, body: rv.body, mode: COLD_MODE, leadId: id, draftHash: rv.draft_hash }); }
+          catch (e) {
+            if (!TRANSIENT_RE.test(e.message)) throw e;
+            // 429/5xx/Netz: Backoff 1 → 2 → 4 … max 60 min; Queue bleibt vollständig erhalten.
+            const count = (dw.backoffCount || 0) + 1, minutes = Math.min(60, 2 ** (count - 1));
+            Object.assign(dw, { backoffCount: count, backoffUntil: new Date(+t + minutes * 60_000).toISOString(), lastError: { at: t.toISOString(), message: String(e.message).slice(0, 160) } });
+            dwChanged = true;
+            log("warn", "draft_worker_backoff", { lead_id: id, minutes, count, error: e.message });
+            break;
+          }
           contacted.add(to);
-          gmailDraftsDay++; gmailDraftsHour++;
+          createdThisPass++;
+          Object.assign(dw, { backoffCount: 0, backoffUntil: null, lastDraftAt: t.toISOString(), lastError: null });
+          dwChanged = true;
           coldPatch[id] = { status: "draft_created", gmail_draft_id: d.draftId, message_id: d.messageId || null, thread_id: d.threadId, draft_created_at: t.toISOString() };
           log("info", "cold_draft_created", { lead_id: id, draftId: d.draftId });
         } else if (rv.status === "draft_created" && rv.discard_requested) {
@@ -639,9 +661,10 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     function writeCold() {
       const fresh = store.read(COLD_DRAFTS_FILE, { reviews: {} });
       for (const [id, patch] of Object.entries(coldPatch)) if (fresh.reviews?.[id]) fresh.reviews[id] = { ...fresh.reviews[id], ...patch, updated_at: t.toISOString() };
+      if (dwChanged) fresh.draft_worker = dw; // Backoff/letzter Entwurf persistent – überlebt Neustart
       store.write(COLD_DRAFTS_FILE, fresh);
     }
-    if (Object.keys(coldPatch).length) writeCold();
+    if (Object.keys(coldPatch).length || dwChanged) writeCold();
 
     // 4) Versand. Gesprächsantworten (conversation_reply) und manuelle Aufträge von Chris (manual_chris_mail) gehen zeitnah
     // raus, rund um die Uhr. Kampagnen (automatic_sales_outreach, sales_followup) ausschliesslich in den zwei Versandfenstern,
@@ -968,7 +991,7 @@ async function loop() {
   const startedAt = new Date().toISOString();
   // Server Control (nur VPS): Pause zwischen Durchläufen ist weckbar; Neustart des Cores = sauberes Ende nach dem Durchlauf,
   // Docker (restart: unless-stopped) startet den Container-Prozess neu. Nie mitten in einem Gmail-Durchlauf.
-  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false;
+  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false, discoveryRunning = null;
   const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
   const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
   const salesMod = await import("./sales.js");
@@ -1006,10 +1029,13 @@ async function loop() {
     standbyLogged = false;
     const r = it.result;
     // Danach (Antworten haben Vorrang): neue Websites suchen und prüfen, wenn fällig. Sendet nie.
-    try {
-      const d = await finder.runDiscovery({ gmail, log });
-      if (d.busy) log("info", "discovery_busy");
-    } catch (e) { log("error", "discovery_failed", { error: e.message }); }
+    // Entkoppelt: DISCOVERY QUEUE (Websites prüfen, bis 1500/Tag) läuft im Hintergrund und blockiert weder den Mail-Takt noch den
+    // DRAFT-Worker (Gmail-Entwürfe aus individual_reviews.json, siehe 3b). Nie zwei Discovery-Läufe gleichzeitig (eigenes Lock + Promise).
+    if (!discoveryRunning) {
+      discoveryRunning = finder.runDiscovery({ gmail, log })
+        .then((d) => { if (d.busy) log("info", "discovery_busy"); }, (e) => log("error", "discovery_failed", { error: e.message }))
+        .finally(() => { discoveryRunning = null; });
+    }
     // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.
     try {
       // Vertriebskennzahlen (nur Zähler/CHF-Summen der zwei Angebote) lokal festhalten und mitsynchronisieren.

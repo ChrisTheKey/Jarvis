@@ -249,7 +249,7 @@ form.cmd button.stop { color: var(--red); }
       <div><span>AI Service</span><b id="qAi">–</b></div>
       <div><span>Server Control</span><b id="qSrv">–</b></div>
       <div><span>24/7 Discovery</span><b id="qDisc">–</b></div>
-      <div><span>Entwürfe heute</span><b id="qDiscDrafts">–</b></div>
+      <div><span>Websites / Drafts heute</span><b id="qDiscDrafts">–</b></div>
     </div>
   </section>
 
@@ -325,14 +325,17 @@ form.cmd button.stop { color: var(--red); }
       <h2>24/7 Discovery <span id="discSeen"></span></h2>
       <div class="kv">
         <span>Discovery</span><b id="dState" title="Lead-Suche auf dem VPS, rund um die Uhr – der PC ist nicht nötig">–</b>
-        <span>Heute geprüft</span><b id="dAudited">–</b>
+        <span>Websites heute</span><b id="dAudited" title="Geprüfte Websites gegen den harten Tagesdeckel (1500)">–</b>
         <span>Neue Leads</span><b id="dNew">–</b>
-        <span>Qualifiziert</span><b id="dQualified">–</b>
-        <span>Gmail-Entwürfe</span><b id="dDrafts" title="Neue Cold-Entwürfe heute (Stunde / Tag gegen Limit)">–</b>
-        <span>Blockiert</span><b id="dBlocked" title="Suppression, Duplikat oder Limit">–</b>
-        <span>Letzter Lauf</span><b id="dLast">–</b>
-        <span>Nächster Zyklus</span><b id="dNext">–</b>
-        <span>Queue</span><b id="dQueue" title="Lokale Entwürfe, die der Worker noch in Gmail anlegt">–</b>
+        <span>Qualifizierte Leads</span><b id="dQualified" title="Persistent zur Entwurfserstellung vorgemerkt – kein Business-Limit">–</b>
+        <span>Warten auf Gmail-Draft</span><b id="dQueue" title="Draft-Queue: wird mit technischem Pacing abgearbeitet, nichts geht verloren">–</b>
+        <span>Gmail-Drafts heute erstellt</span><b id="dDrafts">–</b>
+        <span>Gesamt offene Gmail-Drafts</span><b id="dOpen" title="Entwürfe in Gmail, die auf Chris warten">–</b>
+        <span>Blockiert</span><b id="dBlocked" title="Suppression, Opt-out, Duplikat, Sperrfrist">–</b>
+        <span>Draft Worker</span><b id="dWorker" title="Gmail-Entwürfe: ACTIVE oder BACKOFF (API-Fehler, nur Verzögerung)">–</b>
+        <span>Letzter Draft</span><b id="dLastDraft">–</b>
+        <span>Letzter Discovery-Lauf</span><b id="dLast">–</b>
+        <span>Nächster Discovery-Lauf</span><b id="dNext">–</b>
         <span>Letzter Fehler</span><b id="dError">–</b>
       </div>
       <div class="srv-ctl">
@@ -1042,7 +1045,7 @@ function renderQuick() {
   set("qSrv", s?.server || "–", s ? (s.online ? "on-ok" : ["NICHT KONFIGURIERT", "UNBEKANNT", "CLOUD-PASSWORT FEHLT", "NUR ÜBER CLOUD"].includes(s.server) ? idle : "on-bad") : "");
   const d = typeof discHud !== "undefined" ? discHud : null;
   set("qDisc", d ? d.status : "–", d ? (d.status === "ACTIVE" ? "on-ok" : d.status === "PAUSED" ? idle : "on-bad") : "");
-  set("qDiscDrafts", d ? `${d.drafts_today ?? 0} · Queue ${d.queue ?? 0}` : "–");
+  set("qDiscDrafts", d ? `${d.audited_today ?? 0}/${d.websites_limit ?? "–"} · Drafts ${d.gmail_drafts_today ?? 0} · warten ${d.waiting_for_draft ?? d.queue ?? 0}` : "–");
 }
 // Mail-Panel: letzte Aufträge der Cloud-Warteschlange mit Ergebnis des Mail-Workers (Entwurf in Gmail, gesendet, blockiert …).
 function renderMailList(requests) {
@@ -1457,15 +1460,19 @@ let discHud = null;
 function renderDiscovery(d, note = "") {
   const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
   discHud = d || null;
-  if (!d) { for (const id of ["dAudited", "dNew", "dQualified", "dDrafts", "dBlocked", "dLast", "dNext", "dQueue", "dError"]) set(id, "–"); set("dState", note || "–", note ? "on-idle" : ""); renderQuick(); return; }
+  if (!d) { for (const id of ["dAudited", "dNew", "dQualified", "dDrafts", "dOpen", "dBlocked", "dWorker", "dLastDraft", "dLast", "dNext", "dQueue", "dError"]) set(id, "–"); set("dState", note || "–", note ? "on-idle" : ""); renderQuick(); return; }
   const tone = d.status === "ACTIVE" ? "on-ok" : d.status === "PAUSED" ? "on-idle" : "on-bad";
   set("dState", d.status === "ACTIVE" ? "ACTIVE" : d.status === "PAUSED" ? "PAUSED" : d.status === "BACKOFF" ? "BACKOFF (Quelle gestört)" : d.status || "–", tone);
-  set("dAudited", `${d.audited_today ?? 0} / ${d.limits?.max_sites_per_day ?? "–"}`);
-  set("dNew", String(d.new_leads_today ?? 0)); set("dQualified", String(d.qualified_today ?? 0));
-  set("dDrafts", `${d.drafts_today ?? 0} (${d.drafts_hour ?? 0}/h · Limit ${d.limits?.max_drafts_per_hour ?? "–"}/h, ${d.limits?.max_drafts_per_day ?? "–"}/Tag)`);
+  set("dAudited", `${d.audited_today ?? 0} / ${d.websites_limit ?? d.limits?.max_sites_per_day ?? "–"}`);
+  set("dNew", String(d.new_leads_today ?? 0)); set("dQualified", `${d.qualified_total ?? d.qualified_today ?? 0} (heute ${d.qualified_today ?? 0})`);
+  set("dQueue", String(d.waiting_for_draft ?? d.queue ?? 0), (d.waiting_for_draft ?? d.queue) ? "on-idle" : "");
+  set("dDrafts", String(d.gmail_drafts_today ?? d.drafts_today ?? 0));
+  set("dOpen", String(d.open_drafts_total ?? 0));
   set("dBlocked", String(d.blocked_today ?? 0), d.blocked_today ? "on-idle" : "");
+  const w = d.draft_worker || null;
+  set("dWorker", w ? (w.status === "BACKOFF" ? `BACKOFF bis ${fmtTime(w.backoff_until)}` : "ACTIVE") : "–", w ? (w.status === "ACTIVE" ? "on-ok" : "on-idle") : "");
+  set("dLastDraft", fmtTime(w?.last_draft_at));
   set("dLast", fmtTime(d.last_run_at)); set("dNext", d.status === "PAUSED" ? "pausiert" : fmtTime(d.next_run_at));
-  set("dQueue", String(d.queue ?? 0));
   set("dError", d.last_error ? `${fmtTime(d.last_error.at)} ${d.last_error.stage || ""}: ${d.last_error.message}` : "keiner", d.last_error ? "on-idle" : "on-ok");
   $("discPanel").querySelector('[data-action="discovery.pause"]').disabled = d.status === "PAUSED";
   $("discPanel").querySelector('[data-action="discovery.resume"]').disabled = d.status !== "PAUSED";
