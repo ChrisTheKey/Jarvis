@@ -141,7 +141,9 @@ test("Composer sichtbar in LOCAL und CLOUD: gleiches Markup, nicht verdeckt, im 
   assert.match(html, /grid-template-rows: auto minmax\(0, 1fr\) auto;/);
   assert.match(html, /\.bottom \{[^}]*position: relative; z-index: 5; min-width: 0;/);
   assert.match(html, /\.right \{[^}]*min-height: 0; overflow: hidden;/);
-  assert.match(html, /@media \(max-width: 860px\)[\s\S]*\.left, \.right \{ display: none; \}/, "kleine Fenster: nur Kern und Eingabe");
+  // Handy (Cloud-first): Status, Mail, Meldungen und Server bleiben sichtbar; der Composer ist unten festgepinnt statt die Panels zu verstecken.
+  assert.doesNotMatch(html, /\.left, \.right \{ display: none; \}/, "Handy versteckt die Panels nicht mehr");
+  assert.match(html, /@media \(max-width: 860px\)[\s\S]*\.bottom \{ order: 4; margin-top: auto; position: sticky; bottom: 0;/, "Composer bleibt unten erreichbar");
   assert.ok(fs.existsSync(path.join(ROOT, "public", "composer.js")), "Netlify (Cloud) liefert public/ aus");
   assert.match(read("server.js"), /\["\/mode-detect\.js", "\/composer\.js", "\/mail-status\.js", "\/server-status\.js"\]/, "Local Core liefert dasselbe Skript");
   // Leertaste/Escape-Kurzbefehle greifen im Textfeld nicht

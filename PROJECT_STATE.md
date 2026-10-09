@@ -2,7 +2,7 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-08
+Letzte Aktualisierung: 2026-10-09
 
 ## CLOUD-FIRST (Rollout ab 2026-10-07) – Zielbild: VPS = Gehirn/24-7-Runtime, Netlify = UI, GitHub = Code, Windows = optionaler Client
 Entscheidungen Chris (2026-10-07): (1) VPS nur AUSGEHEND, kein offener Port – Netlify-Functions sind das authentifizierte Gateway;
@@ -35,6 +35,28 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
   check-mail-auth: Windows 200 self=false, VPS 200 self=true → genau ein Sender.
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
+
+## MOBILE + CLOUD PARITY (2026-10-09, Code fertig, Tests 302/302) – Jarvis vom Handy, PC optional
+- Bestandsaufnahme: Cloud Core/VPS live (Heartbeat frisch, Start 2026-10-08 20:43 UTC = 4eff23c, 0 Restarts), Netlify Production 200
+  (`/api/cloud` configured, Server-Control-Probe length 64), check-mail-auth VPS self=true / Windows self=false, dr-probe: System ONLINE,
+  Core CLOUD ONLINE, VPS ACTIVE, Authority VPS, Queue 0, AI ONLINE, Backup OK (3 Gen., offsite 3), 144 Leads, 8 Cold, 7 Drafts offen.
+  SSH `fiverr` in dieser Sitzung nicht möglich (Key nicht im Agent) – VPS-Stand nur über die Cloud verifiziert.
+- Hauptbefund HUD: unter 860 px waren linke und rechte Panels (Status, Server, Meldungen, Mail, Vertrieb, Protokoll) komplett
+  ausgeblendet; Cloud-Modus hiess im Wording „ohne PC-Zugriff“/„nur Gespräch“; Fehlertext verwies aufs Terminal-Fenster.
+- Umsetzung `public/index.html` (nur Frontend, kein VPS-Redeploy nötig): Handy-Layout als eine scrollbare Spalte (Composer unten
+  festgepinnt, 16-px-Feld, Touch-Flächen ≥ 40 px, Panels per Titel-Tipp auf-/zuklappbar, Desktop unverändert); Quick-Status
+  (JARVIS / VPS CORE / MAIL WORKER / AUTHORITY / WINDOWS CLIENT / QUEUE / AI SERVICE / SERVER CONTROL) aus Cloud-Quellen; neues
+  Mail-Panel (letzte 12 Cloud-Mailaufträge mit Status „Entwurf in Gmail“/gesendet/blockiert + Grund, Link zu Gmail-Entwürfen; auch im
+  LOCAL-Modus aus der Cloud); Cloud-Wording positiv (VPS = Normalbetrieb, PC optional). `cloud.js`: Systemprompt sagt dasselbe.
+- Docs: `docs/JARVIS_CAPABILITY_MATRIX.md` (Local/Cloud/Mobile/Backend/Status je Funktion, LOCAL_ONLY vs. SAFE_CLOUD_EQUIVALENT) und
+  `docs/MOBILE_CLOUD_RUNBOOK.md` (URL, Login, Handy-Nutzung, Gmail-Draft-Workflow, ohne PC, lokal optional, Sicherheitsmodell, Cold-Draft-Regeln, Recovery).
+- Tests: `test/mobile-cloud-027.test.js` (6) + angepasste Mobile-Assertion in ux-mail-020. Playwright (lokale index.html unter dem
+  Netlify-Hostnamen, Local Core blockiert, Cloud-APIs gemockt) bei 390×844 und 430×932: Modus CLOUD, Quick-Status gefüllt, Composer im
+  Viewport, kein horizontaler Overflow, Chat → `mail_request` draft → Mail-Panel „WARTET AUF MAIL-WORKER“ → „ENTWURF IN GMAIL“.
+- Unverändert: TF-024/025, Suppression, Opt-out, Foreign-Gmail-Schutz, Server-Control-Allowlist, Cold Leads COLD_LEAD_DRAFT_ONLY,
+  Authority VPS. Keine echte Mail, kein Restart, keine Secrets. Lead-Details/Cold-Draft-Buttons bleiben LOCAL_ONLY (Cloud: Zähler, Gmail-App).
+- Nächster Schritt: Push → Netlify-Autodeploy; Chris prüft auf dem Handy `https://chrisjarvis.netlify.app/` (Cloud-Passwort), schreibt
+  „Schreib eine Mail an …“ und findet den Entwurf in Gmail. Optional später: sichere Lead-Kurzliste via Server-Control-READ.
 
 ## SERVER CONTROL (2026-10-08) – Cloud-Jarvis steuert den VPS sicher, ohne Shell
 Weg: Browser (`x-jarvis-key` = JARVIS_PASSWORD) → Netlify `/api/server-control` (`netlify/functions/server-control.mjs`,

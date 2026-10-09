@@ -161,14 +161,62 @@ form.cmd button.stop { color: var(--red); }
 @media (prefers-reduced-motion: reduce) { .log li { animation: none; } }
 @media (max-width: 1100px) { .hud { grid-template-columns: 250px minmax(0, 1fr) 280px; } }
 @media (max-height: 700px) { .subs { min-height: 0; } .subs .jarvis { font-size: 18px; max-height: 2.8em; } .hud { gap: 10px; } }
+/* Quick-Status (Handy): die wichtigsten Cloud-Werte auf einen Blick – auf dem Desktop zeigt das STATUS-Panel alles. */
+.quick { display: none; }
+.quick .q { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font: 12px var(--mono); }
+.quick .q div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.quick .q span { color: var(--muted); letter-spacing: .1em; font-size: 10px; text-transform: uppercase; }
+.quick .q b { font-weight: 400; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Mail-Aufträge (Cloud-Warteschlange): Entwurf in Gmail / gesendet / blockiert – in LOCAL und CLOUD sichtbar, Quelle ist die Cloud. */
+.mail { flex: none !important; }
+.mail ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font: 12px/1.4 var(--mono); max-height: 220px; overflow-y: auto; }
+.mail li { border-left: 2px solid var(--line); padding-left: 10px; overflow-wrap: anywhere; }
+.mail li.empty { border: 0; padding: 0; color: var(--muted); }
+.mail li.ok { border-left-color: var(--green); } .mail li.bad { border-left-color: var(--red); } .mail li.wait { border-left-color: var(--amber); }
+.mail .st { color: var(--cyan); letter-spacing: .08em; }
+.mail li.ok .st { color: var(--green); } .mail li.bad .st { color: var(--red); } .mail li.wait .st { color: var(--amber); }
+.mail .sub { color: var(--text); opacity: .85; }
+.mail time, .mail .why { color: var(--muted); display: block; }
+.mail h2 a { color: var(--cyan); text-decoration: none; border: 1px solid var(--line); font: 11px var(--mono); letter-spacing: .08em; padding: 2px 8px; }
+/* Handy (≤ 860 px): eine Spalte, alles scrollbar, Composer unten festgepinnt, Panels per Tipp auf den Titel auf-/zuklappbar.
+   Keine Funktion hängt hier am Local Core – Status, Mail, Server und Meldungen kommen aus der Cloud. */
 @media (max-width: 860px) {
-  .hud { grid-template-columns: minmax(0, 1fr); padding: 14px 16px max(14px, env(safe-area-inset-bottom)); }
-  header { flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+  .hud { display: flex; flex-direction: column; gap: 12px; padding: 10px 16px 0; pointer-events: auto; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
+  header { flex-wrap: wrap; gap: 8px 10px; min-width: 0; order: 0; }
   .tag { display: none; }
-  .mic { width: 46px; height: 46px; }
-  form.cmd button { padding: 0 12px; }
-  .left, .right { display: none; }
-  .clock { font-size: 30px; }
+  .pill { margin-left: 0; font-size: 12px; padding: 7px 10px; }
+  .pill#state { margin-left: auto; }
+  .quick { display: block; order: 1; }
+  .mid { display: none; }
+  .left, .right { display: flex; flex: none; flex-direction: column; gap: 12px; overflow: visible; max-height: none; min-height: 0; }
+  header, .quick { flex: none; }
+  .right { order: 2; }
+  .left { order: 3; }
+  .left .clock-panel, .left .sys-panel { display: none; }
+  .bottom { order: 4; margin-top: auto; position: sticky; bottom: 0; z-index: 5; background: linear-gradient(transparent, var(--bg) 12%); margin-inline: -16px; padding: 10px 16px max(12px, env(safe-area-inset-bottom)); gap: 10px; }
+  .subs { min-height: 0; }
+  .subs .jarvis { font-size: 17px; max-height: 4.2em; }
+  .subs .you { font-size: 13px; }
+  .mic { width: 48px; height: 48px; }
+  form.cmd textarea { font-size: 16px; padding: 12px; } /* 16 px: iOS zoomt sonst beim Fokus in das Feld */
+  form.cmd button { padding: 0 14px; min-width: 64px; }
+  .opts { gap: 10px 14px; }
+  .opts label[for="voiceSel"] { display: none; }
+  .opts button { min-height: 40px; padding: 6px 14px; }
+  .panel { padding: 12px 14px; align-self: stretch; }
+  .panel h2 { cursor: pointer; user-select: none; }
+  .panel h2::after { content: "−"; color: var(--muted); margin-left: 8px; }
+  .panel.collapsed h2::after { content: "+"; }
+  .panel.collapsed > :not(h2) { display: none; }
+  .right .panel { max-height: none; }
+  .log { max-height: 50vh; }
+  .alerts ul, .mail ul { max-height: none; }
+  .alerts button, .srv-ctl button, .panel h2 button, .leads-box button, .mail h2 a { min-height: 40px; padding: 8px 12px; font-size: 12px; display: inline-flex; align-items: center; }
+  .alerts .acts, .srv-ctl .btns { gap: 8px; flex-wrap: wrap; }
+  .kv b { white-space: normal; }
+  .leads { padding: 8px; align-items: stretch; }
+  .leads-box { max-height: none; height: 100%; }
+  .leads-box .panel { max-height: none; }
 }
 </style>
 </head>
@@ -182,19 +230,31 @@ form.cmd button.stop { color: var(--red); }
     <div class="pill" id="state">Bereit</div>
     <div class="pill mode" id="modePill" title="Wo Jarvis gerade läuft">–</div>
   </header>
+  <section class="panel quick" id="quick" aria-label="Cloud-Status">
+    <div class="q">
+      <div><span>Jarvis</span><b id="qJarvis">–</b></div>
+      <div><span>VPS Core</span><b id="qCore">–</b></div>
+      <div><span>Mail Worker</span><b id="qMail">–</b></div>
+      <div><span>Authority</span><b id="qAuth">–</b></div>
+      <div><span>Windows Client</span><b id="qWin">–</b></div>
+      <div><span>Queue</span><b id="qQueue">–</b></div>
+      <div><span>AI Service</span><b id="qAi">–</b></div>
+      <div><span>Server Control</span><b id="qSrv">–</b></div>
+    </div>
+  </section>
 
   <div class="left">
-    <section class="panel">
+    <section class="panel clock-panel">
       <div class="clock" id="clock">--:--:--</div>
       <div class="date" id="date"></div>
     </section>
-    <section class="panel">
+    <section class="panel sys-panel">
       <h2>Systeme <span id="host"></span></h2>
       <div class="stat"><span class="k">CPU</span><div class="bar"><i id="cpuBar"></i></div><span class="v" id="cpu">–</span></div>
       <div class="stat"><span class="k">RAM</span><div class="bar"><i id="memBar"></i></div><span class="v" id="mem">–</span></div>
       <div class="stat"><span class="k">AUDIO</span><div class="bar"><i id="audioBar"></i></div><span class="v" id="audio">–</span></div>
     </section>
-    <section class="panel">
+    <section class="panel" id="statusPanel">
       <h2>Status</h2>
       <div class="kv">
         <span>System</span><b id="kSystem" title="Gesamtsystem: Cloud Core + Mail-Worker – der PC ist dafür nicht nötig">–</b>
@@ -253,12 +313,16 @@ form.cmd button.stop { color: var(--red); }
     </section>
   </div>
 
-  <div></div>
+  <div class="mid"></div>
 
   <div class="right">
     <section class="panel alerts" id="alerts" hidden aria-live="polite">
       <h2>Meldungen <span id="alertCount"></span></h2>
       <ul id="alertList"></ul>
+    </section>
+    <section class="panel mail" id="mailPanel" aria-live="polite">
+      <h2><span>Mail <span id="mailCount"></span></span> <a href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noopener" title="Gmail-Entwürfe öffnen – gesendet wird nur durch Sie">GMAIL ENTWÜRFE</a></h2>
+      <ul id="mailList"><li class="empty">Noch keine Mailaufträge. „Schreib eine Mail an …“ legt einen Entwurf in Gmail an – gesendet wird nur durch Sie.</li></ul>
     </section>
     <section class="panel sold" id="soldPanel" aria-live="polite">
       <h2>Verkäufe</h2>
@@ -269,7 +333,7 @@ form.cmd button.stop { color: var(--red); }
       <div class="total"><span>UMSATZ TOTAL</span><b id="sRevenue">–</b></div>
     </section>
     <section class="panel sales" id="salesPanel">
-      <h2>Vertrieb <button type="button" id="leadsBtn" title="Lead-Details (nur im Local-Modus)">LEADS</button></h2>
+      <h2>Vertrieb <button type="button" id="leadsBtn" title="Lead-Details nur im LOCAL-Modus – Leads bleiben auf VPS/PC, in der Cloud nur Zähler">LEADS</button></h2>
       <div class="kv two">
         <span>Gefunden</span><b id="sDiscovered">–</b><span>CH verifiziert</span><b id="sSwiss">–</b>
         <span>Geprüft</span><b id="sAudited">–</b><span>Repair Fit</span><b id="sFit" title="modern/weiterverwendbar">–</b>
@@ -283,7 +347,7 @@ form.cmd button.stop { color: var(--red); }
         <span>Antworten</span><b id="sReplies">–</b><span>Kunden</span><b id="sCustomers">–</b>
       </div>
     </section>
-    <section class="panel">
+    <section class="panel" id="logPanel">
       <h2>Protokoll <span id="count"></span></h2>
       <ul class="log" id="log"><li class="empty">Noch keine Aktivität. Sagen Sie „Jarvis“ und Ihren Befehl.</li></ul>
     </section>
@@ -743,7 +807,7 @@ async function run(text, { typed = false } = {}) {
   ctl = new AbortController();
   let said = "";
   try {
-    if (mode === "offline") throw new Error("Der Jarvis-Kern auf dem Computer ist nicht erreichbar.");
+    if (mode === "offline") throw new Error(HOSTED ? "Weder die Cloud noch der Local Core sind erreichbar." : "Der Jarvis-Kern auf dem Computer ist nicht erreichbar.");
     const res = mode === "cloud"
       ? await fetch("/api/cloud", { method: "POST", headers: { "content-type": "application/json", "x-jarvis-key": cloudKey }, body: JSON.stringify({ messages: [...cloudTurns, { role: "user", content: text }] }) })
       : await api("/api/ask", { text });
@@ -786,7 +850,7 @@ async function run(text, { typed = false } = {}) {
           said += (said ? "\n\n" : "") + msg;
           $("say").textContent = said;
           speak(msg);
-          if (ev.ok) mailSeen[ev.request.request_id] = ev.request.status;
+          if (ev.ok) { mailSeen[ev.request.request_id] = ev.request.status; loadMailRequests(); }
         } else if (ev.type === "done" && ev.error && !said) {
           log("FEHLER", ev.error, "red");
         }
@@ -798,7 +862,7 @@ async function run(text, { typed = false } = {}) {
       pushCloudTurns([{ role: "user", content: text }, { role: "assistant", content: said }]);
     }
   } catch (e) {
-    if (!ctl.signal.aborted) { log("FEHLER", e.message || "Verbindung verloren.", "red"); $("say").textContent = "Keine Verbindung zum Jarvis-Server. Läuft das Terminal-Fenster noch?"; }
+    if (!ctl.signal.aborted) { log("FEHLER", e.message || "Verbindung verloren.", "red"); $("say").textContent = mode === "cloud" ? "Keine Verbindung zur Cloud. Bitte Internetverbindung prüfen und erneut senden." : "Keine Verbindung zum Jarvis-Server. Läuft das Terminal-Fenster noch?"; }
   } finally {
     busy = false; ctl = null;
     $("send").textContent = "SENDEN"; $("send").classList.remove("stop");
@@ -846,6 +910,7 @@ async function loadShared() {
       loadMailRequests();
     } else return;
     renderShared();
+    if (mode === "local" && HOSTED && cloudKey) loadMailRequests({ serviceToo: false });
   } catch { $("kSync").textContent = "FEHLER"; $("kSync").className = "on-bad"; }
 }
 function renderShared() {
@@ -908,6 +973,7 @@ let mailHud = null;
 function renderMailService(svc, localWorker = null) {
   const set = (id, v, cls = "") => { $(id).textContent = v; $(id).className = cls; };
   mailHud = JarvisMailStatus.summarizeMail({ service: svc, localWorker, localMode: mode === "local", clientSeenAt: shared?.sync?.lastClientPushAt || null });
+  renderQuick();
   const m = mailHud, tone = (ok, idle) => (ok ? "on-ok" : idle ? "on-idle" : "on-bad");
   set("kSystem", m.system, tone(m.system === "ONLINE"));
   set("kJarvisCore", m.core, tone(m.core === "CLOUD ONLINE"));
@@ -927,6 +993,37 @@ function renderMailService(svc, localWorker = null) {
   $("kAfternoon").textContent = `${svc.sales.afternoon} / ${svc.sales.window_limit}`;
   $("kSales").textContent = `${svc.sales.today} / ${svc.sales.daily_limit}`;
 }
+// Quick-Status (Handy): JARVIS / VPS CORE / MAIL WORKER / AUTHORITY / WINDOWS CLIENT / QUEUE / AI SERVICE / SERVER CONTROL –
+// dieselben Quellen wie das STATUS- und SERVER-Panel (Cloud), kein Local Core nötig.
+let srvHud = null;
+function renderQuick() {
+  const m = mailHud, s = srvHud;
+  const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
+  const ok = (c) => (c ? "on-ok" : "on-bad"), idle = "on-idle";
+  set("qJarvis", mode === "local" ? "LOCAL ONLINE" : mode === "cloud" ? "CLOUD ONLINE" : "OFFLINE", mode === "offline" ? "on-bad" : "on-ok");
+  set("qCore", m ? (m.core === "CLOUD ONLINE" ? "ONLINE" : m.core) : "–", m ? ok(m.core === "CLOUD ONLINE") : "");
+  set("qMail", m?.mailWorker || "–", m ? (m.healthy ? "on-ok" : m.mailWorker === "STANDBY" ? idle : "on-bad") : "");
+  set("qAuth", m?.authority || "–", m ? ok(m.authority === "VPS" || m.authority === "WINDOWS") : "");
+  set("qWin", mode === "local" ? "ONLINE" : m?.windows || "OFFLINE", mode === "local" || m?.windows === "ACTIVE" ? "on-ok" : idle);
+  set("qQueue", m && m.pending !== null ? String(m.pending) : "–", m?.pending ? idle : "");
+  set("qAi", m?.ai || "–", m ? (m.ai === "ONLINE" ? "on-ok" : String(m.ai).startsWith("PAUSED") ? "on-bad" : "") : "");
+  set("qSrv", s?.server || "–", s ? (s.online ? "on-ok" : ["NICHT KONFIGURIERT", "UNBEKANNT", "CLOUD-PASSWORT FEHLT", "NUR ÜBER CLOUD"].includes(s.server) ? idle : "on-bad") : "");
+}
+// Mail-Panel: letzte Aufträge der Cloud-Warteschlange mit Ergebnis des Mail-Workers (Entwurf in Gmail, gesendet, blockiert …).
+function renderMailList(requests) {
+  const list = (requests || []).slice().sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""))).slice(0, 12);
+  $("mailCount").textContent = list.length ? String(list.length) : "";
+  if (!list.length) return;
+  const el = (tag, cls, text) => { const x = document.createElement(tag); x.className = cls; x.textContent = text; return x; };
+  $("mailList").replaceChildren(...list.map((q) => {
+    const li = document.createElement("li");
+    li.className = ["sent", "drafted"].includes(q.status) ? "ok" : ["blocked", "failed", "expired"].includes(q.status) ? "bad" : "wait";
+    li.append(el("span", "st", (q.delivery === "draft" ? "ENTWURF · " : "MAIL · ") + (MAIL_STATUS[q.status] || q.status).toUpperCase()), document.createTextNode(" "), el("span", "sub", `${q.recipient} – ${q.subject}`));
+    if (q.reason) li.append(el("span", "why", q.reason));
+    li.append(el("time", "", fmtTime(q.updated_at || q.created_at)));
+    return li;
+  }));
+}
 // LOCAL-Modus: der Local Core liest den Cloud-Status mit seinem Sync-Token (nur GET) und kennt den Windows-Worker.
 async function loadMailService() {
   try {
@@ -936,12 +1033,14 @@ async function loadMailService() {
     renderMailService(j.service, j.localWorker);
   } catch { renderMailService(null, null); }
 }
-async function loadMailRequests() {
+async function loadMailRequests({ serviceToo = true } = {}) {
+  if (!HOSTED || !cloudKey) return;
   try {
     const r = await fetch("/api/mail-requests", { headers: { "x-jarvis-key": cloudKey }, cache: "no-store" });
     if (!r.ok) return;
     const j = await r.json();
-    renderMailService(j.service);
+    if (serviceToo) renderMailService(j.service);
+    renderMailList(j.requests);
     for (const q of j.requests || []) {
       if (mailSeen[q.request_id] === q.status) continue;
       if (mailSeen[q.request_id] !== undefined || q.status !== "pending") log("MAIL", `${q.recipient}: ${MAIL_STATUS[q.status] || q.status}${q.reason ? " – " + q.reason : ""}`, q.status === "sent" ? "green" : q.status === "blocked" || q.status === "failed" ? "red" : "amber");
@@ -1137,13 +1236,14 @@ function renderMode() {
   $("modePill").classList.toggle("cloud", mode !== "local");
   $("leadsBtn").disabled = mode !== "local";
   if (mode !== "local") { for (const k of ["cpu", "mem"]) { $(k).textContent = "–"; $(k + "Bar").style.width = "0"; } $("host").textContent = mode === "cloud" ? "CLOUD" : ""; }
+  renderQuick();
 }
 async function applyMode(next, prev) {
   mode = next;
   renderMode();
   if (!booted) { if (next !== "offline" && !$("bootBtn").hidden) $("bootBtn").textContent = "Jarvis starten"; return; }
   if (prev === null) return;
-  log("SYSTEM", next === "local" ? "Local Core erreichbar – LOCAL-Modus mit PC-Zugriff." : next === "cloud" ? "Local Core nicht erreichbar – CLOUD-Modus ohne PC-Zugriff." : "Weder Local Core noch Cloud erreichbar.", next === "local" ? "green" : "amber");
+  log("SYSTEM", next === "local" ? "Local Core erreichbar – LOCAL-Modus mit PC-Zugriff." : next === "cloud" ? "CLOUD-Modus: Jarvis läuft auf dem VPS, der PC ist optional." : "Weder Local Core noch Cloud erreichbar.", next === "local" ? "green" : "amber");
   if (next !== "local") $("leads").hidden = true;
   if (next === "local") poll();
   if (next === "cloud") { if (!cloudKey) { $("boot").hidden = false; booted = false; return boot(); } await loadCloudConversation(); }
@@ -1168,7 +1268,7 @@ async function boot() {
   await line("> Initialisiere Kernsysteme ............ OK");
   if (micReady === null) micReady = await initAudio();
   await loadStatus();
-  const coreLabel = mode === "local" ? (status.claude ? "CLAUDE CODE" : "CLAUDE CODE FEHLT") : mode === "cloud" ? "CLOUD (OHNE PC-ZUGRIFF)" : "NICHT ERREICHBAR";
+  const coreLabel = mode === "local" ? (status.claude ? "CLAUDE CODE" : "CLAUDE CODE FEHLT") : mode === "cloud" ? "CLOUD (VPS – PC OPTIONAL)" : "NICHT ERREICHBAR";
   await line("> Kern ................................. " + coreLabel);
   if (mode === "offline") {
     $("bootHint").textContent = HOSTED
@@ -1180,15 +1280,15 @@ async function boot() {
     return;
   }
   if (mode === "cloud" && !cloudKey) {
-    $("bootHint").textContent = "Jarvis auf dem PC ist nicht erreichbar. Im Cloud-Modus kann er sprechen und planen, aber keine Befehle auf dem Computer ausführen.";
+    $("bootHint").textContent = "Cloud-Modus: Jarvis läuft auf dem VPS – Chat, Gmail-Entwürfe, Status und Server Control funktionieren ohne PC. Bitte Cloud-Passwort eingeben.";
     $("bootHint").hidden = false; $("pwForm").hidden = false; $("pw").focus();
-    $("bootBtn").textContent = "PC erneut suchen"; $("bootBtn").hidden = false;
+    $("bootBtn").textContent = "Erneut prüfen"; $("bootBtn").hidden = false;
     return;
   }
   await line("> Audio-Sensorik ....................... " + (micReady ? "OK" : "KEIN MIKROFON"));
   await line("> Spracherkennung ...................... " + (SR ? "OK" : "NICHT VERFÜGBAR"));
   await line("> Stimme ............................... " + (status.tts === "elevenlabs" ? "ELEVENLABS" : "BROWSER"));
-  await line("> Zugriffsebene ........................ " + (mode === "cloud" ? "NUR GESPRÄCH" : status.fullAccess ? "VOLLZUGRIFF" : "STANDARD"));
+  await line("> Zugriffsebene ........................ " + (mode === "cloud" ? "CLOUD: CHAT · GMAIL-ENTWÜRFE · SERVER CONTROL" : status.fullAccess ? "VOLLZUGRIFF" : "STANDARD"));
   if (mode === "cloud") await loadCloudConversation(); // zuerst den neuesten gemeinsamen Stand lesen
   await loadShared();
   await line("> Gemeinsamer Zustand ................... " + (shared ? "OK" : "NICHT VERFÜGBAR"));
@@ -1211,7 +1311,7 @@ async function boot() {
       ? `${greet} ${allOnline ? "Alle Systeme sind online." : `Achtung: Kein aktiver Mail-Worker (${mailHud ? mailHud.mailWorker : "Status unbekannt"}).`} ${call}`
       : `${greet} Ich kann Claude Code nicht finden. Bitte installieren Sie es und melden Sie sich einmal im Terminal an.`;
   $("say").textContent = msg;
-  log("SYSTEM", mode === "cloud" ? "Cloud-Modus: Gespräch ohne PC-Zugriff." : "Online. " + (SR ? "Sprachsteuerung bereit." : "Keine Spracherkennung – bitte Chrome oder Edge nutzen."), mode === "local" && !status.claude ? "red" : "green");
+  log("SYSTEM", mode === "cloud" ? "Cloud-Modus: Jarvis auf dem VPS – Chat, Gmail-Entwürfe, Server Control. Kein PC nötig." : "Online. " + (SR ? "Sprachsteuerung bereit." : "Keine Spracherkennung – bitte Chrome oder Edge nutzen."), mode === "local" && !status.claude ? "red" : "green");
   speak(msg);
 }
 // ---------- SERVER: Status und feste Aktionen des Jarvis-VPS über /api/server-control (nur Action-IDs, keine Befehle) ----------
@@ -1224,6 +1324,8 @@ function renderServer(data, note = "") {
   const m = JarvisServerStatus.summarizeServer(data);
   const set = (id, v, ok) => { $(id).textContent = v ?? "–"; $(id).className = ok === undefined || v === "–" ? "" : ok ? "on-ok" : "on-bad"; };
   set("srvState", note || m.server, note ? undefined : m.online);
+  srvHud = note ? { server: note, online: false } : m;
+  renderQuick();
   const r = m.rows, ok = m.ok || {};
   set("srvUptime", r.uptime); set("srvCpu", r.cpu, ok.cpu); set("srvRam", r.ram, ok.ram); set("srvDisk", r.disk, ok.disk);
   set("srvDocker", r.docker, ok.docker); set("srvCore", r.core, ok.core); set("srvMail", r.mail, ok.mail); set("srvScheduler", r.scheduler, ok.scheduler);
@@ -1262,6 +1364,15 @@ document.querySelectorAll("#srvControl button[data-action]").forEach((b) => b.ad
 }));
 $("srvControl").addEventListener("toggle", () => { if ($("srvControl").open) loadServer(); });
 setInterval(loadServer, 30_000); loadServer();
+
+// Handy: Panel-Titel antippen klappt das Panel auf/zu (CSS nur ≤ 860 px wirksam, Desktop unverändert). Meldungen und Mail bleiben offen.
+const MOBILE = matchMedia("(max-width: 860px)");
+document.querySelectorAll(".left .panel, .right .panel").forEach((p) => p.querySelector("h2")?.addEventListener("click", (e) => {
+  if (!MOBILE.matches || e.target.closest("button, a")) return;
+  p.classList.toggle("collapsed");
+}));
+for (const id of ["statusPanel", "serverPanel", "soldPanel", "salesPanel", "logPanel"]) $(id).classList.add("collapsed");
+if (MOBILE.matches) $("cmdInput").placeholder = "Befehl an Jarvis …"; // kurz, damit das Feld einzeilig bleibt
 
 $("bootBtn").addEventListener("click", boot);
 $("pwForm").addEventListener("submit", (e) => {
