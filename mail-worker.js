@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { detectHumanContact } from "./human-contact.js";
 import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend, ensureColdDraft, coldDraftAction } from "./swiss-repair.js";
 import { publicLeads } from "./cloud-leads.js";
+import { loadRegistry, registryBlock, reconcileRegistry, publicRegistry, registryStatus } from "./lead-registry.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -611,6 +612,9 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     // Kunden werden nie als Cold Lead angeschrieben – frisch gelesen direkt vor dem Gmail-Entwurf.
     const salesRecords = store.read("sales.json", { records: {} }).records || {};
     const isCustomer = (domain) => !!salesRecords[domain]?.sale?.selected_offer;
+    // Lead-Datenbank (frisch gelesen): bereits angeschrieben / Antwort / Kunde / kein Interesse / Suppression / Opt-out / Do-not-contact → nie ein Cold-Entwurf.
+    let leadDb = null;
+    try { leadDb = loadRegistry(store); } catch (e) { log("error", "lead_registry_read_failed", { error: e.message }); }
     let createdThisPass = 0, dwChanged = false;
     const queuedInOrder = Object.entries(coldData.reviews || {}).sort(([, a], [, b]) => String(a?.created_at || "").localeCompare(String(b?.created_at || "")));
     for (const [id, rv] of queuedInOrder) {
@@ -624,6 +628,9 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           if (!EMAIL_RE.test(to) || FREEMAIL_RE.test(to)) { coldPatch[id] = { status: "blocked", blocked_reason: "keine geschäftliche Adresse" }; continue; }
           if (contacted.has(to)) { coldPatch[id] = { status: "blocked", blocked_reason: "bereits kontaktiert/Entwurf vorhanden" }; continue; }
           if (isCustomer(rv.domain)) { coldPatch[id] = { status: "blocked", blocked_reason: "bestehender Kunde" }; continue; }
+          if (!leadDb) continue; // Lead-Datenbank nicht lesbar → fail closed: Eintrag bleibt queued, kein Entwurf ohne Dedupe
+          const dbWhy = registryBlock(store, { lead_id: id, domain: rv.domain, email: to, company: rv.company }, leadDb);
+          if (dbWhy) { coldPatch[id] = { status: "blocked", blocked_reason: "Lead-Datenbank: " + dbWhy }; continue; }
           if (dwBackoff) continue; // Gmail-API im Backoff: Eintrag bleibt queued, nächster Durchlauf
           if (createdThisPass >= dl.draftsPerPass) continue; // technisches Pacing je Durchlauf – Rest bleibt in der Queue
           if (createdThisPass > 0 && dl.draftPaceMs > 0) await sleep(dl.draftPaceMs);
@@ -972,6 +979,9 @@ async function loop() {
   const backup = await import("./backup.js");
   try { const m = cloudCore.migrateStateDir(WORKER_DIR); if (m.applied.length) log("info", "state_migrated", m); }
   catch (e) { log("error", "state_schema_refused", { error: e.message }); releaseLock(WORKER_DIR); throw e; }
+  // Lead-Datenbank: beim Start ALLE Quellen zusammenführen (= Migration; idempotent, additiv, löscht nie). Fehler stoppen den Worker nie.
+  try { log("info", "lead_registry_migrated", reconcileRegistry(createStore(WORKER_DIR), { gmailRegistry: gmail.listOwned(), full: true })); }
+  catch (e) { log("error", "lead_registry_migration_failed", { error: e.message }); }
   const release = () => releaseLock(WORKER_DIR);
   process.on("exit", release);
   for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0));
@@ -1007,7 +1017,9 @@ async function loop() {
     leads: () => publicLeads(salesMod.loadPipeline({ dir: WORKER_DIR, registry: gmail.listOwned() }).leads),
     coldDraft: (op, leadId) => coldDraftFromCloud({ op, leadId, gmail, dir: WORKER_DIR, wake: () => wake() }),
     // 24/7-Discovery: Status fürs Dashboard und Pause/Fortsetzen (nur ein Flag in discovered.json, nichts wird gelöscht).
-    discovery: () => finderMod.discoveryStatus(WORKER_DIR),
+    discovery: () => ({ ...finderMod.discoveryStatus(WORKER_DIR), lead_db: registryStatus(createStore(WORKER_DIR)) }),
+    // Lead-Datenbank (Allowlist, lead-db.js) für Cloud/Handy: Suche, Filter, Detail, CSV-/JSON-Export – nie Gmail-IDs oder Roh-Evidence.
+    leadDb: () => publicRegistry(createStore(WORKER_DIR)),
     setDiscovery: (op) => { const r = finderMod.setDiscoveryPaused(WORKER_DIR, op === "pause"); wake(); return { ok: true, ...r, status: r.paused ? "PAUSED" : "ACTIVE" }; },
   });
   log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
@@ -1028,6 +1040,9 @@ async function loop() {
     }
     standbyLogged = false;
     const r = it.result;
+    // Lead-Datenbank nachführen: Entwürfe, manuell versendete Cold-Entwürfe, Antworten, Kunden, Suppression/Opt-out (nur bei geänderten Quellen).
+    try { const lr = reconcileRegistry(createStore(WORKER_DIR), { gmailRegistry: gmail.listOwned() }); if (!lr.skipped && (lr.created || lr.updated)) log("info", "lead_registry_updated", lr); }
+    catch (e) { log("error", "lead_registry_failed", { error: e.message }); }
     // Danach (Antworten haben Vorrang): neue Websites suchen und prüfen, wenn fällig. Sendet nie.
     // Entkoppelt: DISCOVERY QUEUE (Websites prüfen, bis 7500/Tag) läuft im Hintergrund und blockiert weder den Mail-Takt noch den
     // DRAFT-Worker (Gmail-Entwürfe aus individual_reviews.json, siehe 3b). Nie zwei Discovery-Läufe gleichzeitig (eigenes Lock + Promise).
@@ -1081,6 +1096,9 @@ export async function coldDraftFromCloud({ op, leadId, gmail, dir = WORKER_DIR, 
   if (!sender?.name) return { ok: false, error: "Absender nicht konfiguriert." };
   const reg = gmail?.listOwned ? gmail.listOwned() : { sent: {}, drafts: {} };
   const contacted = new Set([...Object.values(reg.sent || {}), ...Object.values(reg.drafts || {})].map((s) => normEmail(s.to || "")).filter(Boolean));
+  // Lead-Datenbank: bereits angeschriebene, beantwortete, gesperrte Firmen und Kunden bekommen nie einen neuen Cold-Entwurf.
+  const dbWhy = registryBlock(store, { domain: lead.domain, email: to, company: lead.company });
+  if (dbWhy) return { ok: false, error: "Blockiert (Lead-Datenbank): " + dbWhy };
   try {
     const r = ensureColdDraft(store, lead, { sender, now, contacted, suppression: supp });
     if (r.blocked) return { ok: false, error: "Blockiert: " + r.blocked, review: r.existing ? summary(r.existing) : null };

@@ -7,6 +7,11 @@ import os from "node:os";
 import path from "node:path";
 import { ACTIONS, MAX_LOG_LINES, validateAction, redact, cleanResult } from "./server-control.js";
 import { leadsFingerprint } from "./cloud-leads.js";
+import { dbFingerprint } from "./lead-db.js";
+
+// Lead-Datenbank in die Cloud: eigene Operation (grösser als der Status-Pull), nur bei Änderung bzw. spätestens alle 30 min.
+export const LEADDB_MAX_BYTES = 4_500_000;
+export const LEADDB_RESEND_MS = 30 * 60_000;
 
 // ---------- Pfad-Schutz ----------
 export const BLOCKED_PATH_RE = /(^|[\\/])(fiverr|\.ssh|ssh_host_[^\\/]*|shadow|gshadow|sudoers|passwd)([\\/]|$)|\/root([\\/]|$)|\.env$|\.pem$|id_(rsa|ecdsa|ed25519)|gmail_token|gmail_credentials|gmail_jarvis|jarvis_sync|vps_worker|server_control/i;
@@ -152,7 +157,7 @@ export function createVpsActions({ dir, roots = [dir], deps, now = () => new Dat
 
 // ---------- Agent: abholen → prüfen → ausführen → melden ----------
 // config: { url (…/api/state oder Origin), controlToken }. Ohne eigenen Token läuft der Agent nicht (kein Fallback auf andere Tokens).
-export function createControlAgent({ dir, config, actions, snapshot, leads = null, fetchFn = globalThis.fetch, log = () => {}, now = () => new Date(), timeoutMs = 60_000 }) {
+export function createControlAgent({ dir, config, actions, snapshot, leads = null, leadDb = null, fetchFn = globalThis.fetch, log = () => {}, now = () => new Date(), timeoutMs = 60_000 }) {
   if (!config?.controlToken || config.controlToken.length < 32) return null;
   const endpoint = config.url.replace(/\/api\/state$/, "").replace(/\/+$/, "") + "/api/server-control";
   // Lead-Liste (Allowlist, cloud-leads.js) nur mitschicken, wenn sie sich geändert hat oder die letzte Übertragung > 10 min zurückliegt.
@@ -167,6 +172,21 @@ export function createControlAgent({ dir, config, actions, snapshot, leads = nul
       leadsSent = { fp, at: +now() };
       return { leads: list };
     } catch (e) { log("warn", "control_leads_failed", { error: e.message }); return {}; }
+  };
+  // Lead-Datenbank (Allowlist aus lead-db.js): neueste Änderungen zuerst; zu gross → älteste fallen weg (truncated), nie Rohdaten.
+  let dbSent = { fp: null, at: 0 }, dbRetryAt = 0;
+  const leadDbPayload = () => {
+    if (typeof leadDb !== "function") return null;
+    try {
+      let list = leadDb();
+      if (!Array.isArray(list)) return null;
+      if (+now() < dbRetryAt) return null; // Cloud hat abgelehnt (z. B. noch alte Netlify-Version) → nicht jede Minute Megabytes schicken
+      const fp = dbFingerprint(list), total = list.length;
+      if (fp === dbSent.fp && +now() - dbSent.at < LEADDB_RESEND_MS) return null;
+      let truncated = false, json = JSON.stringify(list);
+      while (json.length > LEADDB_MAX_BYTES && list.length) { list = list.slice(0, Math.floor(list.length * 0.9)); truncated = true; json = JSON.stringify(list); }
+      return { fp, body: { op: "leaddb", leads: list, total, truncated, generated_at: now().toISOString() } };
+    } catch (e) { log("warn", "control_leaddb_failed", { error: e.message }); return null; }
   };
   const post = async (body) => {
     const r = await fetchFn(endpoint, { method: "POST", headers: { "content-type": "application/json", "x-jarvis-control": config.controlToken }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
@@ -213,6 +233,14 @@ export function createControlAgent({ dir, config, actions, snapshot, leads = nul
       // Neustart erst NACH bestätigter Rückmeldung – sonst kein Neustart (fail closed, keine Schleife).
       if (res.after && res.ok && reported) { try { await res.after(); } catch (e) { log("error", "control_after_failed", { error: e.message }); } }
     }
+    const db = leadDbPayload();
+    if (db) {
+      try {
+        const r = await post(db.body);
+        if (r.status === 200) { dbSent = { fp: db.fp, at: +now() }; dbRetryAt = 0; }
+        else { dbRetryAt = +now() + 10 * 60_000; log("warn", "control_leaddb_refused", { status: r.status }); }
+      } catch (e) { dbRetryAt = +now() + 10 * 60_000; log("warn", "control_leaddb_failed", { error: e.message }); }
+    }
     return { hot: !!pulled.body.hot, handled, status: 200 };
   }
   return { pollOnce, execute, endpoint };
@@ -252,7 +280,7 @@ export function startServerControl(o) {
     coldDraft: (op, leadId) => (typeof o.coldDraft === "function" ? o.coldDraft(op, leadId) : { ok: false, error: "NOT_IMPLEMENTED" }),
     setDiscovery: (op) => (typeof o.setDiscovery === "function" ? o.setDiscovery(op) : { ok: false, error: "NOT_IMPLEMENTED" }),
   };
-  const agent = createControlAgent({ dir: o.dir, config, actions: createVpsActions({ dir: o.dir, deps }), snapshot, leads: o.leads || null, log: o.log });
+  const agent = createControlAgent({ dir: o.dir, config, actions: createVpsActions({ dir: o.dir, deps }), snapshot, leads: o.leads || null, leadDb: o.leadDb || null, log: o.log });
   if (!agent) { o.log("info", "server_control_disabled", { reason: "JARVIS_SERVER_CONTROL_TOKEN fehlt" }); return null; }
   o.log("info", "server_control_started", {});
   const loop = async () => {

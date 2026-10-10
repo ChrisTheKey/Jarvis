@@ -22,7 +22,10 @@ const write = (name, data) => fs.writeFileSync(path.join(dir, name), JSON.string
 const readJ = (name, fb) => { try { return JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")); } catch { return fb; } };
 const reviews = () => readJ(REVIEWS_FILE, { reviews: {} }).reviews;
 const byStatus = () => Object.values(reviews()).reduce((a, r) => ((a[r.status] = (a[r.status] || 0) + 1), a), {});
-const cfg = (discovery = {}) => write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: SENDER, discovery: { draftPaceMs: 0, intervalMinutes: 0, ...discovery } });
+// maxAuditsPerAreaPerRun hoch: diese Tests prüfen die harten Website-Deckel, nicht die Gebiets-Fairness (die prüft test/swiss-leaddb-033).
+const cfg = (discovery = {}) => write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: SENDER, discovery: { draftPaceMs: 0, intervalMinutes: 0, maxAuditsPerAreaPerRun: 100_000, ...discovery } });
+// Alter Modus mit fester Ortsliste (nur noch per config.json → discovery.areas) – Ort/Branche-Paare in discovered.json.pairs.
+const LEGACY_AREAS = ["Winterthur", "St. Gallen", "Luzern", "Thun", "Aarau", "Chur", "Zug", "Bern", "Basel", "Lausanne"];
 function fakeGmail() {
   const f = { reg: { drafts: {}, sent: {} }, calls: [], n: 0 };
   Object.assign(f, {
@@ -66,9 +69,9 @@ test("Defaults: 20 min · 105 je Lauf · 315 je Stunde · 7500 je Tag; Paralleli
   assert.ok(DEFAULT_DISCOVERY.sitesPerRun * 3 * 24 >= DEFAULT_DISCOVERY.maxSitesPerDay, "Taktung reicht rechnerisch für 7500");
   assert.ok(Number.isInteger(DEFAULT_DISCOVERY.maxConcurrency) && DEFAULT_DISCOVERY.maxConcurrency >= 1 && DEFAULT_DISCOVERY.maxConcurrency <= 16, "begrenzt, nie unlimitiert");
   assert.equal(DEFAULT_DISCOVERY.maxDraftsPerHour, null); assert.equal(DEFAULT_DISCOVERY.maxDraftsPerDay, null);
-  assert.ok(DEFAULT_DISCOVERY.areas.length * DEFAULT_DISCOVERY.categories.length >= 1500, "breite Quelle: viele Orte × Branchen");
+  assert.equal(DEFAULT_DISCOVERY.areas, undefined, "keine feste Ortsliste mehr: Standard ist die ganze Schweiz (swiss-areas.js)");
+  assert.ok(DEFAULT_DISCOVERY.categories.length >= 20, "viele Branchen je Gemeinde");
   assert.ok(DEFAULT_DISCOVERY.maxSearchesPerRun >= 2 && DEFAULT_DISCOVERY.searchMinGapMs >= 3000, "mehrere, aber gedrosselte Quellenabfragen je Lauf");
-  assert.equal(new Set(DEFAULT_DISCOVERY.areas).size, DEFAULT_DISCOVERY.areas.length, "keine doppelten Orte");
   const sl = cleanDiscovery({ status: "ACTIVE", limits: { max_drafts_per_day: 20, max_concurrency: 4 } });
   assert.equal(sl.limits.max_drafts_per_day, null); assert.equal(sl.limits.max_concurrency, 4);
 });
@@ -280,7 +283,7 @@ test("Quellen-Limiter: Abfragen strikt nacheinander (nie parallel) mit Mindestab
 });
 
 test("Mehrere Quellenabfragen je Lauf bis genug neue Firmen vorliegen (Obergrenze maxSearchesPerRun); Ort/Branche ohne Neues wird nicht erneut abgefragt", async () => {
-  cfg({ sitesPerRun: 105, maxSearchesPerRun: 4, maxConcurrency: 4, maxSitesPerHour: 100000 });
+  cfg({ sitesPerRun: 105, maxSearchesPerRun: 4, maxConcurrency: 4, maxSitesPerHour: 100000, areas: LEGACY_AREAS });
   let n = 0; const queries = [];
   const search = async (p) => { queries.push(`${p.area}/${p.category.key}${p.category.value || ""}`); return hosts(40, `s${n++}-`).map(cand); };
   const a = countingAuditor({ withIssue: () => false });
@@ -299,7 +302,7 @@ test("Mehrere Quellenabfragen je Lauf bis genug neue Firmen vorliegen (Obergrenz
 });
 
 test("Einzelner 5xx/Timeout einer Abfrage stoppt die Quelle nicht (nur dieses Paar wird 6 h pausiert); 429 stoppt sofort", async () => {
-  cfg({ sitesPerRun: 20, maxSearchesPerRun: 5 });
+  cfg({ sitesPerRun: 20, maxSearchesPerRun: 5, areas: LEGACY_AREAS });
   let n = 0;
   const a = countingAuditor({ withIssue: () => false });
   const r = await run([], a, { search: async () => { if (n++ === 0) throw new Error("Overpass HTTP 504"); return hosts(25, "g-").map(cand); } });

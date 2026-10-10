@@ -9,6 +9,7 @@
 // Der Token liegt nur in Netlify (Server-Funktion) und in /opt/jarvis-mail/.env – nie im Browser, in Git, Logs oder PROJECT_STATE.
 import { safeEqual } from "./shared-state.js";
 import { LEAD_ID_RE, cleanLeads } from "./cloud-leads.js";
+import { cleanLead as cleanDbLead, filterLeads, leadStats, leadsToCsv, FILTER_KEYS, CANTON_CODES } from "./lead-db.js";
 
 export const TIERS = ["read", "control", "dangerous"];
 export const LOG_SOURCES = ["core", "mail", "scheduler", "backup", "deploy"];
@@ -150,8 +151,53 @@ export function cleanDiscovery(d) {
     last_run_at: iso(d.last_run_at), next_run_at: iso(d.next_run_at), backoff_until: iso(d.backoff_until), backoff_count: n(d.backoff_count, 1000),
     last_error: d.last_error && typeof d.last_error === "object" ? { at: iso(d.last_error.at), stage: word(d.last_error.stage, ["search", "audit", "draft"]), message: redact(String(d.last_error.message || ""), 160) } : null,
     // max_drafts_per_*: null = kein Business-Cap (nur technisches Pacing).
+    coverage: cleanCoverage(d.coverage), lead_db: cleanLeadDbStatus(d.lead_db),
     limits: { interval_minutes: n(lim.interval_minutes, 1440), sites_per_run: n(lim.sites_per_run, 1000), max_sites_per_hour: n(lim.max_sites_per_hour, 10_000), max_sites_per_day: n(lim.max_sites_per_day, 100_000),
       max_drafts_per_hour: null, max_drafts_per_day: null, draft_pace_ms: n(lim.draft_pace_ms, 600_000), drafts_per_pass: n(lim.drafts_per_pass, 10_000), max_concurrency: n(lim.max_concurrency, 64) },
+  };
+}
+
+// Schweiz-Abdeckung der Discovery: Zahlen, Kantonskürzel, ein Gemeindename (Zeichen eines Ortsnamens).
+const PLACE_RE = /^[\p{L}\p{N} .'’()\/-]{1,60}$/u;
+export function cleanCoverage(c) {
+  if (!c || typeof c !== "object") return null;
+  const n = (v, max = 1e6) => num(v, max);
+  return { mode: word(c.mode, ["FULL", "AREAS"]), dataset: typeof c.dataset === "string" && /^bfs-\d{4}-\d{2}-\d{2}$/.test(c.dataset) ? c.dataset : null,
+    cantons_total: n(c.cantons_total, 26), municipalities_total: n(c.municipalities_total, 5000), areas: n(c.areas, 10_000), cycle: n(c.cycle, 1e6), cycle_visited: n(c.cycle_visited, 5000),
+    cycle_progress_pct: n(c.cycle_progress_pct, 100), cantons_covered_cycle: n(c.cantons_covered_cycle, 26), cycles_completed: n(c.cycles_completed, 1e6),
+    last_cycle_completed_at: iso(c.last_cycle_completed_at), current_canton: word(c.current_canton, CANTON_CODES),
+    current_municipality: typeof c.current_municipality === "string" && PLACE_RE.test(c.current_municipality) ? c.current_municipality : null, queue: n(c.queue, 10_000) };
+}
+// Lead-Datenbank im Status: nur Zähler.
+export function cleanLeadDbStatus(s) {
+  if (!s || typeof s !== "object") return null;
+  const n = (v) => num(v, 1e7);
+  return { status: word(s.status, ["ACTIVE"]), total: n(s.total), new_today: n(s.new_today), qualified: n(s.qualified), drafts: n(s.drafts), waiting_for_draft: n(s.waiting_for_draft),
+    contacted: n(s.contacted), replies: n(s.replies), customers: n(s.customers), suppressed: n(s.suppressed), opt_out: n(s.opt_out), do_not_contact: n(s.do_not_contact),
+    cantons_with_leads: n(s.cantons_with_leads), reconciled_at: iso(s.reconciled_at), migrated_at: iso(s.migrated_at) };
+}
+
+// ---------- Lead-Datenbank in der Cloud (eigener Blob „leaddb“): Suche, Filter, Seiten, CSV-/JSON-Export ----------
+export const LEADDB_MAX_LEADS = 25_000;
+export const LEADDB_PAGE_MAX = 200;
+// Filter aus der URL: nur bekannte Schlüssel, kurze Werte.
+export function leadDbFilters(params) {
+  const f = {};
+  for (const k of FILTER_KEYS) { const v = params.get(k); if (typeof v === "string" && v.trim() && v.length <= 80) f[k] = v.trim(); }
+  return f;
+}
+export function leadDbView(db, params, now = new Date()) {
+  const all = Array.isArray(db?.leads) ? db.leads : [];
+  const f = leadDbFilters(params);
+  const hit = filterLeads(all, f);
+  const size = Math.max(0, Math.min(LEADDB_PAGE_MAX, Number.parseInt(params.get("page_size") ?? "50", 10) || 0));
+  const page = Math.max(0, Number.parseInt(params.get("page") || "0", 10) || 0);
+  const count = (key) => { const m = {}; for (const l of all) if (l[key]) m[l[key]] = (m[l[key]] || 0) + 1; return m; };
+  const months = {}; for (const l of all) { const m = String(l.first_discovered_at || "").slice(0, 7); if (m) months[m] = (months[m] || 0) + 1; }
+  return {
+    configured: true, generated_at: db?.generated_at || null, received_at: db?.received_at || null, truncated: db?.truncated === true, total_on_vps: db?.total ?? all.length,
+    stats: leadStats(all, now), filters: f, count: hit.length, page, page_size: size, leads: size ? hit.slice(page * size, page * size + size) : [],
+    facets: { cantons: count("canton"), statuses: count("status"), categories: count("category"), months },
   };
 }
 
@@ -180,7 +226,7 @@ function expire(requests, now) {
   return out;
 }
 
-export function createServerControlHandler({ getStore, env, now = () => new Date(), newId = () => crypto.randomUUID() }) {
+export function createServerControlHandler({ getStore, getLeadDbStore = null, env, now = () => new Date(), newId = () => crypto.randomUUID() }) {
   async function mutate(fn) {
     const store = await getStore();
     for (let i = 0; i < 6; i++) {
@@ -222,7 +268,8 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
     if (!isAgent && !isUser) return reply(401, { error: "Nicht berechtigt." });
     if (!controlToken || controlToken.length < 32) return reply(503, { configured: false, error: "Server Control nicht konfiguriert (JARVIS_SERVER_CONTROL_TOKEN fehlt in Netlify)." });
     if (!["GET", "POST"].includes(req.method)) return reply(405, { error: "Nur GET oder POST." });
-    if (Number(req.headers.get("content-length") || 0) > 64_000) return reply(413, { error: "Zu gross." });
+    // Der VPS-Agent darf die Lead-Datenbank schicken (eigene Operation, bis ~6 MB); Browser-Anfragen bleiben klein.
+    if (Number(req.headers.get("content-length") || 0) > (isAgent && !isUser ? 6_000_000 : 64_000)) return reply(413, { error: "Zu gross." });
     let body = {};
     if (req.method === "POST") { try { body = JSON.parse((await req.text()) || "{}"); } catch { return reply(400, { error: "Ungültiges JSON." }); } }
 
@@ -240,6 +287,18 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
           return { status: 200, body: { requests: due.map((x) => ({ request_id: x.request_id, action: x.action, params: x.params, created_at: x.created_at })), hot } };
         });
         return reply(r.status, r.body);
+      }
+      if (body.op === "leaddb") {
+        // Lead-Datenbank vom VPS: Allowlist erzwingen (cleanLead), nie Rohdaten oder Gmail-IDs speichern. Eigener Blob, eigener Schlüssel.
+        if (!getLeadDbStore) return reply(503, { error: "Lead-Datenbank-Speicher nicht konfiguriert." });
+        if (!Array.isArray(body.leads) || body.leads.length > LEADDB_MAX_LEADS) return reply(400, { error: "leads ungültig." });
+        const leads = body.leads.map(cleanDbLead).filter(Boolean);
+        const t = now();
+        const doc = { leads, total: Number.isFinite(body.total) ? Math.min(body.total, 1e7) : leads.length, truncated: body.truncated === true,
+          generated_at: iso(body.generated_at) || t.toISOString(), received_at: t.toISOString() };
+        const st = await getLeadDbStore();
+        for (let i = 0; i < 4; i++) { const { etag } = await st.get(); if (await st.set(doc, etag)) return reply(200, { ok: true, stored: leads.length }); }
+        return reply(409, { error: "Gleichzeitige Änderung – bitte erneut versuchen." });
       }
       if (body.op === "result") {
         if (typeof body.request_id !== "string" || !ID_RE.test(body.request_id)) return reply(400, { error: "request_id ungültig." });
@@ -260,6 +319,23 @@ export function createServerControlHandler({ getStore, env, now = () => new Date
     }
 
     // ----- Chris im Browser -----
+    const ldb = req.method === "GET" ? new URL(req.url).searchParams.get("leaddb") : null;
+    if (ldb) {
+      // Lead-Datenbank lesen: ?leaddb=1 (Seite + Kennzahlen + Facetten) · ?leaddb=csv · ?leaddb=json (Export, gefiltert, auditiert).
+      if (!getLeadDbStore) return reply(503, { configured: false, error: "Lead-Datenbank-Speicher nicht konfiguriert." });
+      const params = new URL(req.url).searchParams;
+      const { state: db } = await (await getLeadDbStore()).get();
+      if (!db) return reply(200, { configured: true, empty: true, stats: leadStats([], now()), count: 0, leads: [], facets: {} });
+      if (ldb === "csv" || ldb === "json") {
+        const list = filterLeads(db.leads || [], leadDbFilters(params));
+        await mutate((cur, t) => { cur.audit.push(auditEntry(t, { action: "leaddb.export", tier: "read", outcome: "success", reason: `${ldb.toUpperCase()} ${list.length}` })); return { status: 200, body: {} }; });
+        const day = now().toISOString().slice(0, 10);
+        if (ldb === "csv") return new Response(leadsToCsv(list), { status: 200, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="jarvis-leads-${day}.csv"`, "cache-control": "no-store" } });
+        return new Response(JSON.stringify({ exported_at: now().toISOString(), generated_at: db.generated_at || null, filters: leadDbFilters(params), count: list.length, leads: list }, null, 2),
+          { status: 200, headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="jarvis-leads-${day}.json"`, "cache-control": "no-store" } });
+      }
+      return reply(200, leadDbView(db, params, now()));
+    }
     if (req.method === "GET") {
       const q = new URL(req.url).searchParams, watch = q.get("watch") === "1", leads = q.get("leads") === "1";
       const r = await mutate((cur, t) => { if (watch) cur.watch_at = t.toISOString(); return { status: 200, body: view(cur, t, { leads }), readOnly: !watch }; });

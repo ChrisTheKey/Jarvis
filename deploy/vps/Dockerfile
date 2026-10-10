@@ -6,7 +6,9 @@ RUN apk add --no-cache tzdata
 ENV NODE_ENV=production TZ=Europe/Zurich JARVIS_SECRETS_DIR=/data/secrets JARVIS_WORKER_ROLE=vps JARVIS_POLL_MINUTES=2
 WORKDIR /app
 COPY deploy/vps/backup-public.pem ./backup-public.pem
-COPY package.json mail-worker.js gmail.js mail-requests.js shared-state.js local-state.js human-contact.js lead-finder.js site-auditor.js sales.js swiss-repair.js email-permission.js cloud-core.js backup.js backup-api.js server-control.js server-agent.js cloud-leads.js persona-version.js persona.md mail-writer.md ./
+COPY package.json mail-worker.js gmail.js mail-requests.js shared-state.js local-state.js human-contact.js lead-finder.js site-auditor.js sales.js swiss-repair.js email-permission.js cloud-core.js backup.js backup-api.js server-control.js server-agent.js cloud-leads.js lead-db.js lead-registry.js swiss-areas.js persona-version.js persona.md mail-writer.md ./
+# Versionierter Schweiz-Gebietsindex (BFS-Gemeindeverzeichnis) – wird zur Laufzeit nur gelesen, nie heruntergeladen.
+COPY data/swiss-municipalities.json ./data/swiss-municipalities.json
 USER node
 # Deploy-Stand für Server Control (deploy.status) – zuletzt, damit der Cache der übrigen Schichten bleibt.
 ARG JARVIS_COMMIT=unknown

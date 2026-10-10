@@ -62,7 +62,7 @@ test("Defaults (Folgestand 032: 105 je Lauf, 315/h, 7500/Tag); Entwürfe ohne Bu
 });
 
 test("Niemals mehr als maxSitesPerDay (1500) Website-Audits pro Tag – auch über viele Läufe; danach kein weiteres Audit bis zum nächsten Tag", async () => {
-  write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: SENDER, discovery: { maxSitesPerDay: 1500, maxSitesPerHour: 100_000, sitesPerRun: 400, intervalMinutes: 0, draftPaceMs: 0 } });
+  write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: SENDER, discovery: { maxSitesPerDay: 1500, maxSitesPerHour: 100_000, sitesPerRun: 400, intervalMinutes: 0, draftPaceMs: 0, maxAuditsPerAreaPerRun: 100_000 } });
   let audits = 0;
   const auditor = { audit: async (url) => { audits++; return audit(new URL(url).hostname, []); } };
   for (let i = 0; i < 4; i++) { clock = new Date(+clock + MIN); await run(hosts(400, `t${i}-`).map(cand), auditor); }
@@ -78,7 +78,7 @@ test("Niemals mehr als maxSitesPerDay (1500) Website-Audits pro Tag – auch üb
 
 // ---------- Unbegrenzte Draft-Queue ----------
 test("10 qualifizierte Leads → 10 Entwürfe; 100 → 100; kein Business-Limit, alle persistent als queued → draft_created", async () => {
-  write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: SENDER, discovery: { sitesPerRun: 200, maxSitesPerHour: 1000, maxSitesPerDay: 1500, intervalMinutes: 0, draftPaceMs: 0, draftsPerPass: 1000 } });
+  write("config.json", { dryRun: false, sendMode: "compliant_auto", sender: SENDER, discovery: { sitesPerRun: 200, maxSitesPerHour: 1000, maxSitesPerDay: 1500, intervalMinutes: 0, draftPaceMs: 0, draftsPerPass: 1000, maxAuditsPerAreaPerRun: 100_000 } });
   await run(hosts(10, "zehn").map(cand), anyAuditor());
   assert.equal(discoveryStatus(dir, clock).waiting_for_draft, 10);
   await worker().tick();

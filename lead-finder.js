@@ -4,7 +4,8 @@
 // Versendet wird nur über den Mail-Worker und dessen Versandgrundlagen-Prüfung (leads.json).
 //
 // Quelle: OpenStreetMap (Overpass API) – öffentliche Firmeneinträge mit Website, Gebiete und Branchen konfigurierbar.
-// Ketten/Konzerne (OSM-Tag brand) werden übersprungen. Höchstens eine Suche je Lauf, Websites gedrosselt geprüft.
+// Gebiete: die GANZE SCHWEIZ (26 Kantone, alle Gemeinden, Rotation Kanton → Gemeinde → Branche, swiss-areas.js). Ketten/Konzerne (OSM-Tag brand)
+// werden übersprungen. Wenige gedrosselte Suchen je Lauf; qualifizierte Leads landen dauerhaft in der Lead-Datenbank (lead-registry.js).
 //
 //   node lead-finder.js --once     genau ein Such-/Prüflauf (eigenes Lock, unabhängig von server.js)
 //   node lead-finder.js --report   Übersicht über gefundene Leads
@@ -13,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import { createAuditor } from "./site-auditor.js";
 import { swissSignals, qualifyRepairLead, ensureColdDraft, discoverBusinessContact, PLACEHOLDER_RE, REVIEWS_FILE } from "./swiss-repair.js";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock, heartbeat, legalBasis, normEmail, zurichDay } from "./mail-worker.js";
+import { loadGeo, saveGeo, nextJob, advance, enqueue, coverage, categoryKey, categoryLabel, matchCategory, findMunicipality, GEO_FILE } from "./swiss-areas.js";
+import { knownKeys, recordLead, registryBlock, fromDiscovered, TRACKED_DISCOVERY } from "./lead-registry.js";
 
 export const DISCOVERY_LOCK = "discovery.lock";
 // Overpass verlangt eine erkennbare Anwendung als User-Agent (generische Browser-Kennungen werden mit 406 abgelehnt).
@@ -43,15 +46,10 @@ export const DEFAULT_DISCOVERY = {
   backoffMinutes: 15,   // nach Quellenfehler: 15 → 30 → 60 … bis backoffMaxMinutes (Retry-After der Quelle hat Vorrang, wenn länger)
   backoffMaxMinutes: 360,
   minScore: 6,
-  areas: [
-    "Winterthur", "St. Gallen", "Luzern", "Thun", "Aarau", "Chur", "Schaffhausen", "Frauenfeld", "Zug", "Solothurn", "Baden", "Uster", "Wil (SG)", "Rapperswil-Jona",
-    "Zürich", "Bern", "Basel", "Lausanne", "Genève", "Lugano", "Biel/Bienne", "Fribourg", "Neuchâtel", "Sion", "Olten", "Burgdorf", "Langenthal", "Dietikon", "Wädenswil", "Horgen",
-    "Bülach", "Kloten", "Dübendorf", "Wetzikon", "Illnau-Effretikon", "Opfikon", "Schlieren", "Adliswil", "Küsnacht", "Thalwil", "Meilen", "Männedorf", "Pfäffikon", "Affoltern am Albis",
-    "Liestal", "Pratteln", "Muttenz", "Allschwil", "Reinach", "Binningen", "Münchenstein", "Rheinfelden", "Brugg", "Lenzburg", "Wohlen", "Zofingen", "Reinach (AG)", "Spreitenbach",
-    "Kriens", "Emmen", "Sursee", "Hochdorf", "Küssnacht", "Schwyz", "Einsiedeln", "Altdorf", "Stans", "Sarnen", "Glarus", "Herisau", "Appenzell", "Arbon", "Kreuzlingen", "Amriswil",
-    "Gossau (SG)", "Rorschach", "Buchs (SG)", "Uzwil", "Flawil", "Wattwil", "Sargans", "Davos", "Landquart", "Thusis", "Weinfelden", "Frutigen", "Interlaken", "Spiez", "Münsingen",
-    "Ostermundigen", "Köniz", "Lyss", "Aarberg", "Grenchen", "Zuchwil", "Langnau im Emmental", "Visp", "Brig-Glis", "Martigny", "Monthey", "Bellinzona", "Locarno", "Mendrisio", "Yverdon-les-Bains", "Nyon", "Morges", "Vevey", "Montreux", "Delémont",
-  ],
+  // Gebiete: GANZE SCHWEIZ (26 Kantone, alle Gemeinden aus data/swiss-municipalities.json, Rotation in swiss-areas.js / discovery_geo.json).
+  // Nur wenn config.json → discovery.areas ausdrücklich eine Liste enthält, gilt der alte Modus mit fester Ortsliste (Tests/Fehlersuche).
+  maxSplitSearchesPerRun: 2,  // höchstens so viele Folgeabfragen (Gemeinde → Branche, grosse Gemeinden) je Lauf – Rest kommt reihum aus allen Kantonen
+  maxAuditsPerAreaPerRun: 35, // Fairness: aus EINER Abfrage höchstens so viele neue Firmen je Lauf (Rest folgt später per Folgeabfrage)
   categories: [
     { key: "craft" }, { key: "shop" }, { key: "office", value: "company" }, { key: "office", value: "estate_agent" },
     { key: "amenity", value: "restaurant" }, { key: "amenity", value: "dentist" }, { key: "healthcare", value: "physiotherapist" },
@@ -90,15 +88,14 @@ export function overpassSearch({ fetchFn = globalThis.fetch, url = DEFAULT_DISCO
   sleep = (ms) => new Promise((res) => setTimeout(res, ms)) } = {}) {
   let lastAt = 0, tail = Promise.resolve();
   const gate = async () => { const wait = lastAt + minGapMs - Date.now(); if (wait > 0) await sleep(wait); lastAt = Date.now(); };
-  const one = async ({ area, category, limit = 60 }) => {
-    const q = (s) => String(s).replace(/["\\]/g, "");
-    const filter = category.value ? `["${q(category.key)}"="${q(category.value)}"]` : `["${q(category.key)}"]`;
-    const query = `[out:json][timeout:60];area["name"="${q(area)}"]["boundary"="administrative"]->.a;nwr(area.a)${filter}[~"^(website|contact:website)$"~"."];out tags ${limit};`;
-    const ask = () => fetchFn(url, { method: "POST", headers: { "user-agent": OVERPASS_UA, accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ data: query }), signal: AbortSignal.timeout(90_000) });
+  const q = (s) => String(s).replace(/["\\]/g, "");
+  const tagFilter = (c) => (c.value ? `["${q(c.key)}"="${q(c.value)}"]` : `["${q(c.key)}"]`);
+  const WEB = `[~"^(website|contact:website)$"~"."]`;
+  const ask = async (query) => {
     let r;
     for (let attempt = 0; ; attempt++) {
       await gate();
-      r = await ask();
+      r = await fetchFn(url, { method: "POST", headers: { "user-agent": OVERPASS_UA, accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ data: query }), signal: AbortSignal.timeout(90_000) });
       lastAt = Date.now();
       if (![429, 502, 503, 504].includes(r.status)) break;
       const ra = parseRetryAfter(r.headers?.get?.("retry-after"));
@@ -107,12 +104,32 @@ export function overpassSearch({ fetchFn = globalThis.fetch, url = DEFAULT_DISCO
       await sleep(wait);
     }
     if (!r.ok) throw new Error(`Overpass HTTP ${r.status}`);
-    const { elements = [] } = await r.json();
-    return elements.map((e) => ({
-      company: e.tags?.name || "", website: e.tags?.website || e.tags?.["contact:website"] || "",
-      email: e.tags?.email || e.tags?.["contact:email"] || "", chain: !!(e.tags?.brand || e.tags?.["brand:wikidata"]),
-      source: `OpenStreetMap ${e.type}/${e.id} (${area}, ${category.key}${category.value ? "=" + category.value : ""})`,
-    }));
+    return (await r.json()).elements || [];
+  };
+  // Schweiz-Modus: Gemeinde eindeutig über die BFS-Gemeindenummer (keine Verwechslung gleichnamiger Orte); eine Abfrage über mehrere Branchen.
+  // Findet Overpass die Gemeindefläche nicht (Tag fehlt), einmal über den Namen innerhalb des Kantons. Das Ergebnis meldet, ob die Fläche
+  // gefunden wurde und ob das Trefferlimit erreicht ist (meta.saturated → Folgeabfragen je Branche).
+  const one = async ({ area, category, categories, limit = 60, bfs = null, canton = null, osmName = null }) => {
+    const cats = Array.isArray(categories) && categories.length ? categories : [category];
+    const body = cats.length === 1 ? `nwr(area.a)${tagFilter(cats[0])}${WEB};` : `(${cats.map((c) => `nwr(area.a)${tagFilter(c)}${WEB};`).join("")});`;
+    const legacy = `[out:json][timeout:60];area["name"="${q(area)}"]["boundary"="administrative"]->.a;${body}out tags ${limit};`;
+    const byBfs = `[out:json][timeout:90];(area["boundary"="administrative"]["admin_level"="8"]["ref:bfs_Gemeindenummer"="${Number(bfs)}"];area["boundary"="administrative"]["admin_level"="8"]["swisstopo:BFS_NUMMER"="${Number(bfs)}"];)->.a;.a out ids;${body}out tags ${limit};`;
+    const byName = `[out:json][timeout:90];area["ISO3166-2"="CH-${q(canton)}"]["admin_level"="4"]->.c;rel(area.c)["boundary"="administrative"]["admin_level"="8"]["name"="${q(osmName || area)}"];map_to_area->.a;.a out ids;${body}out tags ${limit};`;
+    let elements = await ask(bfs ? byBfs : legacy);
+    let areaFound = !bfs || elements.some((e) => e.type === "area");
+    if (bfs && !areaFound && canton) { elements = await ask(byName); areaFound = elements.some((e) => e.type === "area"); }
+    const hits = elements.filter((e) => e.type !== "area");
+    const label = cats.length === 1 ? categoryKey(cats[0]) : null;
+    const list = hits.map((e) => {
+      const cat = label || matchCategory(e.tags || {}, cats) || null;
+      return {
+        company: e.tags?.name || "", website: e.tags?.website || e.tags?.["contact:website"] || "",
+        email: e.tags?.email || e.tags?.["contact:email"] || "", chain: !!(e.tags?.brand || e.tags?.["brand:wikidata"]), category: cat,
+        source: `OpenStreetMap ${e.type}/${e.id} (${area}, ${cat || "mehrere"})`,
+      };
+    });
+    Object.defineProperty(list, "meta", { value: { areaFound, saturated: hits.length >= limit } });
+    return list;
   };
   return (args) => { const p = tail.then(() => one(args)); tail = p.catch(() => {}); return p; }; // strikt nacheinander
 }
@@ -220,6 +237,8 @@ export function discoveryStatus(dir = WORKER_DIR, now = new Date()) {
     audited_hour: auditedHour,
     last_run_audited: lr ? lr.audited || 0 : null, last_run_duration_s: lr ? lr.duration_s ?? null : null, discovery_rate_per_hour: rate,
     max_concurrency: cfg.maxConcurrency, pool_exhausted: !!data.poolExhausted,
+    // Schweiz-Abdeckung: 26 Kantone, alle Gemeinden, Zyklus/Fortschritt der geografischen Rotation (discovery_geo.json)
+    coverage: Array.isArray(cfg.areas) ? { mode: "AREAS", areas: cfg.areas.length } : coverage(store.read(GEO_FILE, null)),
     last_run_at: data.lastRunAt || null, next_run_at: next, backoff_until: backoffActive ? data.backoffUntil : null, backoff_count: data.backoffCount || 0,
     queue: reviews.filter((r) => r.status === "queued").length, // = waiting_for_draft
     waiting_for_draft: reviews.filter((r) => r.status === "queued").length,
@@ -291,12 +310,16 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
       data.archivedDay = day;
     }
 
-    const pairs = cfg.areas.flatMap((area) => cfg.categories.map((category) => ({ area, category })));
-    if (!pairs.length) { data.lastRunAt = t.toISOString(); save(); return { ...out, skipped: "no_areas" }; }
-    data.pairs ||= {};
+    // Gebiete: GANZE SCHWEIZ (Standard) oder – nur wenn config.json → discovery.areas gesetzt ist – die alte feste Ortsliste.
+    const swiss = !Array.isArray(cfg.areas);
+    const pairs = swiss ? [] : cfg.areas.flatMap((area) => cfg.categories.map((category) => ({ area, category })));
+    if (!swiss && !pairs.length) { data.lastRunAt = t.toISOString(); save(); return { ...out, skipped: "no_areas" }; }
+    if (swiss) delete data.pairs; // alte Ort/Branche-Paare: die Rotation liegt jetzt in discovery_geo.json
+    else data.pairs ||= {};
     data.lastRunAt = t.toISOString();
 
     // Bekanntes: gefundene Leads, Chris’ Lead-Liste, eigene Jarvis-Threads, Suppression (hat immer Vorrang)
+    // und die LEAD-DATENBANK (lead_registry.json): bereits angeschriebene/beantwortete/gesperrte Firmen und Kunden werden nie wieder neu geprüft.
     const leadsFile = store.read("leads.json", []);
     const reg = gmail?.listOwned?.() || { sent: {}, drafts: {} };
     const supp = store.read("suppression.json", {});
@@ -307,6 +330,10 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
       if (company && normCompany(company)) known.companies.add(normCompany(company));
     };
     for (const l of Object.values(data.leads)) remember(l.domain, l.email, l.company);
+    const kk = knownKeys(store);
+    for (const d of kk.domains) known.domains.add(d);
+    for (const e of kk.emails) known.emails.add(e);
+    for (const c of kk.companies) known.companies.add(c);
     const contacted = new Set([...Object.values(reg.sent || {}), ...Object.values(reg.drafts || {})].map((s) => normEmail(s.to)));
     const suppressedDomains = new Set(Object.keys(supp).map(emailDomain).filter((d) => d && !FREEMAIL.test(d)));
     const exclude = new Set(cfg.excludeDomains.map(normDomain));
@@ -316,37 +343,85 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
     const quota = () => Math.min(cfg.sitesPerRun - out.audited, cfg.maxSitesPerDay - stats.audited, cfg.maxSitesPerHour - hour.audited);
     if (stats.audited >= cfg.maxSitesPerDay) { save(); return { ...out, skipped: "day_limit" }; }
 
-    // ---- 1) Quelle: nacheinander (nie parallel) Orte/Branchen abfragen, bis genug NEUE Firmen mit eigener Website vorliegen ----
+    // ---- 1) Quelle: nacheinander (nie parallel) Gebiete/Branchen abfragen, bis genug NEUE Firmen mit eigener Website vorliegen ----
     const pending = [], seen = new Set();
     const want = Math.max(0, quota());
     let sourceError = null, searchFails = 0;
-    const stale = (k) => { const p = data.pairs[k]; return p && p.fresh === 0 && +t - Date.parse(p.at) < (p.error ? 6 : cfg.pairRetryHours) * 3_600_000; }; // nichts Neues (bzw. Abfrage fehlgeschlagen: 6 h) → nicht erneut abfragen
-    for (let tries = 0, queried = 0; pending.length < want && queried < cfg.maxSearchesPerRun && tries < pairs.length; tries++) {
-      const pair = pairs[data.cursor % pairs.length];
-      data.cursor = (data.cursor + 1) % pairs.length;
-      if (stale(pairKey(pair))) continue;
-      queried++; out.searches++;
-      out.query = `${pair.area} / ${pair.category.key}${pair.category.value ? "=" + pair.category.value : ""}`;
-      let candidates = [];
-      try { candidates = await search({ ...pair, limit: cfg.searchLimit }); data.backoffCount = 0; data.backoffUntil = null; }
-      catch (e) { stats.errors++; out.errors.push({ stage: "search", error: e.message }); log("error", "discovery_search_failed", { query: out.query, error: e.message });
-        // 429 / Retry-After / zweiter Fehler im Lauf = Quelle überlastet → Abbruch + Backoff. Ein einzelner 5xx/Timeout (z. B. zu schwere Abfrage) betrifft nur dieses Paar.
-        data.pairs[pairKey(pair)] = { at: t.toISOString(), fresh: 0, total: 0, error: true };
-        if (++searchFails >= 2 || /HTTP 429/.test(e.message) || e.retryAfterMs) { sourceError = e; break; }
-        continue; }
-      let fresh = 0;
+    // Kandidaten einer Abfrage übernehmen (früh verwerfen, Dedupe); cap = Fairness je Gebiet. Liefert { fresh, more }.
+    const take = (candidates, geo, cap = Infinity) => {
+      let fresh = 0, more = false;
       for (const c of candidates) {
         const domain = normDomain(c.website);
         // früh verwerfen: keine eigene Firmenwebsite / Kette / Freemail / ausgeschlossen / ohne Firmenname
         if (!domain || c.chain || exclude.has(domain) || FREEMAIL.test(domain) || PLATFORM_RE.test(domain) || !String(c.company || "").trim()) continue;
-        if (known.domains.has(domain) || seen.has(domain) || (c.company && known.companies.has(normCompany(c.company)))) continue; // Duplikat / bereits aktuell geprüft
+        if (known.domains.has(domain) || seen.has(domain) || (c.company && known.companies.has(normCompany(c.company)))) continue; // Duplikat / aktuell geprüft / in der Lead-Datenbank
+        if (fresh >= cap) { more = true; break; }
         seen.add(domain); fresh++;
-        pending.push({ c, domain, osmEmail: c.email && emailDomain(c.email) === domain });
+        pending.push({ c, domain, osmEmail: c.email && emailDomain(c.email) === domain, geo: { ...geo, ...(c.category ? { category: c.category } : {}) } });
       }
-      data.pairs[pairKey(pair)] = { at: t.toISOString(), fresh, total: candidates.length };
-      if (!force) save({ force: false });
+      return { fresh, more };
+    };
+    const searchFailed = (e, query) => {
+      stats.errors++; out.errors.push({ stage: "search", error: e.message }); log("error", "discovery_search_failed", { query, error: e.message });
+      // 429 / Retry-After / zweiter Fehler im Lauf = Quelle überlastet → Abbruch + Backoff. Ein einzelner 5xx/Timeout (z. B. zu schwere Abfrage) betrifft nur dieses Gebiet.
+      return ++searchFails >= 2 || /HTTP 429/.test(e.message) || !!e.retryAfterMs;
+    };
+    if (swiss) {
+      // GANZE SCHWEIZ: Hauptcursor reihum durch alle Kantone/Gemeinden, Folgeabfragen (Gemeinde → Branche) begrenzt – Cursor persistent nach JEDER Abfrage.
+      const g = loadGeo(store, t);
+      for (let slot = 0, splitUsed = 0; pending.length < want && slot < cfg.maxSearchesPerRun; slot++) {
+        const job = nextJob(g, { slot, splitUsed, maxSplit: cfg.maxSplitSearchesPerRun, now: t });
+        if (job.fromQueue) splitUsed++;
+        const m = job.m, cat = job.cat != null ? cfg.categories[job.cat] : null;
+        out.searches++;
+        out.query = `${m.canton} / ${m.name}${cat ? " / " + categoryLabel(categoryKey(cat)) : ""}`;
+        let candidates = [];
+        try { candidates = await search({ area: m.name, osmName: m.osmName, bfs: m.bfs, canton: m.canton, category: cat || cfg.categories[0], categories: cat ? [cat] : cfg.categories, limit: cfg.searchLimit }); data.backoffCount = 0; data.backoffUntil = null; }
+        catch (e) {
+          const stop = searchFailed(e, out.query);
+          // Gebiet nicht verlieren: genau ein späterer Versuch (frühestens nach 6 h); der Hauptcursor geht weiter, damit keine Gemeinde die Rotation blockiert.
+          if ((job.tries || 0) < 1) enqueue(g, { bfs: m.bfs, cat: job.cat, kind: "retry", retryAt: new Date(+t + 6 * 3_600_000).toISOString(), tries: (job.tries || 0) + 1 });
+          if (!job.fromQueue) advance(g, m, t);
+          saveGeo(store, g);
+          if (stop) { sourceError = e; break; }
+          continue;
+        }
+        const geo = { canton: m.canton, municipality: m.name, municipality_bfs: m.bfs, language: m.language, ...(cat ? { category: categoryKey(cat) } : {}) };
+        const { more } = take(candidates, geo, cfg.maxAuditsPerAreaPerRun);
+        // Gesättigt (Trefferlimit) → je Branche weiter (Gemeinde → Branche); mehr Neues als der Fairness-Deckel → dieselbe Abfrage später erneut.
+        // Folgeabfragen frühestens im NÄCHSTEN Lauf (nie mehrfach dasselbe Gebiet in einem Lauf).
+        const later = new Date(+t + 1).toISOString();
+        if (candidates.meta?.saturated && job.cat == null) cfg.categories.forEach((_, i) => enqueue(g, { bfs: m.bfs, cat: i, retryAt: later }));
+        else if (more || candidates.meta?.saturated) enqueue(g, { bfs: m.bfs, cat: job.cat, retryAt: later });
+        if (candidates.meta && candidates.meta.areaFound === false) log("warn", "discovery_area_not_found", { bfs: m.bfs, municipality: m.name });
+        if (!job.fromQueue) advance(g, m, t);
+        saveGeo(store, g);
+        if (!force) save({ force: false });
+      }
+      data.poolExhausted = false; // die Schweiz-Rotation beginnt nach jedem Zyklus neu (Dedupe-/Audit-Alter-Regeln gelten)
+    } else {
+      const stale = (k) => { const p = data.pairs[k]; return p && p.fresh === 0 && +t - Date.parse(p.at) < (p.error ? 6 : cfg.pairRetryHours) * 3_600_000; }; // nichts Neues (bzw. Abfrage fehlgeschlagen: 6 h) → nicht erneut abfragen
+      for (let tries = 0, queried = 0; pending.length < want && queried < cfg.maxSearchesPerRun && tries < pairs.length; tries++) {
+        const pair = pairs[data.cursor % pairs.length];
+        data.cursor = (data.cursor + 1) % pairs.length;
+        if (stale(pairKey(pair))) continue;
+        queried++; out.searches++;
+        out.query = `${pair.area} / ${pair.category.key}${pair.category.value ? "=" + pair.category.value : ""}`;
+        let candidates = [];
+        try { candidates = await search({ ...pair, limit: cfg.searchLimit }); data.backoffCount = 0; data.backoffUntil = null; }
+        catch (e) {
+          data.pairs[pairKey(pair)] = { at: t.toISOString(), fresh: 0, total: 0, error: true };
+          if (searchFailed(e, out.query)) { sourceError = e; break; }
+          continue;
+        }
+        const muni = findMunicipality(pair.area);
+        const geo = { ...(muni ? { canton: muni.canton, municipality: muni.name, municipality_bfs: muni.bfs, language: muni.language } : {}), category: categoryKey(pair.category) };
+        const { fresh } = take(candidates, geo);
+        data.pairs[pairKey(pair)] = { at: t.toISOString(), fresh, total: candidates.length };
+        if (!force) save({ force: false });
+      }
+      data.poolExhausted = !sourceError && pending.length < want && pairs.every((p) => stale(pairKey(p)));
     }
-    data.poolExhausted = !sourceError && pending.length < want && pairs.every((p) => stale(pairKey(p)));
     if (sourceError) {
       backoff("search", sourceError);
       if (!pending.length) { save(); return out; } // nichts zu prüfen: kein aggressives Wiederholen, Backoff gilt
@@ -372,10 +447,12 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
       }
       return null;
     };
-    const processOne = async ({ c, domain, idx }) => {
+    const processOne = async ({ c, domain, idx, geo = {} }) => {
       const lead = {
         email: null, name: null, company: c.company || null, website: `https://${domain}/`, domain,
         approved: false, discoverySource: c.source, discoveredAt: t.toISOString(),
+        // Gebiet + Branche (Schweiz-Index): Kanton, Gemeinde (BFS-Nr.), Sprachregion, OSM-Branche
+        canton: geo.canton || null, municipality: geo.municipality || null, municipality_bfs: geo.municipality_bfs || null, language: geo.language || null, category: geo.category || null,
         websiteIssues: [], auditScore: 0, scoreDetails: [],
         consentBasis: null, consentAt: null, consentSource: null, existingCustomer: false, similarService: false,
         status: "discovered",
@@ -425,16 +502,26 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
         else lead.status = "blocked_no_legal_basis";
         if (["blocked_no_legal_basis", "matched_existing_lead"].includes(lead.status)) stats.qualified++;
         const q = qualifyRepairLead(lead, { now: t });
-        Object.assign(lead, { site_condition: q.site_condition, repair_fit_score: q.repair_fit_score, repair_stage: q.stage, contact_basis: q.contact_basis });
+        Object.assign(lead, { site_condition: q.site_condition, repair_fit_score: q.repair_fit_score, repair_stage: q.stage, contact_basis: q.contact_basis, repair_offer_class: q.offer?.offer_class || null });
+        // Lead-Datenbank: wurde diese Firma schon angeschrieben / hat geantwortet / ist Kunde / gesperrt? Dann nie ein neuer Cold-Entwurf.
+        const tracked = TRACKED_DISCOVERY.has(lead.status) || (lead.status === "suppressed" && !!lead.email);
+        const dbBlock = tracked ? registryBlock(store, { domain, email: lead.email, company: lead.company }) : null;
+        if (dbBlock) { lead.draft_blocked_reason = "Lead-Datenbank: " + dbBlock; stats.blocked++; log("info", "cold_draft_skipped", { domain, reason: lead.draft_blocked_reason }); }
+        let draftQueued = false;
         // TF-025 COLD_LEAD_DRAFT_ONLY: höchstens EIN lokaler Cold-Entwurf je Firma (Gmail-Entwurf legt der Mail-Worker an). Nie gesendet.
-        if (lead.status === "blocked_no_legal_basis" && q.stage === "cold_lead_draft_only" && sender?.name) {
+        if (!dbBlock && lead.status === "blocked_no_legal_basis" && q.stage === "cold_lead_draft_only" && sender?.name) {
           // Kein geschäftliches Entwurfs-Limit: JEDER qualifizierte Lead wird persistent in die Draft-Queue aufgenommen (queued) –
           // den Gmail-Entwurf legt der Draft-Worker mit technischem Pacing an. Blockiert nur durch Dedupe/Suppression/Sperrfrist.
           try {
             const r = ensureColdDraft(store, lead, { sender, now: t, contacted, suppression: supp });
             if (r.blocked) { stats.blocked++; lead.draft_blocked_reason = r.blocked; log("info", "cold_draft_skipped", { domain, reason: r.blocked }); }
-            else { stats.drafts++; hour.drafts++; }
+            else { stats.drafts++; hour.drafts++; draftQueued = true; }
           } catch (e) { log("error", "cold_draft_failed", { domain, error: e.message }); }
+        }
+        // Qualifizierte (bzw. gesperrte) Leads dauerhaft in die Lead-Datenbank – synchron, nie gelöscht. Fehler stoppen den Lauf nie.
+        if (tracked) {
+          try { recordLead(store, fromDiscovered(lead, draftQueued ? { gmail_draft_status: "queued" } : {}), { now: t, source: "discovery" }); }
+          catch (e) { log("error", "lead_registry_failed", { domain, error: e.message }); }
         }
         log("info", "lead_discovered", { domain, status: lead.status, score, issues: a.issues.length, repair_stage: lead.repair_stage });
       } catch (e) {

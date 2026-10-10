@@ -2,7 +2,7 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-09
+Letzte Aktualisierung: 2026-10-10
 
 ## CLOUD-FIRST (Rollout ab 2026-10-07) – Zielbild: VPS = Gehirn/24-7-Runtime, Netlify = UI, GitHub = Code, Windows = optionaler Client
 Entscheidungen Chris (2026-10-07): (1) VPS nur AUSGEHEND, kein offener Port – Netlify-Functions sind das authentifizierte Gateway;
@@ -35,6 +35,55 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
   check-mail-auth: Windows 200 self=false, VPS 200 self=true → genau ein Sender.
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
+
+## JARVIS — FULL SWITZERLAND DISCOVERY + PERSISTENT LEAD DATABASE (2026-10-10, Code + Tests fertig, 379/379 grün; Live-Stand siehe Ende dieses Abschnitts)
+**A) Ganze Schweiz flächendeckend**
+- Keine hardcoded Städteliste mehr: `DEFAULT_DISCOVERY.areas` entfällt. Gebietsindex = versionierte statische Datei `data/swiss-municipalities.json`
+  (BFS Amtliches Gemeindeverzeichnis, Stichtag 2026-10-01): **26/26 Kantone, 2110 Gemeinden** mit BFS-Nummer, Bezirk, Sprachregion (de 1347, fr 628, it 115, rm 20).
+  Erzeugt einmalig mit `scripts/build-swiss-areas.mjs <snapshot.csv> <Stichtag>` (nur bei Gemeindefusionen neu) – kein Download in einem Discovery-Lauf.
+  Nur wenn `config.json → discovery.areas` ausdrücklich gesetzt ist, gilt der alte Modus mit fester Ortsliste (Tests/Fehlersuche).
+- Architektur CH → Kanton → Gemeinde → Branche (`swiss-areas.js`). Hauptcursor reihum je Kanton eine Gemeinde (ZH, BE, LU … JU, dann wieder ZH …), innerhalb des Kantons
+  in BFS-Reihenfolge; die ersten 26 Abfragen decken alle 26 Kantone ab, ZH+BE+BS ≤ 15 % der ersten 260. Jede Gemeinde genau einmal je Zyklus, danach neuer Zyklus
+  (Dedupe-/Audit-Alter-Regeln gelten weiter: 90 Tage Audit-Index, Lead-Datenbank dauerhaft).
+- Cursor persistent in `discovery_geo.json` (nach JEDER Abfrage gespeichert → Neustart macht beim nächsten Gebiet weiter).
+- Overpass je Gemeinde eindeutig über `ref:bfs_Gemeindenummer` (bzw. `swisstopo:BFS_NUMMER`) – keine Verwechslung gleichnamiger Orte (Reinach AG/BL);
+  Fläche nicht gefunden → einmal über den Namen innerhalb des Kantons. Eine Abfrage über alle 24 Branchen (live geprüft: Köniz, Thun 196 Treffer/7 s).
+- Fairness: aus einer Abfrage höchstens `maxAuditsPerAreaPerRun` 35 neue Firmen je Lauf; gesättigte Gemeinden (Trefferlimit) bekommen Folgeabfragen je Branche
+  (Gemeinde → Branche) in eine Warteschlange, die frühestens im nächsten Lauf und höchstens `maxSplitSearchesPerRun` 2 der 6 Abfragen je Lauf bekommt.
+  Fehlgeschlagene Gemeinde: genau ein späterer Versuch (≥ 6 h), die Rotation läuft weiter.
+- Jeder Lead trägt `canton`, `municipality`, `municipality_bfs`, `language`, `category` (OSM-Branche, spezifischste zuerst).
+- Unverändert: 7500 Websites/Tag, 315/h, 105/Lauf, 20 min, maxConcurrency 6, maxSearchesPerRun 6, searchMinGapMs 6 s, Retry-After/Backoff 15→360 min.
+  Ehrliche Grenze: OSM ist der Pool – die echte Tageszahl = neue Firmen mit Website, nicht der Deckel.
+- Dashboard „24/7 Discovery“: Schweiz-Abdeckung (FULL · 26/26 Kantone · 2110 Gemeinden) und Gebietsrotation (Zyklus, Fortschritt, Kantone im Zyklus, zuletzt Kanton/Gemeinde).
+
+**B) Persistente Lead-Datenbank** – `.secrets/mail_worker/lead_registry.json` (VPS = authoritative, Schema 1, Modell `lead-db.js`, Datei/Abgleich `lead-registry.js`)
+- Felder je Lead: lead_id, company, domain, website, business_email, contact_name, contact_role, canton, municipality, language, category, discovery_source,
+  first_discovered_at, last_audited_at, customer_visible_findings (Kundensprache), repair_fit_score, offer_class, status, draft_created_at, gmail_draft_status,
+  manual_send_detected, first_contacted_at, last_contacted_at, reply_status, reply_at, customer_status, suppressed, opt_out, do_not_contact, last_updated_at
+  (+ alt_domains/alt_emails, sources, history; Gmail-Thread-/Message-Referenzen nur intern unter `refs`). Keine Secrets/Tokens/Keys, keine Roh-Evidence.
+- Status: DISCOVERED, AUDITED, QUALIFIED, WAITING_FOR_DRAFT, DRAFT_CREATED, MANUALLY_SENT, REPLIED, CUSTOMER, NOT_INTERESTED, SUPPRESSED, OPT_OUT, DO_NOT_CONTACT, DISCARDED –
+  abgeleitet aus klebrigen Fakten: Sperren (DNC > Opt-out > Suppression) haben immer Vorrang, dann CUSTOMER > NOT_INTERESTED > REPLIED > MANUALLY_SENT > DRAFT_CREATED > … .
+  Leads werden nie gelöscht, Sperren nie automatisch aufgehoben, erste Zeitpunkte = frühester, letzte = spätester.
+- Aufgenommen werden qualifizierte Leads (blocked_no_legal_basis/matched_existing_lead/already_in_lead_list), gesperrte mit Adresse, alle Entwürfe, jeder Gmail-/Jarvis-Kontakt,
+  Antworten, Verkäufe und Chris’ Lead-Liste. Nicht qualifizierte Websites bleiben (wie bisher) nur im Audit-Index (Domain → Datum, 90 Tage).
+- Dedupe gegen die Datenbank: vor jedem Audit (bekannte Domain/Adresse/Firma → nie neu geprüft), vor dem Cold-Entwurf in der Discovery, in `leads.createDraft` und direkt vor
+  Gmail im Draft-Worker (angeschrieben, Antwort, Kunde, kein Interesse, Suppression, Opt-out, Do-not-contact → `blocked`, „Lead-Datenbank: …“). Datenbank nicht lesbar → fail closed.
+- Abgleich (= Migration, idempotent, additiv) beim Worker-Start (inkl. discovered.json) und nach jedem Worker-Durchlauf (nur bei geänderten Quellen): leads.json,
+  individual_reviews.json, Gmail-/Jarvis-Register (gesendet, manuell), state.json (Antworten), sales.json (Kunde/kein Interesse/Antwort), suppression.json (auch Domain).
+  Manueller Versand: syncColdDrafts → MANUALLY_SENT, manual_send_detected, first/last_contacted_at, Thread-Referenz intern. Chris’ eigene Adressen (inkl. Plus-Aliasse) nie als Lead.
+- Kommandozeile (VPS): `node lead-registry.js --migrate | --report | --export csv|json [--out datei] [--canton BE] [--status …] [--category Treuhand] [--offer REPAIR_FIX_500]
+  [--month 2026-10] [--view contacted|no_reply|replied|customers|blocked] | --dnc <lead_id|domain|email>` (Do-not-contact dauerhaft).
+- Cloud/Mobile: der VPS-Agent schickt die Allowlist-Sicht (keine Gmail-IDs, keine Roh-Evidence) als eigene Operation `leaddb` (nur bei Änderung, spätestens alle 30 min,
+  max. ~4,5 MB, bei Ablehnung 10 min Pause) in den Blob `jarvis-server-control/leaddb`. `GET /api/server-control?leaddb=1` (Seite + Kennzahlen + Facetten),
+  `?leaddb=csv|json` (gefiltert, auditiert `leaddb.export`). Nur mit JARVIS_PASSWORD.
+- Dashboard-Bereich LEAD-DATENBANK: Gesamt, Heute neu, Qualifiziert, Entwürfe, Angeschrieben, Antworten, Kunden, Suppressed, Opt-out, Do-not-contact; Dialog mit Suche
+  (Firma/Domain/E-Mail/Kontakt/Gemeinde), Filtern Kanton/Gemeinde/Status/Branche/Angebot/Monat, Schnellfiltern (Angeschrieben, Ohne Antwort, Mit Antwort, Kunden, Gesperrt),
+  Detail (Firma, Website, Kontakt, E-Mail, Kanton, Gemeinde, Problem in Kundensprache, Angebot, Status, Draft/Manuell versendet JA/NEIN, Erster/Letzter Kontakt, Antwort,
+  Kunde, Suppression, Opt-out, DNC), Export CSV (Semikolon + UTF-8-BOM, Formel-Injection neutralisiert) / JSON. Mobil: eine Spalte, 16-px-Felder, 44-px-Touch-Ziele.
+- Backup: `lead_registry.json` + `discovery_geo.json` liegen in `mail_worker/` und sind damit automatisch im verschlüsselten Tagesbackup (Test: Restore byte-genau).
+- Unverändert: COLD_LEAD_DRAFT_ONLY, legal_basis NONE, automatic_send_allowed false, kein automatischer Cold-Versand. Die Datenbank enthält kein Versandgrundlagen-Feld
+  und ist nie eine Begründung für einen Versand („später verwenden“ ≠ erneut anschreiben).
+- Tests: `test/swiss-leaddb-033.test.js` (19) + angepasste 031/032; gesamt 379/379.
 
 ## JARVIS 7500/DAY DISCOVERY – 5× QUALIFIZIERTE DRAFTS (2026-10-10, Code + Tests fertig, 360/360 grün; VPS-Rollout siehe unten)
 - Ziel: ~5× Output bei UNVERÄNDERTER Qualität. Website-Deckel (hart, technisch): intervalMinutes 20, sitesPerRun 105, maxSitesPerHour 315, maxSitesPerDay 7500

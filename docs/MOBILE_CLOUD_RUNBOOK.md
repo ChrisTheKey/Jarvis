@@ -52,7 +52,16 @@ Stand: 2026-10-09. Gilt für den CLOUD-Modus: der Windows-PC ist aus, kaputt ode
 4. Chris entscheidet allein in Gmail. Jarvis sendet nie; `gmail.sendDraft` verweigert COLD_LEAD_DRAFT_ONLY auf unterster Ebene.
 - Antworten des VPS im HUD: „OK: Entwurf wird angelegt …“ oder „Abgelehnt: Empfänger hat sich abgemeldet (Opt-out).“ usw.
 
+## 4d. Lead-Datenbank (VPS authoritative, Handy/Cloud)
+- Bereich „Lead-Datenbank“: Gesamt, Heute neu, Qualifiziert, Entwürfe, Angeschrieben, Antworten, Kunden, Suppressed, Opt-out, Do-not-contact.
+- ÖFFNEN: Suche (Firma, Domain, E-Mail, Kontakt, Gemeinde), Filter Kanton/Gemeinde/Status/Branche/Angebot/Monat, Schnellfilter Angeschrieben / Ohne Antwort / Mit Antwort /
+  Kunden / Gesperrt, Lead antippen → Detail. EXPORT CSV (Excel, Semikolon) bzw. JSON – exportiert genau die gefilterten Leads, ohne Secrets und interne IDs.
+- Die Datenbank ist ein Gedächtnis, keine Versandgrundlage: kein Sende-Knopf; angeschriebene, beantwortete, gesperrte Firmen und Kunden werden nie wieder Cold Leads.
+- Auf dem VPS: `node lead-registry.js --report`, `--export csv --out /tmp/leads.csv`, `--dnc <domain>` (dauerhaft nicht kontaktieren).
+
 ## 4c. 24/7 Lead Discovery (VPS, ohne PC)
+- Gebiet: die GANZE SCHWEIZ – 26 Kantone, 2110 Gemeinden (BFS), reihum je Kanton eine Gemeinde, grosse Gemeinden zusätzlich je Branche; Panel zeigt
+  „Schweiz-Abdeckung“ und „Gebietsrotation“ (Zyklus, Fortschritt, zuletzt Kanton/Gemeinde).
 - Läuft im VPS-Worker rund um die Uhr: alle 20 Minuten ein Lauf mit 105 Websites (315/h, harter Deckel 7500 unterschiedliche Websites/Tag, begrenzte Parallelität `maxConcurrency`).
   Für Cold-Entwürfe gibt es KEIN geschäftliches Maximum (maxDraftsPerHour/Day = null): jeder qualifizierte Lead wird persistent in die Draft-Queue
   aufgenommen (queued → draft_created). Der Draft-Worker arbeitet sie 24/7 mit technischem Pacing ab (25 je Durchlauf, 1,5 s Abstand); bei Gmail-429/5xx

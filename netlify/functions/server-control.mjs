@@ -11,6 +11,11 @@ export default createServerControlHandler({
     const { getStore } = await import("@netlify/blobs");
     return netlifyBlobStore(getStore({ name: "jarvis-server-control", consistency: "strong" }), "control");
   },
+  // Lead-Datenbank (Allowlist vom VPS) – eigener Schlüssel, damit der Status-Blob klein bleibt.
+  getLeadDbStore: async () => {
+    const { getStore } = await import("@netlify/blobs");
+    return netlifyBlobStore(getStore({ name: "jarvis-server-control", consistency: "strong" }), "leaddb");
+  },
 });
 
 export const config = { path: "/api/server-control" };

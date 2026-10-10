@@ -164,6 +164,16 @@ form.cmd button.stop { color: var(--red); }
 .lead-detail li { margin-bottom: 6px; overflow-wrap: anywhere; }
 .lead-detail .sev { color: var(--amber); }
 @media (max-width: 860px) { .leads-box { grid-template-columns: 1fr; overflow-y: auto; } }
+/* Lead-Datenbank: Suche/Filter, Liste, Detail, Export – alles umbrechend, nie breiter als der Bildschirm */
+.ldb-panel { flex: none !important; }
+.ldb-filter { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; margin: 0 0 10px; }
+.ldb-filter input, .ldb-filter select { min-width: 0; width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); font: 13px var(--mono); padding: 6px 8px; }
+.ldb-filter .q { grid-column: 1 / -1; }
+.ldb-chips, .ldb-acts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.ldb-chips button[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan-2); background: rgba(63,216,255,.1); }
+.leads-box .ldb-more { margin-top: 10px; width: 100%; }
+.lead-list .o.idle { color: var(--amber); }
+.ldb-note { font: 11px var(--mono); color: var(--muted); margin: 6px 0 0; }
 @keyframes slide { from { opacity: 0; transform: translateX(8px); } }
 @media (prefers-reduced-motion: reduce) { .log li { animation: none; } }
 @media (max-width: 1100px) { .hud { grid-template-columns: 250px minmax(0, 1fr) 280px; } }
@@ -225,6 +235,8 @@ form.cmd button.stop { color: var(--red); }
   .leads { padding: 8px; align-items: stretch; }
   .leads-box { max-height: none; height: 100%; }
   .leads-box .panel { max-height: none; }
+  .ldb-filter { grid-template-columns: 1fr 1fr; }
+  .ldb-filter input, .ldb-filter select { font-size: 16px; min-height: 44px; } /* 16 px: kein iOS-Zoom, 44 px Touch-Ziel */
 }
 </style>
 </head>
@@ -325,6 +337,8 @@ form.cmd button.stop { color: var(--red); }
       <h2>24/7 Discovery <span id="discSeen"></span></h2>
       <div class="kv">
         <span>Discovery</span><b id="dState" title="Lead-Suche auf dem VPS, rund um die Uhr – der PC ist nicht nötig">–</b>
+        <span>Schweiz-Abdeckung</span><b id="dCoverage" title="Ganze Schweiz: alle 26 Kantone und alle Gemeinden (BFS-Gemeindeverzeichnis)">–</b>
+        <span>Gebietsrotation</span><b id="dCycle" title="Kanton → Gemeinde → Branche, reihum durch alle Kantone; jede Gemeinde einmal je Zyklus">–</b>
         <span>Websites heute</span><b id="dAudited" title="Geprüfte Websites gegen den harten Tagesdeckel">–</b>
         <span>Websites diese Stunde</span><b id="dHour" title="Geprüfte Websites gegen den harten Stundendeckel">–</b>
         <span>Neue Leads</span><b id="dNew">–</b>
@@ -387,6 +401,16 @@ form.cmd button.stop { color: var(--red); }
         <span>Antworten</span><b id="sReplies">–</b><span>Kunden</span><b id="sCustomers">–</b>
       </div>
     </section>
+    <section class="panel ldb-panel" id="leadDbPanel">
+      <h2>Lead-Datenbank <button type="button" id="leadDbBtn" title="Alle gespeicherten Leads durchsuchen, filtern und exportieren (VPS-Datenbank, Cloud-Kopie ohne interne IDs)">ÖFFNEN</button></h2>
+      <div class="kv two">
+        <span>Gesamt</span><b id="lTotal">–</b><span>Heute neu</span><b id="lNew">–</b>
+        <span>Qualifiziert</span><b id="lQualified">–</b><span>Entwürfe</span><b id="lDrafts" title="Offene Gmail-Entwürfe">–</b>
+        <span>Angeschrieben</span><b id="lContacted" title="Von Chris manuell versendet bzw. kontaktiert">–</b><span>Antworten</span><b id="lReplies">–</b>
+        <span>Kunden</span><b id="lCustomers">–</b><span>Suppressed</span><b id="lSuppressed">–</b>
+        <span>Opt-out</span><b id="lOptOut">–</b><span>Do-not-contact</span><b id="lDnc">–</b>
+      </div>
+    </section>
     <section class="panel" id="logPanel">
       <h2>Protokoll <span id="count"></span></h2>
       <ul class="log" id="log"><li class="empty">Noch keine Aktivität. Sagen Sie „Jarvis“ und Ihren Befehl.</li></ul>
@@ -423,6 +447,33 @@ form.cmd button.stop { color: var(--red); }
       <ul class="lead-list" id="leadList"></ul>
     </section>
     <section class="panel lead-detail" id="leadDetail"><p>Lead auswählen.</p></section>
+  </div>
+</div>
+
+<div class="leads" id="leadDb" hidden role="dialog" aria-modal="true" aria-labelledby="leadDbTitle">
+  <div class="leads-box">
+    <section class="panel">
+      <h2><span id="leadDbTitle">Lead-Datenbank <span id="ldbCount"></span></span> <button type="button" id="leadDbClose">SCHLIESSEN</button></h2>
+      <form class="ldb-filter" id="ldbForm" role="search">
+        <input class="q" type="search" id="ldbQ" placeholder="Firma, Domain, E-Mail, Kontakt, Gemeinde …" aria-label="Suche" maxlength="80" enterkeyhint="search">
+        <select id="ldbCanton" aria-label="Kanton"><option value="">Alle Kantone</option></select>
+        <input id="ldbMuni" placeholder="Gemeinde" aria-label="Gemeinde" maxlength="60">
+        <select id="ldbStatus" aria-label="Status"><option value="">Alle Status</option></select>
+        <select id="ldbCategory" aria-label="Branche"><option value="">Alle Branchen</option></select>
+        <select id="ldbOffer" aria-label="Angebot"><option value="">Alle Angebote</option><option value="REPAIR_CHECK_150">CHF 150</option><option value="REPAIR_FIX_500">CHF 480</option><option value="NONE">kein Angebot</option></select>
+        <select id="ldbMonth" aria-label="Monat (erstes Discovery)"><option value="">Alle Monate</option></select>
+        <div class="ldb-chips" id="ldbChips" role="group" aria-label="Schnellfilter">
+          <button type="button" data-view="" aria-pressed="true">ALLE</button><button type="button" data-view="contacted" aria-pressed="false">ANGESCHRIEBEN</button>
+          <button type="button" data-view="no_reply" aria-pressed="false">OHNE ANTWORT</button><button type="button" data-view="replied" aria-pressed="false">MIT ANTWORT</button>
+          <button type="button" data-view="customers" aria-pressed="false">KUNDEN</button><button type="button" data-view="blocked" aria-pressed="false">GESPERRT</button>
+        </div>
+        <div class="ldb-acts"><button type="submit">SUCHEN</button><button type="button" id="ldbReset">ZURÜCKSETZEN</button><button type="button" id="ldbCsv" title="Gefilterte Leads als CSV (Excel)">EXPORT CSV</button><button type="button" id="ldbJson">EXPORT JSON</button></div>
+      </form>
+      <ul class="lead-list" id="ldbList"></ul>
+      <button type="button" class="ldb-more" id="ldbMore" hidden>MEHR LADEN</button>
+      <p class="ldb-note" id="ldbNote"></p>
+    </section>
+    <section class="panel lead-detail" id="ldbDetail"><p>Lead auswählen.</p></section>
   </div>
 </div>
 
@@ -1466,7 +1517,11 @@ let discHud = null;
 function renderDiscovery(d, note = "") {
   const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
   discHud = d || null;
-  if (!d) { for (const id of ["dAudited", "dHour", "dLastN", "dRate", "dCpu", "dRam", "dNew", "dQualified", "dDrafts", "dOpen", "dBlocked", "dWorker", "dLastDraft", "dLast", "dNext", "dQueue", "dError"]) set(id, "–"); set("dState", note || "–", note ? "on-idle" : ""); renderQuick(); return; }
+  renderLeadDbStats(d?.lead_db || null);
+  if (!d) { for (const id of ["dAudited", "dHour", "dLastN", "dRate", "dCpu", "dRam", "dNew", "dQualified", "dDrafts", "dOpen", "dBlocked", "dWorker", "dLastDraft", "dLast", "dNext", "dQueue", "dError", "dCoverage", "dCycle"]) set(id, "–"); set("dState", note || "–", note ? "on-idle" : ""); renderQuick(); return; }
+  const cv = d.coverage || null;
+  set("dCoverage", !cv ? "–" : cv.mode === "FULL" ? `FULL · ${cv.cantons_total ?? 26}/26 Kantone · ${cv.municipalities_total ?? "–"} Gemeinden` : `Ortsliste (${cv.areas ?? "–"} Orte)`, cv?.mode === "FULL" ? "on-ok" : cv ? "on-idle" : "");
+  set("dCycle", cv?.mode === "FULL" ? `Zyklus ${cv.cycle ?? 1} · ${cv.cycle_visited ?? 0}/${cv.municipalities_total ?? "–"} (${cv.cycle_progress_pct ?? 0} %) · ${cv.cantons_covered_cycle ?? 0}/26 Kantone${cv.current_municipality ? ` · zuletzt ${cv.current_canton || ""} ${cv.current_municipality}` : ""}` : "–");
   const tone = d.status === "ACTIVE" ? "on-ok" : d.status === "PAUSED" ? "on-idle" : "on-bad";
   set("dState", d.status === "ACTIVE" ? "ACTIVE" : d.status === "PAUSED" ? "PAUSED" : d.status === "BACKOFF" ? "BACKOFF (Quelle gestört)" : d.status || "–", tone);
   set("dAudited", `${d.audited_today ?? 0} / ${d.websites_limit ?? d.limits?.max_sites_per_day ?? "–"}`);
@@ -1520,6 +1575,122 @@ document.querySelectorAll("#srvControl button[data-action], #discPanel button[da
 }));
 $("srvControl").addEventListener("toggle", () => { if ($("srvControl").open) loadServer(); });
 setInterval(loadServer, 30_000); loadServer();
+
+// ---------- LEAD-DATENBANK: VPS ist authoritative; die Cloud zeigt eine Kopie per Allowlist (keine Gmail-/Thread-IDs, keine Roh-Evidence) ----------
+// Gedächtnis, keine Versandgrundlage: es gibt hier keinen Sende-Knopf. Angeschriebene, gesperrte und Kunden-Firmen werden nie wieder Cold Leads.
+const LDB_STATUS = { DISCOVERED: "gefunden", AUDITED: "geprüft", QUALIFIED: "qualifiziert", WAITING_FOR_DRAFT: "wartet auf Entwurf", DRAFT_CREATED: "Entwurf erstellt", MANUALLY_SENT: "manuell versendet",
+  REPLIED: "Antwort erhalten", CUSTOMER: "Kunde", NOT_INTERESTED: "kein Interesse", SUPPRESSED: "gesperrt", OPT_OUT: "abgemeldet", DO_NOT_CONTACT: "nicht kontaktieren", DISCARDED: "verworfen" };
+const LDB_OFFER = { REPAIR_CHECK_150: "CHF 150 · Check & Anleitung", REPAIR_FIX_500: "CHF 480 · Check & Reparatur", NONE: "kein Angebot" };
+const LDB_LANG = { de: "Deutsch", fr: "Französisch", it: "Italienisch", rm: "Rätoromanisch" };
+const CANTONS = ["ZH", "BE", "LU", "UR", "SZ", "OW", "NW", "GL", "ZG", "FR", "SO", "BS", "BL", "SH", "AR", "AI", "SG", "GR", "AG", "TG", "TI", "VD", "VS", "NE", "GE", "JU"];
+const ldb = { page: 0, list: [], view: "", count: 0, facets: false };
+const ldbAvailable = () => HOSTED && !!cloudKey;
+function renderLeadDbStats(s) {
+  const map = { lTotal: "total", lNew: "new_today", lQualified: "qualified", lDrafts: "drafts", lContacted: "contacted", lReplies: "replies", lCustomers: "customers", lSuppressed: "suppressed", lOptOut: "opt_out", lDnc: "do_not_contact" };
+  for (const [id, k] of Object.entries(map)) $(id).textContent = s && s[k] != null ? String(s[k]) : "–";
+  $("leadDbBtn").disabled = !ldbAvailable();
+}
+function ldbParams() {
+  const p = new URLSearchParams({ leaddb: "1", page: String(ldb.page), page_size: "50" });
+  const add = (k, v) => { if (v && String(v).trim()) p.set(k, String(v).trim()); };
+  add("q", $("ldbQ").value); add("canton", $("ldbCanton").value); add("municipality", $("ldbMuni").value); add("status", $("ldbStatus").value);
+  add("category", $("ldbCategory").value); add("offer", $("ldbOffer").value); add("month", $("ldbMonth").value); add("view", ldb.view);
+  return p;
+}
+function ldbFacets(f = {}) {
+  if (ldb.facets) return;
+  const fill = (id, entries, label) => { const sel = $(id); for (const [v, n] of entries) { const o = document.createElement("option"); o.value = v; o.textContent = `${label(v)} (${n})`; sel.append(o); } };
+  fill("ldbCanton", CANTONS.filter((c) => f.cantons?.[c]).map((c) => [c, f.cantons[c]]), (c) => c);
+  fill("ldbStatus", Object.keys(LDB_STATUS).filter((s) => f.statuses?.[s]).map((s) => [s, f.statuses[s]]), (s) => LDB_STATUS[s]);
+  fill("ldbCategory", Object.entries(f.categories || {}).sort((a, b) => a[0].localeCompare(b[0], "de")), (c) => c);
+  fill("ldbMonth", Object.entries(f.months || {}).sort((a, b) => b[0].localeCompare(a[0])), (m) => new Date(m + "-01T12:00:00Z").toLocaleDateString("de-CH", { month: "long", year: "numeric" }));
+  ldb.facets = true;
+}
+async function openLeadDb() {
+  if (!ldbAvailable()) return;
+  $("leadDb").hidden = false;
+  ldb.page = 0;
+  await loadLeadDb();
+}
+async function loadLeadDb({ append = false } = {}) {
+  if (!append) { ldb.page = 0; $("ldbList").replaceChildren(); $("ldbDetail").textContent = "Lade Lead-Datenbank …"; }
+  try {
+    const { status, body } = await serverFetch({}, "?" + ldbParams().toString());
+    if (status !== 200) throw new Error(status === 401 ? "nicht berechtigt" : status === 503 ? "nicht konfiguriert" : "Fehler " + status);
+    ldbFacets(body.facets || {});
+    ldb.list = append ? ldb.list.concat(body.leads || []) : body.leads || [];
+    ldb.count = body.count || 0;
+    $("ldbCount").textContent = `${ldb.count} / ${body.stats?.total ?? 0}`;
+    $("ldbNote").textContent = body.empty ? "Noch keine Daten vom VPS (die Datenbank kommt mit dem nächsten Abgleich)." :
+      `Stand VPS ${fmtTime(body.generated_at)}${body.truncated ? " · Cloud-Kopie gekürzt (älteste Einträge) – vollständig auf dem VPS" : ""}. Keine Versandgrundlage – Sperren und Kontakt-Historie gelten immer.`;
+    const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text !== undefined) x.textContent = text; return x; };
+    const start = append ? $("ldbList").children.length : 0;
+    $("ldbList").append(...(body.leads || []).map((l, j) => {
+      const i = start + j, li = document.createElement("li"), left = el("span", "");
+      left.append(el("b", "", l.company || l.domain || l.lead_id), el("small", "", [l.canton, l.municipality, l.category].filter(Boolean).join(" · ") || "Gebiet unbekannt"),
+        el("small", "", [l.business_email, LDB_OFFER[l.offer_class]].filter(Boolean).join(" · ")));
+      const bad = l.suppressed || l.opt_out || l.do_not_contact, good = ["CUSTOMER", "REPLIED"].includes(l.status), idle = ["MANUALLY_SENT", "DRAFT_CREATED", "WAITING_FOR_DRAFT"].includes(l.status);
+      li.append(left, el("span", "o" + (bad ? " bad" : good ? " ok" : idle ? " idle" : " none"), LDB_STATUS[l.status] || l.status));
+      li.tabIndex = 0;
+      li.onclick = li.onkeydown = (e) => { if (e.type === "click" || e.key === "Enter") showLeadDb(i); };
+      return li;
+    }));
+    $("ldbMore").hidden = ldb.list.length >= ldb.count;
+    if (!append) { if (ldb.list.length) showLeadDb(0); else $("ldbDetail").textContent = body.empty ? "Noch keine Leads." : "Keine Leads für diese Filter."; }
+  } catch (e) { $("ldbDetail").textContent = "Lead-Datenbank nicht verfügbar (" + e.message + ")."; }
+}
+function showLeadDb(i) {
+  const l = ldb.list[i]; if (!l) return;
+  [...$("ldbList").children].forEach((li, j) => li.classList.toggle("sel", j === i));
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text !== undefined) x.textContent = text; return x; };
+  const kv = (rows) => { const d = el("div", "kv"); for (const [k, v] of rows) { const b = el("b"); if (v instanceof Node) b.append(v); else b.textContent = v ?? "–"; d.append(el("span", "", k), b); } return d; };
+  const yn = (v) => (v ? "JA" : "NEIN");
+  const site = el("a", "", l.website || l.domain || "–"); if (l.website) { site.href = l.website; site.target = "_blank"; site.rel = "noopener"; }
+  const blocked = l.suppressed || l.opt_out || l.do_not_contact;
+  const reached = !!l.first_contacted_at || l.manual_send_detected || ["MANUALLY_SENT", "REPLIED", "CUSTOMER", "NOT_INTERESTED"].includes(l.status);
+  const out = [el("h3", "", l.company || l.domain || l.lead_id)];
+  out.push(el("div", "block", blocked ? "GESPERRT — NIE KONTAKTIEREN (SUPPRESSION / OPT-OUT / DO-NOT-CONTACT)" : reached ? "BEREITS ANGESCHRIEBEN — KEIN NEUER COLD LEAD" : "GESPEICHERT — KEINE VERSANDGRUNDLAGE, NUR ENTWURF DURCH CHRIS"));
+  out.push(kv([
+    ["Firma", l.company || "–"], ["Website", site], ["Kontakt", [l.contact_name, l.contact_role].filter(Boolean).join(" · ") || "–"], ["Business-E-Mail", l.business_email || "–"],
+    ["Kanton", l.canton || "–"], ["Gemeinde", l.municipality || "–"], ["Sprache", LDB_LANG[l.language] || "–"], ["Branche", l.category || "–"],
+    ["Angebot", LDB_OFFER[l.offer_class] || l.offer_class], ["Status", LDB_STATUS[l.status] || l.status],
+    ["Draft erstellt", yn(l.draft_created)], ["Manuell versendet", yn(l.manual_send_detected || l.status === "MANUALLY_SENT")],
+    ["Erster Kontakt", fmtTime(l.first_contacted_at)], ["Letzter Kontakt", fmtTime(l.last_contacted_at)],
+    ["Antwort", yn(l.reply_status === "replied")], ["Kunde", yn(l.customer_status === "customer")],
+    ["Suppression", l.suppressed ? "gesperrt" : "nein"], ["Opt-out", l.opt_out ? "abgemeldet" : "nein"], ["Do-not-contact", yn(l.do_not_contact)],
+    ["Erstes Discovery", fmtTime(l.first_discovered_at)], ["Letztes Audit", fmtTime(l.last_audited_at)],
+  ]));
+  out.push(el("div", "", "GEFUNDENES PROBLEM (in Kundensprache)"));
+  const ul = el("ul");
+  for (const p of l.customer_visible_findings || []) ul.append(el("li", "", p));
+  if (!(l.customer_visible_findings || []).length) ul.append(el("li", "", "Kein kundentaugliches Problem gespeichert."));
+  out.push(ul, el("div", "note", "Die Lead-Datenbank ist ein Gedächtnis, keine Versandgrundlage. Cold Leads bleiben COLD_LEAD_DRAFT_ONLY – Jarvis sendet nie automatisch."));
+  $("ldbDetail").replaceChildren(...out);
+}
+async function exportLeadDb(fmt) {
+  const p = ldbParams(); p.set("leaddb", fmt); p.delete("page"); p.delete("page_size");
+  $("ldbNote").textContent = "Export wird erstellt …";
+  try {
+    const r = await fetch("/api/server-control?" + p.toString(), { cache: "no-store", headers: { "x-jarvis-key": cloudKey } });
+    if (!r.ok) throw new Error("Fehler " + r.status);
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a"); a.href = url; a.download = `jarvis-leads-${new Date().toISOString().slice(0, 10)}.${fmt}`; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    $("ldbNote").textContent = `Export ${fmt.toUpperCase()} heruntergeladen (gefilterte Leads, ohne Secrets und interne IDs).`;
+  } catch (e) { $("ldbNote").textContent = "Export fehlgeschlagen (" + e.message + ")."; }
+}
+$("leadDbBtn").addEventListener("click", openLeadDb);
+$("leadDbClose").addEventListener("click", () => { $("leadDb").hidden = true; });
+$("leadDb").addEventListener("click", (e) => { if (e.target === $("leadDb")) $("leadDb").hidden = true; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("leadDb").hidden) $("leadDb").hidden = true; });
+$("ldbForm").addEventListener("submit", (e) => { e.preventDefault(); loadLeadDb(); });
+$("ldbForm").addEventListener("change", (e) => { if (e.target.tagName === "SELECT") loadLeadDb(); });
+$("ldbChips").addEventListener("click", (e) => { const b = e.target.closest("button[data-view]"); if (!b) return; ldb.view = b.dataset.view; $("ldbChips").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); loadLeadDb(); });
+$("ldbReset").addEventListener("click", () => { $("ldbForm").reset(); ldb.view = ""; $("ldbChips").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.view === ""))); loadLeadDb(); });
+$("ldbMore").addEventListener("click", () => { ldb.page++; loadLeadDb({ append: true }); });
+$("ldbCsv").addEventListener("click", () => exportLeadDb("csv"));
+$("ldbJson").addEventListener("click", () => exportLeadDb("json"));
+renderLeadDbStats(null);
 
 // Handy: Panel-Titel antippen klappt das Panel auf/zu (CSS nur ≤ 860 px wirksam, Desktop unverändert). Meldungen und Mail bleiben offen.
 const MOBILE = matchMedia("(max-width: 860px)");
