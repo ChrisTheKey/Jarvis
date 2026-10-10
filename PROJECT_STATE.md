@@ -36,6 +36,27 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
 
+## JARVIS 7500/DAY DISCOVERY – 5× QUALIFIZIERTE DRAFTS (2026-10-10, Code + Tests fertig, 360/360 grün; VPS-Rollout siehe unten)
+- Ziel: ~5× Output bei UNVERÄNDERTER Qualität. Website-Deckel (hart, technisch): intervalMinutes 20, sitesPerRun 105, maxSitesPerHour 315, maxSitesPerDay 7500
+  (105 × 3 × 24 = 7560 theoretisch, Deckel 7500). `maxDraftsPerHour/Day` weiter **null** (kein Business-Cap); Draft-Queue/-Worker/Gmail-Pacing unverändert.
+- Deckel absturzsicher: jede Reservierung schreibt `discovery_counter.json` (Tag + UTC-Stunde); Deckel gilt für max(discovered.json, Zählerfile).
+  Verworfene Kandidaten (Plattform/Kette/Freemail/ohne Firmenname) verbrauchen kein Budget. Test: 9 × 1000 Kandidaten → genau 7500, nie 7501; 3 × 105 → danach hour_limit.
+- Parallelität: `maxConcurrency` (Default 6, zentral in `config.json` → `discovery`), Worker-Pool statt Promise.all-Flut; Reservierung (Domain+Firma+Zähler) synchron
+  vor dem Audit = atomar; pro Domain höchstens eine aktive Prüfung; Einordnung/Dedupe/Queue je Lead ohne `await` (race-frei); Ergebnisse in Kandidatenreihenfolge.
+  `runBudgetMinutes` 19: danach keine neuen Audits (nächster Zyklus macht weiter). `site-auditor`: Zeitbudget `totalMs` 90 s nur für Zusatzprüfungen (nie ein Befund aus Zeitmangel).
+  Rechnung: ≈20 Requests je Audit × 1,5 s Mindestabstand ≈ 30–40 s → 105 Audits / 6 Slots ≈ 10–12 min < 20 min; Last = I/O-Wartezeit (≈4 Req/s gesamt), kaum CPU.
+- Bessere Discovery: bis zu `maxSearchesPerRun` 6 Overpass-Abfragen je Lauf (bis genug NEUE Firmen vorliegen), `searchLimit` 250; 109 Orte × 24 Branchen (≈2600 Paare);
+  Paare ohne Neues werden `pairRetryHours` 72 (bei Fehlern 6 h) nicht erneut abgefragt; Firmen mit OSM-Geschäftsadresse zuerst; Social-/Plattformseiten, Ketten, Freemail,
+  ohne Firmenname vor dem Audit verworfen; bereits aktuell geprüfte Domains übersprungen. Ehrliche Grenze: OSM ist der Pool – bei 7500/Tag ist er irgendwann erschöpft
+  (Status `pool_exhausted`); echte Tageszahl = Zahl neuer Firmen mit Website, nicht der Deckel.
+- Quellen-Limiter (getrennt von den Audits): Overpass strikt nacheinander, Mindestabstand 6 s, Retry-After wird respektiert (bis 120 s im Lauf, sonst Lauf-Backoff ≥ Retry-After),
+  ohne Header exponentiell 30 s · 2^n (max. 2 Retries); 429 oder zweiter Fehler im Lauf → Abbruch + Backoff 15 → 30 … 360 min; einzelner 5xx/Timeout nur Paar-Pause.
+- Skalierung der Daten: nicht qualifizierte Leads früherer Tage → `audited_index.json` (Domain → Datum, 90 Tage; audit_error 7 Tage), `discovered.json` kompakt (ohne Einrückung),
+  Speichern während des Laufs höchstens alle 5 s. Qualitäts-Gate, Dedupe, Suppression, Opt-out, Sperrfrist, COLD_LEAD_DRAFT_ONLY unverändert (Tests 030/031/032).
+- Dashboard/Mobile (Panel „24/7 Discovery“): Websites heute X / 7500, Websites diese Stunde X / 315, Qualifizierte Leads, Warten auf Gmail-Draft, Gmail-Drafts heute, Gesamt offene
+  Gmail-Drafts, Letzter Lauf (Websites), Discovery-Rate (Websites/Stunde, letzte 60 min), Draft Worker ACTIVE/BACKOFF, Backoff, VPS CPU/RAM (aus dem Server-Snapshot). Snapshot-Whitelist erweitert.
+- Tests: `test/discovery-7500-032.test.js` (22) + angepasste 031; gesamt 360/360. 0 Cold-Send-Events.
+
 ## JARVIS 1500/DAY DISCOVERY — UNLIMITED QUALIFIED DRAFT QUEUE (2026-10-09, Tests 338/338)
 - Website-Deckel (hart, technisch): intervalMinutes 20, sitesPerRun 21, maxSitesPerHour 63, maxSitesPerDay 1500 (`DEFAULT_DISCOVERY`, per
   `config.json` → `discovery` überschreibbar). Test: 4 × 400 Kandidaten → genau 1500 Audits, danach bis zum nächsten Tag keines mehr.

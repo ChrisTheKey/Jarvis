@@ -53,16 +53,16 @@ Stand: 2026-10-09. Gilt für den CLOUD-Modus: der Windows-PC ist aus, kaputt ode
 - Antworten des VPS im HUD: „OK: Entwurf wird angelegt …“ oder „Abgelehnt: Empfänger hat sich abgemeldet (Opt-out).“ usw.
 
 ## 4c. 24/7 Lead Discovery (VPS, ohne PC)
-- Läuft im VPS-Worker rund um die Uhr: alle 20 Minuten ein Lauf mit 21 Websites (63/h, harter Deckel 1500 unterschiedliche Websites/Tag).
+- Läuft im VPS-Worker rund um die Uhr: alle 20 Minuten ein Lauf mit 105 Websites (315/h, harter Deckel 7500 unterschiedliche Websites/Tag, begrenzte Parallelität `maxConcurrency`).
   Für Cold-Entwürfe gibt es KEIN geschäftliches Maximum (maxDraftsPerHour/Day = null): jeder qualifizierte Lead wird persistent in die Draft-Queue
   aufgenommen (queued → draft_created). Der Draft-Worker arbeitet sie 24/7 mit technischem Pacing ab (25 je Durchlauf, 1,5 s Abstand); bei Gmail-429/5xx
   Backoff 1 → 2 → 4 … max. 60 min – nur Verzögerung, nie Verlust. Quelle (Overpass) 429/5xx/Netz: Backoff 15 → 360 min. Alles in `config.json` → `discovery`.
 - Ablauf je Firma: OSM-Suche → Website-Audit → Schweiz-Check → geschäftlicher Kontakt → Dedupe (Domain, Firma, E-Mail, offener Entwurf, kontaktiert,
   Suppression/Opt-out, Kunde, Sperrfrist 180 Tage) → nur bei sichtbarem, belegtem Problem → Cold-Entwurf (Standardvorlage: erster Blick +
   vollständiger Webseiten-Check, CHF 150/480) → Gmail-Entwurf (Label JARVIS, COLD_LEAD_DRAFT_ONLY). Nie Versand.
-- Panel „24/7 Discovery“ (Handy: standardmässig offen): ACTIVE/PAUSED/BACKOFF, Websites heute X / 1500, Neue Leads, Qualifizierte Leads, Warten auf
-  Gmail-Draft, Gmail-Drafts heute erstellt, Gesamt offene Gmail-Drafts, Blockiert, Draft Worker ACTIVE/BACKOFF, Letzter Draft, Letzter/Nächster
-  Discovery-Lauf, Letzter Fehler. Quick-Status: „24/7 Discovery“ und „Websites / Drafts heute“.
+- Panel „24/7 Discovery“ (Handy: standardmässig offen): ACTIVE/PAUSED/BACKOFF, Websites heute X / 7500, Websites diese Stunde X / 315, Neue Leads, Qualifizierte Leads, Warten auf
+  Gmail-Draft, Gmail-Drafts heute erstellt, Gesamt offene Gmail-Drafts, Blockiert, Draft Worker ACTIVE/BACKOFF, Letzter Draft, Letzter Lauf (Websites), Discovery-Rate, Nächster
+  Discovery-Lauf, VPS CPU/RAM, Letzter Fehler. Quick-Status: „24/7 Discovery“ und „Websites / Drafts heute“.
 - Pausieren/Fortsetzen: Buttons im Panel → `discovery.pause` / `discovery.resume` (nur ein Flag auf dem VPS, Daten bleiben). Keine anderen Scheduler-Befehle.
 - Nach VPS-Reboot/Container-Neustart/Netzunterbruch läuft die Discovery von selbst weiter (Docker restart unless-stopped, Zustand in Dateien, verwaistes Lock wird erkannt).
 

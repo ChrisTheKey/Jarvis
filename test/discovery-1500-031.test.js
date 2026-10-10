@@ -53,9 +53,9 @@ const worker = () => createWorker({ dir, gmail: g, now: () => clock, log: () => 
 const queued = (n, p = "q") => Object.fromEntries(hosts(n, p).map((h) => [h, { lead_id: h, domain: h, company: h, recipient: `info@${h}`, subject: "Hinweis", body: "Guten Tag", draft_hash: "h", status: "queued", draft_mode: COLD_MODE, legal_basis: "NONE", message_class: "DRAFT_ONLY", automatic_send_allowed: false, manual_send_decision_required: true, created_at: T0.toISOString(), updated_at: T0.toISOString() }]));
 
 // ---------- Website-Deckel ----------
-test("Live-Defaults: 20 min, 21 je Lauf, 63 je Stunde, 1500 je Tag; Entwürfe ohne Business-Cap (null)", () => {
-  assert.equal(DEFAULT_DISCOVERY.intervalMinutes, 20); assert.equal(DEFAULT_DISCOVERY.sitesPerRun, 21);
-  assert.equal(DEFAULT_DISCOVERY.maxSitesPerHour, 63); assert.equal(DEFAULT_DISCOVERY.maxSitesPerDay, 1500);
+test("Defaults (Folgestand 032: 105 je Lauf, 315/h, 7500/Tag); Entwürfe ohne Business-Cap (null)", () => {
+  assert.equal(DEFAULT_DISCOVERY.intervalMinutes, 20); assert.equal(DEFAULT_DISCOVERY.sitesPerRun, 105);
+  assert.equal(DEFAULT_DISCOVERY.maxSitesPerHour, 315); assert.equal(DEFAULT_DISCOVERY.maxSitesPerDay, 7500);
   assert.equal(DEFAULT_DISCOVERY.maxDraftsPerHour, null); assert.equal(DEFAULT_DISCOVERY.maxDraftsPerDay, null);
   assert.ok(DEFAULT_DISCOVERY.draftPaceMs >= 500 && DEFAULT_DISCOVERY.draftsPerPass >= 10, "technisches Pacing vorhanden");
   assert.equal(cleanDiscovery({ status: "ACTIVE", limits: { max_drafts_per_hour: 5, max_drafts_per_day: 20 } }).limits.max_drafts_per_day, null, "Cloud-Whitelist kennt keinen Draft-Cap mehr");

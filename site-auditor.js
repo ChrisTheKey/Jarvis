@@ -44,11 +44,12 @@ export function parseRobots(body = "") {
   };
 }
 
-export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, timeoutMs = 15_000, maxLinks = 10, maxImages = 6, now = () => new Date(),
+export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, timeoutMs = 15_000, totalMs = 90_000, maxLinks = 10, maxImages = 6, now = () => new Date(),
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
 
   async function audit(website) {
     let requests = 0, last = 0;
+    const deadline = Date.now() + totalMs; // Gesamtbudget für die Zusatzprüfungen (Links/Bilder): eine träge Seite blockiert keinen Parallel-Slot dauerhaft
     const issues = [];
     // extra (optional, nur intern): page = Seite, auf der der Fehler sichtbar ist; label = sichtbarer Linktext – für den einfachen Kundentext.
     const add = (type, url, evidence, severity, extra = {}) => issues.push({ type, url, evidence, severity, detectedAt: now().toISOString(), ...extra });
@@ -189,6 +190,7 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     const pages = { home: html };
     const toCheck = [...new Set([contactUrl, impressumUrl, teamUrl, ...unique].filter(Boolean))].slice(0, maxLinks);
     for (const u of toCheck) {
+      if (Date.now() > deadline) break; // Zeitbudget aufgebraucht: restliche Zusatzprüfungen entfallen (nie ein Befund aus Zeitmangel)
       const path = new URL(u).pathname;
       if (!allowed(path)) continue;
       const r = await get(u, { redirect: "follow" });
@@ -205,6 +207,7 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     }
     const imgUrls = [...new Set(imgs.map((t) => attr(t, "src")).filter((s) => s && !/^data:/i.test(s)).map((s) => { try { return new URL(s, page.url).href; } catch { return null; } }).filter(Boolean))];
     for (const u of imgUrls.slice(0, maxImages)) {
+      if (Date.now() > deadline) break;
       if (new URL(u).hostname === new URL(page.url).hostname && !allowed(new URL(u).pathname)) continue;
       const r = await get(u, { redirect: "follow", body: false });
       if (!r.error && BROKEN(r.status)) add("broken_image", u, `Bild liefert HTTP ${r.status} (eingebunden auf ${page.url})`, "medium", { page: page.url });

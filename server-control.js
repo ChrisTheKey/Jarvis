@@ -142,15 +142,16 @@ export function cleanDiscovery(d) {
     status: word(d.status, ["ACTIVE", "PAUSED", "BACKOFF", "DISABLED"]), paused: bool(d.paused), paused_at: iso(d.paused_at),
     audited_today: n(d.audited_today), new_leads_today: n(d.new_leads_today), qualified_today: n(d.qualified_today), drafts_today: n(d.drafts_today), drafts_hour: n(d.drafts_hour),
     blocked_today: n(d.blocked_today), errors_today: n(d.errors_today), audited_hour: n(d.audited_hour), queue: n(d.queue),
-    // 1500/Tag-Discovery + unbegrenzte Draft-Queue: Websites gegen Tagesdeckel, qualifizierte Leads, wartend, heute erstellt, offen gesamt.
-    websites_limit: n(d.websites_limit, 100_000), qualified_total: n(d.qualified_total), waiting_for_draft: n(d.waiting_for_draft), gmail_drafts_today: n(d.gmail_drafts_today), open_drafts_total: n(d.open_drafts_total),
+    // 7500/Tag-Discovery + unbegrenzte Draft-Queue: Websites gegen Tagesdeckel, qualifizierte Leads, wartend, heute erstellt, offen gesamt.
+    websites_limit: n(d.websites_limit, 100_000), websites_hour_limit: n(d.websites_hour_limit, 10_000), last_run_audited: d.last_run_audited == null ? null : n(d.last_run_audited, 100_000),
+    last_run_duration_s: d.last_run_duration_s == null ? null : n(d.last_run_duration_s, 86_400), discovery_rate_per_hour: n(d.discovery_rate_per_hour, 10_000), max_concurrency: n(d.max_concurrency, 64), pool_exhausted: bool(d.pool_exhausted), qualified_total: n(d.qualified_total), waiting_for_draft: n(d.waiting_for_draft), gmail_drafts_today: n(d.gmail_drafts_today), open_drafts_total: n(d.open_drafts_total),
     draft_worker: d.draft_worker && typeof d.draft_worker === "object" ? { status: word(d.draft_worker.status, ["ACTIVE", "BACKOFF"]), backoff_until: iso(d.draft_worker.backoff_until), backoff_count: n(d.draft_worker.backoff_count, 1000),
       last_draft_at: iso(d.draft_worker.last_draft_at), last_error: d.draft_worker.last_error && typeof d.draft_worker.last_error === "object" ? { at: iso(d.draft_worker.last_error.at), message: redact(String(d.draft_worker.last_error.message || ""), 160) } : null } : null,
     last_run_at: iso(d.last_run_at), next_run_at: iso(d.next_run_at), backoff_until: iso(d.backoff_until), backoff_count: n(d.backoff_count, 1000),
     last_error: d.last_error && typeof d.last_error === "object" ? { at: iso(d.last_error.at), stage: word(d.last_error.stage, ["search", "audit", "draft"]), message: redact(String(d.last_error.message || ""), 160) } : null,
     // max_drafts_per_*: null = kein Business-Cap (nur technisches Pacing).
     limits: { interval_minutes: n(lim.interval_minutes, 1440), sites_per_run: n(lim.sites_per_run, 1000), max_sites_per_hour: n(lim.max_sites_per_hour, 10_000), max_sites_per_day: n(lim.max_sites_per_day, 100_000),
-      max_drafts_per_hour: null, max_drafts_per_day: null, draft_pace_ms: n(lim.draft_pace_ms, 600_000), drafts_per_pass: n(lim.drafts_per_pass, 10_000) },
+      max_drafts_per_hour: null, max_drafts_per_day: null, draft_pace_ms: n(lim.draft_pace_ms, 600_000), drafts_per_pass: n(lim.drafts_per_pass, 10_000), max_concurrency: n(lim.max_concurrency, 64) },
   };
 }
 

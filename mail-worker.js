@@ -133,10 +133,10 @@ export function createStore(dir) {
   return {
     dir,
     read(name, fallback) { try { return JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")); } catch { return structuredClone(fallback); } },
-    write(name, data) {
+    write(name, data, { compact = false } = {}) { // compact: grosse, selten von Hand gelesene Dateien (discovered.json bei 7500 Websites/Tag)
       fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, name), tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+      fs.writeFileSync(tmp, JSON.stringify(data, null, compact ? 0 : 2), { mode: 0o600 });
       fs.renameSync(tmp, file);
     },
   };
@@ -1029,7 +1029,7 @@ async function loop() {
     standbyLogged = false;
     const r = it.result;
     // Danach (Antworten haben Vorrang): neue Websites suchen und prüfen, wenn fällig. Sendet nie.
-    // Entkoppelt: DISCOVERY QUEUE (Websites prüfen, bis 1500/Tag) läuft im Hintergrund und blockiert weder den Mail-Takt noch den
+    // Entkoppelt: DISCOVERY QUEUE (Websites prüfen, bis 7500/Tag) läuft im Hintergrund und blockiert weder den Mail-Takt noch den
     // DRAFT-Worker (Gmail-Entwürfe aus individual_reviews.json, siehe 3b). Nie zwei Discovery-Läufe gleichzeitig (eigenes Lock + Promise).
     if (!discoveryRunning) {
       discoveryRunning = finder.runDiscovery({ gmail, log })

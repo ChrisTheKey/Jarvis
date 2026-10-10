@@ -325,7 +325,8 @@ form.cmd button.stop { color: var(--red); }
       <h2>24/7 Discovery <span id="discSeen"></span></h2>
       <div class="kv">
         <span>Discovery</span><b id="dState" title="Lead-Suche auf dem VPS, rund um die Uhr – der PC ist nicht nötig">–</b>
-        <span>Websites heute</span><b id="dAudited" title="Geprüfte Websites gegen den harten Tagesdeckel (1500)">–</b>
+        <span>Websites heute</span><b id="dAudited" title="Geprüfte Websites gegen den harten Tagesdeckel">–</b>
+        <span>Websites diese Stunde</span><b id="dHour" title="Geprüfte Websites gegen den harten Stundendeckel">–</b>
         <span>Neue Leads</span><b id="dNew">–</b>
         <span>Qualifizierte Leads</span><b id="dQualified" title="Persistent zur Entwurfserstellung vorgemerkt – kein Business-Limit">–</b>
         <span>Warten auf Gmail-Draft</span><b id="dQueue" title="Draft-Queue: wird mit technischem Pacing abgearbeitet, nichts geht verloren">–</b>
@@ -335,7 +336,11 @@ form.cmd button.stop { color: var(--red); }
         <span>Draft Worker</span><b id="dWorker" title="Gmail-Entwürfe: ACTIVE oder BACKOFF (API-Fehler, nur Verzögerung)">–</b>
         <span>Letzter Draft</span><b id="dLastDraft">–</b>
         <span>Letzter Discovery-Lauf</span><b id="dLast">–</b>
+        <span>Letzter Lauf (Websites)</span><b id="dLastN" title="Anzahl in diesem Lauf geprüfter Websites">–</b>
+        <span>Discovery-Rate</span><b id="dRate" title="Geprüfte Websites in den letzten 60 Minuten">–</b>
         <span>Nächster Discovery-Lauf</span><b id="dNext">–</b>
+        <span>VPS CPU</span><b id="dCpu">–</b>
+        <span>VPS RAM</span><b id="dRam">–</b>
         <span>Letzter Fehler</span><b id="dError">–</b>
       </div>
       <div class="srv-ctl">
@@ -1454,16 +1459,20 @@ function renderServer(data, note = "") {
   set("srvBackup", r.backup, ok.backup); set("srvDeploy", r.deploy);
   $("srvSeen").textContent = m.seen ? new Date(m.seen).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" }) : "";
   renderDiscovery(m.online ? data?.snapshot?.discovery : null, m.online ? "" : note || m.server);
+  set("dCpu", m.online ? r.cpu : "–", m.online ? ok.cpu : undefined); set("dRam", m.online ? r.ram : "–", m.online ? ok.ram : undefined); // VPS-Auslastung aus dem Server-Snapshot
 }
 // 24/7-Discovery (VPS): ACTIVE / PAUSED / BACKOFF, Tageszähler, letzter und nächster Lauf, Queue, letzter Fehler – Quelle ist der VPS-Snapshot.
 let discHud = null;
 function renderDiscovery(d, note = "") {
   const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
   discHud = d || null;
-  if (!d) { for (const id of ["dAudited", "dNew", "dQualified", "dDrafts", "dOpen", "dBlocked", "dWorker", "dLastDraft", "dLast", "dNext", "dQueue", "dError"]) set(id, "–"); set("dState", note || "–", note ? "on-idle" : ""); renderQuick(); return; }
+  if (!d) { for (const id of ["dAudited", "dHour", "dLastN", "dRate", "dCpu", "dRam", "dNew", "dQualified", "dDrafts", "dOpen", "dBlocked", "dWorker", "dLastDraft", "dLast", "dNext", "dQueue", "dError"]) set(id, "–"); set("dState", note || "–", note ? "on-idle" : ""); renderQuick(); return; }
   const tone = d.status === "ACTIVE" ? "on-ok" : d.status === "PAUSED" ? "on-idle" : "on-bad";
   set("dState", d.status === "ACTIVE" ? "ACTIVE" : d.status === "PAUSED" ? "PAUSED" : d.status === "BACKOFF" ? "BACKOFF (Quelle gestört)" : d.status || "–", tone);
   set("dAudited", `${d.audited_today ?? 0} / ${d.websites_limit ?? d.limits?.max_sites_per_day ?? "–"}`);
+  set("dHour", `${d.audited_hour ?? 0} / ${d.websites_hour_limit ?? d.limits?.max_sites_per_hour ?? "–"}`);
+  set("dLastN", d.last_run_audited == null ? "–" : `${d.last_run_audited} Websites`);
+  set("dRate", d.discovery_rate_per_hour == null ? "–" : `${d.discovery_rate_per_hour} Websites/Stunde`);
   set("dNew", String(d.new_leads_today ?? 0)); set("dQualified", `${d.qualified_total ?? d.qualified_today ?? 0} (heute ${d.qualified_today ?? 0})`);
   set("dQueue", String(d.waiting_for_draft ?? d.queue ?? 0), (d.waiting_for_draft ?? d.queue) ? "on-idle" : "");
   set("dDrafts", String(d.gmail_drafts_today ?? d.drafts_today ?? 0));
