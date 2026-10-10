@@ -84,6 +84,14 @@ VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC 
 - Unverändert: COLD_LEAD_DRAFT_ONLY, legal_basis NONE, automatic_send_allowed false, kein automatischer Cold-Versand. Die Datenbank enthält kein Versandgrundlagen-Feld
   und ist nie eine Begründung für einen Versand („später verwenden“ ≠ erneut anschreiben).
 - Tests: `test/swiss-leaddb-033.test.js` (19) + angepasste 031/032; gesamt 379/379.
+- **LIVE 2026-10-10 (ef211f3)**: VPS-Deploy ohne `--with-secrets` 17:33 UTC (healthy, 0 Restarts; damit ist auch d5fb003 = 7500/Tag erstmals auf dem VPS), Netlify automatisch
+  (Panel + `/api/server-control?leaddb` → 401 ohne Passwort). VPS `config.json → discovery`: alte Ortsliste (14) und 10 Branchen entfernt, 105/315/7500 gesetzt
+  (Sicherung `config.json.bak-20261010-fullch`). Migration beim Start: 57 Leads (7 manuell angeschrieben, 27 offene Entwürfe), 0 Duplikate.
+  Erster Schweiz-Lauf 17:46 UTC: 5 Gemeinden aus ZH, BE, LU, UR, SZ (Cursor 5/2110, Zyklus 1), 105 Websites in 620 s, 10 qualifiziert, alle 105 mit Kanton/Gemeinde;
+  ein Overpass-504 → genau ein späterer Versuch in der Warteschlange (Rotation lief weiter). Danach Lead-Datenbank 67 Leads in 11 Kantonen, 0 Fehler (Registry/Agent-Upload).
+  CSV-/JSON-Export per Kommandozeile live: 57 Zeilen + Kopf mit allen Pflichtspalten, 7 angeschrieben, keine Secrets/IDs. Backup jetzt: lokal + offsite OK, `lead_registry.json`
+  im verschlüsselten Backup (key_id f671042283a91eaf). Authority VPS (self=true), Windows STANDBY (self=false). 0 Cold-Sends, alle 34 Reviews COLD_LEAD_DRAFT_ONLY / NONE / false.
+  Offen: Cloud-Dashboard „Lead-Datenbank“ mit Daten einmal per Passwort ansehen (Chris) – der Upload lief ohne Fehler, eine Lesung braucht JARVIS_PASSWORD.
 
 ## JARVIS 7500/DAY DISCOVERY – 5× QUALIFIZIERTE DRAFTS (2026-10-10, Code + Tests fertig, 360/360 grün; VPS-Rollout siehe unten)
 - Ziel: ~5× Output bei UNVERÄNDERTER Qualität. Website-Deckel (hart, technisch): intervalMinutes 20, sitesPerRun 105, maxSitesPerHour 315, maxSitesPerDay 7500
