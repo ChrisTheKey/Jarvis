@@ -22,7 +22,7 @@ const rawLead = (over = {}) => ({
   email: "info@muster.ch", company: "Muster AG", website: "https://muster.ch/", domain: "muster.ch", uid: "CHE-123.456.789", approved: false, consentBasis: null,
   status: "blocked_no_legal_basis", auditedAt: T0.toISOString(), reachable: true, title: "Muster AG – Schreinerei", discoverySource: "OpenStreetMap node/1 (Winterthur, craft)",
   contact_source: "impressum", source_url: "https://muster.ch/impressum", collected_at: T0.toISOString(), contact_confidence: "medium",
-  websiteIssues: [issue("broken_link", "medium", "https://muster.ch/team-alt", "https://muster.ch/")], ...over,
+  websiteIssues: [issue("broken_link", "medium", "https://muster.ch/team-alt", "https://muster.ch/"), issue("broken_image", "medium", "https://muster.ch/img/team.jpg", "https://muster.ch/")], ...over,
 });
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-028-"));
 function vpsDir({ leads = [rawLead()], suppression = {} } = {}) {

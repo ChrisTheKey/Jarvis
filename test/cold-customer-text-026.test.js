@@ -1,4 +1,4 @@
-// Cold-Outreach in einfacher Kundensprache: Der Gmail-Entwurf nennt höchstens zwei für Besucher sichtbare, belegte Probleme in
+// Cold-Outreach in einfacher Kundensprache: Der Gmail-Entwurf nennt 2–3 (seit 2026-10-11) für Besucher sichtbare, belegte Probleme in
 // Alltagssprache. Technische Evidence bleibt intern. Kein Befund wird erfunden; Cold Leads bleiben COLD_LEAD_DRAFT_ONLY (nie gesendet).
 // Ohne Netzwerk, ohne echte Mail.
 import { test } from "node:test";
@@ -29,10 +29,10 @@ const draft = (issues, over) => createColdDraft(lead(issues, over), { sender: SE
 const customerPart = (body) => body.split("\nFreundliche Grüsse")[0].replace(LANDING_PAGE_URL, "");
 
 test("Cold Lead bleibt Entwurf: COLD_LEAD_DRAFT_ONLY, keine Versandgrundlage, nie automatisch sendbar", () => {
-  const r = draft([BROKEN_LINK]);
+  const r = draft([BROKEN_LINK, OVERLAP]);
   assert.deepEqual([r.draft_mode, r.message_class, r.automatic_send_allowed, r.legal_basis, r.manual_send_decision_required, r.legal_status],
     [COLD_MODE, "DRAFT_ONLY", false, "NONE", true, "NO_AUTOMATIC_SEND_BASIS"]);
-  const q = qualifyRepairLead(lead([BROKEN_LINK]), { now: T0 });
+  const q = qualifyRepairLead(lead([BROKEN_LINK, OVERLAP]), { now: T0 });
   assert.deepEqual([q.contact_basis, q.automatic_send_eligible, q.automatic_marketing_send_eligible], [COLD_MODE, false, false]);
 });
 
@@ -52,18 +52,18 @@ test("Cloud-Werkzeug: fehlendes delivery → nur Entwurf (nie stillschweigend Ve
 });
 
 test("offensichtlicher kaputter Link → einfache, prüfbare Aussage", () => {
-  const { body } = draft([BROKEN_LINK]);
-  assert.match(body, /aufgefallen, dass auf Ihrer Startseite der Link «Unser Angebot» auf eine Fehlerseite führt\. Besucher landen dadurch auf einer Fehlerseite statt beim gewünschten Inhalt\./);
+  const { body } = draft([BROKEN_LINK, OVERLAP]);
+  assert.match(body, /\n• Auf Ihrer Startseite führt der Link «Unser Angebot» auf eine Fehlerseite\. Besucher landen dadurch auf einer Fehlerseite statt beim gewünschten Inhalt\./);
 });
 
 test("mobiles Text-Overlap → einfache Aussage mit Bereich", () => {
-  const { body } = draft([OVERLAP]);
-  assert.match(body, /dass auf dem Handy im Bereich «Über uns» Text teilweise übereinander liegt\. Der Text ist dadurch schwer lesbar\./);
+  const { body } = draft([OVERLAP, BROKEN_LINK]);
+  assert.match(body, /\n• Auf dem Handy liegt im Bereich «Über uns» Text teilweise übereinander\. Der Text ist dadurch schwer lesbar\./);
 });
 
 test("kaputtes Bild → einfache Aussage mit Seite", () => {
-  const { body } = draft([BROKEN_IMG(1)]);
-  assert.match(body, /dass auf der Seite «Ueber uns» ein Bild nicht angezeigt wird\. An dieser Stelle sehen Besucher nur eine leere Fläche\./);
+  const { body } = draft([BROKEN_IMG(1), BROKEN_LINK]);
+  assert.match(body, /\n• Auf der Seite «Ueber uns» wird ein Bild nicht angezeigt\. An dieser Stelle sehen Besucher nur eine leere Fläche\./);
 });
 
 test("kein technischer Jargon, kein Statuscode, keine Messwerte im Kundentext", () => {
@@ -114,7 +114,9 @@ test("mehrere technische Befunde derselben sichtbaren Ursache → eine einfache 
   const f = customerFindings(imgs);
   assert.equal(f.length, 1);
   assert.equal(f[0].internal_refs.length, 3, "intern bleiben alle drei Befunde referenziert");
-  const { body } = draft(imgs);
+  // Drei Meldungen desselben Fehlers zählen als EIN Befund → allein kein Cold-Entwurf.
+  assert.throws(() => draft(imgs), /Nur für COLD_LEAD_DRAFT_ONLY/);
+  const { body } = draft([...imgs, BROKEN_LINK]);
   assert.equal((body.match(/Bild nicht angezeigt/g) || []).length, 1);
   // Kontaktseite kaputt + Kontaktformular kaputt = dieselbe sichtbare Folge (Kontakt nicht möglich) → eine Aussage.
   const contact = [issue("contact_page_broken", "high", "HTTP 404 (verlinkt auf https://muster.ch/)", "https://muster.ch/kontakt", { page: "https://muster.ch/" }),
@@ -122,20 +124,20 @@ test("mehrere technische Befunde derselben sichtbaren Ursache → eine einfache 
   assert.equal(customerFindings(contact).length, 1);
 });
 
-test("höchstens zwei Probleme pro Cold-Mail", () => {
+test("höchstens drei Probleme pro Cold-Mail", () => {
   const many = [BROKEN_LINK, OVERLAP, BROKEN_IMG(1), issue("broken_mailto", "medium", 'Ungültige mailto-Adresse im Link: "info(at)muster.ch"', "https://muster.ch/impressum", { page: "https://muster.ch/impressum" }),
     issue("https_certificate", "high", "TLS-Fehler beim Aufruf: CERT_HAS_EXPIRED", "https://muster.ch/")];
-  assert.equal(MAX_CUSTOMER_FINDINGS, 2);
-  assert.equal(customerFindings(many).length, 2);
+  assert.equal(MAX_CUSTOMER_FINDINGS, 3);
+  assert.equal(customerFindings(many).length, 3);
   const { body } = draft(many);
-  assert.equal((body.match(/aufgefallen, dass/g) || []).length, 2);
+  assert.equal((body.match(/^• /gm) || []).length, 3);
 });
 
 test("keine erfundenen Probleme: jede Aussage geht auf einen beobachteten Befund zurück", () => {
   const issues = [BROKEN_LINK, OVERLAP];
   const r = draft(issues);
   for (const f of r.customer_findings) for (const ref of f.internal_refs) assert.ok(issues.some((i) => i.type === ref.issue_type && i.url === ref.url));
-  assert.equal((r.body.match(/aufgefallen, dass/g) || []).length, r.customer_findings.length);
+  assert.equal((r.body.match(/^• /gm) || []).length, r.customer_findings.length);
   assert.throws(() => buildColdDraft(lead([]), qualifyRepairLead(lead([]), { now: T0 }), SENDER), /Kein belegter Reparaturbefund/);
 });
 
@@ -143,9 +145,9 @@ test("keine Angst-/Druck-Verkaufssprache, kein Preisverkauf, Struktur wie vorgeg
   const { subject, body } = draft([BROKEN_LINK, OVERLAP], { contact_name: "Anna Muster" });
   assert.doesNotMatch(customerPart(subject + body), CUSTOMER_PRESSURE_RE);
   assert.doesNotMatch(body, /kaputt|verlieren|Umsatz|veraltet|unsicher|schlecht|dringend|Redesign|neue Website/i);
-  assert.match(body, /^Hallo Anna Muster,\n\nich habe mir Ihre Website kurz angesehen und dabei ist mir aufgefallen, dass /);
+  assert.match(body, /^Hallo Anna Muster,\n\nmein Name ist Chris Kälin von Helvetic Webdesign\. [^\n]+\n\nBei einem kurzen Blick auf Ihre Website sind mir mehrere konkrete Punkte aufgefallen:\n\n• /);
   // Standardvorlage: erster Blick → vollständiger Webseiten-Check → genau zwei Angebote (Preise nur aus OFFERS) → kurze Antwort genügt.
-  assert.match(body, /\n\nDas ist nur das, was mir beim ersten Blick direkt aufgefallen ist\. Mein Angebot umfasst einen vollständigen Webseiten-Check: /);
+  assert.match(body, /\n\nDas sind nur die Punkte, die mir beim ersten Blick direkt aufgefallen sind\. Mein Angebot umfasst einen vollständigen Webseiten-Check: /);
   assert.match(body, /\n\n«Check & Anleitung» kostet CHF 150: [^\n]*\n\n«Check & Reparatur» kostet CHF 480: /);
   assert.doesNotMatch(body, /CHF (?!(?:150|480)\b)\d/, "keine anderen Preise");
   assert.match(body, /Freundliche Grüsse\nChris Kälin/);
@@ -155,8 +157,9 @@ test("keine Angst-/Druck-Verkaufssprache, kein Preisverkauf, Struktur wie vorgeg
 });
 
 test("technische Evidence bleibt intern vollständig erhalten; Angebot unverändert", () => {
-  const r = draft([BROKEN_LINK]);
-  assert.deepEqual(r.issue_evidence, [{ issue_type: "broken_link", url: "https://muster.ch/angebot", evidence: "HTTP 404 (verlinkt auf https://muster.ch/)", observed_at: T0.toISOString(), reproducible: true, severity: "medium" }]);
+  const r = draft([BROKEN_LINK, OVERLAP]);
+  assert.equal(r.issue_evidence.length, 2);
+  assert.deepEqual(r.issue_evidence.slice(0, 1), [{ issue_type: "broken_link", url: "https://muster.ch/angebot", evidence: "HTTP 404 (verlinkt auf https://muster.ch/)", observed_at: T0.toISOString(), reproducible: true, severity: "medium" }]);
   assert.ok(r.evidence_hash && r.draft_hash);
   assert.equal(r.offer_class, "REPAIR_FIX_500");
   assert.deepEqual([OFFERS.REPAIR_CHECK_150.price, OFFERS.REPAIR_FIX_500.price], [150, 480]);

@@ -32,11 +32,13 @@ const ROOT = decodeURIComponent(new URL("..", import.meta.url).pathname).replace
 const SENDER = { name: "Chris Kälin", company: "Helvetic Webdesign", email: "chris@helvetic-webdesign.ch" };
 const issue = (type, severity, evidence = `Beleg für ${type}`, url = "https://muster.ch/") => ({ type, url, evidence, severity, detectedAt: T0.toISOString() });
 const BROKEN = issue("broken_link", "medium", "HTTP 404 (verlinkt auf https://muster.ch/)", "https://muster.ch/team");
+// Zweiter, unterschiedlicher belegter Befund: Cold-Draft braucht seit 2026-10-11 mindestens zwei.
+const IMAGE = issue("broken_image", "medium", "Bild liefert HTTP 404 (eingebunden auf https://muster.ch/)", "https://muster.ch/img/team.jpg");
 const lead = (over = {}) => ({
   email: "info@muster.ch", company: "Muster AG", website: "https://muster.ch/", domain: "muster.ch", uid: "CHE-123.456.789", approved: false, consentBasis: null,
   consentAt: null, consentSource: null, existingCustomer: false, similarService: false, status: "blocked_no_legal_basis", auditedAt: T0.toISOString(), reachable: true,
   title: "Muster AG – Schreinerei", discoverySource: "OpenStreetMap node/1 (Winterthur, craft)", emailSource: "impressum", contact_source: "impressum",
-  source_url: "https://muster.ch/impressum", collected_at: T0.toISOString(), websiteIssues: [BROKEN], ...over,
+  source_url: "https://muster.ch/impressum", collected_at: T0.toISOString(), websiteIssues: [BROKEN, IMAGE], ...over,
 });
 
 let dir, store, g, clock;
@@ -148,12 +150,13 @@ test("broken link evidence preserved: issue_type, url, evidence, observed_at, re
   const [e] = repairEvidence([BROKEN]);
   assert.deepEqual(e, { issue_type: "broken_link", url: BROKEN.url, evidence: BROKEN.evidence, observed_at: BROKEN.detectedAt, reproducible: true, severity: "medium" });
   const q = qualifyRepairLead(lead(), { now: T0 });
-  assert.deepEqual(q.offer.evidence, [e]);
+  const [img] = repairEvidence([IMAGE]);
+  assert.deepEqual(q.offer.evidence, [e, img]);
   const r = createColdDraft(lead(), { sender: SENDER, now: T0 });
-  assert.deepEqual(r.issue_evidence, [e], "technische Evidence bleibt intern vollständig erhalten");
+  assert.deepEqual(r.issue_evidence, [e, img], "technische Evidence bleibt intern vollständig erhalten");
   // Nach aussen nur die einfache Aussage – keine Ziel-URL, kein Statuscode.
   assert.ok(!r.body.includes(BROKEN.url) && !r.body.includes("HTTP 404"));
-  assert.match(r.body, /auf Ihrer Startseite der Link zur Seite «Team» auf eine Fehlerseite führt/);
+  assert.match(r.body, /• Auf Ihrer Startseite führt der Link zur Seite «Team» auf eine Fehlerseite./);
 });
 
 test("no invented issue: Entwurf nennt nur beobachtete Befunde, keine Abwertung, kein Neubau", () => {

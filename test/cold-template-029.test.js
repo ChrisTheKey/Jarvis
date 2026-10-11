@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildColdDraft, createColdDraft, qualifyRepairLead, ensureColdDraft, customerFindings, FULL_CHECK_TEXT, offer150Text, offer480Text, COLD_FOOTER, COLD_MODE, MAX_CUSTOMER_FINDINGS, CUSTOMER_JARGON_RE } from "../swiss-repair.js";
+import { FINDINGS_INTRO, MIN_COLD_FINDINGS, buildColdDraft, createColdDraft, qualifyRepairLead, ensureColdDraft, customerFindings, FULL_CHECK_TEXT, offer150Text, offer480Text, COLD_FOOTER, COLD_MODE, MAX_CUSTOMER_FINDINGS, CUSTOMER_JARGON_RE } from "../swiss-repair.js";
 import { OFFERS, OFFER_CLASSES, LANDING_PAGE_URL } from "../sales.js";
 import { createStore } from "../mail-worker.js";
 
@@ -15,21 +15,26 @@ const issue = (type, severity, url, page, extra = {}) => ({ type, url, page, evi
 const BROKEN = issue("broken_link", "medium", "https://muster.ch/team-alt", "https://muster.ch/", { label: "Unser Team" });
 const IMAGE = issue("broken_image", "medium", "https://muster.ch/img/x.jpg", "https://muster.ch/angebot/");
 const MAILTO = issue("broken_mailto", "medium", "mailto:kontakt@", "https://muster.ch/kontakt/");
+const PRICES = issue("broken_link", "medium", "https://muster.ch/preise-2019", "https://muster.ch/", { label: "Preise" });
 const lead = (over = {}) => ({
   email: "info@muster.ch", company: "Muster AG", website: "https://muster.ch/", domain: "muster.ch", uid: "CHE-123.456.789", approved: false, consentBasis: null,
   status: "blocked_no_legal_basis", auditedAt: T0.toISOString(), reachable: true, title: "Muster AG – Schreinerei", discoverySource: "OpenStreetMap node/1 (Winterthur, craft)",
-  contact_source: "impressum", source_url: "https://muster.ch/impressum", collected_at: T0.toISOString(), contact_confidence: "medium", websiteIssues: [BROKEN], ...over,
+  contact_source: "impressum", source_url: "https://muster.ch/impressum", collected_at: T0.toISOString(), contact_confidence: "medium", websiteIssues: [BROKEN, IMAGE], ...over,
 });
 const draft = (issues, over = {}) => buildColdDraft(lead({ websiteIssues: issues, ...over }), qualifyRepairLead(lead({ websiteIssues: issues, ...over }), { now: T0 }), SENDER);
 const customerPart = (body) => body.split("\nFreundliche Grüsse")[0].replace(LANDING_PAGE_URL, "");
 
-test("Neue Standardvorlage: erster konkreter Fehler → vollständiger Webseiten-Check → CHF 150 / CHF 480 → kurze Antwort → Signatur → Abmeldesatz", () => {
-  const { subject, body } = draft([BROKEN], { contact_name: "Anna Muster" });
+test("Standardvorlage: Anrede → Einstieg → 2–3 belegte Punkte → vollständiger Webseiten-Check → CHF 150 / CHF 480 → kurze Antwort → Signatur → Abmeldesatz", () => {
+  const { subject, body } = draft([BROKEN, IMAGE], { contact_name: "Anna Muster" });
   const lines = body.split("\n");
   assert.equal(lines[0], "Hallo Anna Muster,");
-  assert.match(lines[2], /^ich habe mir Ihre Website kurz angesehen und dabei ist mir aufgefallen, dass auf Ihrer Startseite der Link «Unser Team» auf eine Fehlerseite führt\. /, "erster konkreter Fehler bleibt der Einstieg");
+  assert.match(lines[2], /^mein Name ist Chris Kälin von Helvetic Webdesign\. /, "kurzer persönlicher Einstieg");
+  assert.equal(lines[4], FINDINGS_INTRO);
+  assert.equal(FINDINGS_INTRO, "Bei einem kurzen Blick auf Ihre Website sind mir mehrere konkrete Punkte aufgefallen:");
+  assert.match(lines[6], /^• Auf Ihrer Startseite führt der Link «Unser Team» auf eine Fehlerseite\. Besucher landen dadurch /);
+  assert.match(lines[7], /^• Auf der Seite «Angebot» wird ein Bild nicht angezeigt\. /);
   const i = lines.indexOf(FULL_CHECK_TEXT);
-  assert.ok(i > 2, "vollständiger Webseiten-Check direkt nach dem Befund");
+  assert.equal(i, 9, "vollständiger Webseiten-Check direkt nach den Punkten");
   assert.equal(lines[i + 2], offer150Text());
   assert.equal(lines[i + 4], offer480Text());
   assert.equal(lines[i + 6], `Wenn das für Sie interessant ist, genügt eine kurze Antwort. Details: ${LANDING_PAGE_URL}`);
@@ -40,7 +45,7 @@ test("Neue Standardvorlage: erster konkreter Fehler → vollständiger Webseiten
 });
 
 test("Vollständiger Webseiten-Check wird genannt: gesamte Website, sichtbare Fehler, defekte Links, Smartphone, Desktop, verständliche Zusammenfassung", () => {
-  const { body } = draft([BROKEN]);
+  const { body } = draft([BROKEN, IMAGE]);
   assert.match(body, /vollständigen Webseiten-Check/);
   for (const re of [/gesamte Website/, /sichtbare Fehler/, /defekte Links/, /Smartphone/, /Desktop/, /verständlich/]) assert.match(body, re, String(re));
   // Der Check ist der eigentliche Nutzen – er steht vor den Preisen und vor dem Link.
@@ -48,7 +53,7 @@ test("Vollständiger Webseiten-Check wird genannt: gesamte Website, sichtbare Fe
 });
 
 test("CHF 150 = Check + Anleitung, CHF 480 = Check + Reparatur + erneuter Test; Preise nur aus OFFERS, nichts erfunden", () => {
-  const { body } = draft([BROKEN]);
+  const { body } = draft([BROKEN, IMAGE]);
   assert.match(body, /«Check & Anleitung» kostet CHF 150: vollständiger Webseiten-Check plus verständliche Schritt-für-Schritt-Anleitung\./);
   assert.match(body, /«Check & Reparatur» kostet CHF 480: vollständiger Webseiten-Check, Reparatur der im Rahmen des Angebots behebbaren gefundenen Fehler und anschliessender Test auf Smartphone und Desktop\./);
   assert.equal(OFFERS.REPAIR_CHECK_150.price, 150); assert.equal(OFFERS.REPAIR_FIX_500.price, 480);
@@ -60,28 +65,27 @@ test("CHF 150 = Check + Anleitung, CHF 480 = Check + Reparatur + erneuter Test; 
 });
 
 test("Keine falsche Behauptung: erster Blick ≠ vollständige Prüfung; nie „bereits komplett geprüft“", () => {
-  for (const issues of [[BROKEN], [BROKEN, IMAGE]]) {
+  for (const issues of [[BROKEN, IMAGE], [BROKEN, IMAGE, MAILTO, PRICES]]) {
     const { body } = draft(issues);
     assert.match(body, /beim ersten Blick direkt aufgefallen/);
     assert.doesNotMatch(body, /komplette Website (bereits )?geprüft|gesamte Website (bereits |schon )?geprüft|vollständig geprüft|habe Ihre (gesamte|ganze|komplette) Website/i);
     assert.match(body, /Mein Angebot umfasst einen vollständigen Webseiten-Check: Ich prüfe/, "Check ist Angebot (Zukunft), keine Vergangenheitsform");
   }
-  // Mit zwei Befunden: „nur das, was … aufgefallen ist“ (Plural-tauglich), mit einem: „nur der Punkt“.
-  assert.match(draft([BROKEN]).body, /Das ist nur der Punkt, der mir beim ersten Blick/);
-  assert.match(draft([BROKEN, IMAGE]).body, /Das ist nur das, was mir beim ersten Blick/);
+  // Immer mindestens zwei Punkte → Plural.
+  assert.match(draft([BROKEN, IMAGE]).body, /Das sind nur die Punkte, die mir beim ersten Blick direkt aufgefallen sind\./);
 });
 
-test("Max. 2 Findings, nur belegte sichtbare Fehler, kein Jargon nach aussen, Evidence intern; ohne sichtbaren Fehler kein Entwurf", () => {
-  const { body } = draft([BROKEN, IMAGE, MAILTO]);
-  assert.equal((body.match(/aufgefallen, dass/g) || []).length, MAX_CUSTOMER_FINDINGS);
-  assert.equal(MAX_CUSTOMER_FINDINGS, 2);
+test("2–3 Findings, nur belegte sichtbare Fehler, kein Jargon nach aussen, Evidence intern; ohne zwei sichtbare Fehler kein Entwurf", () => {
+  const { body } = draft([BROKEN, IMAGE, MAILTO, PRICES]);
+  assert.equal((body.match(/^• /gm) || []).length, MAX_CUSTOMER_FINDINGS);
+  assert.deepEqual([MIN_COLD_FINDINGS, MAX_CUSTOMER_FINDINGS], [2, 3]);
   assert.doesNotMatch(customerPart(body).replace(/CHF \d+/g, ""), CUSTOMER_JARGON_RE, "kein technischer Jargon (Preise sind keine Statuscodes)");
   assert.doesNotMatch(body, /HTTP \d|\b404\b|\bDOM\b|\bCLS\b|\bLCP\b|Lighthouse|Meta-Tag|Zertifikat|Framework|\bSEO\b|team-alt|img\/x\.jpg|mailto:/i);
   const urls = body.match(/https?:\/\/[^\s)]+/g) || [];
   assert.deepEqual([...new Set(urls)], [LANDING_PAGE_URL], "einzige URL = Landingpage");
-  const r = createColdDraft(lead({ websiteIssues: [BROKEN, IMAGE, MAILTO] }), { sender: SENDER, now: T0 });
+  const r = createColdDraft(lead({ websiteIssues: [BROKEN, IMAGE, MAILTO, PRICES] }), { sender: SENDER, now: T0 });
   assert.ok(r.issue_evidence.length >= 1 && r.issue_evidence.every((e) => e.url && e.evidence), "technische Evidence bleibt intern");
-  assert.equal(r.customer_findings.length, 2);
+  assert.equal(r.customer_findings.length, 3);
   // Nichts erfinden: nur Ladezeit/Titel → keine Kundenaussage → kein Entwurf.
   assert.deepEqual(customerFindings([issue("slow_response", "medium", "https://muster.ch/", "https://muster.ch/"), issue("missing_title", "low", "https://muster.ch/", "https://muster.ch/")]), []);
   assert.throws(() => createColdDraft(lead({ websiteIssues: [issue("slow_response", "medium", "https://muster.ch/", "https://muster.ch/")] }), { sender: SENDER, now: T0 }));

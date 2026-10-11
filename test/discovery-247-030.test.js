@@ -41,7 +41,9 @@ beforeEach(() => {
 // Website-Attrappe: Audit-Ergebnis je Host (Befunde frei wählbar), Impressum mit UID und Firmenadresse.
 const impressum = (host) => `<html><body><h1>Impressum</h1><p>${host.split(".")[0]} AG<br>Hauptstrasse 1, 8400 Winterthur<br>E-Mail: <a href="mailto:info@${host}">info@${host}</a><br>UID: CHE-123.456.789</p></body></html>`;
 const broken = (host) => ({ type: "broken_link", url: `https://${host}/team-alt`, page: `https://${host}/`, label: "Unser Team", evidence: `HTTP 404 (verlinkt auf https://${host}/)`, severity: "medium", detectedAt: T0.toISOString() });
-const audit = (host, issues = [broken(host)]) => ({ reachable: true, title: `${host} – Schreinerei`, finalUrl: `https://${host}/`, issues, impressumUrl: `https://${host}/impressum`, contactUrl: `https://${host}/kontakt`, teamUrl: null,
+// Cold-Draft braucht seit 2026-10-11 mindestens zwei unterschiedliche belegte Befunde.
+const qualifying = (host) => [broken(host), { type: "broken_image", url: `https://${host}/img/team.jpg`, page: `https://${host}/`, evidence: `Bild liefert HTTP 404 (eingebunden auf https://${host}/)`, severity: "medium", detectedAt: T0.toISOString() }];
+const audit = (host, issues = qualifying(host)) => ({ reachable: true, title: `${host} – Schreinerei`, finalUrl: `https://${host}/`, issues, impressumUrl: `https://${host}/impressum`, contactUrl: `https://${host}/kontakt`, teamUrl: null,
   pages: { home: `<html lang="de"><head><title>${host}</title></head><body>Schreinerei in Winterthur, Schweiz. Telefon +41 52 123 45 67</body></html>`, impressum: impressum(host), contact: "<html><body>Kontakt</body></html>" } });
 const fakeAuditor = (map) => ({ audit: async (url) => { const host = new URL(url).hostname.replace(/^www\./, ""); const r = map[host]; if (r instanceof Error) throw r; if (!r) throw new Error("unbekannt " + host); return r; } });
 const cand = (host, extra = {}) => ({ company: `${host.split(".")[0]} AG`, website: `https://${host}/`, email: "", chain: false, source: `OpenStreetMap node/1 (Winterthur, craft)`, ...extra });

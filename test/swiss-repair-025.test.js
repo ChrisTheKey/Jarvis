@@ -31,11 +31,13 @@ const ROOT = decodeURIComponent(new URL("..", import.meta.url).pathname).replace
 const SENDER = { name: "Chris Kälin", company: "Helvetic Webdesign", email: "chris@helvetic-webdesign.ch" };
 const issue = (type, severity, evidence, url = "https://muster.ch/") => ({ type, url, evidence: evidence || `Beleg für ${type}`, severity, detectedAt: T0.toISOString() });
 const BROKEN = issue("broken_link", "medium", "HTTP 404 (verlinkt auf https://muster.ch/)", "https://muster.ch/team-alt");
+// Zweiter, unterschiedlicher belegter Befund: Cold-Draft braucht seit 2026-10-11 mindestens zwei.
+const IMAGE = issue("broken_image", "medium", "Bild liefert HTTP 404 (eingebunden auf https://muster.ch/)", "https://muster.ch/img/team.jpg");
 const lead = (over = {}) => ({
   email: "info@muster.ch", company: "Muster AG", website: "https://muster.ch/", domain: "muster.ch", uid: "CHE-123.456.789", approved: false, consentBasis: null,
   consentAt: null, consentSource: null, existingCustomer: false, similarService: false, status: "blocked_no_legal_basis", auditedAt: T0.toISOString(), reachable: true,
   title: "Muster AG – Schreinerei", discoverySource: "OpenStreetMap node/1 (Winterthur, craft)", contact_source: "impressum", source_url: "https://muster.ch/impressum",
-  collected_at: T0.toISOString(), contact_confidence: "medium", websiteIssues: [BROKEN], ...over,
+  collected_at: T0.toISOString(), contact_confidence: "medium", websiteIssues: [BROKEN, IMAGE], ...over,
 });
 
 let dir, store, g, clock;
@@ -187,7 +189,7 @@ test("Duplikate: offener Entwurf, gleiche Firma/Adresse, bereits kontaktiert, Sp
 
 test("Entwurf: konkreter Befund, richtiges Angebot (CHF 150/500), kein Redesign, nichts erfunden, Footer, Absender", () => {
   const r = createColdDraft(lead(), { sender: SENDER, now: T0 });
-  assert.match(r.body, /der Link zur Seite «Team alt» auf eine Fehlerseite führt/, "tatsächlicher Befund, einfach beschrieben");
+  assert.match(r.body, /• Auf Ihrer Startseite führt der Link zur Seite «Team alt» auf eine Fehlerseite./, "tatsächlicher Befund, einfach beschrieben");
   assert.equal(r.offer_class, "REPAIR_FIX_500", "Angebotsklasse bleibt intern erhalten");
   // Nur eine allgemeine Ladezeit-Vermutung: intern weiterhin CHECK_150, aber kein für Besucher sichtbarer Fehler → kein Cold-Entwurf.
   const slow = lead({ websiteIssues: [issue("slow_response", "medium", "Ladezeit der Startseite 7.2 s")] });
@@ -201,7 +203,7 @@ test("Entwurf: konkreter Befund, richtiges Angebot (CHF 150/500), kein Redesign,
     assert.ok(b.includes(COLD_FOOTER), "sachliche Abmeldemöglichkeit");
     assert.match(b, /Chris Kälin/);
   }
-  assert.deepEqual(r.issue_evidence.map((e) => e.url), [BROKEN.url], "nur beobachtete Befunde");
+  assert.deepEqual(r.issue_evidence.map((e) => e.url), [BROKEN.url, IMAGE.url], "nur beobachtete Befunde");
   assert.deepEqual(OFFER_CLASSES, ["REPAIR_CHECK_150", "REPAIR_FIX_500"]);
   assert.equal(Object.keys(OFFERS).length, 2, "genau zwei Angebote");
 });
@@ -443,7 +445,7 @@ test("Kennzahlen: Cold Leads, Kontakte, Drafts, manuell versendet, Auto-Send, Bl
 
 test("Discovery: Schweizer Repair-Lead → Kontakt aus Team-Seite, lokaler Cold-Entwurf, Gmail unberührt, keine Fake-Einwilligung", async () => {
   const host = "muster.ch", web = {
-    [`https://${host}/`]: `<!doctype html><html lang="de"><head><title>Muster Schreinerei AG</title><meta name="viewport" content="width=device-width"></head><body><a href="/kontakt">Kontakt</a> <a href="/impressum">Impressum</a> <a href="/team">Team</a> <a href="/alt">Alt</a></body></html>`,
+    [`https://${host}/`]: `<!doctype html><html lang="de"><head><title>Muster Schreinerei AG</title><meta name="viewport" content="width=device-width"></head><body><a href="/kontakt">Kontakt</a> <a href="/impressum">Impressum</a> <a href="/team">Team</a> <a href="/alt">Alt</a> <img src="/img/team.jpg" alt="Team"></body></html>`,
     [`https://${host}/kontakt`]: "<html><body>Kontakt: info@muster.ch</body></html>",
     [`https://${host}/team`]: "<html><body><div>Beat Beispiel<br>Leiter Marketing<br>beat.beispiel@muster.ch</div></body></html>",
     [`https://${host}/impressum`]: "<html><body><p>Muster Schreinerei AG<br>Hauptstrasse 1, CH-8400 Winterthur<br><a href=\"mailto:info@muster.ch\">info@muster.ch</a><br>UID: CHE-123.456.789</p></body></html>",
@@ -464,7 +466,7 @@ test("Discovery: Schweizer Repair-Lead → Kontakt aus Team-Seite, lokaler Cold-
   const d = cold();
   assert.deepEqual([d.status, d.recipient, d.draft_mode, d.legal_basis], ["queued", "beat.beispiel@muster.ch", COLD_MODE, "NONE"]);
   // Vom echten Auditor: Linktext «Alt» → einfache, prüfbare Aussage; die technische Ziel-URL bleibt intern.
-  assert.match(d.body, /auf Ihrer Startseite der Link «Alt» auf eine Fehlerseite führt/);
+  assert.match(d.body, /• Auf Ihrer Startseite führt der Link «Alt» auf eine Fehlerseite./);
   assert.ok(!d.body.includes("https://muster.ch/alt") && !/404/.test(d.body));
   assert.ok(d.issue_evidence.some((e) => e.url === "https://muster.ch/alt" && /HTTP 404/.test(e.evidence)));
   assert.deepEqual(g.calls, [], "Discovery fasst Gmail nie an");

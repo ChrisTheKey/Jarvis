@@ -98,7 +98,7 @@ test("generische Lieferanten-/Partnerseite und allgemeine Einladungen → keine 
 });
 
 test("personalisierte Cold-Mail, Repair-Befund allein, Chris-Freigabe/Override → nie Auto-Send", () => {
-  const cold = { ...PUBLIC, company: "Muster AG", contact_name: "Anna Muster", websiteIssues: [{ type: "broken_link", url: "https://muster.ch/x", evidence: "HTTP 404", severity: "high", detectedAt: T0.toISOString() }], repair_fit_score: 99 };
+  const cold = { ...PUBLIC, company: "Muster AG", contact_name: "Anna Muster", websiteIssues: [{ type: "broken_link", url: "https://muster.ch/x", evidence: "HTTP 404", severity: "high", detectedAt: T0.toISOString() }, { type: "broken_image", url: "https://muster.ch/img/team.jpg", evidence: "Bild liefert HTTP 404 (eingebunden auf https://muster.ch/)", severity: "medium", detectedAt: T0.toISOString() }], repair_fit_score: 99 };
   for (const extra of [{}, { approved_by_chris: true }, { force: true }, { override: true }, { admin_bypass: true }, { human_approved: true, legal_override: "EXPLICIT_OPT_IN" }]) {
     const r = M(cold, extra);
     assert.deepEqual([r.allowed, r.legal_basis], [false, "NONE"], JSON.stringify(extra));
@@ -161,7 +161,7 @@ test("TF-025: Cold Lead → DRAFT_ONLY, legal_basis NONE; Engine erlaubt keinen 
   const r = shape(evaluateSwissEmailPermission(PUBLIC, { type: "COLD_DRAFT" }, T0));
   assert.deepEqual([r.allowed, r.message_class, r.legal_basis], [false, "DRAFT_ONLY", "NONE"]);
   const lead = { ...PUBLIC, domain: "muster.ch", company: "Muster AG", uid: "CHE-123.456.789", discoverySource: "OpenStreetMap node/1", auditedAt: T0.toISOString(), reachable: true, title: "Muster AG",
-    contact_source: "impressum", websiteIssues: [{ type: "broken_link", url: "https://muster.ch/x", evidence: "HTTP 404 (verlinkt auf https://muster.ch/)", severity: "medium", detectedAt: T0.toISOString() }] };
+    contact_source: "impressum", websiteIssues: [{ type: "broken_link", url: "https://muster.ch/x", evidence: "HTTP 404 (verlinkt auf https://muster.ch/)", severity: "medium", detectedAt: T0.toISOString() }, { type: "broken_image", url: "https://muster.ch/img/team.jpg", evidence: "Bild liefert HTTP 404 (eingebunden auf https://muster.ch/)", severity: "medium", detectedAt: T0.toISOString() }] };
   const q = qualifyRepairLead(lead, { now: T0 });
   assert.deepEqual([q.draft_creation_eligible, q.automatic_marketing_send_eligible, q.message_class, q.legal_basis, q.contact_basis], [true, false, "DRAFT_ONLY", "NONE", COLD_MODE]);
   assert.match(q.permission, /COLD_LEAD_DRAFT_ONLY/);
@@ -179,7 +179,7 @@ test("TF-025: Cold-Entwurf entsteht, Worker sendet nie; 0 Auto-Send-Berechtigte 
     async readThread() { return { messages: [] }; }, async markDraftForReview() {}, async syncColdDrafts() { return []; },
   });
   const lead = { ...PUBLIC, domain: "muster.ch", company: "Muster AG", uid: "CHE-123.456.789", auditedAt: T0.toISOString(), reachable: true, title: "Muster AG", contact_source: "impressum",
-    websiteIssues: [{ type: "broken_link", url: "https://muster.ch/x", evidence: "HTTP 404 (verlinkt auf https://muster.ch/)", severity: "medium", detectedAt: T0.toISOString() }] };
+    websiteIssues: [{ type: "broken_link", url: "https://muster.ch/x", evidence: "HTTP 404 (verlinkt auf https://muster.ch/)", severity: "medium", detectedAt: T0.toISOString() }, { type: "broken_image", url: "https://muster.ch/img/team.jpg", evidence: "Bild liefert HTTP 404 (eingebunden auf https://muster.ch/)", severity: "medium", detectedAt: T0.toISOString() }] };
   assert.equal(ensureColdDraft(store, lead, { sender: SENDER, now: T0 }).status, "queued");
   fs.writeFileSync(path.join(dir, "leads.json"), JSON.stringify([{ ...PUBLIC, approved: true }])); // öffentliche Adresse, von Chris eingetragen
   const r = await createWorker({ dir, gmail: g, now: () => T0, log: () => {}, compose: async () => ({ decision: "draft", body: "x" }) }).tick();

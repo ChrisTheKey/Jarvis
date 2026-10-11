@@ -40,7 +40,9 @@ beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-032-")); 
 
 const impressum = (host) => `<html><body><h1>Impressum</h1><p>${host.split(".")[0]} AG<br>Hauptstrasse 1, 8400 Winterthur<br>E-Mail: <a href="mailto:info@${host}">info@${host}</a><br>UID: CHE-123.456.789</p></body></html>`;
 const broken = (host) => ({ type: "broken_link", url: `https://${host}/team-alt`, page: `https://${host}/`, label: "Unser Team", evidence: `HTTP 404 (verlinkt auf https://${host}/)`, severity: "medium", detectedAt: T0.toISOString() });
-const audit = (host, issues = [broken(host)]) => ({ reachable: true, title: `${host} – Schreinerei`, finalUrl: `https://${host}/`, issues, impressumUrl: `https://${host}/impressum`, contactUrl: `https://${host}/kontakt`, teamUrl: null,
+// Cold-Draft braucht seit 2026-10-11 mindestens zwei unterschiedliche belegte Befunde.
+const qualifying = (host) => [broken(host), { type: "broken_image", url: `https://${host}/img/team.jpg`, page: `https://${host}/`, evidence: `Bild liefert HTTP 404 (eingebunden auf https://${host}/)`, severity: "medium", detectedAt: T0.toISOString() }];
+const audit = (host, issues = qualifying(host)) => ({ reachable: true, title: `${host} – Schreinerei`, finalUrl: `https://${host}/`, issues, impressumUrl: `https://${host}/impressum`, contactUrl: `https://${host}/kontakt`, teamUrl: null,
   pages: { home: `<html lang="de"><head><title>${host}</title></head><body>Schreinerei in Winterthur, Schweiz. Telefon +41 52 123 45 67</body></html>`, impressum: impressum(host), contact: "<html><body>Kontakt</body></html>" } });
 const hostOf = (url) => new URL(url).hostname.replace(/^www\./, "");
 // Auditor mit Zähler: Aufrufe je Domain, gleichzeitig aktive Audits (gesamt und je Domain), optional verzögert.
@@ -49,7 +51,7 @@ function countingAuditor({ withIssue = () => true, delayMs = 0 } = {}) {
   a.audit = async (url) => {
     const h = hostOf(url);
     a.calls[h] = (a.calls[h] || 0) + 1; a.active++; a.peak = Math.max(a.peak, a.active); a.activeBy[h] = (a.activeBy[h] || 0) + 1; a.domainPeak = Math.max(a.domainPeak, a.activeBy[h]);
-    try { if (delayMs) await new Promise((r) => setTimeout(r, delayMs)); return audit(h, withIssue(h) ? [broken(h)] : []); }
+    try { if (delayMs) await new Promise((r) => setTimeout(r, delayMs)); return audit(h, withIssue(h) ? qualifying(h) : []); }
     finally { a.active--; a.activeBy[h]--; }
   };
   a.total = () => Object.values(a.calls).reduce((s, n) => s + n, 0);

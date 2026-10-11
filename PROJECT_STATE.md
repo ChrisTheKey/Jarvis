@@ -2,7 +2,7 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-10
+Letzte Aktualisierung: 2026-10-11
 
 ## CLOUD-FIRST (Rollout ab 2026-10-07) – Zielbild: VPS = Gehirn/24-7-Runtime, Netlify = UI, GitHub = Code, Windows = optionaler Client
 Entscheidungen Chris (2026-10-07): (1) VPS nur AUSGEHEND, kein offener Port – Netlify-Functions sind das authentifizierte Gateway;
@@ -35,6 +35,29 @@ Cloud Core = im Mail-Worker-Prozess auf dem VPS integriert (eine Runtime, ein Sc
   check-mail-auth: Windows 200 self=false, VPS 200 self=true → genau ein Sender.
 Bestandsaufnahme 2026-10-07: Gmail-Registry Windows = VPS; Suppression/Opt-outs beide leer (kein Compliance-Konflikt);
 VPS-`config.offer` war der ALTE Text (ohne CHF 150/480), Windows seit 14:32 UTC der neue; 6 entdeckte Leads nur auf Windows.
+
+## JARVIS COLD OUTREACH — 2–3 VERIFIED WEBSITE FINDINGS (2026-10-11, Tests 396/396)
+- Harte Regel (`swiss-repair.js`): ein neuer Cold-Draft braucht mindestens `MIN_COLD_FINDINGS` = 2 unterschiedliche, belegte, für Besucher
+  sichtbare Probleme; im Mailtext höchstens `MAX_CUSTOMER_FINDINGS` = 3. 0 Befunde → kein Draft (`cold_block_reason` NO_VISIBLE_ISSUE),
+  1 Befund → kein Draft (TOO_FEW_VISIBLE_ISSUES; Stufe bleibt `no_visible_issue`), 2 → beide, 3 → alle drei, >3 → die 3 wichtigsten.
+  Ein fehlender zweiter Punkt wird nie ergänzt/erfunden; `buildColdDraft` wirft zusätzlich bei < 2 (fail closed).
+- Auswahl `selectCustomerVisibleFindings(issues)` (alter Name `customerFindings` = Alias): nur belegte Rohbefunde (Evidence-Gate wie bisher),
+  LOW nur bei reproduzierten Darstellungs-/Bedienfehlern mit Bereich; Sortierung Severity (critical > high > medium > low), dann Besucherwirkung
+  (Seite lädt nicht > Kontakt > Button/Browser-Warnung > Link > abgeschnitten > Überlagerung/Layout > Bild > E-Mail-Link).
+- Duplikate zusammengeführt: gleiches Link-Ziel (Fragment/Schrägstrich egal), gleicher Bereich (Navigation = Menü = Hauptmenü), mehrere Bilder
+  derselben Seite, Kontaktseite kaputt + Kontaktformular + defekter Link auf genau diese Kontaktseite = EIN Befund (höchste Severity zählt).
+- Mailstruktur: Anrede → kurzer persönlicher Einstieg („mein Name ist … von … Ich unterstütze Firmen dabei, sichtbare Fehler auf ihrer Website
+  zu finden und zu beheben.“) → `FINDINGS_INTRO` „Bei einem kurzen Blick auf Ihre Website sind mir mehrere konkrete Punkte aufgefallen:“ →
+  2–3 Aufzählungspunkte „• Befund. Direkte Auswirkung.“ → `FULL_CHECK_TEXT` (jetzt „Das sind nur die Punkte, die mir beim ersten Blick direkt
+  aufgefallen sind. Mein Angebot umfasst einen vollständigen Webseiten-Check: …“) → CHF 150 / CHF 480 (aus OFFERS, je genau einmal) →
+  kurze Antwort + Landingpage → Signatur → COLD_FOOTER. Keine Schadens-/Umsatz-/SEO-/Angstbehauptungen (Jargon-/Druck-Sperre unverändert).
+- Lead-Datenbank: `customer_findings` im Draft (key, text, severity, internal_refs – keine Roh-Evidence) → `customer_visible_findings`
+  (nur Kundentext, max. 3) = genau die gezeigten Punkte. Roh-Evidence bleibt intern (`issue_evidence`).
+- Bestehende Gmail-Entwürfe werden NICHT geändert (nur `createColdDraft` baut Text, nur für neue Drafts); neue Regel gilt für alle künftigen Cold-Drafts.
+- Unverändert: COLD_LEAD_DRAFT_ONLY, legal_basis NONE, automatic_send_allowed false, automatic_send_eligible false, delivery draft, kein Auto-Send.
+- Tests: neu `test/cold-findings-034.test.js` (17); angepasst 022/024/025/026/028/029/030/031/032/033 (Fixtures mit einem zweiten echten Befund).
+- Live-Test im Testmodus (echte Discovery + echter Auditor, 3 simulierte Websites, Gmail-Attrappe, echter Worker-Tick): A 1 Befund → KEIN Draft;
+  B 2 Befunde → Draft mit genau 2 Punkten; C 6 Rohbefunde → Draft mit genau 3 Punkten (HIGH Kontaktseite zuerst, Kontaktlink nicht doppelt). 0 Sends.
 
 ## JARVIS — FULL SWITZERLAND DISCOVERY + PERSISTENT LEAD DATABASE (2026-10-10, Code + Tests fertig, 379/379 grün; Live-Stand siehe Ende dieses Abschnitts)
 **A) Ganze Schweiz flächendeckend**

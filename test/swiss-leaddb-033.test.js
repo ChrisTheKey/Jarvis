@@ -53,10 +53,12 @@ beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-033-")); 
 
 const impressum = (host) => `<html><body><h1>Impressum</h1><p>${host.split(".")[0]} AG<br>Hauptstrasse 1, 3098 Köniz<br>E-Mail: <a href="mailto:info@${host}">info@${host}</a><br>UID: CHE-123.456.789</p></body></html>`;
 const broken = (host) => ({ type: "broken_link", url: `https://${host}/team-alt`, page: `https://${host}/`, label: "Unser Team", evidence: `HTTP 404 (verlinkt auf https://${host}/)`, severity: "medium", detectedAt: T0.toISOString() });
-const audit = (host, issues = [broken(host)]) => ({ reachable: true, title: `${host} – Treuhand`, finalUrl: `https://${host}/`, issues, impressumUrl: `https://${host}/impressum`, contactUrl: `https://${host}/kontakt`, teamUrl: null,
+// Cold-Draft braucht seit 2026-10-11 mindestens zwei unterschiedliche belegte Befunde.
+const qualifying = (host) => [broken(host), { type: "broken_image", url: `https://${host}/img/team.jpg`, page: `https://${host}/`, evidence: `Bild liefert HTTP 404 (eingebunden auf https://${host}/)`, severity: "medium", detectedAt: T0.toISOString() }];
+const audit = (host, issues = qualifying(host)) => ({ reachable: true, title: `${host} – Treuhand`, finalUrl: `https://${host}/`, issues, impressumUrl: `https://${host}/impressum`, contactUrl: `https://${host}/kontakt`, teamUrl: null,
   pages: { home: `<html lang="de"><head><title>${host}</title></head><body>Treuhand in Köniz, Schweiz. Telefon +41 31 123 45 67</body></html>`, impressum: impressum(host), contact: "<html><body>Kontakt</body></html>" } });
 const hostOf = (url) => new URL(url).hostname.replace(/^www\./, "");
-const auditor = (withIssue = () => true) => { const a = { calls: [] }; a.audit = async (url) => { const h = hostOf(url); a.calls.push(h); return audit(h, withIssue(h) ? [broken(h)] : []); }; return a; };
+const auditor = (withIssue = () => true) => { const a = { calls: [] }; a.audit = async (url) => { const h = hostOf(url); a.calls.push(h); return audit(h, withIssue(h) ? qualifying(h) : []); }; return a; };
 const cand = (host, extra = {}) => ({ company: `${host.split(".")[0]} AG`, website: `https://${host}/`, email: "", chain: false, category: "office=accountant", source: "OpenStreetMap node/1 (Köniz, office=accountant)", ...extra });
 const hosts = (n, p = "firma") => Array.from({ length: n }, (_, i) => `${p}${i + 1}.ch`);
 const run = (opts = {}) => runDiscovery({ dir, gmail: g, auditor: opts.auditor || auditor(), now: () => clock, log: () => {}, pid: process.pid, ...opts });
@@ -280,7 +282,7 @@ test("Suppression, Opt-out und Do-not-contact bleiben erhalten (auch wenn die Qu
 
 test("Migration: discovered.json, individual_reviews.json, Gmail-Register, leads.json, sales.json zusammengeführt – kein Lead verloren, späterer Status gewinnt", () => {
   write("discovered.json", { leads: {
-    "q.ch": { domain: "q.ch", company: "Q AG", email: "info@q.ch", status: "blocked_no_legal_basis", discoveredAt: "2026-09-20T08:00:00Z", auditedAt: "2026-09-20T08:00:00Z", websiteIssues: [broken("q.ch")], discoverySource: "OpenStreetMap node/5 (Thun, office=architect)" },
+    "q.ch": { domain: "q.ch", company: "Q AG", email: "info@q.ch", status: "blocked_no_legal_basis", discoveredAt: "2026-09-20T08:00:00Z", auditedAt: "2026-09-20T08:00:00Z", websiteIssues: qualifying("q.ch"), discoverySource: "OpenStreetMap node/5 (Thun, office=architect)" },
     "nix.ch": { domain: "nix.ch", company: "Nix AG", status: "no_issues", discoveredAt: "2026-09-20T08:00:00Z" },
   } });
   write(REVIEWS_FILE, { reviews: { "r.ch": review("r.ch", { status: "manually_sent", manual_send_detected: true, manual_send_at: "2026-10-01T09:00:00Z", draft_created_at: "2026-09-30T09:00:00Z" }),
