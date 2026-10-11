@@ -1001,7 +1001,7 @@ async function loop() {
   const startedAt = new Date().toISOString();
   // Server Control (nur VPS): Pause zwischen Durchläufen ist weckbar; Neustart des Cores = sauberes Ende nach dem Durchlauf,
   // Docker (restart: unless-stopped) startet den Container-Prozess neu. Nie mitten in einem Gmail-Durchlauf.
-  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false, discoveryRunning = null;
+  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false, discoveryRunning = null, repairRunning = null;
   const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
   const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
   const salesMod = await import("./sales.js");
@@ -1050,6 +1050,15 @@ async function loop() {
       discoveryRunning = finder.runDiscovery({ gmail, log })
         .then((d) => { if (d.busy) log("info", "discovery_busy"); }, (e) => log("error", "discovery_failed", { error: e.message }))
         .finally(() => { discoveryRunning = null; });
+    }
+    // CHF-480-Reparaturaufträge (TF-035, repair-workflow.js): persistente Orders im Hintergrund weiterarbeiten – eigenes Lock,
+    // nie zwei Läufe, blockiert weder Mail-Takt noch Discovery. Ohne offene Aufträge ist der Aufruf ein No-op.
+    // Ohne konfigurierte Stack-Adapter bleibt es beim passiven Audit bzw. BLOCKED_NO_ACCESS – es wird nie etwas verändert.
+    if (!repairRunning) {
+      repairRunning = import("./repair-workflow.js")
+        .then((m) => m.runRepairOrders({ log }))
+        .then((r) => { if (r && !r.busy && r.advanced) log("info", "repair_orders_processed", r); }, (e) => log("error", "repair_orders_failed", { error: e.message }))
+        .finally(() => { repairRunning = null; });
     }
     // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.
     try {

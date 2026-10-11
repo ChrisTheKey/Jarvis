@@ -4,6 +4,43 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-11
 
+## JARVIS CHECK & REPARATUR CHF 480 — AUTOPILOT (TF-035, 2026-10-11, Code + Tests fertig, 413/413 grün; noch NICHT auf dem VPS deployt)
+- Neu `repair-workflow.js`: persistenter Reparatur-Workflow für bezahlte, ausdrücklich freigegebene CHF-480-Aufträge (REPAIR_FIX_500,
+  Preis ausschliesslich aus OFFERS; Angebot/Preise UNVERÄNDERT, keine dritte Stufe). Zustände exakt: ORDER_RECEIVED → AUTHORIZATION_REQUIRED →
+  ACCESS_CHECK → BACKUP → FULL_AUDIT → REPAIR_PLAN → REPAIRING → VALIDATION → RETEST → READY_FOR_DELIVERY → COMPLETED; Fehlerzustände
+  BLOCKED_NO_ACCESS / BLOCKED_NO_AUTHORIZATION / BLOCKED_UNSUPPORTED_STACK / REPAIR_FAILED / VALIDATION_FAILED / MANUAL_REVIEW_REQUIRED.
+  Jeder Übergang atomar in `.secrets/mail_worker/repair_orders.json` (state_history lückenlos; liegt in mail_worker/ → automatisch im
+  verschlüsselten Tagesbackup); nach VPS-/Worker-Neustart arbeitet die Engine exakt am gespeicherten Zustand weiter (getestet).
+- AUTORISIERUNG PFLICHT (fail closed): Änderungen nur mit `customer_authorized_repair = true` + Freigabequelle aus der Whitelist
+  (customer_reply_email, customer_order_form, signed_offer, written_confirmation) + EXAKT übereinstimmender Domain. Cold-Outreach/
+  Lead-DB/„Interesse“ werden hart abgelehnt (NEVER_AUTHORIZATION). Ohne Freigabe: genau EIN passiver Audit, Status AUTHORIZATION_REQUIRED.
+- ZUGÄNGE: Stack-Erkennung nur aus öffentlichen Signalen (github_netlify/static/nextjs/react/wordpress/other). Änderungen laufen NUR über
+  Stack-Adapter (Interface checkAccess/backup/locate/applyFix/validate/deployProduction/rollback); Secrets bleiben beim Adapter (env),
+  die Engine speichert aus Adapter-Antworten nur connector/ok/checked_at (Test: Token landet nie im JSON). **Aktuell sind KEINE Adapter
+  konfiguriert** → jeder echte Auftrag endet ehrlich bei BLOCKED_NO_ACCESS (bzw. BLOCKED_UNSUPPORTED_STACK); Zugangsdaten werden nie erraten.
+- BACKUP VOR JEDER ÄNDERUNG: production_ref + backup_ref + rollback_point + Branch `repair/<order-id>` Pflicht; unvollständig →
+  MANUAL_REVIEW_REQUIRED, nichts wird angefasst. Nie direkt auf main/Production.
+- FULL_AUDIT (Stufe 1, passiv via site-auditor mit erhöhten Limits: 80 Links, 25 Bilder, 10 min): Befunde als issue_id/type/severity/page/
+  evidence/customer_text (aus den bestehenden Kundentext-Vorlagen, Jargon-Gate)/repairable/protected/repair_status. Nichts wird erfunden.
+- REPAIR_PLAN je Befund: Ursache/target/geplante Änderung/Risiko/Testmethode/Rollback-Methode via adapter.locate; Ursache unklar → nie raten,
+  MANUAL_REVIEW. Geschützt (nie automatisch): Seiten Impressum/Datenschutz/AGB/Preise/Konto/Checkout (PROTECTED_PAGE_RE) und Änderungen an
+  DNS/Registrar/Zahlung/Bank/Kundendaten/Datenbank/Preisen/Verträgen/Migration/Redesign (PROTECTED_TARGET_RE) → MANUAL_REVIEW_REQUIRED.
+- MINIMAL SAFE FIX: nur repairable Befunde (REPAIR_TYPES „fix“) innerhalb des Pakets; jeder Fix einzeln persistiert. VALIDATION: Build-Gate
+  (ohne Build-Schritt nur static/github_netlify, sonst MANUAL_REVIEW), reparierte Befunde müssen weg sein, sonst VALIDATION_FAILED.
+  REGRESSION: VORHER gegen NACHHER, neue Befunde ≥ medium → Rollback (wenn Kanal vorhanden) → REPAIR_FAILED, sonst MANUAL_REVIEW_REQUIRED.
+  RETEST Desktop (passiver Abruf) + Smartphone (deps.retester, sonst ehrlich benannte passive Prüfung). Production-Deploy nur: Freigabe +
+  Tests bestanden + Rollback vorhanden + bereits autorisierter Kanal (adapter.deployProduction); danach Live-Retest, Fehler → Rollback.
+- KUNDENBERICHT („Webseiten-Check – Abschlussbericht“): verständlich, behobene Punkte aus customer_text (Jargon-Gate getestet), Abschluss-
+  kontrolle Smartphone/Desktop ehrlich benannt – wird NUR gespeichert, nie automatisch versendet. COMPLETED erst durch `--complete` (Chris).
+- Worker-Hook (mail-worker.js loop): `runRepairOrders` im Hintergrund wie die Discovery (eigenes Lock `repair.lock`, No-op ohne offene
+  Aufträge, blockiert nie Mail-Takt/Discovery, Fehler stoppen den Worker nie). Dockerfile kopiert repair-workflow.js.
+- Kommandozeile: `node repair-workflow.js --list | --show <id> | --create <domain> [--website URL] [--lead ID] [--company NAME] |
+  --authorize <id> --domain <domain> --source <quelle> [--reference TEXT] | --run | --complete <id> | --report <id>`.
+- Tests: neu `test/repair-480-035.test.js` (18, nur Attrappen, kein Netzwerk, keine Mail); gesamt 413/413, Secret-Scan 0 Treffer.
+- OFFEN: (1) VPS-Deploy (deploy.sh fiverr) + Netlify unverändert; (2) erster Stack-Adapter (GitHub+Netlify) mit echtem, von Chris
+  eingerichtetem Zugang je Kundenauftrag – erst damit repariert Jarvis wirklich selbst; (3) optional echter Smartphone-Rendertest
+  (deps.retester, z. B. Playwright 390×844) und Dashboard-Kachel aus `repairOrdersStatus()` (nur Zähler, keine IDs).
+
 ## CLOUD-FIRST (Rollout ab 2026-10-07) – Zielbild: VPS = Gehirn/24-7-Runtime, Netlify = UI, GitHub = Code, Windows = optionaler Client
 Entscheidungen Chris (2026-10-07): (1) VPS nur AUSGEHEND, kein offener Port – Netlify-Functions sind das authentifizierte Gateway;
 (2) Storage = bestehende atomare JSON-Stores + Schema-Versionierung/Migrationen (kein SQLite-Umbau); (3) VPS-Reboot nur per
