@@ -25,8 +25,13 @@
 //   - MINIMAL SAFE FIX: nur Befunde mit eindeutiger Ursache, innerhalb des CHF-480-Pakets, nie Design/Texte/Branding.
 //     Geschützte Inhalte (Impressum, Datenschutz, AGB, Preise, Zahlung, DNS, Kundendaten …) nie automatisch → MANUAL_REVIEW_REQUIRED.
 //   - Nach der Reparatur: Validierung + Regression (VORHER gegen NACHHER). Neue relevante Probleme → Rollback, nie „erfolgreich“.
-//   - Einzige Mail dieses Moduls: die Zugangs-Anfrage (CUSTOMER_ACCESS_REQUEST, über das injizierte gmail-Objekt). Der
-//     Abschlussbericht wird nur gespeichert – Versand entscheidet Chris.
+//   - Mails dieses Moduls: die Zugangs-Anfrage und (TF-043) die Host-Key-Bestätigung – beide als Service-Klasse
+//     CUSTOMER_ACCESS_REQUEST über das injizierte gmail-Objekt, je genau einmal, nur mit One-Time-Link. Der Abschlussbericht
+//     wird nur gespeichert – Versand entscheidet Chris.
+//   - AUTOMATISCHES ZUGANGSPROFIL (TF-043): nach erhaltenem Zugang erzeugt der Preflight (repair-adapters/profile-builder.js) das
+//     Zugangsprofil selbst – nur lesend, nur bei eindeutigem Ergebnis (PROFILE_READY). Unbekannter SSH-Host-Key → nie vertrauen,
+//     Kunde bestätigt über einen sicheren Link (HOST_KEY_CONFIRMATION_REQUIRED); unklarer Webroot → WAITING_FOR_ACCESS_PROFILE
+//     (Chris ergänzt das Profil, der Auftrag läuft danach selbst weiter). Nie raten, nie schreiben vor PROFILE_READY.
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +41,7 @@ import { OFFERS } from "./sales.js";
 import { paymentGateForOrder, paymentSummary, paymentThresholdChf } from "./payments.js";
 import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIntakeToken, openAccessCredential, destroyAccessSecret,
   markSecretDestroyed, syncAccessIntake, intakeClient } from "./access-intake.js";
+import { profileRecord, profileReason, HOST_KEY_CONFIRMED_SOURCES, PROFILE_STATUSES } from "./repair-adapters/profile-builder.js";
 import { REPAIR_TYPES, selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { createAuditor } from "./site-auditor.js";
 import { MAX_AUTO_FIXES_PER_ORDER, hasCapabilities, onlyCapabilities } from "./repair-adapters/common.js";
@@ -48,8 +54,12 @@ export const REPAIR_OFFER = "REPAIR_FIX_500"; // Kundenbezeichnung „Check & Re
 // Adapter/Intake. ACCESS_REQUESTED: Kunde hat nach erfüllter Schwelle genau EINE Zugangs-Anfrage mit sicherem Link bekommen –
 // wartet auf die Einreichung (Zugang + Freigabe) bzw. einen von Chris konfigurierten Adapter-Zugang.
 // PAYMENT_REVIEW_REQUIRED: Zahlung fiel unter die Schwelle, nachdem die Website bereits verändert wurde – Chris entscheidet.
+// TF-043: ACCESS_PROFILE_PREFLIGHT (Zugangsprofil wird automatisch und nur lesend erzeugt), HOST_KEY_CONFIRMATION_REQUIRED
+// (unbekannter SSH-Host-Key – wartet auf die Bestätigung des Kunden bzw. von Chris), WAITING_FOR_ACCESS_PROFILE (Webroot/Angaben
+// nicht eindeutig – wartet, bis Chris das Profil ergänzt). Alle drei warten, nichts wird verändert.
 export const ORDER_STATES = Object.freeze(["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK",
-  "ACCESS_REQUESTED", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]);
+  "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
+  "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]);
 export const BLOCKED_STATES = Object.freeze(["BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK",
   "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS"]);
 // TF-042: BLOCKED_UNSAFE_ACCESS = Zugang technisch möglich, aber unsicher (root-Login, Systemverzeichnis als Webroot, Symlink-Root).
@@ -57,7 +67,9 @@ export const BLOCKED_STATES = Object.freeze(["BLOCKED_NO_ACCESS", "BLOCKED_NO_AU
 export const REPAIR_CANCELLED = "CANCELLED";
 const TERMINAL = new Set(["COMPLETED", REPAIR_CANCELLED, ...BLOCKED_STATES]);
 // Ab diesen Zuständen wird mit dem Kundenzugang gearbeitet – fällt die Zahlung unter die Schwelle, stoppt der Auftrag.
-const WORK_STATES = new Set(["BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY"]);
+const WORK_STATES = new Set(["ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
+  "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY"]);
+const MAX_PREFLIGHT_ATTEMPTS = 6; // vorübergehende Fehler (Server nicht erreichbar) – danach Chris
 // Zugangsart aus dem sicheren Formular → passender Adapter-Schlüssel (nur wenn ein solcher Adapter konfiguriert ist).
 const CONNECTOR_ADAPTER = { github_netlify: "github_netlify", wordpress_cms: "wordpress" };
 
@@ -206,7 +218,12 @@ export function cancelRepairOrder(store, orderId, { reason = null, now = new Dat
 }
 
 // Tresor-Eintrag zerstören und nur Metadaten behalten (connector_type, received_at, destroyed_at, revoked_required).
+// TF-043: auch das Auftragsprofil wird auf Status/Quellen reduziert – Webroot und Fingerprint werden nicht mehr gebraucht.
 function destroyOrderSecret(store, order, now) {
+  if (order.access_profile && !order.access_profile.cleared_at) {
+    const { profile_status, interface: iface, host_key_source, webroot_source, profile_created_at } = order.access_profile;
+    order.access_profile = { profile_status, interface: iface, host_key_source, webroot_source, profile_created_at, cleared_at: now.toISOString() };
+  }
   if (!order.access_intake || order.access_intake.status === "DESTROYED") return;
   const existed = destroyAccessSecret(store.dir, order.order_id);
   markSecretDestroyed(order, { now, existed });
@@ -227,8 +244,10 @@ function destroyOrderSecret(store, order, now) {
 // Fähigkeiten (order.route). Contract-Adapter (WordPress/SFTP/SSH) kommen über die Brücke mit identischer Aufrufform und
 // direct_live = true (Änderungen sind sofort live → jede fehlgeschlagene Prüfung führt zum Rollback). Allen Adapter-Aufrufen
 // wird der Zugangskontext (accessCtx) als letztes Argument mitgegeben; Zugangsdaten werden nur darin zur Laufzeit geöffnet.
+// TF-043: deps.preflight (repair-adapters/profile-builder.js, über createAdapterRegistry) erzeugt nach erhaltenem Zugang das
+// Zugangsprofil automatisch (ACCESS_PROFILE_PREFLIGHT). Ohne preflight bleibt alles wie in TF-042 (Profil von Chris).
 export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir), adapters = {}, auditor = null, retester = null,
-  gmail = null, intake = null, router = null, alert = null, now = () => new Date(), log = () => {} } = {}) {
+  gmail = null, intake = null, router = null, preflight = null, alert = null, now = () => new Date(), log = () => {} } = {}) {
 
   const adapterOf = (order) => (order.stack ? adapters[order.route?.adapter || order.stack.type] || null : null);
   const block = (order, state, reason) => {
@@ -245,6 +264,41 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
   };
   const canRequestAccess = (order) => !!(order.delivery_email && intake && gmail && typeof gmail.createDraft === "function" && typeof gmail.sendDraft === "function");
   const intakeReceived = (order) => order.access_intake?.status === "RECEIVED";
+  // One-Time-Link registrieren + Service-Mail genau EINMAL senden (Zugangs-Anfrage bzw. Host-Key-Bestätigung). Draft-ID und
+  // Sendeversuch werden VOR dem Versand persistiert – ein Neustart erzeugt nie eine zweite Mail; unklarer Ausgang → nie wiederholen.
+  // Rückgabe: "sent" | "unclear" | "deferred" (vorübergehender Fehler, nächster Lauf) | { error }.
+  const sendLinkMail = async (order, field, { register = {}, build, extra = {}, events }) => {
+    const t = now();
+    if (order[field]?.sent_at) return "sent";
+    if (order[field]?.send_attempted_at) {
+      if (!order[field].send_unclear) { order[field] = { ...order[field], send_unclear: true }; order.updated_at = t.toISOString(); saveOrder(store, order); log("warn", events.unclear, { order_id: order.order_id }); }
+      return "unclear";
+    }
+    try {
+      if (!order[field]?.draft_id) {
+        // Neuer One-Time-Link: nur der Hash wird registriert/gespeichert; der Token steht ausschliesslich in der Mail.
+        const tk = newIntakeToken({ now: t });
+        await intake.register({ order_id: order.order_id, domain: order.domain, token_hash: tk.token_hash, expires_at: tk.expires_at, public_key: accessKeys(store.dir).publicKeyPem, ...register });
+        const mail = build({ link: accessLink(intake.origin, tk.token), expires_at: tk.expires_at });
+        const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: ACCESS_REQUEST_CLASS });
+        order[field] = { to: order.delivery_email, draft_id: d.draftId, message_class: ACCESS_REQUEST_CLASS, token_hash: tk.token_hash, expires_at: tk.expires_at, created_at: t.toISOString(), ...extra };
+        order.updated_at = t.toISOString();
+        saveOrder(store, order); // Draft-ID sofort persistieren – ein Neustart erzeugt nie ein Duplikat
+      }
+      order[field] = { ...order[field], send_attempted_at: t.toISOString() };
+      saveOrder(store, order); // VOR dem Versand – ein Absturz danach führt nie zu einer zweiten Mail
+      await gmail.sendDraft(order[field].draft_id);
+    } catch (e) {
+      if (order[field]?.send_attempted_at) { order[field] = { ...order[field], send_attempted_at: null }; saveOrder(store, order); }
+      if (TRANSIENT_RE.test(e.message)) { log("warn", events.deferred, { order_id: order.order_id, error: String(e.message).slice(0, 160) }); return "deferred"; } // nächster Lauf
+      return { error: String(e.message).slice(0, 120) };
+    }
+    order[field] = { ...order[field], sent_at: t.toISOString() };
+    order.updated_at = t.toISOString();
+    saveOrder(store, order);
+    log("info", events.sent, { order_id: order.order_id, message_class: ACCESS_REQUEST_CLASS });
+    return "sent";
+  };
   // Domain-Bindung (TF-041): Auftrag, Freigabe und – falls vorhanden – der sicher übermittelte Zugang zeigen auf exakt dieselbe Domain.
   const domainBound = (order) => authorizationOk(order) && (!order.access_intake || normDomain(order.access_intake.access_domain) === normDomain(order.domain));
   // Zugangsdaten nur auf Abruf im Speicher entschlüsseln (Adapter) – nie speichern, nie loggen.
@@ -384,6 +438,11 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         const viaForm = intakeReceived(order) ? CONNECTOR_ADAPTER[order.access_intake.connector_type] : null;
         if (viaForm && adapters[viaForm] && order.stack.type !== viaForm && !adapters[order.stack.type]) { order.stack = { type: viaForm, evidence: ["secure_order_access_form"] }; saveOrder(store, order); }
       }
+      // TF-043: Zugangsprofil automatisch vorbereiten (nur lesend), bevor irgendein Adapter mit dem Zugang arbeitet.
+      if (preflight && router && intakeReceived(order) && order.route?.adapter && order.access_profile?.profile_status !== "PROFILE_READY") {
+        transition(order, "ACCESS_PROFILE_PREFLIGHT", `Zugang erhalten (${order.route.label || order.route.adapter}) – Zugangsprofil wird automatisch und nur lesend vorbereitet`, t);
+        saveOrder(store, order); return true;
+      }
       if (order.stack.type === "other" && !intakeReceived(order)) { block(order, "BLOCKED_UNSUPPORTED_STACK", "Stack nicht erkannt – kein sicher unterstützter Reparaturweg."); return false; }
       const a = adapterOf(order);
       if (!a || typeof a.checkAccess !== "function") return requestAccessOrBlock(order, intakeReceived(order)
@@ -411,33 +470,10 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
           block(order, "BLOCKED_NO_ACCESS", "Keine automatische Zugangs-Anfrage möglich (Kundenadresse, sicherer Link oder Versandweg fehlt) – Zugangsdaten werden nie erraten."); return false;
         }
         // Send-Idempotenz: ein früherer Versuch ohne gesicherten Ausgang wird NIE blind wiederholt (Chris prüft «Gesendet»).
-        if (order.access_request?.send_attempted_at) {
-          if (!order.access_request.send_unclear) { order.access_request = { ...order.access_request, send_unclear: true }; order.updated_at = t.toISOString(); saveOrder(store, order); log("warn", "repair_access_request_unclear", { order_id: order.order_id }); }
-        } else {
-          try {
-            if (!order.access_request?.draft_id) {
-              // Neuer One-Time-Link: nur der Hash wird registriert/gespeichert; der Token steht ausschliesslich in der Mail.
-              const tk = newIntakeToken({ now: t });
-              await intake.register({ order_id: order.order_id, domain: order.domain, token_hash: tk.token_hash, expires_at: tk.expires_at, public_key: accessKeys(store.dir).publicKeyPem });
-              const mail = buildAccessRequestMail(order, { link: accessLink(intake.origin, tk.token), expires_at: tk.expires_at });
-              const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: ACCESS_REQUEST_CLASS });
-              order.access_request = { to: order.delivery_email, draft_id: d.draftId, message_class: ACCESS_REQUEST_CLASS, token_hash: tk.token_hash, expires_at: tk.expires_at, created_at: t.toISOString() };
-              order.updated_at = t.toISOString();
-              saveOrder(store, order); // Draft-ID sofort persistieren – ein Neustart erzeugt nie ein Duplikat
-            }
-            order.access_request = { ...order.access_request, send_attempted_at: t.toISOString() };
-            saveOrder(store, order); // VOR dem Versand – ein Absturz danach führt nie zu einer zweiten Mail
-            await gmail.sendDraft(order.access_request.draft_id);
-          } catch (e) {
-            if (order.access_request?.send_attempted_at) { order.access_request = { ...order.access_request, send_attempted_at: null }; saveOrder(store, order); }
-            if (TRANSIENT_RE.test(e.message)) { log("warn", "repair_access_request_deferred", { order_id: order.order_id, error: String(e.message).slice(0, 160) }); return false; } // nächster Lauf
-            block(order, "BLOCKED_NO_ACCESS", `Automatische Zugangs-Anfrage fehlgeschlagen: ${String(e.message).slice(0, 120)}`); return false;
-          }
-          order.access_request = { ...order.access_request, sent_at: t.toISOString() };
-          order.updated_at = t.toISOString();
-          saveOrder(store, order);
-          log("info", "repair_access_requested", { order_id: order.order_id, message_class: ACCESS_REQUEST_CLASS });
-        }
+        const r = await sendLinkMail(order, "access_request", { build: (x) => buildAccessRequestMail(order, x),
+          events: { unclear: "repair_access_request_unclear", deferred: "repair_access_request_deferred", sent: "repair_access_requested" } });
+        if (r === "deferred") return false;
+        if (r?.error) { block(order, "BLOCKED_NO_ACCESS", `Automatische Zugangs-Anfrage fehlgeschlagen: ${r.error}`); return false; }
       }
       // Sicherer Zugang + Freigabe über das Formular eingegangen → Zugangsprüfung (Domain-Bindung wird dort erneut geprüft).
       if (intakeReceived(order)) {
@@ -454,6 +490,67 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         }
       }
       return false; // wartet auf sicheren Zugang (+ Freigabe)
+    }
+
+    if (order.state === "ACCESS_PROFILE_PREFLIGHT") {
+      // TF-043: Profil nur lesend erzeugen. Ergebnis NUR bei eindeutigem, sicherem Befund PROFILE_READY – sonst warten/stoppen.
+      if (!domainBound(order)) { block(order, "BLOCKED_NO_AUTHORIZATION", "Freigabe fehlt oder Domain (Auftrag/Freigabe/Zugang) stimmt nicht überein."); return false; }
+      if (!preflight || !order.route?.adapter) { manual(order, "Automatischer Profil-Preflight nicht verfügbar – Zugangsprofil manuell anlegen."); return false; }
+      const prev = order.access_profile || {};
+      const r = await preflight.run(order, { adapter: order.route.adapter, accessCtx: accessCtx(order) }).catch(() => ({ profile_status: "PREFLIGHT_RETRY", reason: "connect_failed" }));
+      if (r.profile_status === "PREFLIGHT_RETRY") {
+        const attempts = (prev.attempts || 0) + 1;
+        order.access_profile = { ...prev, attempts, reason: String(r.reason || "").slice(0, 60), updated_at: t.toISOString() };
+        if (attempts >= MAX_PREFLIGHT_ATTEMPTS) { await informChris(order, "preflight_failed", profileReason(r.reason)); manual(order, `Zugangsprofil: ${profileReason(r.reason)} (${attempts} Versuche).`); return false; }
+        saveOrder(store, order); log("warn", "repair_profile_preflight_retry", { order_id: order.order_id, reason: r.reason }); return false;
+      }
+      order.access_profile = profileRecord(r, { prev, now: t });
+      const why = profileReason(r.reason);
+      log("info", "repair_profile_preflight", { order_id: order.order_id, profile_status: order.access_profile.profile_status, reason: order.access_profile.reason });
+      switch (order.access_profile.profile_status) {
+        case "PROFILE_READY":
+          transition(order, "ACCESS_CHECK", `PROFILE_READY – Zugangsprofil automatisch erstellt (${order.access_profile.interface}${order.access_profile.webroot_source ? `, Webroot: ${order.access_profile.webroot_source}` : ""}${order.access_profile.host_key_source ? `, Host-Key: ${order.access_profile.host_key_source}` : ""})`, t);
+          saveOrder(store, order); return true;
+        case "HOST_KEY_CONFIRMATION_REQUIRED":
+          transition(order, "HOST_KEY_CONFIRMATION_REQUIRED", why, t); saveOrder(store, order); return true;
+        case "WAITING_FOR_ACCESS_PROFILE":
+          order.access_profile.manual_profile_seen = preflight.manualProfileFor?.(order)?.updated_at || null; // Stand des Chris-Profils beim Warten
+          transition(order, "WAITING_FOR_ACCESS_PROFILE", `${why} Chris ergänzt das Zugangsprofil (router.js --profile); danach läuft der Auftrag selbst weiter.`, t);
+          await informChris(order, "access_profile_required", why); saveOrder(store, order); return false;
+        case "BLOCKED_UNSAFE_ACCESS": block(order, "BLOCKED_UNSAFE_ACCESS", `Zugang abgelehnt: ${why}`); return false;
+        case "BLOCKED_NO_ACCESS": return requestAccessOrBlock(order, `Zugangsprüfung fehlgeschlagen (${String(r.reason || "").slice(0, 40)}) – keine Änderung ohne sicheren Zugang.`);
+        default: await informChris(order, "access_profile_review", why); manual(order, `Zugangsprofil: ${why}`); return false;
+      }
+    }
+
+    if (order.state === "HOST_KEY_CONFIRMATION_REQUIRED") {
+      // Unbekannter SSH-Host-Key wird NIE automatisch vertraut. Weiter erst nach Bestätigung (Kunde über den sicheren Link,
+      // Chris per --confirm-host-key) oder wenn Chris den Fingerprint im Profil hinterlegt. Bis dahin keine Verbindung mit Zugangsdaten.
+      const ap = order.access_profile || {};
+      if (ap.host_key_rejected_at) { await informChris(order, "host_key_rejected", "Kunde meldet abweichenden Fingerprint"); manual(order, "Kunde meldet: Server-Fingerprint stimmt nicht mit der Angabe des Hosters überein – keine Verbindung mit Zugangsdaten, Chris prüft."); return false; }
+      const confirmed = HOST_KEY_CONFIRMED_SOURCES.includes(ap.host_key_source) && !!ap.host_key_sha256;
+      if (confirmed || preflight?.manualProfileFor?.(order)?.host_key_sha256) {
+        transition(order, "ACCESS_PROFILE_PREFLIGHT", confirmed ? `Host-Key bestätigt (${ap.host_key_source})` : "Host-Key von Chris im Zugangsprofil hinterlegt", t); saveOrder(store, order); return true;
+      }
+      if (!order.host_key_request?.sent_at && !order.host_key_request?.failed_at && canRequestAccess(order) && ap.host_key_candidate) {
+        const r = await sendLinkMail(order, "host_key_request", { register: { purpose: "host_key_confirmation", host_key_candidate: ap.host_key_candidate },
+          build: (x) => buildHostKeyConfirmationMail(order, x), extra: { host_key_candidate: ap.host_key_candidate },
+          events: { unclear: "repair_host_key_request_unclear", deferred: "repair_host_key_request_deferred", sent: "repair_host_key_requested" } });
+        if (r?.error) {
+          order.host_key_request = { ...(order.host_key_request || {}), failed_at: t.toISOString() };
+          await informChris(order, "host_key_request_failed", r.error); saveOrder(store, order);
+        }
+      }
+      return false; // wartet auf Bestätigung
+    }
+
+    if (order.state === "WAITING_FOR_ACCESS_PROFILE") {
+      // Wartet, bis Chris das Profil ergänzt (oder ändert) – dann genau ein neuer Preflight. Nie raten.
+      const mp = preflight?.manualProfileFor?.(order);
+      if (mp?.updated_at && mp.updated_at !== (order.access_profile?.manual_profile_seen || null)) {
+        transition(order, "ACCESS_PROFILE_PREFLIGHT", "Zugangsprofil von Chris ergänzt – neuer Preflight", t); saveOrder(store, order); return true;
+      }
+      return false;
     }
 
     if (order.state === "BACKUP") {
@@ -652,6 +749,34 @@ export function buildAccessRequestMail(order, { link = null, expires_at = null }
   return { subject: `Ihre Website-Reparatur ${order.domain} – sicherer Zugang benötigt`, body, message_class: ACCESS_REQUEST_CLASS };
 }
 
+// ---------- Host-Key-Bestätigung (TF-043): nur nach erhaltenem Zugang + erfüllter Zahlungsschwelle, nur an die verifizierte ----------
+// Kundenadresse, genau einmal, mit One-Time-Link. Der Fingerprint steht nur auf der Link-Seite (nicht geheim, aber unnötig in der
+// Mail); keine Hosts, Benutzer, Pfade oder internen IDs. Bis zur Bestätigung verbindet sich Jarvis nicht mit den Zugangsdaten.
+export function buildHostKeyConfirmationMail(order, { link = null, expires_at = null } = {}) {
+  const until = expires_at ? new Intl.DateTimeFormat("de-CH", { dateStyle: "long", timeStyle: "short", timeZone: "Europe/Zurich" }).format(new Date(expires_at)) : null;
+  const body = [
+    `Hallo ${order.contact_name || order.company || ""}`.trim(),
+    "",
+    `vielen Dank für den Zugang zu Ihrer Website ${order.domain}.`,
+    "",
+    "Bevor ich mich mit Ihrem Server verbinde, prüfe ich dessen digitales Sicherheitsmerkmal (den sogenannten Fingerprint).",
+    "So ist sichergestellt, dass ich wirklich mit Ihrem Server spreche und nicht mit einem fremden.",
+    "",
+    "Bitte öffnen Sie dazu Ihren persönlichen Link" + (until ? ` (gültig bis ${until}, nur einmal verwendbar):` : " (nur einmal verwendbar):"),
+    link || "(Link folgt separat)",
+    "",
+    "Dort sehen Sie das Merkmal. Bitte vergleichen Sie es mit der Angabe Ihres Hosting-Anbieters (oft im Kundenbereich unter",
+    "«SSH» bzw. «SFTP» zu finden – der Support Ihres Anbieters nennt es Ihnen auch gerne) und bestätigen Sie, ob es übereinstimmt.",
+    "",
+    "Bis zu Ihrer Bestätigung verbinde ich mich nicht mit Ihren Zugangsdaten. Bitte senden Sie mir keine Passwörter per E-Mail.",
+    "",
+    "Freundliche Grüsse",
+    "Chris",
+    "Helvetic Webdesign",
+  ].join("\n");
+  return { subject: `Ihre Website-Reparatur ${order.domain} – kurze Sicherheitsbestätigung`, body, message_class: ACCESS_REQUEST_CLASS };
+}
+
 // ---------- Kundenbericht (verständlich, ohne Fachjargon; wird nur gespeichert, nie automatisch versendet) ----------
 // Für den Kunden: keine internen IDs, keine Git-Referenzen, keine Roh-Evidence, keine internen Pfade, keine Tokens.
 export function buildCustomerReport(order, { now = new Date() } = {}) {
@@ -698,11 +823,13 @@ export function repairOrdersStatus(dir = WORKER_DIR) {
     waiting_authorization: states.AUTHORIZATION_REQUIRED || 0, waiting_payment: states.PAYMENT_REQUIRED || 0,
     access_requested: states.ACCESS_REQUESTED || 0, payment_review: states.PAYMENT_REVIEW_REQUIRED || 0,
     ready_for_delivery: states.READY_FOR_DELIVERY || 0, cancelled: states[REPAIR_CANCELLED] || 0,
-    manual_review: states.MANUAL_REVIEW_REQUIRED || 0, unsafe_access: states.BLOCKED_UNSAFE_ACCESS || 0 };
+    manual_review: states.MANUAL_REVIEW_REQUIRED || 0, unsafe_access: states.BLOCKED_UNSAFE_ACCESS || 0,
+    host_key_confirmation: states.HOST_KEY_CONFIRMATION_REQUIRED || 0, waiting_access_profile: states.WAITING_FOR_ACCESS_PROFILE || 0 };
 }
 
 // Kundenphase fürs Dashboard (TF-041) – feste Wörter, aus Zustand + Zahlung + Zugang abgeleitet.
-export const REPAIR_PHASES = Object.freeze(["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "BACKUP", "REPAIRING",
+export const REPAIR_PHASES = Object.freeze(["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED",
+  "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "BACKUP", "REPAIRING",
   "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"]);
 export function repairPhase(o, pay) {
   if (o.state === "COMPLETED") return "COMPLETED";
@@ -715,6 +842,9 @@ export function repairPhase(o, pay) {
   if (o.state === "RETEST") return "LIVE_RETEST";
   if (["REPAIRING", "FULL_AUDIT", "REPAIR_PLAN"].includes(o.state)) return "REPAIRING";
   if (o.state === "BACKUP") return "BACKUP";
+  if (o.state === "ACCESS_PROFILE_PREFLIGHT") return "ACCESS_PROFILE_PREFLIGHT";
+  if (o.state === "HOST_KEY_CONFIRMATION_REQUIRED") return "HOST_KEY_CONFIRMATION";
+  if (o.state === "WAITING_FOR_ACCESS_PROFILE") return "WAITING_FOR_ACCESS_PROFILE";
   if (!["DEPOSIT_MET", "PAID_FULL"].includes(pay.payment_status)) return "WAITING_FOR_DEPOSIT";
   if (o.access_intake?.status === "RECEIVED") return "ACCESS_RECEIVED";
   if (o.access_request?.sent_at && Date.parse(o.access_request.expires_at || 0) > Date.now()) return "ACCESS_REQUEST_SENT";
@@ -727,7 +857,7 @@ export function repairPhase(o, pay) {
 export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domain", "offer_class", "price_chf", "state", "phase", "findings",
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
-  "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "created_at", "updated_at"]);
+  "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "created_at", "updated_at"]);
 // Adapter-Anzeige (TF-042): feste Wörter – nie Connector-Strings (enthalten z. B. Repo-Namen), nie Hosts/Pfade.
 const ADAPTER_WORDS = { github_netlify: "GITHUB_NETLIFY", wordpress: "WORDPRESS", sftp: "SFTP", ssh: "SSH" };
 const adapterWord = (o) => (o.state === "BLOCKED_UNSUPPORTED_STACK" || (o.route && !o.route.adapter) ? "UNSUPPORTED"
@@ -758,6 +888,8 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         adapter: adapterWord(o), access_ok: o.access?.ok === true,
         rollback_ok: !!o.backup?.rollback_point && (!o.access?.capabilities || o.access.capabilities.includes("ROLLBACK")),
         auto_fixable: (o.plan || []).length, manual_review: (o.manual_review || []).length,
+        // TF-043: nur das Statuswort des Zugangsprofils – nie Host, Benutzer, IP, Webroot/Pfade oder Fingerprint.
+        profile_status: PROFILE_STATUSES.includes(o.access_profile?.profile_status) ? o.access_profile.profile_status : null,
         created_at: o.created_at, updated_at: o.updated_at,
       };
     });
@@ -779,12 +911,12 @@ function registryStatus() {
 // TF-042: zusätzlich WordPress REST, SFTP und SSH/SFTP über den Router (repair-adapters/router.js). Ohne Zugangsprofil/Tresor
 // bleiben sie wirkungslos (fail closed). Ladefehler eines Adapters → ohne ihn (nie ein Absturz des Workers).
 export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
-  let adapters = {}, router = null;
+  let adapters = {}, router = null, preflight = null;
   try { const m = await import("./repair-adapters/github-netlify.js"); adapters = { github_netlify: m.githubNetlifyAdapter({ dir }) }; } catch {}
-  try { const reg = await (await import("./repair-adapters/router.js")).createAdapterRegistry({ dir, legacy: adapters }); adapters = reg.adapters; router = reg.router; } catch {}
+  try { const reg = await (await import("./repair-adapters/router.js")).createAdapterRegistry({ dir, legacy: adapters }); adapters = reg.adapters; router = reg.router; preflight = reg.preflight; } catch {}
   let retester = null;
   try { retester = await (await import("./repair-render-test.js")).loadRenderRetester(); } catch {}
-  return { adapters, retester, router };
+  return { adapters, retester, router, preflight };
 }
 
 // ---------- Worker-Hook (eigenes Lock, nie zwei Läufe; ohne explizite Deps werden die Standard-Deps geladen) ----------
@@ -792,7 +924,7 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
 // intake (optional, access-intake.js intakeClient): sicherer One-Time-Link; vor dem Engine-Lauf werden eingegangene
 // Einreichungen abgeholt (nur wenn ein Auftrag darauf wartet – kein Netzverkehr ohne Grund). Ohne gmail/intake bleibt
 // fehlender Zugang wie bisher BLOCKED_NO_ACCESS – es wird nie etwas erraten.
-export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
+export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
@@ -802,12 +934,14 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
       adapters = defaults.adapters;
       retester = retester || defaults.retester;
       router = router || defaults.router;
+      preflight = preflight || defaults.preflight;
     }
     const store = createStore(dir);
     let access = null;
-    const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED");
+    const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => (o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED")
+      || (o.state === "HOST_KEY_CONFIRMATION_REQUIRED" && o.host_key_request?.sent_at && !o.host_key_request.received_at));
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
-    const engine = createRepairEngine({ dir, store, adapters, retester, router, gmail, intake, log });
+    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, gmail, intake, log });
     return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }
@@ -820,6 +954,8 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
 //                         | --authorize <order_id> --domain <domain> --source <quelle> [--reference TEXT]
 //                         | --run | --complete <order_id> | --report <order_id> | --cancel <order_id> --reason TEXT
 //                         | --reissue-access <order_id> --reason TEXT   (abgelaufener Link: genau EINE neue Anfrage, nur durch Chris)
+//                         | --confirm-host-key <order_id> --fingerprint SHA256:…  (TF-043: Chris hat den Fingerprint unabhängig
+//                           beim Kunden/Hoster geprüft; muss EXAKT dem vom Server präsentierten Kandidaten entsprechen)
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
   const flag = (n) => { const i = argv.indexOf("--" + n); return i >= 0 ? argv[i + 1] : undefined; };
@@ -847,11 +983,37 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
     if (flag("complete")) { const o = completeOrder(store, flag("complete")); console.log(`Abgeschlossen: ${o.order_id} → ${o.state}${o.access_intake ? " – Zugangsdaten zerstört; Kunden bitten, den temporären Zugang zu entfernen." : ""}`); return 0; }
     if (flag("cancel")) { const o = cancelRepairOrder(store, flag("cancel"), { reason: flag("reason") }); console.log(`Storniert: ${o.order_id} → ${o.state}${o.access_intake ? " – Zugangsdaten zerstört." : ""}`); return 0; }
+    if (flag("confirm-host-key")) {
+      const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });
+      const o = data.orders?.[flag("confirm-host-key")];
+      if (!o) throw new Error("Auftrag nicht gefunden.");
+      if (o.state !== "HOST_KEY_CONFIRMATION_REQUIRED") throw new Error(`Nur im Zustand HOST_KEY_CONFIRMATION_REQUIRED (aktuell ${o.state}).`);
+      const { normFingerprint } = await import("./repair-adapters/common.js");
+      const fp = normFingerprint(flag("fingerprint"));
+      if (!fp || fp !== o.access_profile?.host_key_candidate) throw new Error("Fingerprint stimmt nicht exakt mit dem vom Server präsentierten Kandidaten überein – nichts bestätigt.");
+      const at = new Date().toISOString();
+      o.access_profile = { ...o.access_profile, host_key_sha256: fp, host_key_source: "chris_confirmation", host_key_confirmed_at: at, updated_at: at };
+      o.state_history.push({ at, from: o.state, to: o.state, reason: "Host-Key von Chris bestätigt (unabhängig geprüft)" });
+      store.write(REPAIR_ORDERS_FILE, data);
+      console.log("Host-Key bestätigt. Beim nächsten Worker-Lauf läuft der Preflight weiter.");
+      return 0;
+    }
     if (flag("reissue-access")) {
       const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });
       const o = data.orders?.[flag("reissue-access")];
       if (!o) throw new Error("Auftrag nicht gefunden.");
       if (!String(flag("reason") || "").trim()) throw new Error('Begründung ist Pflicht: --reason "<grund>".');
+      if (o.state === "HOST_KEY_CONFIRMATION_REQUIRED") {
+        // Abgelaufener Bestätigungslink: genau EIN neuer Link (nur durch Chris), nie solange der alte gilt.
+        if (o.host_key_request?.received_at) throw new Error("Bestätigung bereits erhalten.");
+        if (o.host_key_request?.sent_at && Date.parse(o.host_key_request.expires_at) > Date.now()) throw new Error("Der bestehende Bestätigungslink ist noch gültig – keine zweite Anfrage.");
+        o.host_key_request_history = [...(o.host_key_request_history || []), { sent_at: o.host_key_request?.sent_at || null, expires_at: o.host_key_request?.expires_at || null, reissued_at: new Date().toISOString(), reason: String(flag("reason")).slice(0, 200) }];
+        o.host_key_request = null;
+        o.state_history.push({ at: new Date().toISOString(), from: o.state, to: o.state, reason: `Neuer Bestätigungslink durch Chris: ${String(flag("reason")).slice(0, 120)}` });
+        store.write(REPAIR_ORDERS_FILE, data);
+        console.log("Beim nächsten Worker-Lauf geht genau EINE neue Host-Key-Bestätigung mit neuem Link raus.");
+        return 0;
+      }
       if (o.state !== "ACCESS_REQUESTED" || o.access_intake?.status === "RECEIVED") throw new Error(`Nur ein wartender Auftrag (ACCESS_REQUESTED, ohne erhaltenen Zugang) – aktuell ${o.state}.`);
       if (o.access_request?.sent_at && Date.parse(o.access_request.expires_at) > Date.now()) throw new Error("Der bestehende Link ist noch gültig – keine zweite Anfrage.");
       o.access_request_history = [...(o.access_request_history || []), { sent_at: o.access_request?.sent_at || null, expires_at: o.access_request?.expires_at || null, reissued_at: new Date().toISOString(), reason: String(flag("reason")).slice(0, 200) }];
@@ -862,7 +1024,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       return 0;
     }
     if (flag("report")) { const o = store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders?.[flag("report")]; if (!o?.report) throw new Error("Kein Bericht vorhanden."); console.log(`${o.report.subject}\n\n${o.report.body}`); return 0; }
-    console.log("Befehle: --list | --show <id> | --create <domain> | --authorize <id> --domain <d> --source <q> | --run | --complete <id> | --cancel <id> --reason <r> | --reissue-access <id> --reason <r> | --report <id>");
+    console.log("Befehle: --list | --show <id> | --create <domain> | --authorize <id> --domain <d> --source <q> | --run | --complete <id> | --cancel <id> --reason <r> | --reissue-access <id> --reason <r> | --confirm-host-key <id> --fingerprint SHA256:… | --report <id>");
     return 1;
   };
   run().then((c) => process.exit(c), (e) => { console.error("Fehler: " + e.message); process.exit(1); });

@@ -25,15 +25,19 @@ import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore } from "./mail-worker.js";
 import { paymentGateForOrder } from "./payments.js";
 import { safeEqual } from "./shared-state.js";
-import { ACCESS_TYPES, ACCESS_ENVELOPE_ALG, INTAKE_TTL_MS, ORDER_ID_RE, REPAIR_SCOPE, normDomain, tokenHash, consentText, validEnvelope } from "./access-intake-api.js";
+import { ACCESS_TYPES, ACCESS_ENVELOPE_ALG, INTAKE_TTL_MS, ORDER_ID_RE, REPAIR_SCOPE, INTAKE_PURPOSES, normDomain, tokenHash, consentText,
+  hostKeyConfirmText, validEnvelope } from "./access-intake-api.js";
 
-export { ACCESS_TYPES, INTAKE_TTL_MS, tokenHash, consentText };
+export { ACCESS_TYPES, INTAKE_TTL_MS, INTAKE_PURPOSES, tokenHash, consentText, hostKeyConfirmText };
 export const ACCESS_KEY_FILE = "access_intake_private.pem";
 export const ACCESS_VAULT_DIR = "access_vault";
 export const ACCESS_AUTH_SOURCE = "secure_order_access_form";
 export const ACCESS_REQUEST_CLASS = "CUSTOMER_ACCESS_REQUEST";
 const REPAIR_ORDERS_FILE = "repair_orders.json"; // lokal (wie payments.js), damit kein Import-Zyklus mit repair-workflow.js entsteht
-const PAYLOAD_KEYS = new Set(["access_type", "host", "username", "secret", "notes"]);
+// TF-043: zusätzlich strukturierte Server-Angaben (port, remote_root, ssh_host_key_sha256, website_stack_hint, provider_name) und
+// die Passphrase eines Schlüssels – alles nur im Chiffrat; geheim sind secret + passphrase (profile-builder.js SECRET_FIELDS).
+const PAYLOAD_KEYS = new Set(["access_type", "host", "username", "secret", "notes", "port", "remote_root", "ssh_host_key_sha256", "passphrase",
+  "website_stack_hint", "provider_name"]);
 
 // ---------- Schlüssel (Private Key nur hier auf dem VPS) ----------
 export function accessKeys(workerDir = WORKER_DIR) {
@@ -134,6 +138,7 @@ export function markSecretDestroyed(order, { now = new Date(), existed = true } 
 export function applyAccessSubmission(store, s, { workerDir = store.dir, now = new Date() } = {}) {
   const reject = (reason) => ({ ok: false, reason });
   if (!s || !ORDER_ID_RE.test(String(s.order_id))) return reject("order_id ungültig");
+  if (s.submission?.purpose === "host_key_confirmation") return applyHostKeyConfirmation(store, s, { now });
   const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
   const order = data.orders?.[s.order_id];
   if (!order) return reject("Auftrag unbekannt");
@@ -166,6 +171,42 @@ export function applyAccessSubmission(store, s, { workerDir = store.dir, now = n
   data.orders[order.order_id] = order;
   store.write(REPAIR_ORDERS_FILE, data);
   return { ok: true, connector_type: sub.access_type };
+}
+
+// Host-Key-Bestätigung des Kunden (TF-043) – fail closed: richtiger Zustand, Token-Hash des Bestätigungslinks, nicht abgelaufen,
+// Domain exakt, Zahlungsschwelle erfüllt, bestätigter Fingerprint == gespeicherter Kandidat (exakt). Kein Chiffrat, keine Secrets.
+export function applyHostKeyConfirmation(store, s, { now = new Date() } = {}) {
+  const reject = (reason) => ({ ok: false, reason });
+  const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  const order = data.orders?.[s.order_id];
+  if (!order) return reject("Auftrag unbekannt");
+  const sub = s.submission || {};
+  const deny = (reason) => {
+    order.access_intake_rejections = [...(order.access_intake_rejections || []), { at: now.toISOString(), reason }].slice(-10);
+    order.updated_at = now.toISOString();
+    data.orders[order.order_id] = order; store.write(REPAIR_ORDERS_FILE, data);
+    return reject(reason);
+  };
+  if (order.state !== "HOST_KEY_CONFIRMATION_REQUIRED") return deny(`Auftrag nicht im Zustand HOST_KEY_CONFIRMATION_REQUIRED (${order.state})`);
+  const hr = order.host_key_request || {};
+  if (hr.received_at) return deny("Bestätigung bereits erhalten – One-Time-Link");
+  if (!hr.token_hash || !safeEqual(hr.token_hash, s.token_hash)) return deny("Token passt nicht zum Auftrag");
+  if (!Date.parse(sub.submitted_at) || Date.parse(sub.submitted_at) > Date.parse(hr.expires_at)) return deny("Link war abgelaufen");
+  if (normDomain(s.domain) !== order.domain || normDomain(sub.access_domain) !== order.domain) return deny("Domain stimmt nicht mit dem Auftrag überein");
+  const candidate = order.access_profile?.host_key_candidate;
+  if (!candidate || hr.host_key_candidate !== candidate || sub.host_key !== candidate) return deny("Fingerprint passt nicht zum gespeicherten Kandidaten");
+  if (!["confirm", "reject"].includes(sub.decision)) return deny("Entscheidung fehlt");
+  if (sub.decision === "confirm" && (sub.consent !== true || sub.confirm_text !== hostKeyConfirmText(order.domain))) return deny("Bestätigung fehlt");
+  if (!paymentGateForOrder(store, order).satisfied) return deny("Zahlungsschwelle nicht erfüllt");
+  const at = now.toISOString();
+  order.host_key_request = { ...hr, received_at: at, decision: sub.decision };
+  order.access_profile = sub.decision === "confirm"
+    ? { ...order.access_profile, host_key_sha256: candidate, host_key_source: "customer_confirmation", host_key_confirmed_at: sub.submitted_at, updated_at: at }
+    : { ...order.access_profile, host_key_rejected_at: sub.submitted_at, updated_at: at };
+  order.updated_at = at;
+  data.orders[order.order_id] = order;
+  store.write(REPAIR_ORDERS_FILE, data);
+  return { ok: true, connector_type: "host_key_confirmation", decision: sub.decision };
 }
 
 // Ein Abgleich: alle Einreichungen holen, je Auftrag übernehmen oder ablehnen, IMMER quittieren (Link ist danach tot,

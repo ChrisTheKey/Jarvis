@@ -275,9 +275,18 @@ test("Repair-Module können keine Mail senden: kein Gmail-Import, kein Send-Aufr
   // nur über das injizierte gmail-Objekt (kein statischer Gmail-Import, keine SMTP-/messages.send-Wege).
   const src = fs.readFileSync(path.join(ROOT, "repair-workflow.js"), "utf8");
   assert.ok(!/^import .*gmail/im.test(src) && !/messages\.send|smtp/i.test(src), "kein statischer Gmail-Import, keine Direkt-Sendewege");
-  assert.equal(src.match(/gmail\.sendDraft\(/g)?.length, 1, "genau ein Send-Aufruf (Zugangs-Anfrage)");
+  assert.equal(src.match(/gmail\.sendDraft\(/g)?.length, 1, "genau ein Send-Aufruf (One-Time-Link-Helfer)");
+  // TF-043: der einzige Send-Aufruf liegt im Helfer sendLinkMail; genutzt NUR für die Zugangs-Anfrage (ACCESS_REQUESTED) und die
+  // Host-Key-Bestätigung (HOST_KEY_CONFIRMATION_REQUIRED) – beide mit One-Time-Link, nie in einem Arbeits-/Reparaturschritt.
   const sendAt = src.indexOf("gmail.sendDraft(");
-  assert.ok(src.lastIndexOf('order.state === "ACCESS_REQUESTED"', sendAt) > src.lastIndexOf('order.state === "ACCESS_CHECK"', sendAt), "Send nur im ACCESS_REQUESTED-Schritt");
+  assert.ok(sendAt > src.indexOf("const sendLinkMail = async") && sendAt < src.indexOf("async function step("), "Send nur im Helfer sendLinkMail");
+  const uses = [...src.matchAll(/await sendLinkMail\(order, "(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual(uses, ["access_request", "host_key_request"]);
+  for (const [field, state] of [["access_request", "ACCESS_REQUESTED"], ["host_key_request", "HOST_KEY_CONFIRMATION_REQUIRED"]]) {
+    const at = src.indexOf(`await sendLinkMail(order, "${field}"`);
+    const steps = [...src.slice(0, at).matchAll(/if \(order\.state === "(\w+)"\)/g)];
+    assert.equal(steps.at(-1)[1], state, `${field} nur im Schritt ${state}`);
+  }
 });
 
 test("Dockerfile kopiert Adapter + Rendertest", () => {

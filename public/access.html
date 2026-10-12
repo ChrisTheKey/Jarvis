@@ -15,6 +15,7 @@
 
   <section id="loading"><p>Link wird geprüft …</p></section>
   <section id="invalid" hidden><p class="err" id="invalidMsg">Link ungültig, bereits verwendet oder abgelaufen. Bitte melden Sie sich bei uns.</p></section>
+  <section id="hkDone" hidden><p class="ok" id="hkDoneMsg">Vielen Dank – Ihre Rückmeldung ist bei uns eingegangen. Dieser Link ist jetzt ungültig.</p></section>
   <section id="done" hidden>
     <p class="ok">Vielen Dank – Ihr Zugang wurde verschlüsselt übermittelt. Dieser Link ist jetzt ungültig.</p>
     <p>Wir erstellen zuerst eine vollständige Sicherung Ihrer Website und beginnen danach mit der vereinbarten Reparatur.
@@ -52,6 +53,30 @@
     <input id="user" type="text" maxlength="200" spellcheck="false" autocapitalize="off">
     <label for="secret">Temporäres Passwort / Token / Einladungscode (optional)</label>
     <input id="secret" type="password" maxlength="2000" autocomplete="new-password">
+
+    <fieldset id="serverFields" hidden>
+      <legend>Server-Angaben für SFTP/SSH (alles optional – hilft uns, ohne Rückfragen sicher zu starten)</legend>
+      <label for="port">Port</label>
+      <input id="port" type="text" inputmode="numeric" maxlength="5" placeholder="22" spellcheck="false" autocapitalize="off">
+      <label for="root">Website-Verzeichnis auf dem Server</label>
+      <input id="root" type="text" maxlength="500" placeholder="z. B. public_html oder /home/benutzer/www" spellcheck="false" autocapitalize="off">
+      <p class="hint">Wenn Sie es nicht wissen: leer lassen. Wir suchen es dann nur lesend und fragen nach, falls es nicht eindeutig ist.</p>
+      <label for="hostKey">Fingerprint des Servers (SSH-Host-Key, SHA256:…)</label>
+      <input id="hostKey" type="text" maxlength="80" placeholder="SHA256:…" spellcheck="false" autocapitalize="off">
+      <p class="hint">Steht oft im Kundenbereich Ihres Hosting-Anbieters. Ohne Angabe bitten wir Sie später um eine kurze Bestätigung – vorher verbinden wir uns nicht.</p>
+      <label for="passphrase">Passphrase des Schlüssels (nur bei SSH-Schlüssel mit Passphrase)</label>
+      <input id="passphrase" type="password" maxlength="500" autocomplete="new-password">
+      <label for="stack">Website-System</label>
+      <select id="stack">
+        <option value="unknown">Weiss nicht</option>
+        <option value="wordpress">WordPress</option>
+        <option value="static">Einfache HTML-Website</option>
+        <option value="php">Andere PHP-Website</option>
+        <option value="other">Anderes</option>
+      </select>
+      <label for="provider">Hosting-Anbieter</label>
+      <input id="provider" type="text" maxlength="80" placeholder="z. B. Hostpoint, Infomaniak, cyon" spellcheck="false">
+    </fieldset>
     <label for="notes">Hinweise (optional)</label>
     <textarea id="notes" maxlength="2000" rows="3"></textarea>
 
@@ -62,6 +87,24 @@
 
     <p class="err" id="formErr" hidden></p>
     <button id="send" type="submit">Verschlüsselt übermitteln</button>
+  </form>
+
+  <form id="hkForm" hidden autocomplete="off" novalidate>
+    <p>Website: <b id="hkDomain"></b> · Link gültig bis <span id="hkExpires"></span></p>
+    <div class="note">
+      Bevor wir uns mit Ihrem Server verbinden, prüfen wir sein digitales Sicherheitsmerkmal (Fingerprint). So ist sicher, dass wir
+      wirklich mit Ihrem Server sprechen. Bitte vergleichen Sie das Merkmal unten <b>Zeichen für Zeichen</b> mit der Angabe Ihres
+      Hosting-Anbieters (Kundenbereich unter «SSH»/«SFTP» oder beim Support erfragen). Bis zu Ihrer Bestätigung verbinden wir uns
+      nicht mit Ihren Zugangsdaten.
+    </div>
+    <label>Vom Server gemeldeter Fingerprint</label>
+    <code id="hkFingerprint" class="fp"></code>
+    <label for="hkDom">Domain der Website (bitte bestätigen)</label>
+    <input id="hkDom" type="text" maxlength="253" required spellcheck="false" autocapitalize="off">
+    <label class="consent"><input id="hkConsent" type="checkbox"> <span id="hkConfirmText"></span></label>
+    <p class="err" id="hkErr" hidden></p>
+    <button id="hkYes" type="submit">Fingerprint stimmt überein</button>
+    <button id="hkNo" type="button" class="secondary">Stimmt NICHT überein</button>
   </form>
 </main>
 <script type="module" src="access.js"></script>

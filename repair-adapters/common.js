@@ -30,6 +30,23 @@ export const MAX_FILES_PER_FIX = 3;
 export const MAX_OCCURRENCES_PER_OBJECT = 3;
 
 export const sha256 = (s) => crypto.createHash("sha256").update(typeof s === "string" ? Buffer.from(s, "utf8") : s).digest("hex");
+
+// Host-Angabe aus dem Zugangsformular (sftp://host:22, host:2222, https://…) → nicht geheime Bestandteile. Nie geraten.
+export function parseHost(host = "") {
+  const h = String(host || "").trim();
+  if (!h) return { scheme: null, hostname: null, port: null, raw: "" };
+  const m = h.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  if (m) { try { const u = new URL(h); return { scheme: m[1].toLowerCase(), hostname: u.hostname, port: u.port ? Number(u.port) : null, path: u.pathname, raw: h }; } catch { return { scheme: "invalid", hostname: null, port: null, raw: h }; } }
+  const hp = h.match(/^([a-z0-9.-]+)(?::(\d{1,5}))?$/i);
+  return hp ? { scheme: null, hostname: hp[1].toLowerCase(), port: hp[2] ? Number(hp[2]) : null, raw: h } : { scheme: "invalid", hostname: null, port: null, raw: h };
+}
+// SSH-Host-Key-Fingerprint normalisieren (ssh-keygen -lf: «SHA256:<43 Zeichen Base64>», «=» am Ende optional).
+// null = nicht angegeben, undefined = angegeben, aber ungültig (fail closed, nie «reparieren»).
+export function normFingerprint(v) {
+  if (v == null || String(v).trim() === "") return null;
+  const s = String(v).trim().replace(/^SHA256:/i, "").replace(/=+$/, "");
+  return /^[A-Za-z0-9+/]{43}$/.test(s) ? `SHA256:${s}` : undefined;
+}
 export const hasCapabilities = (have = [], need = []) => need.every((c) => have.includes(c));
 export const onlyCapabilities = (list) => [...new Set((Array.isArray(list) ? list : []).filter((c) => CAPABILITIES.includes(c)))];
 

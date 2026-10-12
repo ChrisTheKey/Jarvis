@@ -145,11 +145,13 @@ const CHECK150_STATE_WORDS = ["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT",
 // Zahlungs-/Phasen-Wörter (TF-041) – bewusst hier dupliziert (kein Import von payments.js in die Netlify-Funktion).
 const PAYMENT_STATE_WORDS = ["UNPAID", "PARTIAL", "DEPOSIT_MET", "PAID_FULL", "REFUNDED", "PAYMENT_REVIEW_REQUIRED"];
 const CHECK150_PHASE_WORDS = ["WAITING_FOR_CONFIRMATION", "WAITING_FOR_DEPOSIT", "DEPOSIT_RECEIVED", "AUDITING", "REPORT", "READY_FOR_DELIVERY", "SENT", "COMPLETED", "CANCELLED", "BLOCKED"];
-const REPAIR_PHASE_WORDS = ["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"];
+const REPAIR_PHASE_WORDS = ["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"];
 // Adapter-Wörter (TF-042) – nie Connector-Strings, Hosts oder Pfade.
 const REPAIR_ADAPTER_WORDS = ["GITHUB_NETLIFY", "WORDPRESS", "SFTP", "SSH", "UNSUPPORTED"];
 const REGISTRY_ADAPTERS = ["github_netlify", "wordpress", "sftp", "ssh"];
 const ACCESS_TYPE_WORDS = ["github_netlify", "wordpress_cms", "sftp", "ssh", "hosting", "other"];
+// Zugangsprofil-Status (TF-043) – nur das Wort, nie Host, Benutzer, IP, Webroot/Pfade oder Fingerprint.
+const PROFILE_STATUS_WORDS = ["PROFILE_READY", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "MANUAL_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS", "BLOCKED_NO_ACCESS", "PREFLIGHT_RETRY"];
 const payFields = (o, n) => ({ paid_chf: o.paid_chf == null ? null : n(o.paid_chf, 10_000), payment_required_chf: o.payment_required_chf == null ? null : n(o.payment_required_chf, 10_000),
   rest_to_deposit_chf: o.rest_to_deposit_chf == null ? null : n(o.rest_to_deposit_chf, 10_000), payment_status: word(o.payment_status, PAYMENT_STATE_WORDS), payment_ok: bool(o.payment_ok) });
 export function cleanCheck150(r) {
@@ -178,7 +180,8 @@ export function cleanCheck150(r) {
 }
 // Reparaturaufträge (TF-036): nur Zähler, feste Zustandswörter und ungefährliche Auftragsfelder – nie Evidence, Branches,
 // Commits, Preview-URLs, Freigabe-Referenzen oder Tokens. Die Cloud erzwingt die Whitelist erneut (wie bei den Leads).
-const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK", "ACCESS_REQUESTED", "BACKUP",
+const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK", "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT",
+  "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "BACKUP",
   "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "BLOCKED_NO_ACCESS",
   "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED_UNSAFE_ACCESS"];
 const NAME_RE = /^[\p{L}\p{N} .,&'’()\/+-]{1,80}$/u;
@@ -201,12 +204,14 @@ export function cleanRepair(r) {
     access_requested: bool(o.access_requested), access_received: bool(o.access_received), access_type: word(o.access_type, ACCESS_TYPE_WORDS),
     adapter: word(o.adapter, REPAIR_ADAPTER_WORDS), access_ok: bool(o.access_ok), rollback_ok: bool(o.rollback_ok),
     auto_fixable: o.auto_fixable == null ? null : n(o.auto_fixable, 10_000), manual_review: o.manual_review == null ? null : n(o.manual_review, 10_000),
+    profile_status: word(o.profile_status, PROFILE_STATUS_WORDS),
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
     waiting_payment: n(r.waiting_payment, 100_000), access_requested: n(r.access_requested, 100_000),
     payment_review: n(r.payment_review, 100_000), cancelled: n(r.cancelled, 100_000),
     ready_for_delivery: n(r.ready_for_delivery, 100_000), manual_review: n(r.manual_review, 100_000), unsafe_access: n(r.unsafe_access, 100_000),
+    host_key_confirmation: n(r.host_key_confirmation, 100_000), waiting_access_profile: n(r.waiting_access_profile, 100_000),
     adapter_registry: r.adapter_registry && typeof r.adapter_registry === "object" ? { status: word(r.adapter_registry.status, ["ACTIVE"]),
       adapters: (Array.isArray(r.adapter_registry.adapters) ? r.adapter_registry.adapters : []).filter((a) => REGISTRY_ADAPTERS.includes(a)),
       ssh_library: bool(r.adapter_registry.ssh_library) } : null,

@@ -16,5 +16,9 @@ input[type=text], input[type=password], select, textarea { width: 100%; max-widt
 button { margin-top: 18px; width: 100%; padding: 12px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
 button:disabled { opacity: .6; cursor: wait; }
 .ok { color: var(--ok); font-weight: 600; }
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 16px 0 0; padding: 4px 12px 12px; min-width: 0; }
+legend { font-weight: 600; padding: 0 4px; overflow-wrap: anywhere; }
+.fp { display: block; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font: .95rem/1.4 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; word-break: break-all; }
+button.secondary { background: transparent; color: var(--err); border: 1px solid var(--err); }
 .err { color: var(--err); font-weight: 600; overflow-wrap: anywhere; }
 b, span { overflow-wrap: anywhere; }

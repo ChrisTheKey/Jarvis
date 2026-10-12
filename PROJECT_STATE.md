@@ -4,6 +4,56 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-12
 
+## JARVIS AUTOMATIC REPAIR ACCESS PROFILE & PREFLIGHT — TF-043 (2026-10-12, Tests 539/539 grün)
+- **Ziel erreicht**: normale SFTP/SSH-Aufträge brauchen kein `router.js --profile/--root/--host-key` mehr. Ablauf: ACCESS RECEIVED →
+  ACCESS_CHECK (Routing) → **ACCESS_PROFILE_PREFLIGHT** (nur lesend) → PROFILE_READY → ACCESS_CHECK (Adapter) → BACKUP → …
+- **Neu**: `repair-adapters/profile-builder.js` (Preflight, Host-Key-Probe ohne Zugangsdaten, Webroot-Discovery, Profil-Allowlist).
+  Profil am Auftrag `order.access_profile` (interface, port, remote_root, host_key_sha256, host_key_source, webroot_source,
+  webroot_signals, capabilities, profile_status, profile_created_at) – NIE Host/Benutzer/Passwort/Schlüssel. Profil von Chris
+  (`repair_access_profiles.json`) hat Vorrang (router.js `effectiveProfile`). Nach COMPLETED/CANCELLED/REPAIR_FAILED auf
+  Status/Quellen reduziert (kein Webroot, kein Fingerprint mehr).
+- **Neue Zustände** (wartend, nichts wird verändert): ACCESS_PROFILE_PREFLIGHT, HOST_KEY_CONFIRMATION_REQUIRED,
+  WAITING_FOR_ACCESS_PROFILE. Zahlungsschwelle gilt auch hier (fällt sie → PAYMENT_REQUIRED). 6 vorübergehende Fehler
+  (Server nicht erreichbar) → MANUAL_REVIEW_REQUIRED + Chris informiert.
+- **Formular** (`public/access.html/.js`): für SFTP/SSH/Hosting zusätzlich Port, Website-Verzeichnis, SSH-Host-Key (SHA256:…),
+  Passphrase, Website-System, Hosting-Anbieter – alles nur im Browser-Chiffrat, nichts im Browser-Speicher. Geheim: secret,
+  passphrase; Metadaten: host, port, username, remote_root, Fingerprint, Stack-Hinweis, Provider.
+- **WordPress**: PROFILE_READY nach erfolgreicher REST-Prüfung (HTTPS, REST, Domain, Auth, Schreibrecht) – ohne Chris.
+  **GitHub+Netlify**: genau EINE Zuordnung → PROFILE_READY; keine/mehrere → MANUAL_REVIEW_REQUIRED.
+- **Host-Key** (nie blind vertrauen): Fingerprint wird per ssh2 OHNE Anmeldung erfasst (hostVerifier lehnt ab). Vertrauen nur
+  aus (A) Kundenangabe im Formular, (B) Profil von Chris, (C) Bestätigung (Kunde per Link / Chris per CLI); Provider-API-Quelle
+  vorbereitet, bewusst leer. Abweichung → MANUAL_REVIEW_REQUIRED. Keine Quelle → HOST_KEY_CONFIRMATION_REQUIRED, nur Kandidat
+  gespeichert, keine Verbindung mit Zugangsdaten. Kunde bekommt GENAU EINE Service-Mail (Klasse CUSTOMER_ACCESS_REQUEST) mit
+  One-Time-Link (Zweck `host_key_confirmation`, 72 h, nur Token-Hash): Seite zeigt Fingerprint, Kunde vergleicht mit seinem
+  Hoster und bestätigt (Pflicht-Häkchen + Domain) oder meldet Abweichung (→ MANUAL_REVIEW_REQUIRED). Fallback Chris:
+  `node repair-workflow.js --confirm-host-key <id> --fingerprint SHA256:…` (muss exakt dem Kandidaten entsprechen);
+  abgelaufener Link: `--reissue-access <id> --reason …`.
+- **Webroot**: Profil von Chris > Kundenangabe (kanonisiert, `~/`/relativ → Login-Root, kein `..`, validateRemoteRoot, innerhalb
+  Login-Root, existiert, kein Symlink, Startseite vorhanden; /etc, /root … → BLOCKED_UNSAFE_ACCESS) > nur lesende Discovery
+  (public_html, www, htdocs, httpdocs, web, site, <domain>, www.<domain>, domains/<domain>/public_html; nur im Login-Root, Symlinks
+  nie betreten). Automatisch nur bei GENAU EINEM plausiblen Kandidaten: WordPress = wp-config.php + wp-content/ + wp-includes/ +
+  index.php (nur Existenz, wp-config.php nie gelesen); statisch = index.html + Inhalt passt zur öffentlichen Startseite.
+  0/>1 Kandidaten oder nicht belegbar → WAITING_FOR_ACCESS_PROFILE; Chris ergänzt `--root`, Auftrag läuft selbst weiter.
+- **Dashboard**: Phasen ACCESS PROFILE PREFLIGHT / HOST KEY CONFIRMATION / WAITING FOR ACCESS PROFILE, Feld `profile_status`
+  (nur Wort), Zeile «Zugangsprofil» (Host-Key n · Profil fehlt n). Nie Host, Benutzer, IP, Pfade, Fingerprint (cleanRepair).
+- **Cloud** (`access-intake-api.js`): zweiter Link-Zweck `host_key_confirmation` (register/info/submit), bestehender Zugangs-Link
+  unverändert kompatibel.
+- **Tests**: `test/access-profile-043.test.js` (21; inkl. echter Host-Key-Probe gegen isolierten lokalen ssh2-Testserver
+  127.0.0.1 ohne Anmeldeversuch, SFTP-E2E bis COMPLETED, First-Use-E2E mit Kundenbestätigung, Mutationsprobe). Angepasst:
+  035 (ORDER_STATES), 036 (einziger sendDraft im Helfer sendLinkMail, nur ACCESS_REQUESTED + HOST_KEY_CONFIRMATION_REQUIRED).
+  539/539 grün, Secret-Scan 0. Keine echten Kundenserver, Mails, Zahlungen oder Zugangsdaten.
+- **Router/CLI**: Preflight über `createAdapterRegistry` (reg.preflight) automatisch in Engine + Worker verdrahtet;
+  `router.js --profile` und `--confirm-host-key` sind nur noch Recovery/Fallback. Payment CHF 240 (von CHF 480), Freigabe und
+  Domain-Bindung werden VOR jedem Preflight geprüft (sonst 0 Probes, 0 Verbindungen).
+- **Mobile lokal (390×844, Playwright, echter Intake-Handler In-Memory, nur Attrappen)**: kein horizontaler Overflow; Server-Felder
+  nur bei SFTP/SSH/Hosting sichtbar und bedienbar; Fehlermeldungen (Freigabe, Port, Fingerprint, Domain); Erfolg → alle Felder
+  geleert, keine Attrappen-Werte im DOM, kein local/sessionStorage, keine Cookies, keine Konsolenausgabe; Token nach Laden aus
+  der URL entfernt; Server sah nur Chiffrat + Metadaten; Host-Key-Seite: Fingerprint, Pflicht-Häkchen, Bestätigung, Link danach
+  ungültig; CSP/no-store/noindex-Header wie netlify.toml.
+- **Bekannte sichere Einschränkung**: ssh2 handelt den Host-Key-Typ selbst aus. Liefert ein Kunde den Fingerprint eines anderen
+  Typs (z. B. RSA statt Ed25519), endet das fail closed in MANUAL_REVIEW_REQUIRED (unnötige manuelle Prüfung, nie unsicher).
+  Bewusst KEIN Typ-Durchprobieren/Auto-Trust in TF-043.
+
 ## JARVIS AUTHORIZED REPAIR ADAPTERS — TF-042 (2026-10-12, Tests 518/518 grün)
 - **Neue Dateien**: `repair-adapters/common.js` (Contract, Capabilities, Issue→Fix-Matrix, Minimal-Patch, Domain-Bindung, Objekt-
   Backup, Fehlerbereinigung), `wordpress.js`, `sftp.js`, `ssh.js`, `router.js` (Routing, Zugangsprofile, Credential-Kontext, Brücke

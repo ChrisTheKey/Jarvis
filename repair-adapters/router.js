@@ -8,6 +8,8 @@
 //                      BLOCKED_UNSUPPORTED_STACK; other → BLOCKED_UNSUPPORTED_STACK. Kein Browser-Login, keine Hoster-Portale.
 //   Zugangsprofil      repair_access_profiles.json (Worker-Verzeichnis, KEINE Secrets): je Domain Schnittstelle (für hosting),
 //                      Port, remote_root, SSH-Host-Key-Fingerprint, WordPress-REST-Basis, konfigurierte Build-/Health-Checks.
+//                      TF-043: für normale Aufträge erzeugt der Preflight (profile-builder.js) das Profil automatisch am Auftrag
+//                      (order.access_profile); ein Profil von Chris hat Vorrang und bleibt für Sonderfälle (Checks, Webroot).
 //   Credential-Kontext entsteht NUR zur Laufzeit je Adapter-Aufruf (Tresor entschlüsseln → sofort verwenden → verwerfen).
 //   Brücke             übersetzt den Contract (common.js) in die Aufrufe der Engine; übernimmt nur Metadaten und bereinigt Fehler.
 import fs from "node:fs";
@@ -15,9 +17,10 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore } from "../mail-worker.js";
-import { CAPABILITIES, hasCapabilities, onlyCapabilities, pickMeta, sanitizeError, normDomain, sha256 } from "./common.js";
+import { CAPABILITIES, hasCapabilities, onlyCapabilities, pickMeta, sanitizeError, normDomain, sha256, parseHost, normFingerprint } from "./common.js";
 import { validateRemoteRoot } from "./sftp.js";
 import { validateChecks } from "./ssh.js";
+import { createProfilePreflight, PROFILE_ROUTING_KEYS, repairMappingsFor } from "./profile-builder.js";
 
 export const ACCESS_PROFILES_FILE = "repair_access_profiles.json";
 export const ADAPTER_KEYS = Object.freeze(["github_netlify", "wordpress", "sftp", "ssh"]);
@@ -41,7 +44,7 @@ export function setAccessProfile(store, domain, input = {}) {
   if (input.interface != null) { if (!INTERFACES[input.interface]) throw new Error(`Schnittstelle unbekannt. Erlaubt: ${Object.keys(INTERFACES).join(", ")}.`); p.interface = input.interface; }
   if (input.port != null) { const n = Number(input.port); if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error("Port ungültig."); p.port = n; }
   if (input.remote_root != null) { const v = validateRemoteRoot(input.remote_root); if (!v.ok) throw new Error(`remote_root ungültig (${v.reason}).`); p.remote_root = v.root; }
-  if (input.host_key_sha256 != null) { if (!/^SHA256:[A-Za-z0-9+/]{43}=?$/.test(input.host_key_sha256)) throw new Error("Host-Key als SHA256:<43 Zeichen> angeben (ssh-keygen -lf)."); p.host_key_sha256 = input.host_key_sha256; }
+  if (input.host_key_sha256 != null) { const fp = normFingerprint(input.host_key_sha256); if (!fp || !/^SHA256:/.test(input.host_key_sha256)) throw new Error("Host-Key als SHA256:<43 Zeichen> angeben (ssh-keygen -lf)."); p.host_key_sha256 = fp; }
   if (input.wp_api_base != null) {
     let u; try { u = new URL(input.wp_api_base); } catch { throw new Error("wp_api_base ungültig."); }
     if (u.protocol !== "https:" || normDomain(u.hostname) !== d || u.username || u.password) throw new Error("wp_api_base: nur HTTPS auf der Auftrags-Domain, ohne Zugangsdaten.");
@@ -55,31 +58,36 @@ export function setAccessProfile(store, domain, input = {}) {
 }
 
 // ---------- Credential-Kontext (nur Laufzeit) ----------
-// payload aus dem Tresor: { access_type, host, username, secret, notes }. notes wird nie ausgewertet (kein Raten).
-export function parseHost(host = "") {
-  const h = String(host || "").trim();
-  if (!h) return { scheme: null, hostname: null, port: null, raw: "" };
-  const m = h.match(/^([a-z][a-z0-9+.-]*):\/\//i);
-  if (m) { try { const u = new URL(h); return { scheme: m[1].toLowerCase(), hostname: u.hostname, port: u.port ? Number(u.port) : null, path: u.pathname, raw: h }; } catch { return { scheme: "invalid", hostname: null, port: null, raw: h }; } }
-  const hp = h.match(/^([a-z0-9.-]+)(?::(\d{1,5}))?$/i);
-  return hp ? { scheme: null, hostname: hp[1].toLowerCase(), port: hp[2] ? Number(hp[2]) : null, raw: h } : { scheme: "invalid", hostname: null, port: null, raw: h };
-}
+// payload aus dem Tresor: { access_type, host, username, secret, notes } + (TF-043) port, remote_root, ssh_host_key_sha256,
+// passphrase, website_stack_hint, provider_name. notes wird nie ausgewertet (kein Raten). remote_root und Host-Key gelangen NIE
+// direkt aus dem Formular in den Kontext – nur über ein geprüftes Zugangsprofil (Chris bzw. Preflight, profile-builder.js).
 export function buildCredentialContext(order, accessCtx, profile = null) {
   const raw = typeof accessCtx?.credential === "function" ? accessCtx.credential() : null;
   if (!raw || typeof raw !== "object") return null;
   const secret = typeof raw.secret === "string" && raw.secret ? raw.secret : null;
+  const passphrase = typeof raw.passphrase === "string" && raw.passphrase ? raw.passphrase : null;
   const isKey = !!secret && /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(secret);
   const h = parseHost(raw.host);
+  const formPort = /^\d{1,5}$/.test(String(raw.port ?? "").trim()) && +raw.port >= 1 && +raw.port <= 65535 ? +raw.port : null;
   const ctx = {
     connector_type: accessCtx.connector_type || raw.access_type || null, domain: order.domain,
-    scheme: h.scheme, host: h.hostname, port: profile?.port || h.port || null, username: raw.username || null,
-    password: isKey ? null : secret, private_key: isKey ? secret : null,
+    scheme: h.scheme, host: h.hostname, port: profile?.port || h.port || formPort || null, username: raw.username || null,
+    password: isKey ? null : secret, private_key: isKey ? secret : null, passphrase: isKey ? passphrase : null,
     api_base: profile?.wp_api_base || (h.scheme === "https" || (!h.scheme && h.hostname) ? h.raw : null),
     remote_root: profile?.remote_root || null, host_key_sha256: profile?.host_key_sha256 || null, checks: profile?.checks || null,
-    secrets: [secret, raw.username && secret ? `${raw.username}:${secret}` : null, secret ? Buffer.from(`${raw.username || ""}:${secret}`).toString("base64") : null].filter(Boolean),
+    secrets: [secret, passphrase, raw.username && secret ? `${raw.username}:${secret}` : null, secret ? Buffer.from(`${raw.username || ""}:${secret}`).toString("base64") : null].filter(Boolean),
   };
-  ctx.wipe = () => { ctx.password = null; ctx.private_key = null; ctx.username = null; ctx.secrets.length = 0; };
+  ctx.wipe = () => { ctx.password = null; ctx.private_key = null; ctx.passphrase = null; ctx.username = null; ctx.secrets.length = 0; };
   return ctx;
+}
+// Wirksames Zugangsprofil eines Auftrags (TF-043): Profil von Chris (repair_access_profiles.json, Vorrang) ergänzt das vom
+// Preflight erzeugte Auftragsprofil (order.access_profile, nur PROFILE_READY). Nur Routing-/Verbindungs-Metadaten, nie Secrets.
+export function effectiveProfile(store, order = {}) {
+  const manual = loadAccessProfiles(store)[normDomain(order.domain)] || null;
+  const ap = order.access_profile?.profile_status === "PROFILE_READY" ? order.access_profile : null;
+  if (!ap) return manual;
+  const auto = Object.fromEntries(PROFILE_ROUTING_KEYS.filter((k) => ap[k] != null).map((k) => [k, ap[k]]));
+  return { ...auto, ...Object.fromEntries(Object.entries(manual || {}).filter(([, v]) => v != null)) };
 }
 // Nicht geheime Merkmale für den Router (Klartext wird sofort verworfen).
 export function credentialMeta(cred) {
@@ -178,8 +186,10 @@ export function adapterRegistryStatus() {
 }
 
 // Standard-Registry für den Produktivbetrieb: alle vier Adapter + Router. contract-Adapter erhalten ihren Kontext über die Brücke.
-export async function createAdapterRegistry({ dir = WORKER_DIR, store = createStore(dir), fetchFn = globalThis.fetch, legacy = {}, contracts = null } = {}) {
-  const profileFor = (order) => loadAccessProfiles(store)[normDomain(order.domain)] || null;
+// TF-043: zusätzlich der Preflight (profile-builder.js), der aus dem sicher übermittelten Zugang automatisch ein Zugangsprofil
+// erzeugt – profileDeps ersetzt in Tests die Netzwerk-Transporte (probeHostKey, connect) durch Attrappen.
+export async function createAdapterRegistry({ dir = WORKER_DIR, store = createStore(dir), fetchFn = globalThis.fetch, legacy = {}, contracts = null, profileDeps = {} } = {}) {
+  const profileFor = (order) => effectiveProfile(store, order);
   let c = contracts;
   if (!c) {
     const [{ wordpressAdapter }, { sftpAdapter }, { sshAdapter }] = await Promise.all([import("./wordpress.js"), import("./sftp.js"), import("./ssh.js")]);
@@ -198,10 +208,12 @@ export async function createAdapterRegistry({ dir = WORKER_DIR, store = createSt
     },
     capabilitiesOf: (key) => (adapters[key]?.capabilities?.length ? adapters[key].capabilities : LEGACY_CAPABILITIES[key] || []),
   };
-  return { adapters, router, status: adapterRegistryStatus };
+  const preflight = createProfilePreflight({ adapters, fetchFn, capabilitiesOf: router.capabilitiesOf,
+    manualProfileFor: (order) => loadAccessProfiles(store)[normDomain(order.domain)] || null, mappingsFor: (order) => repairMappingsFor(store, order.domain), ...profileDeps });
+  return { adapters, router, preflight, status: adapterRegistryStatus };
 }
 
-export { CAPABILITIES, sha256 };
+export { CAPABILITIES, sha256, parseHost };
 
 // Kommandozeile (nie Secrets): Zugangsprofil je Domain pflegen; Checks als JSON-Datei ({ "build": { id: { binary, args } } }).
 //   node repair-adapters/router.js --profile <domain> [--interface sftp|ssh|wordpress_rest|github_netlify] [--root /pfad]

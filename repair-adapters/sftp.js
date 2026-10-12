@@ -2,8 +2,9 @@
 // in statischen HTML-Dateien bzw. eine exakt belegte CSS-Stelle – innerhalb einer harten Pfad-Sandbox (remote_root).
 //
 // Sicherheitsmodell:
-//   - Nur SFTP (SSH-Dateiübertragung, verschlüsselt). Kein FTP, keine Shell. Host-Key MUSS vorab von Chris im Zugangsprofil
-//     hinterlegt sein (SHA256-Fingerprint) – sonst keine Verbindung (kein Trust-on-first-use).
+//   - Nur SFTP (SSH-Dateiübertragung, verschlüsselt). Kein FTP, keine Shell. Host-Key MUSS vorab im Zugangsprofil stehen
+//     (SHA256-Fingerprint: von Chris, vom Kunden im sicheren Formular oder vom Kunden über den Bestätigungslink – TF-043,
+//     profile-builder.js) – sonst keine Verbindung (kein Trust-on-first-use).
 //   - Zugangsdaten (Passwort/Private Key) nur zur Laufzeit im Credential-Kontext; nie gespeichert, nie geloggt.
 //   - Login als root → BLOCKED_UNSAFE_ACCESS. remote_root Pflicht, kanonisch, kein Systemverzeichnis.
 //   - Jeder Pfad bleibt kanonisch in remote_root: kein ../, kein absoluter Escape, kein Symlink-Escape, keine .ssh/.env/
@@ -89,7 +90,7 @@ export async function ssh2Session(cred, { timeoutMs = 20_000, withSftp = true } 
     conn.once("ready", () => { clearTimeout(t); resolve(); });
     conn.once("error", (e) => { clearTimeout(t); reject(new Error(`SSH-Verbindung fehlgeschlagen (${e?.level || e?.code || "error"}).`)); });
     conn.connect({ host: cred.host, port: Number(cred.port) || 22, username: cred.username, readyTimeout: timeoutMs, tryKeyboard: false,
-      ...(cred.private_key ? { privateKey: cred.private_key } : { password: cred.password }),
+      ...(cred.private_key ? { privateKey: cred.private_key, ...(cred.passphrase ? { passphrase: cred.passphrase } : {}) } : { password: cred.password }),
       hostVerifier: (key) => crypto.createHash("sha256").update(key).digest("base64").replace(/=+$/, "") === expected });
   });
   let sftp = null;
