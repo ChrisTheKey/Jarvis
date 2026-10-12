@@ -116,16 +116,74 @@ async function accessToken() {
   return fresh.access_token;
 }
 
+// Quota-Schutz (TF-037): Gmail zählt „Total Query Cost / Units per minute per user“ – eine ununterbrochene Call-Salve
+// (z. B. hunderte drafts.get) reisst das Limit. Deshalb zentral für JEDEN Gmail-Call: Mindestabstand zwischen zwei Calls
+// (Default 150 ms ≈ max. 6–7 Calls/s) und bei 429/Quota-Fehlern Retry-After respektieren (begrenzt, nie enge Schleife).
+export const GMAIL_QUOTA_RE = /quota|rate ?limit|\b429\b/i;
+export const isGmailQuotaError = (e) => e?.gmailQuota === true || GMAIL_QUOTA_RE.test(String(e?.message || ""));
+const GMAIL_MIN_GAP_MS = Math.max(0, Number(process.env.JARVIS_GMAIL_MIN_GAP_MS ?? 150));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let lastGmailCallAt = 0;
+
 async function gmail(method, route, body) {
-  const r = await fetch(API + route, {
-    method, signal: AbortSignal.timeout(60_000),
-    headers: { authorization: `Bearer ${await accessToken()}`, ...(body && { "content-type": "application/json" }) },
-    body: body && JSON.stringify(body),
-  });
-  const text = await r.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!r.ok) throw new Error(`Gmail ${method} ${route}: ${data.error?.message || r.status}`);
-  return data;
+  for (let attempt = 0; ; attempt++) {
+    const wait = lastGmailCallAt + GMAIL_MIN_GAP_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastGmailCallAt = Date.now();
+    const r = await fetch(API + route, {
+      method, signal: AbortSignal.timeout(60_000),
+      headers: { authorization: `Bearer ${await accessToken()}`, ...(body && { "content-type": "application/json" }) },
+      body: body && JSON.stringify(body),
+    });
+    const text = await r.text();
+    const data = text ? JSON.parse(text) : {};
+    if (r.ok) return data;
+    const msg = data.error?.message || r.status;
+    const quota = r.status === 429 || GMAIL_QUOTA_RE.test(String(msg));
+    // Quota/429: höchstens 2 Wiederholungen, Wartezeit aus Retry-After (sonst 2 s · 2^n), nie länger als 30 s –
+    // danach Fehler mit Quota-Kennung, damit der Aufrufer in den Backoff geht statt weiterzuhämmern.
+    if (quota && attempt < 2) {
+      const ra = Number(r.headers.get("retry-after"));
+      await sleep(Math.min(30_000, Number.isFinite(ra) && ra > 0 ? ra * 1000 : 2000 * 2 ** attempt));
+      continue;
+    }
+    const err = new Error(`Gmail ${method} ${route}: ${msg}`);
+    err.status = r.status;
+    if (quota) err.gmailQuota = true;
+    throw err;
+  }
+}
+
+// ---------- Persistenter Gmail-Sync-State (TF-037, nie Tokens) ----------
+// .secrets/gmail_sync_state.json: { history_id, cold_cursor, last_cold_sync_at, last_history_sync_at, history_recovered_at }
+// Nach einem VPS-Neustart geht der inkrementelle Sync exakt dort weiter; Verlust der Datei ist harmlos (Neuaufbau).
+const SYNC_STATE_FILE = path.join(SECRETS, "gmail_sync_state.json");
+export const loadSyncState = () => readJson(SYNC_STATE_FILE, {});
+export const saveSyncState = (patch) => { const next = { ...loadSyncState(), ...patch }; writeSecret(SYNC_STATE_FILE, next); return next; };
+
+// Inkrementeller Sync über die Gmail-History-API (2 Quota-Units je Seite statt Vollscan): liefert NUR Thread-IDs mit neuen
+// Nachrichten seit sinceHistoryId. Gelesen wird weiterhin ausschliesslich über readThread (eigene Threads, Register-Prüfung) –
+// fremde Threads werden hier nie geöffnet. Ungültige/abgelaufene historyId → { invalid: true, historyId: <frisch> } (Recovery:
+// der begrenzte Round-Robin-Scan deckt die Lücke ab, KEIN Vollscan).
+export async function changedThreadIds({ sinceHistoryId = null, maxPages = 3 } = {}) {
+  if (!sinceHistoryId) { const p = await gmail("GET", "/profile"); return { threadIds: [], historyId: String(p.historyId), initial: true }; }
+  const ids = new Set();
+  let pageToken = null, newest = String(sinceHistoryId);
+  try {
+    for (let i = 0; i < maxPages; i++) {
+      const q = new URLSearchParams({ startHistoryId: String(sinceHistoryId), historyTypes: "messageAdded", maxResults: "100", ...(pageToken ? { pageToken } : {}) });
+      const r = await gmail("GET", `/history?${q}`);
+      for (const h of r.history || []) for (const m of h.messagesAdded || []) if (m.message?.threadId) ids.add(m.message.threadId);
+      if (r.historyId) newest = String(r.historyId);
+      pageToken = r.nextPageToken || null;
+      if (!pageToken) break;
+    }
+  } catch (e) {
+    // Abgelaufene/ungültige startHistoryId meldet Gmail als 404 – Quota-/Netzfehler (429/5xx) werden hier NICHT verschluckt.
+    if (e.status === 404) { const p = await gmail("GET", "/profile"); return { threadIds: [], historyId: String(p.historyId), invalid: true }; }
+    throw e;
+  }
+  return { threadIds: [...ids], historyId: newest, truncated: !!pageToken };
 }
 
 // ---------- Register & Label ----------
@@ -296,15 +354,37 @@ export async function deleteDraft(draftId) {
 // Cold-Entwürfe und nur der Thread, den dieser Entwurf selbst eröffnet hat. Als Jarvis-Thread registriert wird er nur, wenn die
 // Zuordnung eindeutig ist: Thread-ID gleich, erste Nachricht ist eine gesendete Nachricht an denselben Empfänger mit demselben
 // Betreff, nicht älter als der Entwurf. Die Rechtsgrundlage bleibt NONE; ein Fenster/Limit wird nicht belastet.
-export async function syncColdDrafts() {
+// TF-037: NICHT mehr alle Cold-Entwürfe je Durchlauf prüfen (bei hunderten Entwürfen war das eine Quota-Salve), sondern
+// höchstens `max` je Aufruf über einen persistenten Round-Robin-Cursor (gmail_sync_state.json). Jeder Entwurf kommt
+// spätestens nach ceil(n/max) Durchläufen wieder dran; ein manueller Versand wird also weiterhin erkannt, nur etwas später.
+// Bricht ein Quota-Fehler die Runde ab, bleibt der Cursor auf dem letzten fertig geprüften Entwurf stehen – kein Neubeginn.
+export async function syncColdDrafts({ max = 40 } = {}) {
+  const all = Object.entries(loadRegistry().drafts || {}).filter(([, e]) => e.mode === COLD_DRAFT_MODE).sort(([a], [b]) => a.localeCompare(b));
+  if (!all.length) return [];
+  const st = loadSyncState();
+  let start = all.findIndex(([id]) => id > String(st.cold_cursor || ""));
+  if (start < 0) start = 0; // Cursor hinter dem letzten Eintrag → wieder vorne beginnen
+  const batch = [];
+  for (let i = 0; i < Math.min(Math.max(1, max), all.length); i++) batch.push(all[(start + i) % all.length]);
   const out = [];
-  for (const [draftId, e] of Object.entries(loadRegistry().drafts || {})) {
-    if (e.mode !== COLD_DRAFT_MODE) continue;
+  let cursor = st.cold_cursor || "";
+  try {
+    for (const [draftId, e] of batch) {
+      await syncOneColdDraft(draftId, e, out);
+      cursor = draftId;
+    }
+  } finally {
+    saveSyncState({ cold_cursor: cursor, last_cold_sync_at: new Date().toISOString() });
+  }
+  return out;
+}
+async function syncOneColdDraft(draftId, e, out) {
+  {
     const exists = await gmail("GET", `/drafts/${encodeURIComponent(draftId)}?format=minimal`).then(() => true, (err) => {
       if (/not found|404/i.test(err.message)) return false;
       throw err;
     });
-    if (exists) continue;
+    if (exists) return;
     const thread = await gmail("GET", `/threads/${encodeURIComponent(e.threadId)}?format=metadata&metadataHeaders=To&metadataHeaders=Subject`).catch((err) => {
       if (/not found|404/i.test(err.message)) return null;
       throw err;
@@ -329,7 +409,6 @@ export async function syncColdDrafts() {
       out.push({ draftId, leadId: e.leadId, status: thread ? "unclear" : "gone" });
     }
   }
-  return out;
 }
 
 export const listOwned = () => loadRegistry();

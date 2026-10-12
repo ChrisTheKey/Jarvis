@@ -4,6 +4,39 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-11
 
+## JARVIS GMAIL INCREMENTAL SYNC + QUOTA SAFE WORKER (TF-037, 2026-10-12, Tests 436/436 grün)
+- **Ursache des Livelocks (seit 2026-10-12 02:18 UTC)**: je Tick ein VOLLSCAN – `syncColdDrafts` prüfte ALLE registrierten
+  Cold-Entwürfe (live 274 × drafts.get als ununterbrochene Salve) + Reply-Scan las jeden aktiven Thread (threads.get format=full,
+  10 Units); ein Quota-Fehler („Total Query Cost / Units per minute per user“) matchte TRANSIENT_RE → GANZER Tick brach ab →
+  exponentieller Backoff → nächster Tick begann WIEDER VON VORNE → Quota sofort wieder gerissen; tick_failed lieferte keine Stats
+  → kein Heartbeat → HUD „Core OFFLINE“, Reply-Erkennung stand.
+- **Kein Vollscan mehr (inkrementell)**:
+  - `gmail.js gmail()`-Helper zentral: Mindestabstand zwischen ALLEN Gmail-Calls (`JARVIS_GMAIL_MIN_GAP_MS`, Default 150 ms ≈ max.
+    6–7 Calls/s) + bei 429/Quota Retry-After respektiert (max. 2 Wiederholungen, Wartezeit ≤ 30 s, nie enge Schleife), danach
+    Fehler mit Quota-Kennung (`isGmailQuotaError`).
+  - `gmail_sync_state.json` (`.secrets/`, nie Tokens): history_id, cold_cursor, Zeitstempel – nach VPS-Neustart geht der Sync
+    exakt dort weiter; Verlust der Datei ist harmlos (Neuaufbau, kein Datenverlust).
+  - **History-API** (`changedThreadIds`, 2 Units je Seite, scope gmail.modify deckt sie ab): nur Threads mit NEUEN Nachrichten seit
+    history_id; geschnitten mit den EIGENEN Threads aus dem Gesendet-Register (fremde Thread-IDs aus der History werden nie
+    gelesen – Foreign-Gmail-Schutz getestet). historyId 404/abgelaufen → Recovery: frische historyId + begrenzter Round-Robin
+    deckt die Lücke, KEIN Vollscan. historyId rückt erst vor, wenn alle geänderten Threads wirklich gelesen wurden.
+  - **Budgets je Tick** (config.json überschreibbar): `maxThreadReadsPerTick` 20 (Reply-Scan, 10 Units/Thread) und
+    `maxColdDraftChecksPerTick` 40 (Cold-Sync, 5 Units/Entwurf) ⇒ Grundlast ≈ 400–500 Units/Tick statt >2000 in Salven.
+    Rest über persistente Round-Robin-Cursor (`state.threadScanCursor` in state.json; `cold_cursor` in gmail_sync_state.json):
+    507 Threads → 20/Tick, Cursor schreitet, überlebt Neustart (getestet); manueller Versand wird weiterhin erkannt, nur
+    bis zu ceil(n/40) Durchläufe später.
+- **DEGRADED statt OFFLINE**: Gmail-Lesefehler (Quota/429/5xx/Netz) brechen den Tick NICHT mehr ab – betroffener Abschnitt stoppt
+  (Cursor bleibt stehen), Cloud-Aufträge/Draft-Worker/Statistik laufen weiter; `stats.mail_degraded` (bewusst ohne das Wort
+  „gmail“ im Cloud-Blob) + `serviceStatus.mail_health` ok|degraded; Heartbeat fliesst in JEDEM Tick → Core bleibt ONLINE,
+  Discovery/Repair/Server-Control unberührt (hängen am Loop, nicht am Gmail-Erfolg). Draft-Worker: Gmail-Fehler → eigener
+  persistierter Backoff (1→2→…→60 min), Queue-Eintrag bleibt queued, nichts geht verloren (getestet inkl. Erholung).
+  Send-Pfad (Fenster 09:30/14:30) unverändert konservativ; COLD_LEAD_DRAFT_ONLY/legal_basis NONE/kein Auto-Send unverändert.
+- Tests: neu `test/gmail-quota-037.test.js` (8: kein 507-Vollscan, Budget, Cursor + Neustart, History-Priorität + fremde Threads
+  nie, invalid-historyId-Recovery, Quota→DEGRADED+Stats+kein Backoff-Livelock+Erholung hinter dem Cursor, Draft-Queue intakt,
+  Reply ohne Duplikate, 0 Sends); angepasst mail-worker (2× Tageslimit mit Budget 150) + always-online (Stats-Whitelist
+  +mail_degraded). Gesamt 436/436, Secret-Scan 0 Treffer.
+- Live-Stand nach Deploy: siehe nächster Eintrag unten (wird nach der Live-Verifikation ergänzt).
+
 ## JARVIS CHECK & REPARATUR CHF 480 — PRODUCTION READY (TF-036, 2026-10-12, Tests 428/428 grün; VPS-Deploy wartet auf SSH-Key)
 Alles Folgende ist mit Attrappen (Mock-Fetch, Browser-Attrappe, Test-Fixtures) getestet – KEINE echte Kundenwebsite verändert, keine Mail.
 - **GitHub+Netlify-Adapter** `repair-adapters/github-netlify.js`: repariert nur Websites mit EXPLIZITER Zuordnung durch Chris in

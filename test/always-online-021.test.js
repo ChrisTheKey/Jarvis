@@ -408,7 +408,7 @@ test("Keine Secrets in der Cloud: Blob ohne Gmail-IDs, Adressen in Locks oder To
   assert.match(lock.lock_key, /^[a-f0-9]{24}$/);
   assert.match(lock.thread_ref, /^[a-f0-9]{12}$/);
   assert.equal(lock.status, "SENT");
-  assert.deepEqual(Object.keys(blob.peek().workers.vps.stats).sort(), ["ai_paused", "blocked_today", "campaign_afternoon", "campaign_morning", "campaign_today", "escalations_today", "manual_today", "replies_today", "sent_today"]);
+  assert.deepEqual(Object.keys(blob.peek().workers.vps.stats).sort(), ["ai_paused", "blocked_today", "campaign_afternoon", "campaign_morning", "campaign_today", "escalations_today", "mail_degraded", "manual_today", "replies_today", "sent_today"]);
   // Browser-Antwort enthält weder Lease-Inhaber noch Tokens
   const pub = JSON.stringify(await cloudList());
   assert.ok(!/lease_owner|token|fingerprint/.test(pub));

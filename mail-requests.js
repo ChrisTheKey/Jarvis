@@ -171,7 +171,7 @@ export function finishSendLock(locks, { lock_key, owner, status }, now = new Dat
 }
 
 // ---------- Worker-Heartbeat und Mail-Service-Status (nur Zahlen) ----------
-const STAT_FIELDS = ["sent_today", "campaign_morning", "campaign_afternoon", "campaign_today", "replies_today", "manual_today", "blocked_today", "escalations_today", "ai_paused"];
+const STAT_FIELDS = ["sent_today", "campaign_morning", "campaign_afternoon", "campaign_today", "replies_today", "manual_today", "blocked_today", "escalations_today", "ai_paused", "mail_degraded"];
 export function cleanHeartbeat(h, owner, now = new Date()) {
   const stats = Object.fromEntries(STAT_FIELDS.map((k) => [k, Number.isFinite(h?.stats?.[k]) ? Math.max(0, Math.min(10_000, Math.round(h.stats[k]))) : 0]));
   return { worker_id: owner, role: owner === "vps" ? "vps" : "local", at: now.toISOString(), started_at: typeof h?.started_at === "string" ? h.started_at.slice(0, 40) : null, stats, core: cleanCore(h?.core) };
@@ -187,6 +187,8 @@ export function serviceStatus(state, now = new Date(), dedicated = false) {
     sent_today: s.sent_today || 0, blocked_today: s.blocked_today || 0, escalations_today: s.escalations_today || 0,
     // KI-Dienst des Workers: nur online / paused_credit – keine Keys, keine Billing-Daten.
     ai: hb?.at ? (s.ai_paused ? "paused_credit" : "online") : null,
+    // TF-037: Mail-Lesepfad gedrosselt (Quota-Backoff) → Mail DEGRADED, der Core bleibt ONLINE.
+    mail_health: hb?.at ? (s.mail_degraded ? "degraded" : "ok") : null,
     sales: { morning: s.campaign_morning || 0, afternoon: s.campaign_afternoon || 0, today: s.campaign_today || 0, window_limit: 50, daily_limit: 100 },
     // Cloud Core (gleicher Prozess wie der Mail-Worker): Schema, Scheduler-Checkpoints, Discovery, Backup – nur Whitelist-Felder.
     core: hb?.core ? cleanCore(hb.core) : null,

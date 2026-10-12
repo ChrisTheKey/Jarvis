@@ -153,6 +153,7 @@ test("Follow-up 2 frühestens 5 Tage nach Follow-up 1, danach Schluss", async ()
 });
 
 test("Tageslimit: bei 99 genau noch ein Entwurf, bei 100 keiner mehr", async () => {
+  live({ maxThreadReadsPerTick: 150 }); // Test prüft das Tageslimit, nicht das TF-037-Scan-Budget
   for (let i = 0; i < 99; i++) g.reg.sent["old" + i] = { threadId: "alt" + i, to: "a@b.ch", sentAt: new Date(+T0 - 3600e3).toISOString() };
   for (let i = 0; i < 99; i++) g.threads["alt" + i] = []; // ohne Antworten, Follow-ups noch nicht fällig
   ownThread("t1", { replies: ["Frage 1"] });
@@ -403,7 +404,7 @@ test("Suppression wird direkt vor dem Send geprüft", async () => {
 });
 
 test("Tageslimit bleibt hart: bei 99 genau ein Send, bei 100 keiner", async () => {
-  auto();
+  auto({ maxThreadReadsPerTick: 150 }); // Test prüft das Tageslimit, nicht das TF-037-Scan-Budget
   for (let i = 0; i < 98; i++) g.reg.sent["old" + i] = { threadId: "alt" + i, to: "x@y.ch", sentAt: new Date(+T0 - 3600e3).toISOString() };
   for (let i = 0; i < 98; i++) g.threads["alt" + i] = [];
   ownThread("t1", { to: "a@firma.ch", replies: ["Frage 1"], sentAt: new Date(+T0 - 2 * 3600e3) });

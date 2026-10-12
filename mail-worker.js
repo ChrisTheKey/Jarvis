@@ -53,6 +53,11 @@ export const DEFAULT_CONFIG = {
   maxPacedPerTick: 2, // höchstens so viele Follow-ups/Erstkontakte werden pro Durchlauf geschrieben
   followUpDays: [3, 5],
   activeDays: 60, // ältere Threads werden nicht mehr abgefragt
+  // TF-037 Gmail-Quota-Budget je Durchlauf (gegen „Units per minute per user“): Reply-Scan liest höchstens so viele
+  // Thread-Volltexte (10 Quota-Units je Thread), der Cold-Draft-Sync prüft höchstens so viele Entwürfe (5 Units je Entwurf).
+  // Der Rest kommt über den persistenten Round-Robin-Cursor in den nächsten Durchläufen dran – nichts geht verloren.
+  maxThreadReadsPerTick: 20,
+  maxColdDraftChecksPerTick: 40,
   excludeAddresses: [], // z. B. eigene Adressen von Chris: dafür nie Entwürfe vorbereiten
   sender: { name: "", company: "", email: "", signature: "" }, // echte Identität von Chris – ohne name kein Erstkontakt/Versand
   offer: "", // Angebot von Chris in eigenen Worten – ohne Angebot keine Erstkontakte
@@ -255,11 +260,20 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const state = { ...structuredClone(STATE), ...store.read("state.json", STATE) };
     const supp = store.read("suppression.json", {});
     const exclude = new Set(cfg.excludeAddresses.map(normEmail));
+    // TF-037: Gmail-Lesefehler (Quota/429/5xx/Netz) brechen den Durchlauf NICHT mehr ab. Der betroffene Abschnitt stoppt,
+    // Cursor und Queues bleiben stehen, der Rest des Durchlaufs (Cloud-Aufträge, Draft-Worker, Statistik, Heartbeat) läuft
+    // weiter – Mail ist dann DEGRADED, der Core bleibt ONLINE. Kein Vollscan-Neustart, also kein Quota-Livelock mehr.
+    let gmailDegraded = null;
+    const degrade = (stage, e) => {
+      gmailDegraded ||= { stage, at: t.toISOString(), message: String(e.message || e).slice(0, 160) };
+      log("warn", "gmail_degraded", { stage, error: String(e.message || e).slice(0, 200) });
+    };
     // TF-025: von Chris manuell in Gmail versendete Cold-Entwürfe erkennen (nur eigene, eindeutig zugeordnete Threads).
     // Ergebnis sind nur Fakten (Zeit, IDs) – nie eine Rechtsgrundlage. Danach gelten die normalen sicheren Antwortregeln.
+    // TF-037: höchstens maxColdDraftChecksPerTick Entwürfe je Durchlauf (persistenter Round-Robin-Cursor in gmail.js).
     if (!dry && !readOnly && typeof gmail.syncColdDrafts === "function") {
       try {
-        const found = await gmail.syncColdDrafts();
+        const found = await gmail.syncColdDrafts({ max: cfg.maxColdDraftChecksPerTick });
         if (found.length) {
           const cold = store.read(COLD_DRAFTS_FILE, { reviews: {} });
           for (const f of found) {
@@ -272,8 +286,8 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           store.write(COLD_DRAFTS_FILE, cold);
         }
       } catch (e) {
-        if (TRANSIENT_RE.test(e.message)) throw e;
-        log("error", "cold_sync_failed", { error: e.message });
+        if (TRANSIENT_RE.test(e.message)) degrade("cold_sync", e); // Cursor steht auf dem letzten fertig geprüften Entwurf
+        else log("error", "cold_sync_failed", { error: e.message });
       }
     }
     const reg = gmail.listOwned();
@@ -360,12 +374,45 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       threads.get(s.threadId).push(s);
     }
     const followUps = [];
+    // Kandidaten ohne Gmail-Kosten vorfiltern (Ausschlussadressen, inaktive Threads kosten keinen API-Call).
+    const scanCandidates = [];
     for (const [threadId, entries] of threads) {
+      const recips = [...new Set(entries.map((e) => normEmail(e.to)))];
+      if (recips.some((r) => exclude.has(r))) { ownThreads.push({ threadId, to: recips.join(", "), skipped: "excludeAddresses" }); continue; }
+      if (t - Math.max(...entries.map((e) => new Date(e.sentAt))) > cfg.activeDays * DAY_MS) { ownThreads.push({ threadId, to: recips.join(", "), skipped: "inaktiv" }); continue; }
+      scanCandidates.push({ threadId, entries, recips });
+    }
+    // TF-037 INKREMENTELL statt Vollscan: Threads mit neuen Nachrichten (Gmail-History-API, 2 Quota-Units) haben Vorrang –
+    // neue Kundenantworten werden also zuerst gelesen. Basisabdeckung: Round-Robin ab persistentem Cursor
+    // (state.threadScanCursor in state.json, überlebt jeden Neustart). Höchstens maxThreadReadsPerTick Volltext-Reads
+    // (10 Units je Thread) pro Durchlauf; der Rest kommt in den nächsten Durchläufen dran, nichts geht verloren.
+    // Foreign-Gmail-Schutz unverändert: gelesen wird nur über readThread (eigene Threads aus dem Gesendet-Register).
+    let changedSet = new Set(), historyNext = null;
+    if (!dry && typeof gmail.changedThreadIds === "function") {
       try {
-        const recips = [...new Set(entries.map((e) => normEmail(e.to)))];
-        if (recips.some((r) => exclude.has(r))) { ownThreads.push({ threadId, to: recips.join(", "), skipped: "excludeAddresses" }); continue; }
-        if (t - Math.max(...entries.map((e) => new Date(e.sentAt))) > cfg.activeDays * DAY_MS) { ownThreads.push({ threadId, to: recips.join(", "), skipped: "inaktiv" }); continue; }
+        const syncState = typeof gmail.loadSyncState === "function" ? gmail.loadSyncState() : {};
+        const ch = await gmail.changedThreadIds({ sinceHistoryId: syncState.history_id || null });
+        changedSet = new Set(ch.threadIds || []);
+        historyNext = ch.historyId || null;
+        if (ch.invalid) log("warn", "gmail_history_recovered", { note: "historyId abgelaufen - Round-Robin deckt die Luecke ab, kein Vollscan" });
+      } catch (e) {
+        if (!TRANSIENT_RE.test(e.message)) throw e;
+        degrade("history", e); // ohne History in diesem Durchlauf: nur Round-Robin im Budget
+      }
+    }
+    const scanBudget = Math.max(1, Number(cfg.maxThreadReadsPerTick) || 20);
+    const prioThreads = scanCandidates.filter((c) => changedSet.has(c.threadId));
+    const restThreads = scanCandidates.filter((c) => !changedSet.has(c.threadId)).sort((a, b) => a.threadId.localeCompare(b.threadId));
+    let restStart = restThreads.findIndex((c) => c.threadId > String(state.threadScanCursor || ""));
+    if (restStart < 0) restStart = 0;
+    const scanOrder = [...prioThreads, ...restThreads.map((_, i) => restThreads[(restStart + i) % restThreads.length])];
+    let scanned = 0, scanAborted = false;
+    for (const { threadId, entries, recips } of scanOrder) {
+      if (scanned >= scanBudget) { ownThreads.push({ threadId, to: recips.join(", "), skipped: "quota_budget" }); continue; }
+      try {
+        scanned++;
         const { messages } = await gmail.readThread(threadId);
+        if (!changedSet.has(threadId)) state.threadScanCursor = threadId; // Round-Robin-Fortschritt, persistent
         const mails = messages.filter((m) => !m.draft);
         const own = mails.filter((m) => m.sent), ext = mails.filter((m) => !m.sent);
         const lastOwnAt = own.at(-1)?.internalDate || 0;
@@ -437,10 +484,15 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           if (due && t >= due) followUps.push({ threadId, n, own, to: recips[0] });
         }
       } catch (e) {
-        if (TRANSIENT_RE.test(e.message)) throw e; // Gmail/Netz gestört → ganzer Durchlauf mit Backoff
+        // TF-037: Gmail-Quota/Netz → Scan hier beenden (Cursor bleibt stehen), Rest des Durchlaufs läuft weiter – kein Tick-Abbruch.
+        if (TRANSIENT_RE.test(e.message)) { degrade("reply_scan", e); scanAborted = true; break; }
         log("error", "thread_failed", { threadId, error: e.message }); // ein Kontakt stoppt nie den Worker
       }
     }
+    // historyId erst vorrücken, wenn alle geänderten Threads wirklich gelesen wurden – sonst liefert der nächste
+    // Durchlauf dieselben Änderungen erneut (keine verlorenen Antworten, keine Duplikate dank state.handled).
+    if (!dry && !readOnly && historyNext && !scanAborted && prioThreads.length <= scanned && typeof gmail.saveSyncState === "function")
+      gmail.saveSyncState({ history_id: historyNext, last_history_sync_at: t.toISOString() });
 
     // 2) Follow-ups und Erstkontakte vorbereiten: nur im Zeitfenster, wenige pro Durchlauf, Reserve für Antworten bleibt frei.
     // Gesendet wird erst im nächsten Versandfenster (Schritt 4).
@@ -460,7 +512,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         }, (r) => gmail.replyToThread(f.threadId, { body: r.body }));
         paced++;
       } catch (e) {
-        if (TRANSIENT_RE.test(e.message)) throw e;
+        if (TRANSIENT_RE.test(e.message)) { degrade("followup", e); break; } // Gmail gestört: Rest folgt im nächsten Durchlauf
         log("error", "followup_failed", { threadId: f.threadId, error: e.message });
       }
     }
@@ -497,7 +549,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         }, (r) => gmail.createDraft({ to: name ? `${name.replace(/[<>"\r\n]/g, "")} <${to}>` : to, subject: r.subject || "Kurze Frage", body: r.body }));
         paced++;
       } catch (e) {
-        if (TRANSIENT_RE.test(e.message)) throw e;
+        if (TRANSIENT_RE.test(e.message)) { degrade("outreach", e); break; } // Gmail gestört: Rest folgt im nächsten Durchlauf
         log("error", "outreach_failed", { to, error: e.message });
       }
     }
@@ -642,6 +694,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
             const count = (dw.backoffCount || 0) + 1, minutes = Math.min(60, 2 ** (count - 1));
             Object.assign(dw, { backoffCount: count, backoffUntil: new Date(+t + minutes * 60_000).toISOString(), lastError: { at: t.toISOString(), message: String(e.message).slice(0, 160) } });
             dwChanged = true;
+            degrade("draft_worker", e); // TF-037: Mail DEGRADED melden – Queue bleibt vollständig erhalten
             log("warn", "draft_worker_backoff", { lead_id: id, minutes, count, error: e.message });
             break;
           }
@@ -661,7 +714,15 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           coldPatch[id] = { suppressed_after_draft: true }; // Dashboard warnt: Empfänger hat sich inzwischen abgemeldet
         }
       } catch (e) {
-        if (TRANSIENT_RE.test(e.message)) { if (Object.keys(coldPatch).length) writeCold(); throw e; }
+        // TF-037: Gmail gestört (auch bei Verwerfen/Aktualisieren) → Draft-Worker-Backoff statt Tick-Abbruch;
+        // die persistente Queue bleibt vollständig erhalten, nichts wird verworfen.
+        if (TRANSIENT_RE.test(e.message)) {
+          const count = (dw.backoffCount || 0) + 1, minutes = Math.min(60, 2 ** (count - 1));
+          Object.assign(dw, { backoffCount: count, backoffUntil: new Date(+t + minutes * 60_000).toISOString(), lastError: { at: t.toISOString(), message: String(e.message).slice(0, 160) } });
+          dwChanged = true;
+          degrade("draft_worker", e);
+          break;
+        }
         log("error", "cold_draft_failed", { lead_id: id, error: e.message });
       }
     }
@@ -770,10 +831,12 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       blocked_today: acts.filter((a) => today(a.blockedAt)).length + Object.values(store.read(CLOUD_INBOX, {})).filter((e) => e.status === "blocked" && today(e.updatedAt)).length,
       escalations_today: acts.filter((a) => a.kind === "antwort" && a.review && today(a.at)).length,
       ai_paused: aiBudget().paused ? 1 : 0,
+      mail_degraded: gmailDegraded ? 1 : 0, // TF-037: Mail DEGRADED, Core bleibt ONLINE (Heartbeat läuft weiter; nie das Wort „gmail“ in der Cloud)
     };
 
     save();
     return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, window: win?.id || null, windows, stats, escalations, cloudResults, ownThreads, plan, sends, optouts, humanContacts,
+      gmail: gmailDegraded ? { status: "DEGRADED", ...gmailDegraded } : { status: "OK" },
       suppressedTotal: Object.keys(supp).length, eligibleLeads: eligibleLeads.length, blockedLeads: blockedLeads.length, notes };
   }
 
@@ -803,7 +866,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         r.report = await report(r);
         const s = store.read("state.json", STATE);
         if (s.failures) store.write("state.json", { ...s, failures: 0, backoffUntil: 0 });
-        log("info", "tick", { report: r.report, dryRun: dry, sentToday: r.sentToday, used: r.used, free: r.free, threads: r.ownThreads.length, autoSend: r.autoSendActive, sends: r.sends, eligibleLeads: r.eligibleLeads, blockedLeads: r.blockedLeads, plan: r.plan.map(({ task, ...p }) => p), optouts: r.optouts, notes: r.notes });
+        log("info", "tick", { report: r.report, dryRun: dry, gmail: r.gmail?.status || "OK", sentToday: r.sentToday, used: r.used, free: r.free, threads: r.ownThreads.length, autoSend: r.autoSendActive, sends: r.sends, eligibleLeads: r.eligibleLeads, blockedLeads: r.blockedLeads, plan: r.plan.map(({ task, ...p }) => p), optouts: r.optouts, notes: r.notes });
         return r;
       } catch (e) {
         const s = { ...STATE, ...store.read("state.json", STATE) };
