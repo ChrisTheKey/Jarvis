@@ -163,7 +163,7 @@ export const PUBLIC_FIELDS = Object.freeze(["lead_id", "company", "website", "do
   "draft_created_at", "gmail_draft_status", "manual_send_detected", "first_contacted_at", "last_contacted_at", "reply_status", "reply_at", "customer_status",
   "suppressed", "opt_out", "do_not_contact", "last_updated_at"]);
 const finding = (v) => { const s = str(typeof v === "string" ? v : v?.text, 240); return s && !URLISH.test(s) ? s : null; };
-const sourceWord = (s = "") => (/^OpenStreetMap/i.test(s) ? "OpenStreetMap" : /lead-?liste|leads\.json/i.test(s) ? "Lead-Liste Chris" : /gmail/i.test(s) ? "Gmail" : s ? "Jarvis" : null);
+const sourceWord = (s = "") => (/^OpenStreetMap/i.test(s) ? "OpenStreetMap" : /lead-?liste|leads\.json/i.test(s) ? "Lead-Liste Chris" : /gmail/i.test(s) ? "Gmail" : /direct_customer/i.test(s) ? "Direktkunde" : s ? "Jarvis" : null);
 export function publicLead(l) {
   if (!l || typeof l !== "object" || !REGISTRY_ID_RE.test(String(l.lead_id || ""))) return null;
   const website = str(l.website, 200);

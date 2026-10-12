@@ -2,7 +2,44 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-11
+Letzte Aktualisierung: 2026-10-12
+
+## JARVIS DIRECT CUSTOMER ORDER INTAKE (TF-039, 2026-10-12, Tests 459/459 grün)
+- **Bestehender Lead ist für echte Direktkunden nicht mehr zwingend**: Ein Kunde kann über Website-Formular, Direktanfrage,
+  Empfehlung oder persönlichen Kontakt bestellen, ohne je durch Discovery gelaufen zu sein. `node sales.js sale` bleibt
+  unverändert (unbekannte Domain → weiterhin sauberer Fehler, Test A).
+- **`node sales.js direct-sale <domain> <offer> --email <adresse> [--company] [--name] [--website] [--date]`**
+  (`recordDirectSale` in sales.js): nur bewusst von Chris über CLI – der Aufruf IST die ausdrückliche betriebliche Bestätigung.
+  Validiert Domain, Offer (nur REPAIR_CHECK_150/REPAIR_FIX_500, Preis aus OFFERS) und E-Mail (fail closed). Erzeugt den
+  Verkauf über bestehendes `recordSale` plus `direct_sale`-Block (source=direct_customer, basis=manual_confirmed_order,
+  confirmed_by=chris_cli, Firma/Lieferadresse/Kontakt/Website). Bestehender Lead → wird verwendet (kein Duplikat, echte
+  Audit-Evidence); neue Domain → minimaler Kundendatensatz. NIE erfunden: discovery_source aus Discovery, Audit-Evidence,
+  Cold-Contact-Basis, legal basis, Outreach-Historie (Tests B/C/H/I). Versandgrundlagen (legalBasis) bleiben unberührt;
+  Direktkunde ≠ Cold-Lead; registryBlock liefert danach «bestehender Kunde» → nie wieder Cold-Entwurf für diese Firma.
+- **Lead-Datenbank nur über bestehendes reconcile** (lead-registry.js Schritt 6): `direct_sale` liefert Stammdaten
+  (Firma, Lieferadresse, Kontakt, Website, discovery_source=direct_customer), aber nie first_contacted_at /
+  manual_send_detected / gmail_draft_status / reply_status – Status wird direkt CUSTOMER. publicLead zeigt Quelle «Direktkunde».
+- **CHF-150 direkt startbar**: `node check-150-workflow.js --create-confirmed <domain> --email <adresse> [--company] [--name]
+  [--website]` = EIN Befehl: interner Direktverkauf (recordDirectSale) + Auftrag; der Worker bestätigt über die bestehende
+  Order-Logik (confirmedCheck150Sale, unverändert). Läuft bereits ein Auftrag, bestätigt der erfasste Verkauf diesen beim
+  nächsten Lauf. Kein Auftrag gilt je allein wegen eines Domainnamens als bezahlt.
+- **CANCELLED für versehentliche (Test-)Aufträge**: `node check-150-workflow.js --cancel <order-id> [--reason TEXT]`
+  (`cancelCheck150Order`): nur nicht abgeschlossene Aufträge (COMPLETED/CANCELLED nie), Grund optional dokumentiert,
+  Auftrag bleibt gespeichert (nie JSON von Hand löschen). CANCELLED ist terminal: Worker überspringt vollständig
+  (kein Audit/Bericht/Entwurf, keine Gmail-, keine Website-Aktion), zählt nie als offen, Dashboard zeigt es neutral
+  («STORNIERT», eigener Zähler, nicht rot). Danach darf für dieselbe Domain ein neuer echter Auftrag entstehen.
+  STORNIERT LOKAL 2026-10-12: Testaufträge CA150-20261012-65119b (firma.ch) und CA150-20261012-63e315 (echtefirma.ch) –
+  beide waren ORDER_RECEIVED ohne Verkauf (keine sales.json), eindeutig unbestätigte Platzhalter-Tests. 0 offene Aufträge.
+- **Formular-Vorbereitung**: Ein späteres bestätigtes Kundenformular nutzt denselben Intake (recordDirectSale →
+  createCheck150Order). Eine normale Formularanfrage bleibt REQUEST_RECEIVED und wird NIE automatisch bezahlt/bestätigt –
+  erst echte Bestätigung/Zahlung führt (durch Chris) zu CUSTOMER / SALE CONFIRMED. Kein neuer Endpoint in diesem Schritt.
+- **Dashboard**: CHF-150-Auftrag zeigt Quelle nur als Wort «Direktkunde»/«Jarvis Lead» (publicCheck150Orders.source,
+  cleanCheck150-Whitelist um CANCELLED/source/cancelled erweitert; Cloud erzwingt erneut). Keine technischen Interna.
+- Unverändert: Cold-Lead-Regeln/COLD_LEAD_DRAFT_ONLY, Discovery, Suppression/Opt-out, Gmail Foreign Protection,
+  2–3 Findings im Cold-Outreach, CHF-480-Workflow, Gmail incremental sync (Tests H + bestehende Suiten grün).
+- Tests: `test/direct-customer-039.test.js` (11: A alter sale-Fehler, B/D Direktkunde+CHF150, C kein Duplikat, E/F Offer/E-Mail
+  blockiert, G create-confirmed→READY_FOR_DELIVERY, H Cold unverändert, I keine erfundene Historie, J/K/L Cancel/Worker-Skip/
+  Dashboard, M/N 0 Sends + 0 Website-Writes). Gesamt 459/459 grün, Secret-Scan 0 Treffer.
 
 ## JARVIS CHECK & ANLEITUNG CHF 150 — AUTOMATED FULFILLMENT (TF-038, 2026-10-12, Tests 448/448 grün)
 - Neu `check-150-workflow.js`: automatische Erfüllung des CHF-150-Pakets (REPAIR_CHECK_150, Preis aus OFFERS; Angebot unverändert).

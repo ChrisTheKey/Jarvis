@@ -13,6 +13,11 @@
 //   node sales.js report                         Kennzahlen (auch in .secrets/mail_worker/metrics.json)
 //   node sales.js leads                          Pipeline-Übersicht ohne Kontaktdaten
 //   node sales.js sale <domain> <REPAIR_CHECK_150|REPAIR_FIX_500> [--date JJJJ-MM-TT] [--work open|in_progress|delivered]
+//   node sales.js direct-sale <domain> <REPAIR_CHECK_150|REPAIR_FIX_500> --email <kunde@firma.ch>
+//                 [--company "Firma AG"] [--name "Anrede"] [--website URL] [--date JJJJ-MM-TT] [--work …]
+//                 Tatsächlich bestätigter Kundenauftrag (Formular/Direktanfrage/Empfehlung/Kontakt) – nur bewusst von
+//                 Chris über die Kommandozeile. Braucht KEINEN bestehenden Discovery-Lead; erfindet nie Discovery-,
+//                 Outreach- oder Versandgrundlagen-Historie (source = direct_customer, Basis = manual_confirmed_order).
 //   node sales.js status <domain> <replied|not_interested>
 //   node sales.js work <domain> <open|in_progress|delivered>
 import path from "node:path";
@@ -97,6 +102,32 @@ export function recordSale(records, key, { offer, date, work_status = "open", le
   rec.status = "customer";
   rec.statusAt = now.toISOString();
   return { ...records, [key]: rec };
+}
+
+// ---------- Direktkunde / manuell bestätigter Auftrag (TF-039) ----------
+// Ein echter Kunde kann ohne Discovery-Lead bestellen (Website-Formular, Direktanfrage, Empfehlung, persönlicher Kontakt).
+// Der CLI-Aufruf durch Chris ist die ausdrückliche betriebliche Bestätigung – NIE wird allein aus einer Anfrage oder einem
+// Domainnamen ein bezahlter Auftrag. Es entsteht ein Verkaufs-Datensatz mit Kundenstammdaten (source = direct_customer),
+// ohne erfundene Discovery-Quelle, ohne Cold-Outreach-Historie und ohne jede Änderung an Versandgrundlagen (legalBasis bleibt
+// allein massgeblich; ein Direktkunde ist KEIN Cold-Lead). In die Lead-Datenbank gelangt der Kunde ausschliesslich über die
+// bestehende reconcile-Logik (lead-registry.js liest sales.json).
+export const DIRECT_CUSTOMER_SOURCE = "direct_customer";
+const DELIVERY_EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
+
+export function recordDirectSale(records, { domain, offer, delivery_email, company = null, contact_name = null, website = null, date, work_status = "open", lead = {}, now = new Date() } = {}) {
+  const key = safeDomain(String(domain || ""));
+  if (!key || !key.includes(".")) throw new Error(`Ungültige Domain "${domain}".`);
+  const email = normEmail(delivery_email || "");
+  if (!DELIVERY_EMAIL_RE.test(email)) throw new Error("Gültige Kunden-E-Mail (--email) des bestätigten Auftrags erforderlich.");
+  const out = recordSale(records, key, { offer, date, work_status, lead, now });
+  const rec = out[key];
+  rec.direct_sale = {
+    source: DIRECT_CUSTOMER_SOURCE, basis: "manual_confirmed_order", confirmed_by: "chris_cli",
+    domain: key, website: website || lead.website || `https://${key}/`,
+    company: company || lead.company || null, delivery_email: email, contact_name: contact_name || lead.name || null,
+    created_at: records[key]?.direct_sale?.created_at || now.toISOString(), updated_at: now.toISOString(),
+  };
+  return out;
 }
 
 export function setPipelineStatus(records, key, status, now = new Date()) {
@@ -253,9 +284,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (cmd === "report") console.log(JSON.stringify(persistMetrics({ registry }), null, 2));
     else if (cmd === "leads") console.log(JSON.stringify(leads.map((l) => ({ key: l.key, company: l.company, status: l.status, offer: l.offer.offer_class, legal: l.legalBasisStatus })), null, 2));
     else if (cmd === "sale") { lead(); store.write("sales.json", { records: recordSale(data.records, key, { offer: value, date: opt("date"), work_status: opt("work") || "open", lead: raw(key) }) }); console.log("Verkauf erfasst:", key, value, `CHF ${OFFERS[value].price}`); persistMetrics({ registry }); }
+    else if (cmd === "direct-sale") {
+      // Bewusst bestätigter Direktauftrag durch Chris: bestehender Lead wird verwendet (kein Duplikat, echte Audit-Evidence),
+      // sonst entsteht ein minimaler Kundendatensatz – nie erfundene Discovery-/Outreach-Historie.
+      const k = safeDomain(key || "");
+      const existing = leads.find((x) => x.key === k) || null;
+      store.write("sales.json", { records: recordDirectSale(data.records, { domain: key, offer: value, delivery_email: opt("email"), company: opt("company"), contact_name: opt("name"), website: opt("website"), date: opt("date"), work_status: opt("work") || "open", lead: existing ? raw(k) : {} }) });
+      console.log(`Direktverkauf erfasst: ${k} ${value} CHF ${OFFERS[value].price} (Quelle: Direktkunde, ${existing ? "bestehender Lead verwendet" : "neuer Kundendatensatz"})`);
+      persistMetrics({ registry });
+      // Lead-Datenbank sofort über die BESTEHENDE sichere reconcile-Logik nachführen (idempotent, additiv, nie löschend).
+      try { const { reconcileRegistry } = await import("./lead-registry.js"); reconcileRegistry(store, { gmailRegistry: registry, force: true }); } catch (e) { console.error("Hinweis: Lead-Datenbank-Abgleich folgt beim nächsten Worker-Lauf (" + e.message + ")"); }
+    }
     else if (cmd === "status") { lead(); store.write("sales.json", { records: setPipelineStatus(data.records, key, value) }); console.log("Status gesetzt:", key, value); persistMetrics({ registry }); }
     else if (cmd === "work") { store.write("sales.json", { records: setWorkStatus(data.records, key, value) }); console.log("Arbeitsstatus gesetzt:", key, value); }
-    else { console.log("Befehle: report | leads | sale <domain> <REPAIR_CHECK_150|REPAIR_FIX_500> [--date JJJJ-MM-TT] | status <domain> <replied|not_interested> | work <domain> <open|in_progress|delivered>"); return 1; }
+    else { console.log("Befehle: report | leads | sale <domain> <REPAIR_CHECK_150|REPAIR_FIX_500> [--date JJJJ-MM-TT] | direct-sale <domain> <offer> --email <adresse> [--company] [--name] [--website] | status <domain> <replied|not_interested> | work <domain> <open|in_progress|delivered>"); return 1; }
     return 0;
   };
   run().then((c) => process.exit(c), (e) => { console.error("Fehler: " + e.message); process.exit(1); });

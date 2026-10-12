@@ -139,7 +139,7 @@ export function cleanSnapshot(s) {
 // Check & Anleitung CHF 150 (TF-038): gleiche Whitelist-Disziplin wie cleanRepair – nur Zähler, feste Zustandswörter,
 // ungefährliche Auftragsfelder. Nie Berichte, Draft-Inhalte, Adressen, Evidence, Pfade oder Tokens.
 const CHECK150_STATE_WORDS = ["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT", "FINDINGS_ANALYSIS", "INSTRUCTIONS_GENERATION",
-  "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "READY_FOR_DELIVERY", "COMPLETED",
+  "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "READY_FOR_DELIVERY", "COMPLETED", "CANCELLED",
   "BLOCKED_ORDER_NOT_CONFIRMED", "AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED"];
 export function cleanCheck150(r) {
   if (!r || typeof r !== "object") return null;
@@ -156,10 +156,11 @@ export function cleanCheck150(r) {
     medium: o.medium == null ? null : n(o.medium, 10_000), low: o.low == null ? null : n(o.low, 10_000),
     report_available: bool(o.report_available), draft_available: bool(o.draft_available),
     delivery_status: word(o.delivery_status, ["none", "draft_ready", "delivered"]),
+    source: word(o.source, ["direct_customer", "jarvis_lead"]),
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), ready_for_delivery: n(r.ready_for_delivery, 100_000),
-    waiting_confirmation: n(r.waiting_confirmation, 100_000), states, orders };
+    waiting_confirmation: n(r.waiting_confirmation, 100_000), cancelled: n(r.cancelled, 100_000), states, orders };
 }
 // Reparaturaufträge (TF-036): nur Zähler, feste Zustandswörter und ungefährliche Auftragsfelder – nie Evidence, Branches,
 // Commits, Preview-URLs, Freigabe-Referenzen oder Tokens. Die Cloud erzwingt die Whitelist erneut (wie bei den Leads).

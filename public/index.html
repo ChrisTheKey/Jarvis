@@ -396,6 +396,7 @@ form.cmd button.stop { color: var(--red); }
         <span>Bericht wird erstellt</span><b id="c150Reporting">–</b>
         <span>Lieferentwurf bereit</span><b id="c150Ready" title="Gmail-Entwurf liegt bereit – Versand entscheidet Chris">–</b>
         <span>Abgeschlossen</span><b id="c150Done">–</b>
+        <span>Storniert</span><b id="c150Cancelled" title="Von Chris stornierte Aufträge (z. B. Testaufträge) – kein Fehler, zählt nicht als offen">–</b>
         <span>Fehler</span><b id="c150Failed">–</b>
       </div>
       <ul id="check150List"><li class="empty">Keine CHF-150-Aufträge. Ein Auftrag startet erst mit einem erfassten Verkauf – nie durch Cold-Outreach.</li></ul>
@@ -1621,13 +1622,14 @@ const C150_LABELS = { ORDER_RECEIVED: "AUFTRAG ERHALTEN", BLOCKED_ORDER_NOT_CONF
   ORDER_CONFIRMED: "BESTÄTIGT", FULL_AUDIT: "WEBSITE WIRD GEPRÜFT", FINDINGS_ANALYSIS: "BEFUNDE WERDEN AUSGEWERTET",
   INSTRUCTIONS_GENERATION: "ANLEITUNG WIRD ERSTELLT", CUSTOMER_REPORT_READY: "BERICHT WIRD ERSTELLT",
   DELIVERY_DRAFT_CREATED: "LIEFERENTWURF WIRD ERSTELLT", READY_FOR_DELIVERY: "BEREIT ZUR ÜBERGABE", COMPLETED: "ABGESCHLOSSEN",
-  AUDIT_FAILED: "CHECK FEHLGESCHLAGEN", REPORT_FAILED: "BERICHT FEHLGESCHLAGEN", DELIVERY_DRAFT_FAILED: "ENTWURF FEHLGESCHLAGEN",
-  MANUAL_REVIEW_REQUIRED: "MANUELLE PRÜFUNG" };
+  CANCELLED: "STORNIERT", AUDIT_FAILED: "CHECK FEHLGESCHLAGEN", REPORT_FAILED: "BERICHT FEHLGESCHLAGEN",
+  DELIVERY_DRAFT_FAILED: "ENTWURF FEHLGESCHLAGEN", MANUAL_REVIEW_REQUIRED: "MANUELLE PRÜFUNG" };
+const C150_SOURCE = { direct_customer: "Direktkunde", jarvis_lead: "Jarvis Lead" };
 function renderCheck150(rep) {
   const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
   const st = rep?.states || {};
   const sum = (...keys) => keys.reduce((a, k) => a + (st[k] || 0), 0);
-  if (!rep) { for (const id of ["c150Open", "c150Unconfirmed", "c150Auditing", "c150Reporting", "c150Ready", "c150Done", "c150Failed"]) set(id, "–");
+  if (!rep) { for (const id of ["c150Open", "c150Unconfirmed", "c150Auditing", "c150Reporting", "c150Ready", "c150Done", "c150Cancelled", "c150Failed"]) set(id, "–");
     $("c150Seen").textContent = ""; $("check150List").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine Daten vom VPS." })); return; }
   set("c150Open", String(rep.open ?? 0), rep.open ? "on-idle" : "");
   set("c150Unconfirmed", String(rep.waiting_confirmation ?? 0), rep.waiting_confirmation ? "on-idle" : "");
@@ -1635,18 +1637,20 @@ function renderCheck150(rep) {
   set("c150Reporting", String(sum("INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED")));
   set("c150Ready", String(rep.ready_for_delivery ?? 0), rep.ready_for_delivery ? "on-ok" : "");
   set("c150Done", String(st.COMPLETED || 0), st.COMPLETED ? "on-ok" : "");
+  set("c150Cancelled", String(rep.cancelled ?? st.CANCELLED ?? 0)); // storniert = neutral, nie ein Fehler
   set("c150Failed", String(sum("AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED")),
     sum("AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED") ? "on-bad" : "");
   const orders = Array.isArray(rep.orders) ? rep.orders : [];
   if (!orders.length) { $("check150List").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine CHF-150-Aufträge. Ein Auftrag startet erst mit einem erfassten Verkauf – nie durch Cold-Outreach." })); return; }
   $("check150List").replaceChildren(...orders.map((o) => {
     const li = document.createElement("li");
-    li.className = ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|MANUAL/.test(o.state || "") ? "bad" : "wait";
+    li.className = o.state === "CANCELLED" ? "" : ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|MANUAL/.test(o.state || "") ? "bad" : "wait";
     li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span>`;
     li.querySelector(".st").textContent = `${C150_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 150}`;
-    li.querySelector(".sub").textContent = ` ${[o.company, o.domain].filter(Boolean).join(" · ")}`;
+    li.querySelector(".sub").textContent = ` ${[o.company, o.domain, C150_SOURCE[o.source]].filter(Boolean).join(" · ")}`;
     const sev = o.findings == null ? "Befunde –" : `Befunde ${o.findings} (kritisch ${o.critical ?? 0} · hoch ${o.high ?? 0} · mittel ${o.medium ?? 0} · gering ${o.low ?? 0})`;
-    li.querySelector(".why").textContent = `${sev} · Bericht ${o.report_available ? "JA" : "NEIN"} · Gmail-Entwurf ${o.draft_available ? "JA" : "NEIN"} · Lieferung ${o.delivery_status === "draft_ready" ? "ENTWURF BEREIT" : o.delivery_status === "delivered" ? "ÜBERGEBEN" : "OFFEN"}`;
+    li.querySelector(".why").textContent = o.state === "CANCELLED" ? "Von Chris storniert – keine weitere Verarbeitung"
+      : `${sev} · Bericht ${o.report_available ? "JA" : "NEIN"} · Gmail-Entwurf ${o.draft_available ? "JA" : "NEIN"} · Lieferung ${o.delivery_status === "draft_ready" ? "ENTWURF BEREIT" : o.delivery_status === "delivered" ? "ÜBERGEBEN" : "OFFEN"}`;
     return li;
   }));
 }

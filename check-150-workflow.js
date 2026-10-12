@@ -29,7 +29,11 @@ export const CHECK150_STATES = Object.freeze(["ORDER_RECEIVED", "ORDER_CONFIRMED
   "INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "READY_FOR_DELIVERY", "COMPLETED"]);
 export const CHECK150_BLOCKED = Object.freeze(["BLOCKED_ORDER_NOT_CONFIRMED", "AUDIT_FAILED", "REPORT_FAILED",
   "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED"]);
-const TERMINAL = new Set(["COMPLETED", ...CHECK150_BLOCKED.filter((s) => s !== "BLOCKED_ORDER_NOT_CONFIRMED")]);
+// Von Chris storniert (z. B. versehentlich angelegter Testauftrag): terminal, KEIN Fehler, zählt nie als offen.
+// Der Datensatz bleibt aus Nachvollziehbarkeit gespeichert (nie JSON von Hand löschen); Audit/Bericht/Entwurf stoppen,
+// es folgt keine Gmail- und keine Website-Aktion.
+export const CHECK150_CANCELLED = "CANCELLED";
+const TERMINAL = new Set(["COMPLETED", CHECK150_CANCELLED, ...CHECK150_BLOCKED.filter((s) => s !== "BLOCKED_ORDER_NOT_CONFIRMED")]);
 const WAITING = new Set(["READY_FOR_DELIVERY"]);
 const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i;
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
@@ -85,6 +89,19 @@ export function completeCheck150(store, orderId, { now = new Date() } = {}) {
   if (order.state !== "READY_FOR_DELIVERY") throw new Error(`Nur READY_FOR_DELIVERY kann abgeschlossen werden (aktuell ${order.state}).`);
   order.delivery_status = "delivered";
   transition(order, "COMPLETED", "Abschluss bestätigt", now);
+  return saveOrder(store, order);
+}
+// Stornierung nur durch Chris (CLI). Nur nicht abgeschlossene Aufträge; Grund optional dokumentiert; der Auftrag bleibt
+// gespeichert (Nachvollziehbarkeit). Danach: kein Audit, kein Bericht, kein Entwurf mehr (terminal), keine Gmail-/Website-Aktion.
+export function cancelCheck150Order(store, orderId, { reason = null, now = new Date() } = {}) {
+  const order = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders?.[orderId];
+  if (!order) throw new Error("Auftrag nicht gefunden.");
+  if (order.state === "COMPLETED") throw new Error("Abgeschlossene Aufträge können nicht storniert werden.");
+  if (order.state === CHECK150_CANCELLED) throw new Error("Auftrag ist bereits storniert.");
+  order.cancel_reason = reason ? String(reason).replace(/\s+/g, " ").trim().slice(0, 200) || null : null;
+  order.cancelled_at = now.toISOString();
+  order.blocked_reason = null;
+  transition(order, CHECK150_CANCELLED, order.cancel_reason ? `Von Chris storniert: ${order.cancel_reason}` : "Von Chris storniert", now);
   return saveOrder(store, order);
 }
 
@@ -384,16 +401,21 @@ export function check150Status(dir = WORKER_DIR) {
   const states = {};
   for (const o of orders) states[o.state] = (states[o.state] || 0) + 1;
   return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state)).length, states,
-    ready_for_delivery: states.READY_FOR_DELIVERY || 0, waiting_confirmation: states.BLOCKED_ORDER_NOT_CONFIRMED || 0 };
+    ready_for_delivery: states.READY_FOR_DELIVERY || 0, waiting_confirmation: states.BLOCKED_ORDER_NOT_CONFIRMED || 0,
+    cancelled: states[CHECK150_CANCELLED] || 0 };
 }
 export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
-  const orders = Object.values(createStore(dir).read(CHECK150_ORDERS_FILE, { orders: {} }).orders || {})
+  const store = createStore(dir);
+  // Quelle nur als Wort (Direktkunde / Jarvis Lead) – keine technischen internen Daten im Dashboard.
+  const records = store.read("sales.json", { records: {} }).records || {};
+  const orders = Object.values(store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders || {})
     .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, max)
     .map((o) => {
       const s = o.report?.summary || {};
       return { order_id: o.order_id, company: o.company || null, domain: o.domain, offer_class: o.offer_class, price_chf: o.price_chf,
         state: o.state, findings: o.report_findings_count ?? null, critical: s.critical ?? null, high: s.high ?? null, medium: s.medium ?? null, low: s.low ?? null,
         report_available: !!o.report, draft_available: !!o.delivery_draft?.draft_id, delivery_status: o.delivery_status || "none",
+        source: records[normDomain(o.domain)]?.direct_sale?.source === "direct_customer" ? "direct_customer" : "jarvis_lead",
         created_at: o.created_at, updated_at: o.updated_at };
     });
   return { ...check150Status(dir), orders };
@@ -410,7 +432,8 @@ export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, log = 
 
 // ---------- Kommandozeile ----------
 // node check-150-workflow.js --list | --show <id> | --create <domain> --email <lieferadresse> [--website URL] [--company NAME]
-//                            [--name ANREDE] | --run | --report <id> | --complete <id>
+//                            [--name ANREDE] | --create-confirmed <domain> --email <adresse> [--company] [--name] [--website]
+//                            | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
   const flag = (n) => { const i = argv.indexOf("--" + n); return i >= 0 ? argv[i + 1] : undefined; };
@@ -418,6 +441,32 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const run = async () => {
     if (argv.includes("--list")) { console.log(JSON.stringify(check150Status(), null, 2)); return 0; }
     if (flag("show")) { const o = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders?.[flag("show")]; if (!o) throw new Error("Auftrag nicht gefunden."); console.log(JSON.stringify(o, null, 2)); return 0; }
+    if (flag("create-confirmed")) {
+      // Direktkunde mit TATSÄCHLICH bestätigtem CHF-150-Auftrag: der bewusste CLI-Aufruf durch Chris ist die betriebliche
+      // Bestätigung. Erzeugt intern den Direktverkauf (sales.js recordDirectSale, Quelle direct_customer) und den Auftrag –
+      // der Worker bestätigt ihn beim nächsten Lauf über die bestehende Order-Logik (confirmedCheck150Sale).
+      const { recordDirectSale, persistMetrics } = await import("./sales.js");
+      const domain = flag("create-confirmed");
+      const data = store.read("sales.json", { records: {} });
+      store.write("sales.json", { records: recordDirectSale(data.records, { domain, offer: CHECK150_OFFER, delivery_email: flag("email"), company: flag("company"), contact_name: flag("name"), website: flag("website"), date: flag("date") }) });
+      console.log(`Bestätigter CHF-150-Direktverkauf erfasst: ${normDomain(domain)} (CHF ${OFFERS[CHECK150_OFFER].price}, Quelle: Direktkunde).`);
+      try {
+        const o = createCheck150Order(store, { domain, website: flag("website"), company: flag("company"), delivery_email: flag("email"), contact_name: flag("name") });
+        console.log(`Auftrag angelegt: ${o.order_id} (${o.state}) – der Worker bestätigt ihn automatisch über den erfassten Verkauf.`);
+      } catch (e) {
+        if (!/läuft bereits/.test(e.message)) throw e;
+        console.log(`Kein neuer Auftrag: ${e.message} Der erfasste Verkauf bestätigt den bestehenden Auftrag beim nächsten Lauf.`);
+      }
+      const registry = await import("./gmail.js").then((g) => g.listOwned(), () => ({ sent: {}, drafts: {} }));
+      persistMetrics({ registry });
+      try { const { reconcileRegistry } = await import("./lead-registry.js"); reconcileRegistry(store, { gmailRegistry: registry, force: true }); } catch {}
+      return 0;
+    }
+    if (flag("cancel")) {
+      const o = cancelCheck150Order(store, flag("cancel"), { reason: flag("reason") });
+      console.log(`Storniert: ${o.order_id} → ${o.state}${o.cancel_reason ? ` (${o.cancel_reason})` : ""}. Auftrag bleibt gespeichert; keine Gmail-/Website-Aktion.`);
+      return 0;
+    }
     if (flag("create")) {
       const o = createCheck150Order(store, { domain: flag("create"), website: flag("website"), company: flag("company"), delivery_email: flag("email"), contact_name: flag("name") });
       console.log(`Auftrag angelegt: ${o.order_id} (${o.state}). Bestätigung = erfasster Verkauf: node sales.js sale ${o.domain} REPAIR_CHECK_150`);
@@ -426,7 +475,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (argv.includes("--run")) { const gmail = await import("./gmail.js"); console.log(JSON.stringify(await runCheck150Orders({ gmail }), null, 2)); return 0; }
     if (flag("report")) { const o = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders?.[flag("report")]; if (!o?.report_text_file || !fs.existsSync(o.report_text_file)) throw new Error("Kein Bericht vorhanden."); console.log(fs.readFileSync(o.report_text_file, "utf8")); return 0; }
     if (flag("complete")) { const o = completeCheck150(store, flag("complete")); console.log(`Abgeschlossen: ${o.order_id} → ${o.state}`); return 0; }
-    console.log("Befehle: --list | --show <id> | --create <domain> --email <adresse> | --run | --report <id> | --complete <id>");
+    console.log("Befehle: --list | --show <id> | --create <domain> --email <adresse> | --create-confirmed <domain> --email <adresse> | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>");
     return 1;
   };
   run().then((c) => process.exit(c), (e) => { console.error("Fehler: " + e.message); process.exit(1); });
