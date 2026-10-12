@@ -69,6 +69,13 @@ Letzte Aktualisierung: 2026-10-12
   wiederhergestellt. Secret-Scan 0.
 - **Bekannte Einschränkungen**: Production-Image deutlich grösser (Chromium). Browser-Gate prüft max. 3 Seiten je Auftrag; Befundtypen
   ohne eigene Browser-Prüfung laufen nur über die allgemeinen Checks. Visuelle Bewertung bewusst ohne Pixelvergleich.
+- **LIVE 2026-10-12 (c475c26 Feature, fb01df8 Docs)**: Push → GitHub (origin = HEAD verifiziert); VPS `deploy/vps/deploy.sh fiverr` OHNE
+  --with-secrets: DEPLOYED_COMMIT fb01df8, Container healthy, 0 Restarts, worker_started role=vps 19:50:54 UTC, authority holder=vps; im
+  Container (Prüfskript per stdin, nur passiv) alle Repair-Module + `repair-browser-validator.js` ladbar, Browser-Runtime ACTIVE
+  (`/usr/bin/chromium`, playwright-core), Validator-Probe-Start ohne Navigation ok (~1.3 s), 0 Browser-Temp übrig; Registry ACTIVE,
+  Host-Key-Verifier ACTIVE, `browser_validator` ACTIVE, Profile-Builder ladbar, 0 Reparaturaufträge. Keine Kundenwebsite aufgerufen, keine
+  Lab-Container auf dem VPS (Lab nur lokal, danach 0/0/0). /opt/fiverr unberührt. Netlify Production autodeployt (`/` 200 mit «Browser
+  Desktop»/Registry «Browser»), 390×844 ohne Overflow, keine Page-Errors. Keine echte Zahlung, Mail, Kundenverbindung oder Zugangsdaten.
 
 ## JARVIS REAL REPAIR ADAPTER INTEGRATION LAB + HOST KEY TYPE SAFETY — TF-044 (2026-10-12, Unit 558/558 + Lab 18/18 grün)
 - **TF-043-Einschränkung behoben**: Bestätigt der Kunde den Fingerprint eines anderen Host-Key-Typs (z. B. RSA, während der
