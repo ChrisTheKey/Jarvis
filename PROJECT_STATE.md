@@ -4,6 +4,58 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-12
 
+## JARVIS AUTHORIZED REPAIR ADAPTERS — TF-042 (2026-10-12, Tests 518/518 grün)
+- **Neue Dateien**: `repair-adapters/common.js` (Contract, Capabilities, Issue→Fix-Matrix, Minimal-Patch, Domain-Bindung, Objekt-
+  Backup, Fehlerbereinigung), `wordpress.js`, `sftp.js`, `ssh.js`, `router.js` (Routing, Zugangsprofile, Credential-Kontext, Brücke
+  zur Engine, Registry). GitHub+Netlify-Adapter unverändert (036-Tests grün, Router wählt ihn für github_netlify bzw. Mapping).
+- **Contract**: checkAccess/backup/locate/applyFix/validate/deployProduction/rollback/cleanup(+detectCapabilities), jeweils mit
+  Credential-Kontext NUR zur Laufzeit. Persistiert werden nur Allowlist-Metadaten (connector, capabilities, checked_at, backup_ref,
+  rollback_ref, Hashes …); enthält eine Antwort ein Secret → verworfen. Exceptions werden in der Brücke bereinigt.
+- **Capabilities**: READ_FILES, WRITE_FILES, ATOMIC_REPLACE, REST_CONTENT_READ, REST_CONTENT_WRITE, BACKUP, ROLLBACK, BUILD_TEST,
+  HEALTH_CHECK – je Adapter tatsächlich geprüft (am Auftrag `access.capabilities`). Ohne BACKUP+ROLLBACK → MANUAL_REVIEW_REQUIRED;
+  Plan-Eintrag nur, wenn alle benötigten Capabilities vorhanden sind.
+- **Issue→Fix-Matrix**: automatisch nur broken_link / contact_page_broken / navigation_broken (href), broken_image / missing_asset
+  (src), mobile_overflow nur mit exakt belegter CSS-Stelle (nur Dateien). NIE: Zertifikat, DNS, Redirect, Security, Auth, Formulare.
+  Kein Raten: locate() liefert nur mit exaktem Objekt, exakter Stelle, genau EINEM Ersatzziel (öffentlich 200, gleiche Domain),
+  höchstens 3 Objekten; sonst needs_review → MANUAL_REVIEW_REQUIRED. max_auto_fixes_per_order = 10, mehr → MANUAL_REVIEW_REQUIRED.
+- **WordPress (REST, kein wp-admin, kein Browser)**: HTTPS Pflicht, REST-Basis exakt auf der Auftrags-Domain, Redirects mit
+  Zugangsdaten werden nie verfolgt; Application Password/temporärer Benutzer; nur lesend → BLOCKED_NO_ACCESS; Rechte nie erweitert,
+  nie Benutzer angelegt. Schreiben NUR `/wp/v2/(pages|posts|navigation)/<id>` (harte Allowlist) – nie Plugins/Themes/Users/Settings/
+  WooCommerce. Vor jedem Write Objekt-Backup (object_type, object_id, original_hash, Originalinhalt, modified_at, backup_created_at),
+  Minimal-Patch nur des kaputten href/src (auch Block-JSON), Hash-Prüfung; Validierung über Objekt-Hash + öffentliche Seite.
+- **SFTP**: nur SFTP (kein FTP), Host-Key-Fingerprint Pflicht (Profil), root → BLOCKED_UNSAFE_ACCESS, remote_root Pflicht/kanonisch/
+  kein Systemverzeichnis. Sandbox blockiert ../, absolute Escapes, Symlink-Escapes (realpath), /etc, /root, .ssh, .env, .htaccess,
+  Schlüssel/Konfig. Schreiben nur .html/.htm/.css. Write: lesen → Hash prüfen → lokales Backup → Temp-Datei im selben Verzeichnis →
+  Rechte prüfen → Inhalt prüfen → posix-rename (atomar) → Ergebnis-Hash. Ohne atomaren Rename keine ATOMIC_REPLACE/ROLLBACK.
+- **SSH**: keine freie Shell, kein exec(string); nur typisierte Funktionen (statFile, readFile, hashFile, listDirectory, writeTempFile,
+  atomicRename, runConfiguredBuildCheck, runConfiguredHealthCheck). Dateiänderungen ausschliesslich über die SFTP-Schicht. Ausführen
+  nur von Chris konfigurierte Check-IDs: npm (`--prefix <root> run <script>`/`test`), php `-l`, node `--check`; Argumente ohne Shell-
+  Metazeichen (; && || | ` $() > < Zeilenumbruch …), Pfade in remote_root; sudo/su/apt/useradd/rm/curl … verboten. root → unsicher.
+- **Router**: github_netlify → GitHub+Netlify; wordpress_cms → WordPress; sftp → SFTP; ssh → SSH (mit Checks) bzw. SFTP über SSH
+  (ohne Checks, minimal nötige Rechte); hosting nur über erkennbare Schnittstelle (Profil-Interface, sftp://, ssh://, wp-json,
+  GitHub-Mapping), sonst BLOCKED_UNSUPPORTED_STACK; other → BLOCKED_UNSUPPORTED_STACK. Zugangsart ≠ Stack (z. B. WordPress-Site +
+  SFTP → SFTP); gebaute Apps (Next.js/React) nie per Dateiänderung. Kein Browser-Login, keine Hoster-Panels.
+- **Zugangsprofil** `repair_access_profiles.json` (KEINE Secrets): interface, port, remote_root, host_key_sha256, wp_api_base,
+  checks. `node repair-adapters/router.js --profile <domain> --root /pfad --host-key SHA256:… [--interface …] [--checks datei.json]`.
+- **Engine** (repair-workflow.js): order.route (Adapter-Wahl genau einmal), neuer Endzustand BLOCKED_UNSAFE_ACCESS, Domain-Bindung
+  vor jedem Write (Auftrag/Freigabe/Zugang/Live-Ziel, fremde Weiterleitung → STOP). WordPress/SFTP/SSH ohne Preview = direkt live:
+  nur niedriges Risiko mit Backup+Rollback; jede fehlgeschlagene Validierung/Retest/Health/Live-Regression → sofort Rollback, danach
+  erneut geprüft; Rollback ok → REPAIR_FAILED (Tresor zerstört), Rollback fehlgeschlagen/unsauber → MANUAL_REVIEW_REQUIRED + Chris
+  informiert (order.alerts, Log `repair_chris_alert`, Dashboard). Payment/Auth-Gate TF-041 unverändert (CHF 480, Deposit 240).
+- **Kundenbericht**: zusätzlich «Nicht automatisch repariert» und Hinweis, den temporären Zugang zu entfernen – nie Credentials,
+  Hosts, Pfade, Git-SHA, Backup-IDs, Tokens.
+- **Dashboard/Snapshot**: je Auftrag Adapter (GitHub+Netlify/WordPress/SFTP/SSH/Unsupported), Access, Backup, Rollback, Auto-fixable,
+  Manual Review; Phasen BACKUP / REPAIRING / VALIDATING / LIVE RETEST / COMPLETED / MANUAL REVIEW; Zeilen «Adapter Registry» und
+  «Manuelle Prüfung». Whitelist in server-control.js (cleanRepair). Mobile 390×844 lokal geprüft: kein horizontaler Overflow.
+- **Dependency**: `ssh2` 1.17.0 (exakt gepinnt, package-lock.json neu). Dockerfile: `npm ci --omit=dev --omit=optional --ignore-scripts`.
+  Kein basic-ftp, kein FTP. Kein Bankzugriff (payments.js unverändert).
+- **Tests**: `test/repair-adapters-042.test.js` (30; WordPress-Mock-E2E, SFTP- und SSH/SFTP-Fixture-E2E bis COMPLETED, Sandbox,
+  Injection, Router, Payment/Auth, Secret-Marker in Order/payments/sales/lead_registry/Logs/Dashboard/Snapshot/Bericht/
+  PROJECT_STATE/Git). Angepasst: 035 (BLOCKED_STATES). Gesamt 518/518, Secret-Scan 0 Treffer. Keine echte Zahlung, Mail,
+  Zugangsdaten, WordPress-/SSH-/SFTP-Verbindung, Kundenwebsite.
+- **OFFEN** für echte Aufträge: je Domain ein Zugangsprofil (remote_root + Host-Key) durch Chris; Adapter gegen einen echten
+  Testserver wurden bewusst nicht geprüft (nur Mocks/Fixtures).
+
 ## JARVIS PAYMENT GATES + SECURE CUSTOMER ACCESS — TF-041 (2026-10-12, Tests 488/488 grün)
 - **VERKAUF != ZAHLUNG**: sale / direct-sale / create-confirmed / ORDER_CONFIRMED bestätigen nur den Auftrag. Geldeingang nur im
   Payment-Ledger `payments.js` → `.secrets/mail_worker/payments.json` (atomar, im verschlüsselten State-Backup). Felder je Zahlung:

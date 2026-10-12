@@ -30,6 +30,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS } from "./sales.js";
 import { paymentGateForOrder, paymentSummary, paymentThresholdChf } from "./payments.js";
@@ -37,6 +38,7 @@ import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIn
   markSecretDestroyed, syncAccessIntake, intakeClient } from "./access-intake.js";
 import { REPAIR_TYPES, selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { createAuditor } from "./site-auditor.js";
+import { MAX_AUTO_FIXES_PER_ORDER, hasCapabilities, onlyCapabilities } from "./repair-adapters/common.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 export const REPAIR_OFFER = "REPAIR_FIX_500"; // Kundenbezeichnung „Check & Reparatur“, Preis aus OFFERS (CHF 480). Keine dritte Preisstufe.
@@ -49,7 +51,8 @@ export const REPAIR_OFFER = "REPAIR_FIX_500"; // Kundenbezeichnung „Check & Re
 export const ORDER_STATES = Object.freeze(["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK",
   "ACCESS_REQUESTED", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]);
 export const BLOCKED_STATES = Object.freeze(["BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK",
-  "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED"]);
+  "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS"]);
+// TF-042: BLOCKED_UNSAFE_ACCESS = Zugang technisch möglich, aber unsicher (root-Login, Systemverzeichnis als Webroot, Symlink-Root).
 // Von Chris storniert: terminal, Zugangsdaten werden zerstört, Datensatz bleibt (nie von Hand löschen).
 export const REPAIR_CANCELLED = "CANCELLED";
 const TERMINAL = new Set(["COMPLETED", REPAIR_CANCELLED, ...BLOCKED_STATES]);
@@ -220,10 +223,26 @@ function destroyOrderSecret(store, order, now) {
 //   deployProduction(order)           → { ok, deploy_ref? }          (optional; ohne = Chris deployt selbst über den bestehenden Kanal)
 //   rollback(order)                   → { ok }                       (optional; bei Regression Pflichtversuch, wenn vorhanden)
 // deps.retester(url) → { ok, method, issues? } (optional, z. B. echter Smartphone-/Desktop-Rendertest).
+// TF-042: deps.router (repair-adapters/router.js) wählt bei sicher übermitteltem Zugang den Adapter nach tatsächlichen
+// Fähigkeiten (order.route). Contract-Adapter (WordPress/SFTP/SSH) kommen über die Brücke mit identischer Aufrufform und
+// direct_live = true (Änderungen sind sofort live → jede fehlgeschlagene Prüfung führt zum Rollback). Allen Adapter-Aufrufen
+// wird der Zugangskontext (accessCtx) als letztes Argument mitgegeben; Zugangsdaten werden nur darin zur Laufzeit geöffnet.
 export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir), adapters = {}, auditor = null, retester = null,
-  gmail = null, intake = null, now = () => new Date(), log = () => {} } = {}) {
+  gmail = null, intake = null, router = null, alert = null, now = () => new Date(), log = () => {} } = {}) {
 
-  const block = (order, state, reason) => { order.blocked_reason = reason; transition(order, state, reason, now()); return saveOrder(store, order); };
+  const adapterOf = (order) => (order.stack ? adapters[order.route?.adapter || order.stack.type] || null : null);
+  const block = (order, state, reason) => {
+    order.blocked_reason = reason; transition(order, state, reason, now());
+    // Credential-Lebenszyklus (TF-042): endgültig gescheiterte Reparatur → Tresor zerstören, nur Metadaten bleiben.
+    if (state === "REPAIR_FAILED") destroyOrderSecret(store, order, now());
+    return saveOrder(store, order);
+  };
+  // Chris informieren (Dashboard zeigt MANUAL REVIEW; zusätzlich Log-Ereignis + optionaler Hinweis-Kanal). Nie Zugangsdaten.
+  const informChris = async (order, kind, reason) => {
+    order.alerts = [...(order.alerts || []), { at: now().toISOString(), kind, reason: String(reason).slice(0, 200) }].slice(-10);
+    log("error", "repair_chris_alert", { order_id: order.order_id, kind });
+    if (typeof alert === "function") { try { await alert({ order_id: order.order_id, domain: order.domain, kind, reason: String(reason).slice(0, 200) }); } catch {} }
+  };
   const canRequestAccess = (order) => !!(order.delivery_email && intake && gmail && typeof gmail.createDraft === "function" && typeof gmail.sendDraft === "function");
   const intakeReceived = (order) => order.access_intake?.status === "RECEIVED";
   // Domain-Bindung (TF-041): Auftrag, Freigabe und – falls vorhanden – der sicher übermittelte Zugang zeigen auf exakt dieselbe Domain.
@@ -260,16 +279,24 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
   };
   const rollbackThen = async (order, adapter, failReason) => {
     const can = typeof adapter?.rollback === "function";
-    const r = can ? await adapter.rollback(order).catch(() => ({ ok: false })) : { ok: false };
+    const r = can ? await adapter.rollback(order, accessCtx(order)).catch(() => ({ ok: false })) : { ok: false };
     order.regression = { ...(order.regression || {}), rolled_back: r.ok === true };
+    if (r.ok === true && adapter?.direct_live) {
+      // Direkt-live-Adapter: Rollback danach erneut prüfen (Website erreichbar, keine neuen relevanten Befunde gegenüber VORHER).
+      const after = await audit(order.website).catch(() => ({ ok: false, issues: {} }));
+      const reg = after.ok ? regression(order.audit_before, after) : [{ type: "unreachable" }];
+      order.regression.rollback_verified = !reg.length;
+      if (reg.length) { await informChris(order, "rollback_unverified", failReason); return manual(order, `${failReason} – Rollback ausgeführt, aber die Prüfung danach ist nicht sauber; Website-Zustand manuell prüfen.`); }
+    }
     if (r.ok === true) return block(order, "REPAIR_FAILED", `${failReason} – auf den letzten sicheren Stand zurückgerollt.`);
+    await informChris(order, "rollback_failed", failReason);
     return manual(order, `${failReason} – Rollback ${can ? "fehlgeschlagen" : "über diesen Kanal nicht verfügbar"}; Website-Zustand manuell prüfen.`);
   };
 
   // Genau einen Schritt ausführen. Rückgabe true = es ging weiter (erneut aufrufen), false = wartet/fertig/blockiert.
   async function step(order) {
     const t = now();
-    const adapter = order.stack ? adapters[order.stack.type] : null;
+    const adapter = adapterOf(order);
 
     // Zahlung fiel während der Arbeit unter die Schwelle (void/refund): vor jeder Änderung → warten; danach → Chris entscheidet.
     if (WORK_STATES.has(order.state)) {
@@ -341,17 +368,34 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         }
         saveOrder(store, order);
       }
-      // Sicher übermittelter Zugang mit passender Zugangsart → dazugehöriger Adapter (nur wenn konfiguriert).
-      const viaForm = intakeReceived(order) ? CONNECTOR_ADAPTER[order.access_intake.connector_type] : null;
-      if (viaForm && adapters[viaForm] && order.stack.type !== viaForm && !adapters[order.stack.type]) { order.stack = { type: viaForm, evidence: ["secure_order_access_form"] }; saveOrder(store, order); }
+      if (router && intakeReceived(order)) {
+        // TF-042: Adapter nach tatsächlichen Fähigkeiten wählen (Zugangsart ≠ Stack) – genau einmal, Ergebnis am Auftrag.
+        if (!order.route) {
+          const gh = adapters.github_netlify;
+          const has_mapping = typeof gh?.claims === "function" ? await gh.claims(order).catch(() => false) : false;
+          const r = await Promise.resolve(router.route({ order, access_type: order.access_intake.connector_type, detected_stack: order.stack.type, accessCtx: accessCtx(order), has_mapping }))
+            .catch(() => ({ adapter: null, state: "BLOCKED_UNSUPPORTED_STACK", reason: "Routing nicht möglich." }));
+          order.route = { adapter: r.adapter || null, label: r.label || null, access_type: order.access_intake.connector_type, detected_stack: order.stack.type, reason: String(r.reason || "").slice(0, 200), routed_at: t.toISOString() };
+          saveOrder(store, order);
+          if (r.state) { block(order, r.state, r.reason || "Kein unterstützter Reparaturweg."); return false; }
+        }
+      } else {
+        // Sicher übermittelter Zugang mit passender Zugangsart → dazugehöriger Adapter (nur wenn konfiguriert).
+        const viaForm = intakeReceived(order) ? CONNECTOR_ADAPTER[order.access_intake.connector_type] : null;
+        if (viaForm && adapters[viaForm] && order.stack.type !== viaForm && !adapters[order.stack.type]) { order.stack = { type: viaForm, evidence: ["secure_order_access_form"] }; saveOrder(store, order); }
+      }
       if (order.stack.type === "other" && !intakeReceived(order)) { block(order, "BLOCKED_UNSUPPORTED_STACK", "Stack nicht erkannt – kein sicher unterstützter Reparaturweg."); return false; }
-      const a = adapters[order.stack.type];
+      const a = adapterOf(order);
       if (!a || typeof a.checkAccess !== "function") return requestAccessOrBlock(order, intakeReceived(order)
         ? `Zugang (${order.access_intake.connector_type}) erhalten, aber kein automatischer Reparaturweg für Stack "${order.stack.type}" – Chris übernimmt manuell.`
         : `Kein sicherer Zugangsweg für Stack "${order.stack.type}" konfiguriert. Zugangsdaten werden nie erraten.`);
       const acc = await a.checkAccess(order, accessCtx(order)).catch((e) => ({ ok: false, error: e.message }));
-      if (acc?.ok !== true) return requestAccessOrBlock(order, "Zugangsprüfung fehlgeschlagen – keine Änderung ohne sicheren Zugang.");
-      order.access = { connector: acc.connector || order.stack.type, ok: true, checked_at: t.toISOString() }; // nie mehr Felder übernehmen (keine Secrets)
+      // Unsicherer Zugang (root, Systemverzeichnis …) wird nie „repariert“ – eigener Endzustand, keine zweite Anfrage.
+      if (acc?.ok !== true && ["BLOCKED_UNSAFE_ACCESS", "BLOCKED_UNSUPPORTED_STACK"].includes(acc?.blocked_state)) { block(order, acc.blocked_state, `Zugang abgelehnt (${String(acc.reason || "unsicher").slice(0, 60)}) – keine automatische Reparatur.`); return false; }
+      if (acc?.ok !== true) return requestAccessOrBlock(order, `Zugangsprüfung fehlgeschlagen${acc?.reason ? ` (${String(acc.reason).slice(0, 60)})` : ""} – keine Änderung ohne sicheren Zugang.`);
+      const caps = Array.isArray(acc.capabilities) ? onlyCapabilities(acc.capabilities) : (router?.capabilitiesOf?.(order.route?.adapter || order.stack.type) || null);
+      order.access = { connector: acc.connector || order.stack.type, ok: true, checked_at: t.toISOString(), ...(caps ? { capabilities: caps } : {}) }; // nie mehr Felder übernehmen (keine Secrets)
+      if (caps && !hasCapabilities(caps, ["BACKUP", "ROLLBACK"])) { manual(order, "Zugang ohne zuverlässiges Backup/Rollback – keine automatische Reparatur."); return false; }
       transition(order, "BACKUP", "Zugang geprüft", t); saveOrder(store, order); return true;
     }
 
@@ -401,7 +445,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         transition(order, "ACCESS_CHECK", "Sicherer Zugang und Reparaturfreigabe über das Auftragsformular erhalten", t); saveOrder(store, order); return true;
       }
       // Alternativ: Freigabe liegt vor und Chris hat den sicher erhaltenen Zugang als Adapter konfiguriert.
-      const a = order.stack ? adapters[order.stack.type] : null;
+      const a = adapterOf(order);
       if (authorizationOk(order) && a && typeof a.checkAccess === "function") {
         const acc = await a.checkAccess(order, accessCtx(order)).catch(() => ({ ok: false }));
         if (acc?.ok === true) {
@@ -414,7 +458,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
 
     if (order.state === "BACKUP") {
       const branch = `repair/${order.order_id}`;
-      const b = await adapter.backup(order, { branch }).catch((e) => ({ error: e.message }));
+      const b = await adapter.backup(order, { branch }, accessCtx(order)).catch((e) => ({ error: e.message }));
       if (!b || !b.production_ref || !b.backup_ref || !b.rollback_point) { manual(order, "Backup unvollständig (Produktionsstand/Backup/Rollback-Punkt) – ohne Rollback keine Reparatur."); return false; }
       order.backup = { production_ref: String(b.production_ref), backup_ref: String(b.backup_ref), rollback_point: String(b.rollback_point),
         branch: String(b.branch || branch), created_at: t.toISOString() };
@@ -434,24 +478,30 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       for (const i of Object.values(order.issues)) if (i.protected) order.manual_review.push({ at: t.toISOString(), reason: `Befund ${i.issue_id} liegt auf einer geschützten Seite (${i.page}) – nur mit zusätzlicher expliziter Freigabe.`, issue_id: i.issue_id });
       const plan = [];
       for (const i of repairables) {
-        const loc = await adapter.locate(i, order).catch(() => null);
-        if (!loc || !loc.target || !loc.cause) { // Ursache unklar → nie raten
-          order.issues[i.issue_id].repair_status = "needs_review";
-          order.manual_review.push({ at: t.toISOString(), reason: `Ursache für ${i.type} (${i.page}) nicht eindeutig – keine automatische Reparatur.`, issue_id: i.issue_id });
-          continue;
-        }
-        const item = { issue_id: i.issue_id, target: String(loc.target), cause: String(loc.cause), planned_change: String(loc.planned_change || "kleinste sinnvolle Korrektur"),
-          risk: loc.risk || "niedrig", test_method: "Befund nach der Änderung erneut prüfen (gleiche Seite, gleicher Ablauf)", rollback_method: `Branch ${order.backup.branch} verwerfen bzw. Rollback auf ${order.backup.rollback_point}`,
+        const loc = await adapter.locate(i, order, accessCtx(order)).catch(() => null);
+        const review = (reason) => { order.issues[i.issue_id].repair_status = "needs_review"; order.manual_review.push({ at: t.toISOString(), reason, issue_id: i.issue_id }); };
+        if (!loc || !loc.target || !loc.cause) { review(`Ursache für ${i.type} (${i.page}) nicht eindeutig – keine automatische Reparatur.`); continue; } // nie raten
+        const caps = order.access?.capabilities || null;
+        const need = Array.isArray(loc.required_capabilities) ? loc.required_capabilities : [];
+        const adapterName = order.route?.adapter || order.stack.type;
+        const item = { issue_id: i.issue_id, issue: i.type, adapter: adapterName, capability: need, target: String(loc.target), cause: String(loc.cause),
+          before_hash: loc.before_hash || null, planned_change: String(loc.planned_change || "kleinste sinnvolle Korrektur"), risk: loc.risk || "niedrig",
+          validation: "Objekt-Hash + öffentliche Seite erneut prüfen, Voll-Audit VORHER/NACHHER, Desktop 1440×900 + Smartphone 390×844",
+          test_method: "Befund nach der Änderung erneut prüfen (gleiche Seite, gleicher Ablauf)",
+          rollback: adapter.direct_live ? "Originalinhalt aus dem Objekt-Backup atomar wiederherstellen, danach erneut prüfen" : `Branch ${order.backup.branch} verwerfen bzw. Rollback auf ${order.backup.rollback_point}`,
+          rollback_method: adapter.direct_live ? "Objekt-Backup (Originalinhalt + Hash)" : `Branch ${order.backup.branch} verwerfen bzw. Rollback auf ${order.backup.rollback_point}`,
           // Deterministische Fix-Details des Adapters (z. B. Datei + Ersetzung) – reine Daten, nie Secrets; überleben einen Neustart.
           fix: loc.fix ? JSON.parse(JSON.stringify(loc.fix)) : null };
-        if (isProtectedChange(item)) {
-          order.issues[i.issue_id].repair_status = "needs_review";
-          order.manual_review.push({ at: t.toISOString(), reason: `Geplante Änderung für ${i.issue_id} berührt einen geschützten Bereich – nur mit zusätzlicher expliziter Freigabe.`, issue_id: i.issue_id });
-          continue;
-        }
+        if (isProtectedChange(item)) { review(`Geplante Änderung für ${i.issue_id} berührt einen geschützten Bereich – nur mit zusätzlicher expliziter Freigabe.`); continue; }
+        // Capability-Modell (TF-042): nur Fixes, deren benötigte Fähigkeiten der geprüfte Zugang tatsächlich hat.
+        if (caps && need.length && !hasCapabilities(caps, need)) { review(`Zugang hat nicht alle nötigen Fähigkeiten (${need.filter((c) => !caps.includes(c)).join(", ")}) – keine automatische Reparatur.`); continue; }
+        // Ohne Preview (direkt live): nur Minimal-Fix mit niedrigem Risiko und Backup/Rollback.
+        if (adapter.direct_live && (item.risk !== "niedrig" || !caps || !hasCapabilities(caps, ["BACKUP", "ROLLBACK"]))) { review(`Änderung ohne Preview nur bei niedrigem Risiko mit Backup + Rollback – ${i.issue_id} manuell.`); continue; }
         plan.push(item);
       }
       order.plan = plan;
+      // Keine automatischen Massenänderungen.
+      if (plan.length > MAX_AUTO_FIXES_PER_ORDER) { for (const p of plan) order.issues[p.issue_id].repair_status = "needs_review"; order.plan = []; manual(order, `${plan.length} automatisch behebbare Befunde – mehr als ${MAX_AUTO_FIXES_PER_ORDER} je Auftrag, keine Massenänderung, manuelle Prüfung.`); return false; }
       if (!plan.length && repairables.length) { manual(order, "Kein Befund mit eindeutiger Ursache automatisch reparierbar – manuelle Prüfung nötig."); return false; }
       transition(order, plan.length ? "REPAIRING" : "VALIDATION", plan.length ? `Plan: ${plan.length} Reparaturen` : "Keine automatisch behebbaren Befunde – nur Prüfung/Bericht", t);
       saveOrder(store, order); return true;
@@ -460,9 +510,16 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     if (order.state === "REPAIRING") {
       let okCount = 0;
       for (const item of order.plan) {
-        const r = await adapter.applyFix(item, order).catch((e) => ({ ok: false, error: e.message }));
+        if (order.issues[item.issue_id].repair_status === "repaired") { okCount++; continue; } // nach Neustart nie doppelt schreiben
+        // Domain-Bindung unmittelbar vor JEDEM Write (der Adapter prüft zusätzlich Zugangs- und Live-Domain).
+        if (!domainBound(order)) { if (changedWebsite(order)) { await rollbackThen(order, adapter, "Domain-Bindung vor dem Schreiben verletzt – STOP"); return false; } block(order, "BLOCKED_NO_AUTHORIZATION", "Domain-Bindung vor dem Schreiben verletzt – STOP."); return false; }
+        const r = await adapter.applyFix(item, order, accessCtx(order)).catch((e) => ({ ok: false, error: e.message }));
+        if (r?.domain_mismatch) { order.issues[item.issue_id].repair_status = "repair_failed"; saveOrder(store, order);
+          if (changedWebsite(order)) { await rollbackThen(order, adapter, "Weiterleitung/Domain stimmt vor dem Schreiben nicht – STOP"); return false; }
+          manual(order, "Weiterleitung/Domain stimmt vor dem Schreiben nicht – STOP, nichts verändert."); return false; }
         order.issues[item.issue_id].repair_status = r?.ok === true ? "repaired" : "repair_failed";
-        if (r?.ok === true) { okCount++; if (r.change_ref) order.issues[item.issue_id].change_ref = String(r.change_ref); }
+        if (r?.ok === true) { okCount++; if (r.change_ref) order.issues[item.issue_id].change_ref = String(r.change_ref);
+          if (r.before_hash) order.issues[item.issue_id].before_hash = String(r.before_hash); if (r.after_hash) order.issues[item.issue_id].after_hash = String(r.after_hash); }
         saveOrder(store, order); // jeder Fix einzeln persistiert – Neustart verliert nichts
       }
       if (!okCount) { block(order, "REPAIR_FAILED", "Keine der geplanten Reparaturen konnte angewendet werden."); return false; }
@@ -472,19 +529,21 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     if (order.state === "VALIDATION") {
       // Ohne Build-/Prüfschritt des Adapters gilt die Validierung nur bei rein statischen Stacks als möglich – sonst fail closed.
       let v;
-      if (typeof adapter.validate === "function") v = await adapter.validate(order).catch((e) => ({ build_ok: false, error: e.message }));
+      // Direkt-live-Adapter (WordPress/SFTP/SSH, kein Preview): jede fehlgeschlagene Prüfung → sofort Rollback, nie „liegen lassen“.
+      const failValidation = async (reason) => { if (adapter.direct_live && changedWebsite(order)) { saveOrder(store, order); await rollbackThen(order, adapter, reason); return false; } block(order, "VALIDATION_FAILED", reason); return false; };
+      if (typeof adapter.validate === "function") v = await adapter.validate(order, accessCtx(order)).catch((e) => ({ build_ok: false, error: e.message }));
       else if (order.plan.length && !["static", "github_netlify"].includes(order.stack.type)) { manual(order, `Stack "${order.stack.type}" ohne Build-/Prüfschritt – Validierung nicht eindeutig, nicht experimentieren.`); return false; }
       else v = { build_ok: true };
-      if (v?.build_ok !== true) { block(order, "VALIDATION_FAILED", "Build/Prüfung nach der Reparatur nicht erfolgreich."); return false; }
+      if (v?.build_ok !== true) return failValidation("Build/Prüfung nach der Reparatur nicht erfolgreich.");
       const target = v.preview_url || order.website;
       const after = await audit(target);
-      if (!after.ok) { block(order, "VALIDATION_FAILED", "Seite nach der Reparatur nicht ladbar."); return false; }
+      if (!after.ok) return failValidation("Seite nach der Reparatur nicht ladbar.");
       // Jeder reparierte Befund muss weg sein (gleiche Seite/gleicher Typ) – sonst ist die Reparatur nicht bestanden.
       const remaining = new Set(Object.values(after.issues).map(issueKey));
       const unresolved = Object.values(order.issues).filter((i) => i.repair_status === "repaired" && remaining.has(issueKey(i)));
       if (unresolved.length) {
         for (const i of unresolved) order.issues[i.issue_id].repair_status = "still_broken";
-        block(order, "VALIDATION_FAILED", `${unresolved.length} reparierte(r) Befund(e) weiterhin vorhanden.`); return false;
+        return failValidation(`${unresolved.length} reparierte(r) Befund(e) weiterhin vorhanden.`);
       }
       const reg = regression(order.audit_before, after);
       order.validation = { build_ok: true, preview_url: v.preview_url || null, target, audited_at: after.audited_at, open_issues: Object.keys(after.issues).length };
@@ -513,12 +572,16 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         mobile = { ok: !noViewport && !mobileIssues.length, method: "passive Prüfung (Viewport + bekannte Mobile-Befunde); kein echter Geräte-Rendertest" };
       }
       order.retest = { desktop, mobile, tested_at: t.toISOString(), target };
-      if (!desktop.ok || !mobile.ok) { block(order, "VALIDATION_FAILED", `Retest nicht bestanden (Desktop ${desktop.ok ? "ok" : "fehlgeschlagen"}, Smartphone ${mobile.ok ? "ok" : "fehlgeschlagen"}).`); return false; }
+      if (!desktop.ok || !mobile.ok) {
+        const why = `Retest nicht bestanden (Desktop ${desktop.ok ? "ok" : "fehlgeschlagen"}, Smartphone ${mobile.ok ? "ok" : "fehlgeschlagen"}).`;
+        if (adapter.direct_live && changedWebsite(order)) { saveOrder(store, order); await rollbackThen(order, adapter, why); return false; }
+        block(order, "VALIDATION_FAILED", why); return false;
+      }
 
       // Production nur: Freigabe + Tests bestanden + Rollback vorhanden + bereits autorisierter Deployment-Kanal.
       if (order.plan.length && typeof adapter.deployProduction === "function") {
         if (!authorizationOk(order) || !order.backup?.rollback_point) { manual(order, "Deployment-Voraussetzungen unvollständig (Freigabe/Rollback)."); return false; }
-        const d = await adapter.deployProduction(order).catch((e) => ({ ok: false, error: e.message }));
+        const d = await adapter.deployProduction(order, accessCtx(order)).catch((e) => ({ ok: false, error: e.message }));
         if (d?.ok !== true) { await rollbackThen(order, adapter, "Produktions-Deployment fehlgeschlagen"); return false; }
         order.deployment = { deployed: true, deploy_ref: d.deploy_ref ? String(d.deploy_ref) : null, at: t.toISOString() };
         const live = await audit(order.website);
@@ -611,7 +674,7 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
     fixed.length ? "Behoben wurden:" : "Behoben wurde nichts – es gab keine im Paket abgedeckten, automatisch behebbaren Fehler.",
     ...fixed.map((i) => `${line(i)} – behoben und erneut geprüft.`),
     "",
-    ...(openForReview.length ? ["Zur Besprechung (nicht automatisch verändert):", ...openForReview.map(line), ""] : []),
+    ...(openForReview.length ? ["Nicht automatisch repariert – zur Besprechung (nicht automatisch verändert):", ...openForReview.map(line), ""] : []),
     "Abschlusskontrolle:",
     `Desktop: ${order.retest?.desktop?.ok ? "geprüft, in Ordnung" : "siehe Hinweis"} (${order.retest?.desktop?.method || "–"}).`,
     `Smartphone: ${order.retest?.mobile?.ok ? "geprüft, in Ordnung" : "siehe Hinweis"} (${order.retest?.mobile?.method || "–"}).`,
@@ -619,6 +682,7 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
     order.deployment?.deployed ? "Die Korrekturen sind auf Ihrer Website live und wurden danach erneut geprüft."
       : order.plan?.length ? "Die Korrekturen sind vorbereitet und werden nach Rücksprache aufgeschaltet." : "An Ihrer Website wurde nichts verändert.",
     "",
+    ...(order.access_intake ? ["Wichtig: Bitte entfernen Sie jetzt den temporären Zugang, den Sie für diesen Auftrag eingerichtet haben (bzw. ändern Sie das Passwort). Die Zugangsdaten werden bei uns mit dem Abschluss gelöscht.", ""] : []),
     "Bei Fragen genügt eine kurze Antwort auf diese E-Mail.",
   ].join("\n");
   return { subject: `Webseiten-Check ${order.domain} – Abschlussbericht`, body, created_at: new Date().toISOString() };
@@ -633,22 +697,26 @@ export function repairOrdersStatus(dir = WORKER_DIR) {
   return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state)).length, states,
     waiting_authorization: states.AUTHORIZATION_REQUIRED || 0, waiting_payment: states.PAYMENT_REQUIRED || 0,
     access_requested: states.ACCESS_REQUESTED || 0, payment_review: states.PAYMENT_REVIEW_REQUIRED || 0,
-    ready_for_delivery: states.READY_FOR_DELIVERY || 0, cancelled: states[REPAIR_CANCELLED] || 0 };
+    ready_for_delivery: states.READY_FOR_DELIVERY || 0, cancelled: states[REPAIR_CANCELLED] || 0,
+    manual_review: states.MANUAL_REVIEW_REQUIRED || 0, unsafe_access: states.BLOCKED_UNSAFE_ACCESS || 0 };
 }
 
 // Kundenphase fürs Dashboard (TF-041) – feste Wörter, aus Zustand + Zahlung + Zugang abgeleitet.
-export const REPAIR_PHASES = Object.freeze(["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "REPAIRING",
-  "VALIDATING", "READY_FOR_DELIVERY", "COMPLETED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"]);
+export const REPAIR_PHASES = Object.freeze(["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "BACKUP", "REPAIRING",
+  "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"]);
 export function repairPhase(o, pay) {
   if (o.state === "COMPLETED") return "COMPLETED";
   if (o.state === REPAIR_CANCELLED) return "CANCELLED";
   if (o.state === "PAYMENT_REVIEW_REQUIRED") return "PAYMENT_REVIEW_REQUIRED";
+  if (o.state === "MANUAL_REVIEW_REQUIRED") return "MANUAL_REVIEW";
   if (BLOCKED_STATES.includes(o.state)) return "BLOCKED";
   if (o.state === "READY_FOR_DELIVERY") return "READY_FOR_DELIVERY";
-  if (["VALIDATION", "RETEST"].includes(o.state)) return "VALIDATING";
-  if (o.state === "REPAIRING") return "REPAIRING";
+  if (o.state === "VALIDATION") return "VALIDATING";
+  if (o.state === "RETEST") return "LIVE_RETEST";
+  if (["REPAIRING", "FULL_AUDIT", "REPAIR_PLAN"].includes(o.state)) return "REPAIRING";
+  if (o.state === "BACKUP") return "BACKUP";
   if (!["DEPOSIT_MET", "PAID_FULL"].includes(pay.payment_status)) return "WAITING_FOR_DEPOSIT";
-  if (o.access_intake?.status === "RECEIVED" || ["BACKUP", "FULL_AUDIT", "REPAIR_PLAN"].includes(o.state)) return "ACCESS_RECEIVED";
+  if (o.access_intake?.status === "RECEIVED") return "ACCESS_RECEIVED";
   if (o.access_request?.sent_at && Date.parse(o.access_request.expires_at || 0) > Date.now()) return "ACCESS_REQUEST_SENT";
   return "WAITING_FOR_ACCESS";
 }
@@ -659,7 +727,11 @@ export function repairPhase(o, pay) {
 export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domain", "offer_class", "price_chf", "state", "phase", "findings",
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
-  "access_type", "created_at", "updated_at"]);
+  "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "created_at", "updated_at"]);
+// Adapter-Anzeige (TF-042): feste Wörter – nie Connector-Strings (enthalten z. B. Repo-Namen), nie Hosts/Pfade.
+const ADAPTER_WORDS = { github_netlify: "GITHUB_NETLIFY", wordpress: "WORDPRESS", sftp: "SFTP", ssh: "SSH" };
+const adapterWord = (o) => (o.state === "BLOCKED_UNSUPPORTED_STACK" || (o.route && !o.route.adapter) ? "UNSUPPORTED"
+  : ADAPTER_WORDS[o.route?.adapter] || (o.access?.ok ? ADAPTER_WORDS[o.stack?.type] : null) || null);
 export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
   const store = createStore(dir);
   const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
@@ -682,21 +754,37 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         // Zugang: nur Ja/Nein + Zugangsart – nie Link, Token(-Hash), Zugangsdaten oder Tresor-Pfad.
         access_requested: !!o.access_request?.sent_at, access_received: o.access_intake?.status === "RECEIVED" || o.access_intake?.status === "DESTROYED",
         access_type: o.access_intake?.connector_type || null,
+        // TF-042: Adapter, Zugang geprüft, Rollback möglich, automatisch behebbar, manuelle Prüfung – nur Wörter/Zahlen/Flags.
+        adapter: adapterWord(o), access_ok: o.access?.ok === true,
+        rollback_ok: !!o.backup?.rollback_point && (!o.access?.capabilities || o.access.capabilities.includes("ROLLBACK")),
+        auto_fixable: (o.plan || []).length, manual_review: (o.manual_review || []).length,
         created_at: o.created_at, updated_at: o.updated_at,
       };
     });
   const status = repairOrdersStatus(dir);
-  return { ...status, orders };
+  return { ...status, adapter_registry: registryStatus(), orders };
+}
+// Adapter-Registry (TF-042) fürs Dashboard: feste Schlüssel + ob die SSH-Bibliothek installiert ist. Nie Profile/Hosts.
+let registryCache = null;
+function registryStatus() {
+  if (!registryCache) {
+    let ssh = false; try { createRequire(import.meta.url).resolve("ssh2"); ssh = true; } catch {}
+    registryCache = { status: "ACTIVE", adapters: ["github_netlify", "wordpress", "sftp", "ssh"], ssh_library: ssh };
+  }
+  return registryCache;
 }
 
 // Standard-Abhängigkeiten für den Produktivbetrieb: GitHub+Netlify-Adapter (nur mit explizitem Mapping + Env-Tokens wirksam)
 // und – falls Playwright installiert ist – der echte Browser-Rendertest. Fehler beim Laden → ohne (fail closed, nur Audit/Blocked).
+// TF-042: zusätzlich WordPress REST, SFTP und SSH/SFTP über den Router (repair-adapters/router.js). Ohne Zugangsprofil/Tresor
+// bleiben sie wirkungslos (fail closed). Ladefehler eines Adapters → ohne ihn (nie ein Absturz des Workers).
 export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
-  let adapters = {};
+  let adapters = {}, router = null;
   try { const m = await import("./repair-adapters/github-netlify.js"); adapters = { github_netlify: m.githubNetlifyAdapter({ dir }) }; } catch {}
+  try { const reg = await (await import("./repair-adapters/router.js")).createAdapterRegistry({ dir, legacy: adapters }); adapters = reg.adapters; router = reg.router; } catch {}
   let retester = null;
   try { retester = await (await import("./repair-render-test.js")).loadRenderRetester(); } catch {}
-  return { adapters, retester };
+  return { adapters, retester, router };
 }
 
 // ---------- Worker-Hook (eigenes Lock, nie zwei Läufe; ohne explizite Deps werden die Standard-Deps geladen) ----------
@@ -704,7 +792,7 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
 // intake (optional, access-intake.js intakeClient): sicherer One-Time-Link; vor dem Engine-Lauf werden eingegangene
 // Einreichungen abgeholt (nur wenn ein Auftrag darauf wartet – kein Netzverkehr ohne Grund). Ohne gmail/intake bleibt
 // fehlender Zugang wie bisher BLOCKED_NO_ACCESS – es wird nie etwas erraten.
-export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
+export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
@@ -713,12 +801,13 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
       const defaults = await loadDefaultRepairDeps({ dir });
       adapters = defaults.adapters;
       retester = retester || defaults.retester;
+      router = router || defaults.router;
     }
     const store = createStore(dir);
     let access = null;
     const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED");
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
-    const engine = createRepairEngine({ dir, store, adapters, retester, gmail, intake, log });
+    const engine = createRepairEngine({ dir, store, adapters, retester, router, gmail, intake, log });
     return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }
