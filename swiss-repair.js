@@ -319,10 +319,11 @@ export const CUSTOMER_JARGON_RE = /\bHTTPS?\b|\b[1-5]\d\d\b|Statuscode|\bCLS\b|\
 export const CUSTOMER_PRESSURE_RE = /kaputt|verlier|Umsatz|veraltet|unsicher|schlecht|dringend|sofort|gefährlich|Hacker|Risiko|Kunden kosten/i;
 const unsafe = (t) => CUSTOMER_JARGON_RE.test(t) || CUSTOMER_PRESSURE_RE.test(t);
 
-// Technische Rohbefunde → höchstens MAX_CUSTOMER_FINDINGS unterschiedliche, für Besucher sichtbare Aussagen.
+// Technische Rohbefunde → höchstens `max` unterschiedliche, für Besucher sichtbare Aussagen (Default MAX_CUSTOMER_FINDINGS –
+// Cold-Mails bleiben bei 2–3; der bezahlte CHF-150-Bericht ruft mit max: Infinity ALLE relevanten belegten Punkte ab, TF-038).
 // Nur belegte Befunde; LOW nur bei direkt sichtbaren (reproduzierten, mit Bereich benannten) Darstellungs-/Bedienfehlern.
 // Mehrere technische Meldungen desselben sichtbaren Fehlers werden zu einer Aussage zusammengeführt (höchster Schweregrad zählt).
-export function selectCustomerVisibleFindings(issues = []) {
+export function selectCustomerVisibleFindings(issues = [], { max = MAX_CUSTOMER_FINDINGS } = {}) {
   const valid = new Set(repairEvidence(issues).filter((e) => e.reproducible && (e.severity !== "low" || VISUAL.has(e.issue_type)))
     .map((e) => `${e.issue_type}|${e.url}|${e.observed_at}`));
   const list = Array.isArray(issues) ? issues : [];
@@ -345,7 +346,8 @@ export function selectCustomerVisibleFindings(issues = []) {
     }
     out.set(key, { key, text: f.text, impact: f.impact, severity: i.severity, internal_refs: [{ issue_type: i.type, url: i.url }], rank });
   }
-  return [...out.values()].sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]).slice(0, MAX_CUSTOMER_FINDINGS).map(({ rank, ...f }) => f);
+  const sorted = [...out.values()].sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
+  return (Number.isFinite(max) ? sorted.slice(0, max) : sorted).map(({ rank, ...f }) => f);
 }
 // Bisheriger Name bleibt erhalten (Lead-Registry, Tests).
 export const customerFindings = selectCustomerVisibleFindings;

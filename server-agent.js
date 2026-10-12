@@ -257,14 +257,16 @@ export function startServerControl(o) {
   const snapshot = () => {
     const it = o.lastIteration();
     const mail = it ? { worker: it.standby ? "STANDBY" : it.holder === "vps" && it.self ? "VPS ACTIVE" : "UNKNOWN", authority: it.holder === "vps" ? "VPS" : it.holder === "local" ? "WINDOWS" : "UNKNOWN", self: it.self, last_iteration_at: it.at } : null;
-    let core = null, queue = null, backup = null, discovery = null, repair = null;
+    let core = null, queue = null, backup = null, discovery = null, repair = null, check150 = null;
     try { core = o.core(); } catch {}
     try { queue = o.queue(); } catch {}
     try { discovery = typeof o.discovery === "function" ? o.discovery() : null; } catch {}
     // Reparaturaufträge (TF-036): Allowlist-Sicht aus repair-workflow.js – nur Zähler + ungefährliche Felder, nie Secrets.
     try { repair = typeof o.repair === "function" ? o.repair() : null; } catch {}
+    // Check & Anleitung CHF 150 (TF-038): Allowlist-Sicht aus check-150-workflow.js – gleiche Regeln.
+    try { check150 = typeof o.check150 === "function" ? o.check150() : null; } catch {}
     backup = core?.backup || null;
-    return { ...collectSnapshot({ dir: o.dir, startedAt: o.startedAt, core, mail, queue, backup, healthy: o.healthy, lastIterationAt: it?.at || null, pollMs: o.pollMs() }), discovery, repair };
+    return { ...collectSnapshot({ dir: o.dir, startedAt: o.startedAt, core, mail, queue, backup, healthy: o.healthy, lastIterationAt: it?.at || null, pollMs: o.pollMs() }), discovery, repair, check150 };
   };
   const deps = {
     snapshot,

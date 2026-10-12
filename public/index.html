@@ -195,13 +195,13 @@ form.cmd button.stop { color: var(--red); }
 .mail .sub { color: var(--text); opacity: .85; }
 .mail time, .mail .why { color: var(--muted); display: block; }
 /* Reparaturaufträge (CHF 480): Liste wie die Mail-Aufträge – nur Status, nie Secrets/Branches/Preview-URLs. */
-#repairList { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font: 12px/1.4 var(--mono); max-height: 240px; overflow-y: auto; }
-#repairList li { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; overflow-wrap: anywhere; min-height: 40px; }
-#repairList li.empty { border: 0; padding: 0; min-height: 0; color: var(--muted); }
-#repairList li.ok { border-left-color: var(--green); } #repairList li.bad { border-left-color: var(--red); } #repairList li.wait { border-left-color: var(--amber); }
-#repairList .st { color: var(--cyan); letter-spacing: .08em; }
-#repairList li.ok .st { color: var(--green); } #repairList li.bad .st { color: var(--red); } #repairList li.wait .st { color: var(--amber); }
-#repairList .why { color: var(--muted); display: block; }
+#repairList, #check150List { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font: 12px/1.4 var(--mono); max-height: 240px; overflow-y: auto; }
+#repairList li, #check150List li { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; overflow-wrap: anywhere; min-height: 40px; }
+#repairList li.empty, #check150List li.empty { border: 0; padding: 0; min-height: 0; color: var(--muted); }
+#repairList li.ok, #check150List li.ok { border-left-color: var(--green); } #repairList li.bad, #check150List li.bad { border-left-color: var(--red); } #repairList li.wait, #check150List li.wait { border-left-color: var(--amber); }
+#repairList .st, #check150List .st { color: var(--cyan); letter-spacing: .08em; }
+#repairList li.ok .st, #check150List li.ok .st { color: var(--green); } #repairList li.bad .st, #check150List li.bad .st { color: var(--red); } #repairList li.wait .st, #check150List li.wait .st { color: var(--amber); }
+#repairList .why, #check150List .why { color: var(--muted); display: block; }
 .mail h2 a { color: var(--cyan); text-decoration: none; border: 1px solid var(--line); font: 11px var(--mono); letter-spacing: .08em; padding: 2px 8px; }
 /* Handy (≤ 860 px): eine Spalte, alles scrollbar, Composer unten festgepinnt, Panels per Tipp auf den Titel auf-/zuklappbar.
    Keine Funktion hängt hier am Local Core – Status, Mail, Server und Meldungen kommen aus der Cloud. */
@@ -386,6 +386,19 @@ form.cmd button.stop { color: var(--red); }
         <span>Fehlgeschlagen</span><b id="repFailed" title="Reparatur/Validierung fehlgeschlagen oder manuelle Prüfung nötig">–</b>
       </div>
       <ul id="repairList"><li class="empty">Keine Reparaturaufträge. Ein Auftrag entsteht erst nach Bestellung und ausdrücklicher Kundenfreigabe.</li></ul>
+    </section>
+    <section class="panel" id="check150Panel">
+      <h2>Check &amp; Anleitung · CHF 150 <span id="c150Seen"></span></h2>
+      <div class="kv">
+        <span>Offen</span><b id="c150Open" title="Aufträge «Check & Anleitung» (CHF 150), die noch nicht abgeschlossen oder blockiert sind">–</b>
+        <span>Wartet auf Bestätigung</span><b id="c150Unconfirmed" title="Start erst mit erfasstem Verkauf (sales.js) – Cold-Outreach genügt nie">–</b>
+        <span>Website wird geprüft</span><b id="c150Auditing">–</b>
+        <span>Bericht wird erstellt</span><b id="c150Reporting">–</b>
+        <span>Lieferentwurf bereit</span><b id="c150Ready" title="Gmail-Entwurf liegt bereit – Versand entscheidet Chris">–</b>
+        <span>Abgeschlossen</span><b id="c150Done">–</b>
+        <span>Fehler</span><b id="c150Failed">–</b>
+      </div>
+      <ul id="check150List"><li class="empty">Keine CHF-150-Aufträge. Ein Auftrag startet erst mit einem erfassten Verkauf – nie durch Cold-Outreach.</li></ul>
     </section>
   </div>
 
@@ -1533,6 +1546,7 @@ function renderServer(data, note = "") {
   $("srvSeen").textContent = m.seen ? new Date(m.seen).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" }) : "";
   renderDiscovery(m.online ? data?.snapshot?.discovery : null, m.online ? "" : note || m.server);
   renderRepair(m.online ? data?.snapshot?.repair : null);
+  renderCheck150(m.online ? data?.snapshot?.check150 : null);
   set("dCpu", m.online ? r.cpu : "–", m.online ? ok.cpu : undefined); set("dRam", m.online ? r.ram : "–", m.online ? ok.ram : undefined); // VPS-Auslastung aus dem Server-Snapshot
 }
 // Reparaturaufträge (CHF 480, TF-036): Zähler + Auftragsliste aus der Allowlist-Sicht des VPS. Reine Anzeige – es gibt
@@ -1600,6 +1614,41 @@ function renderDiscovery(d, note = "") {
   $("discPanel").querySelector('[data-action="discovery.pause"]').disabled = d.status === "PAUSED";
   $("discPanel").querySelector('[data-action="discovery.resume"]').disabled = d.status !== "PAUSED";
   renderQuick();
+}
+// Check & Anleitung CHF 150 (TF-038): Zähler + Auftragsliste aus der Allowlist-Sicht des VPS. Reine Anzeige – Erstellen,
+// Bestätigen (Verkauf erfassen) und Abschliessen laufen bewusst NUR über die Kommandozeile bei Chris. Nie Secrets/Berichte.
+const C150_LABELS = { ORDER_RECEIVED: "AUFTRAG ERHALTEN", BLOCKED_ORDER_NOT_CONFIRMED: "WARTET AUF BESTÄTIGUNG",
+  ORDER_CONFIRMED: "BESTÄTIGT", FULL_AUDIT: "WEBSITE WIRD GEPRÜFT", FINDINGS_ANALYSIS: "BEFUNDE WERDEN AUSGEWERTET",
+  INSTRUCTIONS_GENERATION: "ANLEITUNG WIRD ERSTELLT", CUSTOMER_REPORT_READY: "BERICHT WIRD ERSTELLT",
+  DELIVERY_DRAFT_CREATED: "LIEFERENTWURF WIRD ERSTELLT", READY_FOR_DELIVERY: "BEREIT ZUR ÜBERGABE", COMPLETED: "ABGESCHLOSSEN",
+  AUDIT_FAILED: "CHECK FEHLGESCHLAGEN", REPORT_FAILED: "BERICHT FEHLGESCHLAGEN", DELIVERY_DRAFT_FAILED: "ENTWURF FEHLGESCHLAGEN",
+  MANUAL_REVIEW_REQUIRED: "MANUELLE PRÜFUNG" };
+function renderCheck150(rep) {
+  const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
+  const st = rep?.states || {};
+  const sum = (...keys) => keys.reduce((a, k) => a + (st[k] || 0), 0);
+  if (!rep) { for (const id of ["c150Open", "c150Unconfirmed", "c150Auditing", "c150Reporting", "c150Ready", "c150Done", "c150Failed"]) set(id, "–");
+    $("c150Seen").textContent = ""; $("check150List").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine Daten vom VPS." })); return; }
+  set("c150Open", String(rep.open ?? 0), rep.open ? "on-idle" : "");
+  set("c150Unconfirmed", String(rep.waiting_confirmation ?? 0), rep.waiting_confirmation ? "on-idle" : "");
+  set("c150Auditing", String(sum("ORDER_CONFIRMED", "FULL_AUDIT", "FINDINGS_ANALYSIS")));
+  set("c150Reporting", String(sum("INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED")));
+  set("c150Ready", String(rep.ready_for_delivery ?? 0), rep.ready_for_delivery ? "on-ok" : "");
+  set("c150Done", String(st.COMPLETED || 0), st.COMPLETED ? "on-ok" : "");
+  set("c150Failed", String(sum("AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED")),
+    sum("AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED") ? "on-bad" : "");
+  const orders = Array.isArray(rep.orders) ? rep.orders : [];
+  if (!orders.length) { $("check150List").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine CHF-150-Aufträge. Ein Auftrag startet erst mit einem erfassten Verkauf – nie durch Cold-Outreach." })); return; }
+  $("check150List").replaceChildren(...orders.map((o) => {
+    const li = document.createElement("li");
+    li.className = ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|MANUAL/.test(o.state || "") ? "bad" : "wait";
+    li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span>`;
+    li.querySelector(".st").textContent = `${C150_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 150}`;
+    li.querySelector(".sub").textContent = ` ${[o.company, o.domain].filter(Boolean).join(" · ")}`;
+    const sev = o.findings == null ? "Befunde –" : `Befunde ${o.findings} (kritisch ${o.critical ?? 0} · hoch ${o.high ?? 0} · mittel ${o.medium ?? 0} · gering ${o.low ?? 0})`;
+    li.querySelector(".why").textContent = `${sev} · Bericht ${o.report_available ? "JA" : "NEIN"} · Gmail-Entwurf ${o.draft_available ? "JA" : "NEIN"} · Lieferung ${o.delivery_status === "draft_ready" ? "ENTWURF BEREIT" : o.delivery_status === "delivered" ? "ÜBERGEBEN" : "OFFEN"}`;
+    return li;
+  }));
 }
 let srvPending = null;
 async function loadServer({ watch: force = false } = {}) {

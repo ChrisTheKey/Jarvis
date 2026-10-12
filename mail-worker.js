@@ -1064,12 +1064,13 @@ async function loop() {
   const startedAt = new Date().toISOString();
   // Server Control (nur VPS): Pause zwischen Durchläufen ist weckbar; Neustart des Cores = sauberes Ende nach dem Durchlauf,
   // Docker (restart: unless-stopped) startet den Container-Prozess neu. Nie mitten in einem Gmail-Durchlauf.
-  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false, discoveryRunning = null, repairRunning = null;
+  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false, discoveryRunning = null, repairRunning = null, check150Running = null;
   const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
   const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
   const salesMod = await import("./sales.js");
   const finderMod = await import("./lead-finder.js");
   const repairMod = await import("./repair-workflow.js");
+  const check150Mod = await import("./check-150-workflow.js");
   if (role === "vps") (await import("./server-agent.js")).startServerControl({
     dir: WORKER_DIR, secretsDir: SECRETS, startedAt, log, core, zurichDay, backupPublicKey, healthy: () => healthy(WORKER_DIR),
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
@@ -1086,6 +1087,8 @@ async function loop() {
     leadDb: () => publicRegistry(createStore(WORKER_DIR)),
     // Reparaturaufträge (TF-036): Allowlist-Sicht (Zähler + ungefährliche Felder) fürs Dashboard – keine Aktionen aus der Cloud.
     repair: () => repairMod.publicRepairOrders(WORKER_DIR),
+    // Check & Anleitung CHF 150 (TF-038): Allowlist-Sicht fürs Dashboard – reine Anzeige, keine Aktionen aus der Cloud.
+    check150: () => check150Mod.publicCheck150Orders(WORKER_DIR),
     setDiscovery: (op) => { const r = finderMod.setDiscoveryPaused(WORKER_DIR, op === "pause"); wake(); return { ok: true, ...r, status: r.paused ? "PAUSED" : "ACTIVE" }; },
   });
   log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
@@ -1124,6 +1127,14 @@ async function loop() {
       repairRunning = repairMod.runRepairOrders({ log })
         .then((r) => { if (r && !r.busy && r.advanced) log("info", "repair_orders_processed", r); }, (e) => log("error", "repair_orders_failed", { error: e.message }))
         .finally(() => { repairRunning = null; });
+    }
+    // Check & Anleitung CHF 150 (TF-038, check-150-workflow.js): bezahlte Aufträge im Hintergrund erfüllen – rein passiver
+    // Audit + Bericht + Gmail-LIEFERENTWURF (nie Versand, nie Website-Änderung). Eigenes Lock, No-op ohne offene Aufträge,
+    // blockiert weder Mail-Takt noch Discovery noch den CHF-480-Workflow. Fehler stoppen den Worker nie.
+    if (!check150Running) {
+      check150Running = check150Mod.runCheck150Orders({ gmail, log })
+        .then((r) => { if (r && !r.busy && r.advanced) log("info", "check150_orders_processed", r); }, (e) => log("error", "check150_orders_failed", { error: e.message }))
+        .finally(() => { check150Running = null; });
     }
     // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.
     try {

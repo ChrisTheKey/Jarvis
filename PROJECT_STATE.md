@@ -4,6 +4,53 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-11
 
+## JARVIS CHECK & ANLEITUNG CHF 150 — AUTOMATED FULFILLMENT (TF-038, 2026-10-12, Tests 448/448 grün)
+- Neu `check-150-workflow.js`: automatische Erfüllung des CHF-150-Pakets (REPAIR_CHECK_150, Preis aus OFFERS; Angebot unverändert).
+  Zustände: ORDER_RECEIVED → ORDER_CONFIRMED → FULL_AUDIT → FINDINGS_ANALYSIS → INSTRUCTIONS_GENERATION → CUSTOMER_REPORT_READY →
+  DELIVERY_DRAFT_CREATED → READY_FOR_DELIVERY → COMPLETED; Fehler: BLOCKED_ORDER_NOT_CONFIRMED / AUDIT_FAILED / REPORT_FAILED /
+  DELIVERY_DRAFT_FAILED / MANUAL_REVIEW_REQUIRED. Atomar in `check150_orders.json` (im Backup); Fortsetzung nach Neustart getestet.
+- **NUR BESTÄTIGTE AUFTRÄGE**: Start ausschliesslich mit erfasstem Verkauf in sales.json (bestehende Order-Logik `recordSale` /
+  `node sales.js sale <domain> REPAIR_CHECK_150`). Cold-Lead, Cold-Draft, manuell gesendete Cold-Mail, QUALIFIED, Interesse:
+  starten NIE (Test mit Cold-Fixtures: nicht einmal ein Audit). CHF-480-Verkauf startet diesen Workflow nicht.
+  BLOCKED_ORDER_NOT_CONFIRMED wird je Lauf neu geprüft – erfasst Chris den Verkauf später, läuft der Auftrag automatisch weiter.
+  Lieferadresse ist Pflichtfeld beim Anlegen (--email) – nie automatisch eine alte Cold-Outreach-Adresse.
+- **KEINE WEBSITE-ÄNDERUNG**: rein passiver Workflow – gemeinsame Audit-Basis `fullSiteAudit` (bestehender site-auditor, dessen
+  Rate-Limits gelten). Testbewiesen: Modul enthält keinerlei Fix-/Deploy-/Rollback-/Adapter-Pfade, Laufzeit ruft ausser
+  Gmail-Draft-Erstellung nichts Schreibendes auf. CHF-480-Workflow (repair-workflow.js) unverändert.
+- **ALLE relevanten belegten Findings** (kein 3er-Deckel): `selectCustomerVisibleFindings` hat jetzt optionales `{ max }`
+  (Default unverändert → Cold-Mails bleiben bei 2–3, Tests 034 grün); CHF-150 ruft mit max ∞. Dedupe/Jargon-/Evidence-Gate
+  unverändert aus swiss-repair.js (8 echte Probleme → 8; 3 Bilder einer Seite + Kontaktlink-Duplikat → zusammengeführt;
+  missing_title/slow_response/missing_alt/no_https_redirect = interne Signale, nie ein Kundenproblem; 0 Befunde → ehrlicher
+  Bericht «keine relevanten Probleme festgestellt»). Sortierung critical > high > medium > low.
+- **Kundenspezifische Anleitung je Befund** (`instructionsFor`): Problem / Wo / Was Besucher erleben / Warum relevant /
+  So beheben / Schritte / Danach prüfen + Aufwand (Einfach/Mittel/Fachperson empfohlen). Unbekannter Stack → anbieterneutral
+  («Öffnen Sie in Ihrem Website-System …»), NIE erfundene CMS-/Plugin-Menüs (Test: kein WordPress/Elementor/Wix bei stack=other);
+  sicher erkannter Stack (detectStack) → konkreter erster Schritt (WordPress-Adminbereich bzw. HTML-Datei). Sicherheits-
+  zertifikat/Weiterleitungsschleife → Fachperson empfohlen, trotzdem erklärt (was/wo/Änderung/Test) + sachlicher Hinweis auf
+  «Check & Reparatur» CHF 480 (nur wenn Fachperson-Punkte existieren – kein Upselling sonst, kein Pauschalversprechen).
+- **Kundenbericht** «Webseiten-Check & Anleitung / Ergebnis Ihres Webseiten-Checks»: Firma, Website, Prüfdatum, Zusammenfassung
+  (Total/kritisch/hoch/mittel/gering), je Problem vollständige Anleitung, Abschlusssatz «basiert auf den tatsächlich
+  festgestellten Punkten». Intern strukturiert (`customer_report` mit summary/findings/generated_at/website/company/
+  audit_reference) + menschenlesbarer Text als Datei `mail_worker/reports/check150-<id>.txt` (600, im Backup; KEIN PDF,
+  kein neuer Dateidienst).
+- **Gmail-LIEFERENTWURF** (delivery=draft, automatic_send_allowed=false, Chris sendet): an die verifizierte Auftragsadresse,
+  Betreff «Ihr Webseiten-Check & Ihre Anleitung – <domain>», kurzer Mailtext + Bericht inline (≤5200 Zeichen) oder
+  Zusammenfassung + Hinweis «vollständiger Bericht im Anhang» (Chris hängt die Berichtsdatei beim Senden an; Log-Hinweis).
+  Duplikatschutz über report_hash: je Auftrag genau EIN aktiver Entwurf, neue Berichtsversion → updateDraft statt zweitem
+  Entwurf. Gmail 429/5xx → Zustand bleibt, nächster Lauf (kein Verlust). Tests: Draft ohne Roh-Evidence/order_id/issue_ids/
+  Pfade; 0 Send-Events.
+- **Worker/Dashboard/Mobile**: Worker-Hook `runCheck150Orders` (eigenes Lock check150.lock, No-op ohne Aufträge, blockiert
+  weder Mail/Discovery noch CHF-480); Snapshot `check150` (server-agent) → `cleanCheck150`-Whitelist (server-control) → HUD-Kachel
+  «Check & Anleitung · CHF 150» (Offen / Wartet auf Bestätigung / Website wird geprüft / Bericht wird erstellt / Lieferentwurf
+  bereit / Abgeschlossen / Fehler + je Auftrag Firma, Domain, Befunde mit Severity-Split, Bericht/Draft JA-NEIN, Lieferstatus).
+  REINE ANZEIGE (keine data-action, Test); Mobile 390×844 real geprüft: scrollWidth 390, Zeilen 71–88 px. Kundendaten-Sync:
+  Kunde entsteht über den erfassten Verkauf (bestehendes reconcile aus sales.json) – Auftragsdetails leben im Order-Datensatz.
+- CLI: `node check-150-workflow.js --create <domain> --email <lieferadresse> [--website] [--company] [--name] | --list |
+  --show <id> | --run | --report <id> | --complete <id>`. Dockerfile kopiert check-150-workflow.js.
+- Tests: `test/check150-038.test.js` (12; Order-Gates, Audit/Dedupe/Relevanz, Anleitung, Unknown-Stack-Safety, E2E Muster AG
+  mit 4 Problemen → 4 Anleitungen → 1 Draft → 0 Sends → 0 Writes, 429-Retry, Dashboard-Allowlists, langer Bericht). Gesamt
+  448/448, Secret-Scan 0 Treffer. Cold-Outreach (2–3 Findings), CHF-480, Gmail-Sync, Discovery, Lead-DB: unverändert grün.
+
 ## JARVIS GMAIL INCREMENTAL SYNC + QUOTA SAFE WORKER (TF-037, 2026-10-12, Tests 436/436 grün)
 - **Ursache des Livelocks (seit 2026-10-12 02:18 UTC)**: je Tick ein VOLLSCAN – `syncColdDrafts` prüfte ALLE registrierten
   Cold-Entwürfe (live 274 × drafts.get als ununterbrochene Salve) + Reply-Scan las jeden aktiven Thread (threads.get format=full,
