@@ -1006,6 +1006,7 @@ async function loop() {
   const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
   const salesMod = await import("./sales.js");
   const finderMod = await import("./lead-finder.js");
+  const repairMod = await import("./repair-workflow.js");
   if (role === "vps") (await import("./server-agent.js")).startServerControl({
     dir: WORKER_DIR, secretsDir: SECRETS, startedAt, log, core, zurichDay, backupPublicKey, healthy: () => healthy(WORKER_DIR),
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
@@ -1020,6 +1021,8 @@ async function loop() {
     discovery: () => ({ ...finderMod.discoveryStatus(WORKER_DIR), lead_db: registryStatus(createStore(WORKER_DIR)) }),
     // Lead-Datenbank (Allowlist, lead-db.js) für Cloud/Handy: Suche, Filter, Detail, CSV-/JSON-Export – nie Gmail-IDs oder Roh-Evidence.
     leadDb: () => publicRegistry(createStore(WORKER_DIR)),
+    // Reparaturaufträge (TF-036): Allowlist-Sicht (Zähler + ungefährliche Felder) fürs Dashboard – keine Aktionen aus der Cloud.
+    repair: () => repairMod.publicRepairOrders(WORKER_DIR),
     setDiscovery: (op) => { const r = finderMod.setDiscoveryPaused(WORKER_DIR, op === "pause"); wake(); return { ok: true, ...r, status: r.paused ? "PAUSED" : "ACTIVE" }; },
   });
   log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
@@ -1055,8 +1058,7 @@ async function loop() {
     // nie zwei Läufe, blockiert weder Mail-Takt noch Discovery. Ohne offene Aufträge ist der Aufruf ein No-op.
     // Ohne konfigurierte Stack-Adapter bleibt es beim passiven Audit bzw. BLOCKED_NO_ACCESS – es wird nie etwas verändert.
     if (!repairRunning) {
-      repairRunning = import("./repair-workflow.js")
-        .then((m) => m.runRepairOrders({ log }))
+      repairRunning = repairMod.runRepairOrders({ log })
         .then((r) => { if (r && !r.busy && r.advanced) log("info", "repair_orders_processed", r); }, (e) => log("error", "repair_orders_failed", { error: e.message }))
         .finally(() => { repairRunning = null; });
     }

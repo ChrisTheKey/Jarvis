@@ -214,6 +214,12 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         const probe = order.audit_preview || await audit(order.website);
         if (!order.audit_preview) { order.audit_preview = probe; }
         order.stack = detectStack({ html: probe.html || "" });
+        // Eine EXPLIZITE Zuordnung durch Chris (adapter.claims, z. B. Domain→Repo→Netlify-Site) hat Vorrang vor der
+        // Markup-Erkennung: eine statische Seite, deren Produktionsworkflow über GitHub+Netlify läuft, gehört zu dem Adapter.
+        // claims liest nur die eigene Mapping-Datei – es wird weiterhin nie ein Repository erraten.
+        for (const [type, a] of Object.entries(adapters)) {
+          if (typeof a?.claims === "function" && await a.claims(order).catch(() => false)) { order.stack = { type, evidence: ["explicit_mapping"] }; break; }
+        }
         saveOrder(store, order);
       }
       if (order.stack.type === "other") { block(order, "BLOCKED_UNSUPPORTED_STACK", "Stack nicht erkannt – kein sicher unterstützter Reparaturweg."); return false; }
@@ -254,7 +260,9 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
           continue;
         }
         const item = { issue_id: i.issue_id, target: String(loc.target), cause: String(loc.cause), planned_change: String(loc.planned_change || "kleinste sinnvolle Korrektur"),
-          risk: loc.risk || "niedrig", test_method: "Befund nach der Änderung erneut prüfen (gleiche Seite, gleicher Ablauf)", rollback_method: `Branch ${order.backup.branch} verwerfen bzw. Rollback auf ${order.backup.rollback_point}` };
+          risk: loc.risk || "niedrig", test_method: "Befund nach der Änderung erneut prüfen (gleiche Seite, gleicher Ablauf)", rollback_method: `Branch ${order.backup.branch} verwerfen bzw. Rollback auf ${order.backup.rollback_point}`,
+          // Deterministische Fix-Details des Adapters (z. B. Datei + Ersetzung) – reine Daten, nie Secrets; überleben einen Neustart.
+          fix: loc.fix ? JSON.parse(JSON.stringify(loc.fix)) : null };
         if (isProtectedChange(item)) {
           order.issues[i.issue_id].repair_status = "needs_review";
           order.manual_review.push({ at: t.toISOString(), reason: `Geplante Änderung für ${i.issue_id} berührt einen geschützten Bereich – nur mit zusätzlicher expliziter Freigabe.`, issue_id: i.issue_id });
@@ -306,15 +314,19 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
 
     if (order.state === "RETEST") {
       const target = order.validation?.preview_url || order.website;
-      // Desktop: passiver Abruf aller geprüften Bereiche (Validierungs-Audit zählt als Desktop-Durchlauf).
+      // Passiver Abruf (Regression-Gate auch im Retest): neue relevante Befunde gegenüber VORHER → nicht bestanden.
       const desktopAudit = await audit(target);
-      const desktop = { ok: desktopAudit.ok && !regression(order.audit_before, desktopAudit).length, method: "passiver Seitenabruf (Desktop)" };
-      // Smartphone: echter Rendertest, falls konfiguriert; sonst passive Prüfung (Viewport + keine Mobile-Befunde) – ehrlich benannt.
-      let mobile;
+      const passiveOk = desktopAudit.ok && !regression(order.audit_before, desktopAudit).length;
+      let desktop, mobile;
       if (typeof retester === "function") {
-        const m = await retester(target).catch((e) => ({ ok: false, error: e.message }));
-        mobile = { ok: m?.ok === true, method: m?.method || "Rendertest Smartphone" };
+        // Echter Browser-Rendertest (Playwright): Desktop 1440×900 + Smartphone 390×844, nur lesend.
+        const r = await retester(target).catch((e) => ({ ok: false, error: String(e.message || e).slice(0, 160) }));
+        desktop = { ok: passiveOk && r?.desktop?.ok === true, method: r?.desktop?.viewport ? `Playwright Rendertest ${r.desktop.viewport}` : r?.method || "Rendertest Desktop",
+          problems: (r?.desktop?.problems || []).slice(0, 10) };
+        mobile = { ok: r?.mobile?.ok === true, method: r?.mobile?.viewport ? `Playwright Rendertest ${r.mobile.viewport}` : r?.method || "Rendertest Smartphone",
+          problems: (r?.mobile?.problems || []).slice(0, 10) };
       } else {
+        desktop = { ok: passiveOk, method: "passiver Seitenabruf (Desktop)" };
         const noViewport = Object.values(desktopAudit.issues).some((i) => i.type === "no_mobile_viewport");
         const mobileIssues = Object.values(desktopAudit.issues).filter((i) => /^mobile_/.test(i.type));
         mobile = { ok: !noViewport && !mobileIssues.length, method: "passive Prüfung (Viewport + bekannte Mobile-Befunde); kein echter Geräte-Rendertest" };
@@ -362,19 +374,23 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
 }
 
 // ---------- Kundenbericht (verständlich, ohne Fachjargon; wird nur gespeichert, nie automatisch versendet) ----------
-export function buildCustomerReport(order) {
+// Für den Kunden: keine internen IDs, keine Git-Referenzen, keine Roh-Evidence, keine internen Pfade, keine Tokens.
+export function buildCustomerReport(order, { now = new Date() } = {}) {
   const issues = Object.values(order.issues || {});
   const fixed = issues.filter((i) => i.repair_status === "repaired");
   const openForReview = issues.filter((i) => ["needs_review", "repair_failed", "still_broken"].includes(i.repair_status) || (i.repair_status === "open" && !i.repairable));
+  const relevant = issues.filter((i) => RELEVANT.has(i.severity) || i.customer_text);
   const line = (i) => `• ${i.customer_text || "Ein technischer Punkt auf " + (i.page || "Ihrer Website")}`;
   const body = [
     `Webseiten-Check – Abschlussbericht «Check & Reparatur» (CHF ${OFFERS[REPAIR_OFFER].price})`,
     "",
     `Website: ${order.domain}`,
-    `Auftrag: ${order.order_id}`,
+    `Datum: ${(order.retest?.tested_at || now.toISOString()).slice(0, 10)}`,
     "",
     "Was geprüft wurde:",
     `Ihre Startseite und die von dort verlinkten Unterseiten – Links, Navigation, Bilder, Kontaktbereich sowie die Darstellung auf Smartphone und Desktop.`,
+    "",
+    `Gefundene relevante Punkte: ${relevant.length}`,
     "",
     fixed.length ? "Behoben wurden:" : "Behoben wurde nichts – es gab keine im Paket abgedeckten, automatisch behebbaren Fehler.",
     ...fixed.map((i) => `${line(i)} – behoben und erneut geprüft.`),
@@ -402,12 +418,51 @@ export function repairOrdersStatus(dir = WORKER_DIR) {
     waiting_authorization: states.AUTHORIZATION_REQUIRED || 0, ready_for_delivery: states.READY_FOR_DELIVERY || 0 };
 }
 
-// ---------- Worker-Hook (eigenes Lock, nie zwei Läufe; Adapter kommen aus der Konfiguration, Default: keine → nur Audit/Blocked) ----------
-export async function runRepairOrders({ dir = WORKER_DIR, adapters = {}, retester = null, log = createLogger(dir) } = {}) {
+// Allowlist-Sicht für Dashboard/Cloud/Handy: Zähler + je Auftrag nur die hier aufgezählten, ungefährlichen Felder.
+// NIE: Evidence, URLs einzelner Befunde, Branch-/Commit-/Deploy-Referenzen, Preview-URLs, Freigabe-Referenzen, Tokens, Historie.
+export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domain", "offer_class", "price_chf", "state", "findings",
+  "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available", "created_at", "updated_at"]);
+export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
+  const data = createStore(dir).read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  const orders = Object.values(data.orders || {})
+    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, max)
+    .map((o) => {
+      const issues = Object.values(o.issues || {});
+      return {
+        order_id: o.order_id, company: o.company || null, domain: o.domain, offer_class: o.offer_class, price_chf: o.price_chf,
+        state: o.state, findings: issues.length, repaired: issues.filter((i) => i.repair_status === "repaired").length,
+        needs_review: (o.manual_review || []).length,
+        backup_ok: !!(o.backup?.rollback_point), desktop_retest: o.retest ? o.retest.desktop?.ok === true : null,
+        mobile_retest: o.retest ? o.retest.mobile?.ok === true : null,
+        production: o.deployment?.deployed === true ? "DEPLOYED" : o.deployment ? "BRANCH_ONLY" : "UNCHANGED",
+        report_available: !!o.report, created_at: o.created_at, updated_at: o.updated_at,
+      };
+    });
+  const status = repairOrdersStatus(dir);
+  return { ...status, orders };
+}
+
+// Standard-Abhängigkeiten für den Produktivbetrieb: GitHub+Netlify-Adapter (nur mit explizitem Mapping + Env-Tokens wirksam)
+// und – falls Playwright installiert ist – der echte Browser-Rendertest. Fehler beim Laden → ohne (fail closed, nur Audit/Blocked).
+export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
+  let adapters = {};
+  try { const m = await import("./repair-adapters/github-netlify.js"); adapters = { github_netlify: m.githubNetlifyAdapter({ dir }) }; } catch {}
+  let retester = null;
+  try { retester = await (await import("./repair-render-test.js")).loadRenderRetester(); } catch {}
+  return { adapters, retester };
+}
+
+// ---------- Worker-Hook (eigenes Lock, nie zwei Läufe; ohne explizite Deps werden die Standard-Deps geladen) ----------
+export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
   try {
+    if (!adapters) {
+      const defaults = await loadDefaultRepairDeps({ dir });
+      adapters = defaults.adapters;
+      retester = retester || defaults.retester;
+    }
     const engine = createRepairEngine({ dir, adapters, retester, log });
     return { busy: false, ...(await engine.processAll()) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }

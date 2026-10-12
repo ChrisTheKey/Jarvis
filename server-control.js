@@ -132,7 +132,33 @@ export function cleanSnapshot(s) {
     backup: { status: word(b.status, ["OK", "FAILED", "NONE"]), last_at: iso(b.last_at), generations: num(b.generations, 1000), offsite_ok: bool(b.offsite_ok) },
     deploy: { commit: typeof dp.commit === "string" && /^[0-9a-f]{7,40}$/.test(dp.commit) ? dp.commit : null, deployed_at: iso(dp.deployed_at), container_started_at: iso(dp.container_started_at) },
     discovery: cleanDiscovery(s.discovery),
+    repair: cleanRepair(s.repair),
   };
+}
+// Reparaturaufträge (TF-036): nur Zähler, feste Zustandswörter und ungefährliche Auftragsfelder – nie Evidence, Branches,
+// Commits, Preview-URLs, Freigabe-Referenzen oder Tokens. Die Cloud erzwingt die Whitelist erneut (wie bei den Leads).
+const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING",
+  "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK",
+  "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED"];
+const NAME_RE = /^[\p{L}\p{N} .,&'’()\/+-]{1,80}$/u;
+const DOMAIN_RE = /^[a-z0-9.-]{3,253}$/;
+export function cleanRepair(r) {
+  if (!r || typeof r !== "object") return null;
+  const n = (v, max = 1e6) => num(v, max);
+  const states = {};
+  for (const [k, v] of Object.entries(r.states || {})) if (REPAIR_STATES.includes(k)) states[k] = n(v, 10_000);
+  const orders = (Array.isArray(r.orders) ? r.orders : []).slice(0, 50).map((o) => (o && typeof o === "object" ? {
+    order_id: typeof o.order_id === "string" && /^RF480-\d{8}-[0-9a-f]{6}$/.test(o.order_id) ? o.order_id : null,
+    company: typeof o.company === "string" && NAME_RE.test(o.company) ? o.company : null,
+    domain: typeof o.domain === "string" && DOMAIN_RE.test(o.domain) ? o.domain : null,
+    offer_class: word(o.offer_class, ["REPAIR_FIX_500"]), price_chf: n(o.price_chf, 10_000),
+    state: word(o.state, REPAIR_STATES), findings: n(o.findings, 10_000), repaired: n(o.repaired, 10_000), needs_review: n(o.needs_review, 10_000),
+    backup_ok: bool(o.backup_ok), desktop_retest: bool(o.desktop_retest), mobile_retest: bool(o.mobile_retest),
+    production: word(o.production, ["DEPLOYED", "BRANCH_ONLY", "UNCHANGED"]), report_available: bool(o.report_available),
+    created_at: iso(o.created_at), updated_at: iso(o.updated_at),
+  } : null)).filter(Boolean);
+  return { total: n(r.total, 100_000), open: n(r.open, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
+    ready_for_delivery: n(r.ready_for_delivery, 100_000), states, orders };
 }
 // 24/7-Discovery (VPS): nur Zähler, Zeitpunkte, feste Wörter; Fehlertext bereinigt und gekürzt.
 export function cleanDiscovery(d) {

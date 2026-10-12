@@ -194,6 +194,14 @@ form.cmd button.stop { color: var(--red); }
 .mail li.ok .st { color: var(--green); } .mail li.bad .st { color: var(--red); } .mail li.wait .st { color: var(--amber); }
 .mail .sub { color: var(--text); opacity: .85; }
 .mail time, .mail .why { color: var(--muted); display: block; }
+/* Reparaturaufträge (CHF 480): Liste wie die Mail-Aufträge – nur Status, nie Secrets/Branches/Preview-URLs. */
+#repairList { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font: 12px/1.4 var(--mono); max-height: 240px; overflow-y: auto; }
+#repairList li { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; overflow-wrap: anywhere; min-height: 40px; }
+#repairList li.empty { border: 0; padding: 0; min-height: 0; color: var(--muted); }
+#repairList li.ok { border-left-color: var(--green); } #repairList li.bad { border-left-color: var(--red); } #repairList li.wait { border-left-color: var(--amber); }
+#repairList .st { color: var(--cyan); letter-spacing: .08em; }
+#repairList li.ok .st { color: var(--green); } #repairList li.bad .st { color: var(--red); } #repairList li.wait .st { color: var(--amber); }
+#repairList .why { color: var(--muted); display: block; }
 .mail h2 a { color: var(--cyan); text-decoration: none; border: 1px solid var(--line); font: 11px var(--mono); letter-spacing: .08em; padding: 2px 8px; }
 /* Handy (≤ 860 px): eine Spalte, alles scrollbar, Composer unten festgepinnt, Panels per Tipp auf den Titel auf-/zuklappbar.
    Keine Funktion hängt hier am Local Core – Status, Mail, Server und Meldungen kommen aus der Cloud. */
@@ -364,6 +372,20 @@ form.cmd button.stop { color: var(--red); }
         </div>
         <p class="res" id="discResult" aria-live="polite"></p>
       </div>
+    </section>
+    <section class="panel" id="repairPanel">
+      <h2>Reparaturaufträge <span id="repSeen"></span></h2>
+      <div class="kv">
+        <span>Offen</span><b id="repOpen" title="Aufträge «Check & Reparatur» (CHF 480), die noch nicht abgeschlossen oder blockiert sind">–</b>
+        <span>Warten auf Freigabe</span><b id="repAuth" title="Ohne dokumentierte Kundenfreigabe wird nie etwas verändert – nur geprüft">–</b>
+        <span>Kein Zugang</span><b id="repNoAccess" title="Kein sicherer Zugangsweg (Mapping/Token) oder Stack nicht unterstützt">–</b>
+        <span>In Reparatur</span><b id="repWorking">–</b>
+        <span>Validierung</span><b id="repValidating" title="Prüfung und Retest (Desktop + Smartphone) nach der Reparatur">–</b>
+        <span>Bereit zur Übergabe</span><b id="repReady" title="Bericht liegt vor – Abschluss und Versand entscheidet Chris">–</b>
+        <span>Abgeschlossen</span><b id="repDone">–</b>
+        <span>Fehlgeschlagen</span><b id="repFailed" title="Reparatur/Validierung fehlgeschlagen oder manuelle Prüfung nötig">–</b>
+      </div>
+      <ul id="repairList"><li class="empty">Keine Reparaturaufträge. Ein Auftrag entsteht erst nach Bestellung und ausdrücklicher Kundenfreigabe.</li></ul>
     </section>
   </div>
 
@@ -1510,7 +1532,44 @@ function renderServer(data, note = "") {
   set("srvBackup", r.backup, ok.backup); set("srvDeploy", r.deploy);
   $("srvSeen").textContent = m.seen ? new Date(m.seen).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" }) : "";
   renderDiscovery(m.online ? data?.snapshot?.discovery : null, m.online ? "" : note || m.server);
+  renderRepair(m.online ? data?.snapshot?.repair : null);
   set("dCpu", m.online ? r.cpu : "–", m.online ? ok.cpu : undefined); set("dRam", m.online ? r.ram : "–", m.online ? ok.ram : undefined); // VPS-Auslastung aus dem Server-Snapshot
+}
+// Reparaturaufträge (CHF 480, TF-036): Zähler + Auftragsliste aus der Allowlist-Sicht des VPS. Reine Anzeige – es gibt
+// bewusst KEINE Aktionen aus dem Browser (Freigabe/Abschluss nur per Kommandozeile bei Chris). Nie Secrets/Branches/URLs.
+const REPAIR_LABELS = { ORDER_RECEIVED: "AUFTRAG ERFASST", AUTHORIZATION_REQUIRED: "WARTET AUF FREIGABE", ACCESS_CHECK: "ZUGANG PRÜFEN",
+  BACKUP: "BACKUP", FULL_AUDIT: "VOLL-AUDIT", REPAIR_PLAN: "REPARATURPLAN", REPAIRING: "IN REPARATUR", VALIDATION: "VALIDIERUNG",
+  RETEST: "RETEST", READY_FOR_DELIVERY: "BEREIT ZUR ÜBERGABE", COMPLETED: "ABGESCHLOSSEN", BLOCKED_NO_ACCESS: "KEIN ZUGANG",
+  BLOCKED_NO_AUTHORIZATION: "KEINE FREIGABE", BLOCKED_UNSUPPORTED_STACK: "STACK NICHT UNTERSTÜTZT", REPAIR_FAILED: "REPARATUR FEHLGESCHLAGEN",
+  VALIDATION_FAILED: "VALIDIERUNG FEHLGESCHLAGEN", MANUAL_REVIEW_REQUIRED: "MANUELLE PRÜFUNG" };
+function renderRepair(rep) {
+  const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
+  const st = rep?.states || {};
+  const sum = (...keys) => keys.reduce((a, k) => a + (st[k] || 0), 0);
+  if (!rep) { for (const id of ["repOpen", "repAuth", "repNoAccess", "repWorking", "repValidating", "repReady", "repDone", "repFailed"]) set(id, "–");
+    $("repSeen").textContent = ""; $("repairList").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine Daten vom VPS." })); return; }
+  set("repOpen", String(rep.open ?? 0), rep.open ? "on-idle" : "");
+  set("repAuth", String(rep.waiting_authorization ?? 0), rep.waiting_authorization ? "on-idle" : "");
+  set("repNoAccess", String(sum("BLOCKED_NO_ACCESS", "BLOCKED_UNSUPPORTED_STACK")), sum("BLOCKED_NO_ACCESS", "BLOCKED_UNSUPPORTED_STACK") ? "on-bad" : "");
+  set("repWorking", String(sum("ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING")));
+  set("repValidating", String(sum("VALIDATION", "RETEST")));
+  set("repReady", String(rep.ready_for_delivery ?? 0), rep.ready_for_delivery ? "on-ok" : "");
+  set("repDone", String(st.COMPLETED || 0), st.COMPLETED ? "on-ok" : "");
+  set("repFailed", String(sum("REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "BLOCKED_NO_AUTHORIZATION")),
+    sum("REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "BLOCKED_NO_AUTHORIZATION") ? "on-bad" : "");
+  const orders = Array.isArray(rep.orders) ? rep.orders : [];
+  if (!orders.length) { $("repairList").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine Reparaturaufträge. Ein Auftrag entsteht erst nach Bestellung und ausdrücklicher Kundenfreigabe." })); return; }
+  $("repairList").replaceChildren(...orders.map((o) => {
+    const li = document.createElement("li");
+    li.className = ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|BLOCKED|MANUAL/.test(o.state || "") ? "bad" : "wait";
+    const yn = (v) => (v === true ? "JA" : v === false ? "NEIN" : "–");
+    const prod = o.production === "DEPLOYED" ? "LIVE" : o.production === "BRANCH_ONLY" ? "NUR BRANCH" : "UNVERÄNDERT";
+    li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span>`;
+    li.querySelector(".st").textContent = `${REPAIR_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 480}`;
+    li.querySelector(".sub").textContent = ` ${[o.company, o.domain].filter(Boolean).join(" · ")}`;
+    li.querySelector(".why").textContent = `Befunde ${o.findings ?? 0} · repariert ${o.repaired ?? 0} · Backup ${yn(o.backup_ok)} · Desktop ${yn(o.desktop_retest)} · Mobile ${yn(o.mobile_retest)} · Production ${prod} · Bericht ${o.report_available ? "JA" : "NEIN"}`;
+    return li;
+  }));
 }
 // 24/7-Discovery (VPS): ACTIVE / PAUSED / BACKOFF, Tageszähler, letzter und nächster Lauf, Queue, letzter Fehler – Quelle ist der VPS-Snapshot.
 let discHud = null;

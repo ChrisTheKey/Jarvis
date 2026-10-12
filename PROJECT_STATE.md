@@ -4,6 +4,50 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-11
 
+## JARVIS CHECK & REPARATUR CHF 480 — PRODUCTION READY (TF-036, 2026-10-12, Tests 428/428 grün; VPS-Deploy wartet auf SSH-Key)
+Alles Folgende ist mit Attrappen (Mock-Fetch, Browser-Attrappe, Test-Fixtures) getestet – KEINE echte Kundenwebsite verändert, keine Mail.
+- **GitHub+Netlify-Adapter** `repair-adapters/github-netlify.js`: repariert nur Websites mit EXPLIZITER Zuordnung durch Chris in
+  `.secrets/mail_worker/repair_mappings.json` (domain → repo owner/name → production_branch → netlify_site_id; keine Secrets;
+  CLI `node repair-adapters/github-netlify.js --map <domain> --repo o/n [--branch main] --site <id> | --list | --check <domain>`).
+  Nie ein Repository/eine Site erraten: ohne Mapping `no_mapping` → BLOCKED_NO_ACCESS; zusätzlich muss die Netlify-Site die
+  Auftrags-Domain wirklich tragen (custom_domain/alias, sonst `site_domain_mismatch`). Credentials NUR aus VPS-Env
+  `JARVIS_REPAIR_GITHUB_TOKEN` + `JARVIS_REPAIR_NETLIFY_TOKEN` (in `/opt/jarvis-mail/.env` ergänzen, 600; noch NICHT gesetzt);
+  fehlen sie → `no_token` → BLOCKED_NO_ACCESS. Tokens nie in Ergebnissen/Logs/Orders (Test: Fake-Token taucht nirgends auf).
+  Backup = Production-Commit-SHA + Branch `repair/<order-id>` + Netlify `published_deploy` als Rollback-Punkt; vorhandener Branch
+  (Fortsetzung nach Neustart) wird akzeptiert. locate() nur für broken_link/contact_page_broken/broken_image mit EINDEUTIGER Ursache
+  (genau ein Ersatzziel im Repo-Baum, ≤3 referenzierende Dateien, Code-Suche mit Scan-Fallback, truncated Tree → null) – sonst
+  MANUAL_REVIEW. applyFix committet ausschliesslich in den Repair-Branch (Contents-API, gezielte Ersetzung, sonst Fehler).
+  validate() wartet auf den Netlify-BRANCH-Deploy (Preview; Branch-Deploys müssen auf der Site aktiviert sein; Build-Fehler/Timeout
+  → fail closed); deployProduction() = Merge in den Produktions-Branch + Warten auf den Production-Deploy (bestehender Kanal, nichts
+  Improvisiertes); rollback() = Netlify-Restore auf den Deploy vor der Reparatur (Git-Historie wird nie umgeschrieben).
+  `claims()`: explizites Mapping hat Vorrang vor der Markup-Erkennung (statische Seite über GitHub+Netlify → dieser Adapter).
+- **Echter Browser-Rendertest** `repair-render-test.js` (Playwright, NUR lesend, keine Screenshots gespeichert): Desktop 1440×900 +
+  Smartphone 390×844; Fail-Kriterien Seite lädt/sichtbar, kein horizontaler Overflow, keine abgeschnittenen Hauptinhalte, keine
+  überlappende Navigation, sichtbare Bilder geladen; Buttons/Links/Kontaktbereich werden erfasst (informativ). Engine-RETEST nutzt
+  ihn für BEIDE Viewports (Desktop zusätzlich mit passivem Regression-Gate); `loadRenderRetester()` liefert ohne installiertes
+  Playwright null → ehrlich benannter passiver Fallback. Playwright ist im VPS-Image NICHT installiert (bewusst: +~300 MB) –
+  echter Rendertest wird aktiv, sobald `playwright` + Chromium im Image sind (offener Punkt unten).
+- **Engine-Erweiterungen** (`repair-workflow.js`): Plan-Items tragen deterministische `fix`-Details (reine Daten, neustart-sicher);
+  `loadDefaultRepairDeps()` lädt Adapter+Retester im Worker automatisch; E2E-Reihenfolge testgesichert: Commit → Preview-Poll →
+  Rendertests → ERST DANN Merge/Production → Live-Retest; Mobile-Retest-Fehler ⇒ VALIDATION_FAILED und **kein** Merge.
+- **Kundenbericht** („Webseiten-Check – Abschlussbericht“): Website, Datum, Zahl relevanter Punkte, behobene Punkte, nicht automatisch
+  veränderte Punkte, Desktop-/Smartphone-Retest, Ergebnis. Testgesichert OHNE: order_id, Git-SHAs, Dateipfade, Preview-/Branch-Namen,
+  Tokens, Roh-Evidence. Wird nur gespeichert (`--report <id>`), nie automatisch versendet.
+- **Dashboard-Kachel REPARATURAUFTRÄGE** (`public/index.html`): Offen / Warten auf Freigabe / Kein Zugang / In Reparatur / Validierung /
+  Bereit zur Übergabe / Abgeschlossen / Fehlgeschlagen + je Auftrag Firma, Domain, CHF 480, Status, Befunde, repariert, Backup JA/NEIN,
+  Desktop/Mobile-Retest, Production (LIVE/NUR BRANCH/UNVERÄNDERT), Bericht JA/NEIN. REINE ANZEIGE – bewusst keine Browser-Aktionen
+  (Freigabe/Abschluss nur per CLI bei Chris; Test: keine data-action im Panel). Datenweg: `publicRepairOrders()` (Allowlist) →
+  Snapshot `repair` (server-agent) → `cleanRepair`-Whitelist (server-control, Cloud erzwingt erneut) → HUD `renderRepair`.
+  Mobile 390×844 real im Browser geprüft (Fixture): kein horizontaler Overflow (scrollWidth 390), Zeilen 71–88 px, Panel lesbar.
+- Dockerfile kopiert `repair-render-test.js` + `repair-adapters/`. Worker lädt das Repair-Modul einmal beim Start (kein Re-Import je Takt).
+- Tests: `test/repair-adapter-036.test.js` (14: Mapping/Zugang/Backup/Eindeutigkeit/locate+applyFix/Preview/Rollback/Rendertest/
+  2×E2E/Dashboard-Allowlists/HUD ohne Aktionen/kein Gmail in Repair-Modulen/Dockerfile) + 035 (18) – gesamt 428/428, Secret-Scan 0 Treffer.
+- **OFFEN**: (1) VPS-Deploy `deploy/vps/deploy.sh fiverr` (ohne --with-secrets) – blockiert, SSH-Key passphrase-geschützt, ssh-agent
+  nicht geladen (VPS_DEPLOY_BLOCKED_BY_SSH_AGENT; Chris: `Start-Service ssh-agent; ssh-add ~/.ssh/fiverr_hetzner_working_ed25519`);
+  (2) `JARVIS_REPAIR_GITHUB_TOKEN`/`JARVIS_REPAIR_NETLIFY_TOKEN` in VPS-`.env` setzen (erst dann kann der Adapter wirklich zugreifen);
+  (3) je Kundenauftrag ein Mapping anlegen + Netlify-Branch-Deploys aktivieren; (4) optional Playwright+Chromium ins VPS-Image für den
+  echten Rendertest (bis dahin passiver Fallback, ehrlich im Bericht benannt).
+
 ## JARVIS CHECK & REPARATUR CHF 480 — AUTOPILOT (TF-035, 2026-10-11, Code + Tests fertig, 413/413 grün; noch NICHT auf dem VPS deployt)
 - Neu `repair-workflow.js`: persistenter Reparatur-Workflow für bezahlte, ausdrücklich freigegebene CHF-480-Aufträge (REPAIR_FIX_500,
   Preis ausschliesslich aus OFFERS; Angebot/Preise UNVERÄNDERT, keine dritte Stufe). Zustände exakt: ORDER_RECEIVED → AUTHORIZATION_REQUIRED →
