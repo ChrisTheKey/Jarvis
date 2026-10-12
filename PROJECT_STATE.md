@@ -76,6 +76,15 @@ Letzte Aktualisierung: 2026-10-12
   Host-Key-Verifier ACTIVE, `browser_validator` ACTIVE, Profile-Builder ladbar, 0 Reparaturaufträge. Keine Kundenwebsite aufgerufen, keine
   Lab-Container auf dem VPS (Lab nur lokal, danach 0/0/0). /opt/fiverr unberührt. Netlify Production autodeployt (`/` 200 mit «Browser
   Desktop»/Registry «Browser»), 390×844 ohne Overflow, keine Page-Errors. Keine echte Zahlung, Mail, Kundenverbindung oder Zugangsdaten.
+- **RELEASE-GATE FINAL (2026-10-12 20:42–21:06 UTC, Stand c812dac, kein Code geändert)**: `npm run test:release-045` **PASS in einem
+  vollständigen, zusammenhängenden Lauf, Exit 0**: Unit 581/581 (2 Lab-Suiten in `npm test` übersprungen, laufen im Gate selbst),
+  TF-044 Docker-Lab 18/18, TF-045 Browser-Lab 10/10; Lab-Cleanup 0 Container/0 Volumes/0 Netze, 0 Browser-Temp. Zuvor: der erste
+  Gesamtlauf war im Browser-Lab 9/10 rot (zu grobe Screenshot-Prüfung im WordPress-Test, korrigiert in c475c26); dieser finale Lauf ersetzt
+  den Nachweis «Einzelsuiten danach grün». Danach normale Suite separat 6 von 7 Läufen 581/581; ein Lauf hatte 1 Fehler, dessen Ausgabe
+  nicht gesichert war und der in 5 protokollierten Wiederholungen nicht reproduzierbar war (vermutlich zeitabhängig/unter Last – offen
+  beobachten, kein Release-Blocker). Secret-Scan 0. Keine hängenden Chromium-/Lab-Prozesse. 8 alte Test-Temp-Verzeichnisse (Lab-Tresor/
+  Test-Zugangsdaten bereits entfernter Lab-Container, 1 Screenshot) aus dem früher per Prozess-Kill abgebrochenen Lab-Lauf gelöscht.
+  Kein erneuter VPS-Deploy (Production-Code unverändert, live bleibt fb01df8).
 
 ## JARVIS REAL REPAIR ADAPTER INTEGRATION LAB + HOST KEY TYPE SAFETY — TF-044 (2026-10-12, Unit 558/558 + Lab 18/18 grün)
 - **TF-043-Einschränkung behoben**: Bestätigt der Kunde den Fingerprint eines anderen Host-Key-Typs (z. B. RSA, während der
