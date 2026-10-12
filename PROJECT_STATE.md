@@ -4,6 +4,72 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-12
 
+## JARVIS BROWSER REPAIR VALIDATION & VISUAL REGRESSION GATE — TF-045 (2026-10-12, Unit 581/581 + TF-044-Lab 18/18 + Browser-Lab 10/10 grün)
+- **Ziel**: Nach einer automatischen CHF-480-Reparatur beweist ein ECHTER Browser (Chromium über `playwright-core`), dass die Website für
+  Besucher funktioniert. Neues Modul **`repair-browser-validator.js`** (nur passiv, nie eine Website-Änderung), eingebunden in
+  `repair-workflow.js`. Bekannte Restlücke aus TF-044 (Lab-Retest nur per HTTP) ist damit geschlossen.
+- **Desktop 1440×900 + Smartphone 390×844** (Mobile-Emulation; Layout-Breite = `clientWidth`, da Chromium breite Seiten herauszoomt):
+  HTTP-Status, DOM/Body sichtbar, gleiche Domain nach Redirects, kritische Bereiche header/nav/main/footer (+ hero/CTA, nur passiv),
+  horizontaler Overflow (Toleranz 2 px), Elemente ausserhalb des Viewports, abgeschnittener Text, Bilder über Viewport, kaputte sichtbare
+  Bilder (naturalWidth 0), überdeckter Hauptinhalt (elementFromPoint), Navigation sichtbar; auf dem Smartphone wird eine eingeklappte
+  Navigation NUR über den Menü-Button geöffnet; bis 3 Navigationsziele (gleiche Domain, keine geschützten Pfade) in eigener Seite geprüft.
+- **Befund-spezifisch**: broken_link (alter Verweis weg, neuer vorhanden, **Klick auf den reparierten Link** → Ziel lädt, Domain bleibt),
+  broken_image (sichtbar, naturalWidth > 0, Request < 400), navigation_broken (Navigation sichtbar, Ziele ok), mobile_overflow
+  (scrollWidth ≤ Viewport + Toleranz). Klickt nur nach der Reparatur, nie in Baseline/Rollback-Prüfung. Status der Zielseite über das
+  Dokument-Response bzw. Navigation-Timing (`responseStatus`) – nötig für vorab geladene Seiten (WordPress ≥ 6.8 Speculation Rules,
+  im Lab gefunden).
+- **Kein generisches Klicken / Protected Interactions**: nur `SAFE_INTERACTIONS` (open_page, open_navigation, check_navigation_target,
+  click_repaired_link, verify_image, verify_target_url, measure_overflow). `isSafeClickTarget` lehnt Formulare, submit/reset, Login,
+  Checkout/Warenkorb/Bestellung, Zahlung, Newsletter, Cookie/Consent, Delete, Upload, Konto/Admin, javascript:, Downloads ab. Technisch
+  erzwungen: jede Anfrage ausser GET/HEAD wird im Browser abgebrochen (Auto-Submit + fetch-POST im Test nachgewiesen: 0 POST am Server),
+  Dialoge verworfen, Popups geschlossen, Downloads/Service Worker gesperrt, nie Tippen. Pro Lauf frischer Kontext (Cookies/Storage
+  verschwinden), Browser-HOME in Temp-Verzeichnis, danach gelöscht.
+- **Same-Domain**: Seite selbst auf fremde Domain umgeleitet → nur festgestellt (`redirected_cross_domain`), keine weitere Interaktion,
+  HIGH. Reparierter Link landet auf fremder Domain → `cross_domain_redirect` → FAIL; same-domain-Redirect (301) zulässig.
+- **Network/Console**: je Lauf 4xx/5xx + fehlgeschlagene Requests mit Ressourcentyp und same/cross-domain; `pageerror` (nur Fehlertyp,
+  z. B. TypeError) und `console.error` (nur Zähler je same-site/Drittanbieter/ignoriert). Konservativer Filter: nur bekannte Tracking-Hosts
+  + favicon; Fehler der eigenen Website nie ignoriert. URLs vor Persistenz bereinigt (`sanitizeUrl`: Werte von token/key/secret/
+  password/auth/code/session/sid/sig/jwt… und opake Langwerte → REDACTED, Userinfo/Fragment entfernt); nie Cookies, Header, POST-Bodies.
+- **VORHER/NACHHER**: vor dem ersten Write Browser-Baseline der betroffenen Seiten (Startseite + Seiten der Plan-Befunde, max. 3) als
+  sichere Metadaten (`order.browser_baseline`, kein DOM). Vergleich nur sicherer Signale (Layout-Metriken, Navigation, Bild-Health inkl.
+  Pfade, Console-/Request-Fehler, Struktur-Hashes von header/nav/main/footer).
+- **Regression-Levels** NONE/LOW/MEDIUM/HIGH: HIGH = Seite lädt nicht, Main fehlt, Navigation kaputt, neuer JS-Crash, massiver Overflow
+  (≥ 50 px), ≥ 2 Bilder neu kaputt, fremde Domain, Befund nicht behoben; MEDIUM = neuer kleiner Overflow, 1 Bild neu kaputt, Navigation
+  teilweise kaputt, neuer same-site 4xx/Console-Fehler, Element ausserhalb/Text abgeschnitten/Main überdeckt, Header/Footer fehlt;
+  LOW = Drittanbieter-Fehler, Struktur-Hash geändert, Hero/CTA fehlt. Abschluss nur bei NONE/LOW. Massive Höhenänderung (> 50 %) ohne
+  erklärenden Fehler → nicht eindeutig → **MANUAL_REVIEW_REQUIRED** (kein blindes Pixel-Gate).
+- **Rollback-Gate**: MEDIUM/HIGH → `Adapter.rollback()` → Browser neu gestartet, gleiche URLs → Ausgangszustand bestätigt
+  (`rollbackMatchesBaseline`: ≤ LOW gegenüber Baseline UND Befunde wieder wie vorher) → **REPAIR_FAILED**; sonst
+  **MANUAL_REVIEW_REQUIRED** + Chris informiert (`rollback_unverified`).
+- **Completed-Gate** (`completionGate`, in RETEST und `completeOrder`): Adapter-Validierung UND HTTP-Retest UND Desktop- UND Mobile-
+  Browser-Gate UND Regression KEINE. **Fail closed**: Produktivlauf (`runRepairOrders`) setzt `requireBrowser=true`; Browser nicht ladbar
+  → vor der Reparatur MANUAL_REVIEW (0 Write), im Retest MANUAL_REVIEW statt Abschluss. GitHub+Netlify: Browser-Gate auf der Preview,
+  nach dem Deployment erneut auf der Live-Website.
+- **Screenshots**: nur auf ausdrücklichen Wunsch (Lab/Test), temporär, nach jedem Lauf gelöscht (geprüft) – nie Git, PROJECT_STATE,
+  Cloud oder Kundendatensatz. Produktiv standardmässig aus.
+- **Kundenbericht**: nach bestandenem Gate zusätzlich «Desktop geprüft: Ja / Mobile geprüft: Ja / Navigation geprüft: Ja / Keine neuen
+  relevanten Darstellungsfehler gefunden.» – keine Logs, Requests, Screenshots, Pfade, Debugdaten.
+- **Dashboard** (Allowlist `PUBLIC_REPAIR_FIELDS` + `cleanRepair`): je Auftrag «Browser Desktop JA/NEIN/WARTET · Browser Mobile …
+  · Regression KEINE/GEFUNDEN/ROLLBACK»; Registry «Browser ACTIVE/FEHLT». Nie URLs/Screenshots/Logs/Codes. Lokal 390×844 ohne Overflow.
+- **Production-Image**: `apk add chromium font-dejavu` (Alpine-Chromium, reproduzierbar), `playwright-core` 1.60.0 exakt gepinnt (lädt
+  keinen Browser), `JARVIS_CHROMIUM_PATH=/usr/bin/chromium`; read-only rootfs, tmpfs /tmp, cap_drop ALL, no-new-privileges bleiben.
+  Lokal gebaut + geprüft: Chromium 152 Alpine startet unter genau diesen Restriktionen, Validator misst korrekt.
+- **Lab** (`test/integration/repair-lab/browser-validation.integration.test.js`, Fixture `browser-broken/` mit Header/Nav/Menü-Button/
+  Footer; Skripte als `*.fixture`, sonst hält `node --test` sie für Tests): Chromium spricht echtes HTTPS mit Caddy (nur Lab-Domains per
+  host-resolver-rules auf 127.0.0.1, alles andere ~NOTFOUND + Host-Allowlist; Test-CA nur im Lab-Kontext akzeptiert). Caddy zusätzlich
+  `/umzug.html` (301 same-domain) und `/weg.html` (302 fremd). Nachweise: SFTP VORHER Link/Bild/CSS kaputt → 3 SFTP-Fixes → Desktop+Mobile
+  PASS → Rollback → Ausgangszustand; voller SFTP-Auftrag bis COMPLETED; SSH/SFTP (SFTP-Validation + SSH-Health + Browser) bis COMPLETED;
+  absichtliche Regressionen Mobile-Overflow / JS-Fehler / Header-Bild kaputt (vom HTTP-Audit nicht erfasst) → Rollback → REPAIR_FAILED;
+  unvollständiger Rollback → MANUAL_REVIEW; Redirects; WordPress VORHER/NACHHER bis COMPLETED + WordPress-Nebenwirkung (mu-plugin-
+  Testdoppel) → REST-Rollback → REPAIR_FAILED. Cleanup 0/0/0, 0 Browser-Temp.
+- **Befehle**: `npm test` · `npm run test:repair-integration` (TF-044) · `npm run test:browser-integration` (TF-045) ·
+  **Release-Gate TF-045: `npm run test:release-045`** (alle drei; fehlt Docker oder Chromium → FAIL, kein Skip).
+- **Tests**: neu `test/browser-validation-045.test.js` (23, davon 7 mit echtem Chromium gegen lokalen HTTP-Server) + Browser-Lab (10).
+  Mutation A «Browser-Regression ignorieren» → Unit 6 + Lab rot; Mutation B «COMPLETED ohne Mobile-Gate» → Unit rot; Code danach
+  wiederhergestellt. Secret-Scan 0.
+- **Bekannte Einschränkungen**: Production-Image deutlich grösser (Chromium). Browser-Gate prüft max. 3 Seiten je Auftrag; Befundtypen
+  ohne eigene Browser-Prüfung laufen nur über die allgemeinen Checks. Visuelle Bewertung bewusst ohne Pixelvergleich.
+
 ## JARVIS REAL REPAIR ADAPTER INTEGRATION LAB + HOST KEY TYPE SAFETY — TF-044 (2026-10-12, Unit 558/558 + Lab 18/18 grün)
 - **TF-043-Einschränkung behoben**: Bestätigt der Kunde den Fingerprint eines anderen Host-Key-Typs (z. B. RSA, während der
   Server Ed25519 bevorzugt), findet Jarvis den passenden Schlüssel jetzt selbst – ohne Login, ohne Blind-Trust.
