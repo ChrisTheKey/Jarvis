@@ -53,6 +53,13 @@ Letzte Aktualisierung: 2026-10-12
   Injection, Router, Payment/Auth, Secret-Marker in Order/payments/sales/lead_registry/Logs/Dashboard/Snapshot/Bericht/
   PROJECT_STATE/Git). Angepasst: 035 (BLOCKED_STATES). Gesamt 518/518, Secret-Scan 0 Treffer. Keine echte Zahlung, Mail,
   Zugangsdaten, WordPress-/SSH-/SFTP-Verbindung, Kundenwebsite.
+- **LIVE 2026-10-12 (30e4426)**: Push → GitHub (origin = HEAD verifiziert); VPS `deploy/vps/deploy.sh fiverr` OHNE --with-secrets:
+  Image mit `npm ci` gebaut, DEPLOYED_COMMIT 30e4426, Container healthy, 0 Restarts, worker_started role=vps 14:57:23 UTC,
+  authority holder=vps; im Container: ssh2 ladbar, Standard-Deps = github_netlify, wordpress, sftp, ssh + Router, Registry ACTIVE,
+  0 Reparatur-/CHF-150-Aufträge, Ledger leer. /opt/fiverr unberührt. Discovery-«Overpass HTTP 504» = externe Störung (Backoff aktiv,
+  letzter Fehler noch im alten Container). Netlify Production autodeployt: `/` 200 mit neuen Panel-Zeilen, `/access.html` 200 mit
+  CSP/no-store/noindex, `/api/access-intake` für unbekannte Tokens 404. Mobile 390×844 auf Production: kein Overflow, kein Storage.
+  Windows-STANDBY in diesem Lauf nicht geprüft. Keine echte Zahlung/Mail/Verbindung ausgelöst.
 - **OFFEN** für echte Aufträge: je Domain ein Zugangsprofil (remote_root + Host-Key) durch Chris; Adapter gegen einen echten
   Testserver wurden bewusst nicht geprüft (nur Mocks/Fixtures).
 
