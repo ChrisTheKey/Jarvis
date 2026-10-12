@@ -46,6 +46,13 @@ Letzte Aktualisierung: 2026-10-12
 - **Tests**: neu `test/repair-integration-044.test.js` (17, In-Process-ssh2-Server) + Lab (18). Angepasst: 035 (BLOCKED_STATES +
   BLOCKED_HOST_KEY_CHANGED). Mutationen: A «Host-Key blind vertrauen» → Unit 2 + Lab 2 rot; B «Credentials vor Verifikation» → Unit 2 +
   Lab 2 rot; Code danach wiederhergestellt. Secret-Scan 0.
+- **LIVE 2026-10-12 (042043e)**: Push → GitHub (origin = HEAD verifiziert); VPS `deploy/vps/deploy.sh fiverr` OHNE --with-secrets:
+  DEPLOYED_COMMIT 042043e, Container healthy, 0 Restarts, worker_started role=vps 17:43:19 UTC, authority holder=vps self=true; im
+  Container (Prüfskript per stdin) payments, check-150-workflow, repair-workflow, router, profile-builder, host-key, wordpress, sftp, ssh,
+  github-netlify ladbar; Registry ACTIVE (ssh2 ladbar), Host-Key-Verifier ACTIVE (6 sichere Algorithmen, legacy_allowed=false),
+  BLOCKED_HOST_KEY_CHANGED bekannt, 0 Reparaturaufträge. Keine Lab-Container auf dem VPS (Lab lief nur lokal, danach 0/0/0).
+  /opt/fiverr unberührt. Netlify Production autodeployt (`/` 200 mit «HOST-KEY GEÄNDERT»/«HOST KEY VERIFIED», `/access.html` 200),
+  Production 390×844 ohne Overflow. Keine echte Zahlung, Mail, Kundenverbindung oder Kunden-Zugangsdaten.
 
 ## JARVIS AUTOMATIC REPAIR ACCESS PROFILE & PREFLIGHT — TF-043 (2026-10-12, Tests 539/539 grün)
 - **Ziel erreicht**: normale SFTP/SSH-Aufträge brauchen kein `router.js --profile/--root/--host-key` mehr. Ablauf: ACCESS RECEIVED →
