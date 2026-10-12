@@ -42,11 +42,22 @@ Alles Folgende ist mit Attrappen (Mock-Fetch, Browser-Attrappe, Test-Fixtures) g
 - Dockerfile kopiert `repair-render-test.js` + `repair-adapters/`. Worker lädt das Repair-Modul einmal beim Start (kein Re-Import je Takt).
 - Tests: `test/repair-adapter-036.test.js` (14: Mapping/Zugang/Backup/Eindeutigkeit/locate+applyFix/Preview/Rollback/Rendertest/
   2×E2E/Dashboard-Allowlists/HUD ohne Aktionen/kein Gmail in Repair-Modulen/Dockerfile) + 035 (18) – gesamt 428/428, Secret-Scan 0 Treffer.
-- **OFFEN**: (1) VPS-Deploy `deploy/vps/deploy.sh fiverr` (ohne --with-secrets) – blockiert, SSH-Key passphrase-geschützt, ssh-agent
-  nicht geladen (VPS_DEPLOY_BLOCKED_BY_SSH_AGENT; Chris: `Start-Service ssh-agent; ssh-add ~/.ssh/fiverr_hetzner_working_ed25519`);
-  (2) `JARVIS_REPAIR_GITHUB_TOKEN`/`JARVIS_REPAIR_NETLIFY_TOKEN` in VPS-`.env` setzen (erst dann kann der Adapter wirklich zugreifen);
-  (3) je Kundenauftrag ein Mapping anlegen + Netlify-Branch-Deploys aktivieren; (4) optional Playwright+Chromium ins VPS-Image für den
-  echten Rendertest (bis dahin passiver Fallback, ehrlich im Bericht benannt).
+- **LIVE 2026-10-12 06:14–07:00 UTC (41bdef8)**: Push → GitHub (bb691ec+41bdef8), Netlify Production autodeployt (Repair-Kachel live,
+  per curl verifiziert). VPS: `Start-Service ssh-agent` genügte – der Key war im Windows-Agent persistiert (keine Passphrase nötig,
+  nichts entschlüsselt); `deploy/vps/deploy.sh fiverr` OHNE --with-secrets: DEPLOYED_COMMIT 41bdef8, Container healthy, 0 Restarts,
+  `worker_started role=vps` 06:17:59, restart=unless-stopped, /opt/fiverr unberührt. Keine repair_orders.json auf dem VPS (0 Test-
+  Orders), Authority VPS, Windows STANDBY, genau ein Sender, Queue 0, 0 Send-Events, Discovery läuft (lead_discovered ab 06:37).
+- **BEKANNTER INCIDENT (vorbestehend, NICHT durch 41bdef8; seit 2026-10-12 02:18 UTC, auch schon auf ef211f3)**: Gmail-Minuten-Quota
+  „Total Query Cost / Units per minute per user“ wird in jedem Mail-Tick durch Thread-Reads (507 Leads) erschöpft → `tick_failed`,
+  exponentieller Worker-Backoff (failures 7+), erneuter Versuch läuft sofort wieder in die Quota (Livelock). Folge: kein Cloud-
+  Heartbeat seit 02:18 → HUD „SYSTEM EINGESCHRÄNKT / Core OFFLINE / Mail STANDBY“; Reply-Erkennung/Scheduler-Sends betroffen.
+  Discovery/Registry/Server-Control laufen normal weiter, 0 Sends, keine Datenverluste. NICHT ad hoc gefixt (Fail-Safe: nicht
+  experimentieren). Lösungsrichtung für einen eigenen TF: Thread-Reads je Tick deckeln/inkrementell (Cursor statt Vollscan),
+  Gmail-429 mit Retry-After respektieren statt Tick-Abbruch, Heartbeat auch bei tick_failed senden (Status ehrlich DEGRADED).
+- **OFFEN**: (1) ~~VPS-Deploy~~ ERLEDIGT (siehe LIVE); (2) `JARVIS_REPAIR_GITHUB_TOKEN`/`JARVIS_REPAIR_NETLIFY_TOKEN` in VPS-`.env`
+  setzen (erst dann kann der Adapter wirklich zugreifen); (3) je Kundenauftrag ein Mapping anlegen + Netlify-Branch-Deploys aktivieren;
+  (4) optional Playwright+Chromium ins VPS-Image für den echten Rendertest (bis dahin passiver Fallback, ehrlich im Bericht benannt);
+  (5) Gmail-Quota-Incident (eigener TF, siehe oben) – bis dahin bleibt das HUD EINGESCHRÄNKT.
 
 ## JARVIS CHECK & REPARATUR CHF 480 — AUTOPILOT (TF-035, 2026-10-11, Code + Tests fertig, 413/413 grün; noch NICHT auf dem VPS deployt)
 - Neu `repair-workflow.js`: persistenter Reparatur-Workflow für bezahlte, ausdrücklich freigegebene CHF-480-Aufträge (REPAIR_FIX_500,
