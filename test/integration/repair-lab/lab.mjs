@@ -101,7 +101,20 @@ export function createLabFetch({ ca, port, hosts = Object.values(DOMAINS) }) {
 export function response(status, body, url, headers = {}) {
   const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body ?? ""));
   return { status, ok: status >= 200 && status < 300, url, headers: { get: (n) => headers[String(n).toLowerCase()] ?? null },
-    text: async () => buf.toString("utf8"), json: async () => JSON.parse(buf.toString("utf8")) };
+    text: async () => buf.toString("utf8"), json: async () => JSON.parse(buf.toString("utf8")), buffer: async () => buf };
+}
+
+// ---------- Echter Browser im Lab (TF-045) ----------
+// Chromium spricht echtes HTTPS mit Caddy: NUR die Lab-Domains werden auf 127.0.0.1:<Caddy-Port> aufgelöst, jede andere Adresse
+// ist ~NOTFOUND und wird zusätzlich im Browser-Guard abgebrochen (allowHosts). Die lokale Test-CA wird nur in diesem Lab-Kontext
+// akzeptiert (ignoreHTTPSErrors) – der Produktiv-Validator prüft TLS normal.
+export async function labBrowserValidator(lab, opts = {}) {
+  const { createBrowserValidator, chromiumLauncher, chromiumExecutable } = await import("../../../repair-browser-validator.js");
+  if (!chromiumExecutable()) throw new Error("Chromium nicht verfügbar – das TF-045-Release-Gate verlangt einen echten Browser.");
+  const hosts = Object.values(DOMAINS);
+  const rules = [...hosts.map((h) => `MAP ${h} 127.0.0.1:${lab.httpsPort}`), "MAP * ~NOTFOUND"].join(", ");
+  return createBrowserValidator({ launch: chromiumLauncher({ extraArgs: [`--host-resolver-rules=${rules}`] }), allowHosts: hosts,
+    contextOptions: { ignoreHTTPSErrors: true }, timeoutMs: 30_000, ...opts });
 }
 
 // ---------- Lab-Auditor + Retester (passiv, nur über labFetch) ----------
@@ -188,7 +201,8 @@ export async function startLab({ log = () => {} } = {}) {
   const caddyfile = [
     "{", "  local_certs", "  skip_install_trust", "  auto_https disable_redirects", "  admin off", "}",
     `${DOMAINS.wp} {`, "  tls internal", "  reverse_proxy wordpress:80", "}",
-    `${DOMAINS.site} {`, "  tls internal", "  root * /srv/static", "  file_server", "}",
+    // TF-045: Weiterleitungs-Fälle für den Browser-Gate – innerhalb der Domain (zulässig) und auf eine fremde Domain (FAIL).
+    `${DOMAINS.site} {`, "  tls internal", "  redir /umzug.html /team.html 301", `  redir /weg.html https://${DOMAINS.evil}/ 302`, "  root * /srv/static", "  file_server", "}",
     `${DOMAINS.sshRedirect} {`, "  tls internal", `  redir https://${DOMAINS.evil}{uri} 302`, "}",
     `${DOMAINS.redirect} {`, "  tls internal", `  redir https://${DOMAINS.evil}{uri} 302`, "}",
     `${DOMAINS.evil} {`, "  tls internal", '  respond "Fremde Domain (Lab)" 200', "}", ""].join("\n");
@@ -229,10 +243,15 @@ export async function startLab({ log = () => {} } = {}) {
 }
 
 // Statische Testseite (kaputte Version) frisch in den Webroot legen + Sandbox-Fallen (Symlinks, .env, Datei ausserhalb).
-export async function resetSite(lab) {
+// TF-045: fixture wählbar (browser-broken = Seite mit Header/Navigation/Menü-Button/Footer); files überschreibt einzelne Dateien
+// als Test-Setup (z. B. bereits korrektes CSS) – kein Teil einer Reparatur.
+export async function resetSite(lab, { fixture = "static-broken", files = {} } = {}) {
   const N = lab.names;
   await docker(["exec", N.sshd, "sh", "-c", "find /home/labuser/public_html -mindepth 1 -delete"]);
-  await docker(["cp", path.join(FIXTURES, "static-broken") + path.sep + ".", `${N.sshd}:/home/labuser/public_html/`]);
+  await docker(["cp", path.join(FIXTURES, fixture) + path.sep + ".", `${N.sshd}:/home/labuser/public_html/`]);
+  // Skripte liegen als *.fixture im Repo (sonst hielte «node --test» sie für Tests) und heissen im Webroot wieder *.js.
+  await docker(["exec", N.sshd, "sh", "-c", "find /home/labuser/public_html -name '*.fixture' -exec sh -c 'mv \"$1\" \"${1%.fixture}\"' _ {} \\;"]);
+  for (const [rel, content] of Object.entries(files)) await writeSiteFile(lab, rel, content);
   await docker(["exec", N.sshd, "sh", "-c", [
     "printf 'LAB_DUMMY=1\\n' > /home/labuser/.env",
     "printf '<html>ausserhalb</html>\\n' > /home/labuser/notes.html",
@@ -260,6 +279,12 @@ export async function webrootSnapshot(lab, container = lab.names.sshd) {
 }
 export async function sshdLog(lab, container = lab.names.sshd) { return (await docker(["logs", container], { allowFail: true })).stderr; }
 export async function siteFile(lab, rel) { return (await docker(["exec", lab.names.sshd, "cat", `/home/labuser/public_html/${rel}`])).stdout; }
+// Test-Setup/Fehlerinjektion (TF-045) direkt im Lab-Container – nie über einen Adapter, nie ausserhalb des Test-Webroots.
+const safeRel = (rel) => { if (!/^[a-z0-9][a-z0-9._/-]*$/i.test(rel) || rel.includes("..")) throw new Error(`lab: Pfad ${rel} unzulässig`); return `/home/labuser/public_html/${rel}`; };
+export async function writeSiteFile(lab, rel, content) {
+  await docker(["exec", "-i", lab.names.sshd, "sh", "-c", `cat > '${safeRel(rel)}' && chown labuser:labuser '${safeRel(rel)}' && chmod 644 '${safeRel(rel)}'`], { input: content });
+}
+export async function removeSiteFile(lab, rel) { await docker(["exec", lab.names.sshd, "rm", "-f", safeRel(rel)]); }
 
 // ---------- WordPress (nur Testdaten) ----------
 export async function wpCli(lab, script, { env = [] } = {}) {

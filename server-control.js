@@ -151,6 +151,8 @@ const REPAIR_ADAPTER_WORDS = ["GITHUB_NETLIFY", "WORDPRESS", "SFTP", "SSH", "UNS
 const REGISTRY_ADAPTERS = ["github_netlify", "wordpress", "sftp", "ssh"];
 const ACCESS_TYPE_WORDS = ["github_netlify", "wordpress_cms", "sftp", "ssh", "hosting", "other"];
 // Zugangsprofil-Status (TF-043) – nur das Wort, nie Host, Benutzer, IP, Webroot/Pfade oder Fingerprint.
+const BROWSER_GATE_WORDS = ["JA", "NEIN", "WARTET"]; // TF-045
+const BROWSER_REGRESSION_WORDS = ["KEINE", "GEFUNDEN", "ROLLBACK"];
 const PROFILE_STATUS_WORDS = ["PROFILE_READY", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "MANUAL_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS", "BLOCKED_NO_ACCESS", "PREFLIGHT_RETRY"];
 const payFields = (o, n) => ({ paid_chf: o.paid_chf == null ? null : n(o.paid_chf, 10_000), payment_required_chf: o.payment_required_chf == null ? null : n(o.payment_required_chf, 10_000),
   rest_to_deposit_chf: o.rest_to_deposit_chf == null ? null : n(o.rest_to_deposit_chf, 10_000), payment_status: word(o.payment_status, PAYMENT_STATE_WORDS), payment_ok: bool(o.payment_ok) });
@@ -207,6 +209,9 @@ export function cleanRepair(r) {
     auto_fixable: o.auto_fixable == null ? null : n(o.auto_fixable, 10_000), manual_review: o.manual_review == null ? null : n(o.manual_review, 10_000),
     profile_status: word(o.profile_status, PROFILE_STATUS_WORDS),
     host_key_verified: bool(o.host_key_verified), // TF-044: nur JA/NEIN
+    // TF-045: Browser-Gate nur als feste Wörter – nie URLs, Screenshots, Logs, Codes oder Requests.
+    browser_desktop: word(o.browser_desktop, BROWSER_GATE_WORDS), browser_mobile: word(o.browser_mobile, BROWSER_GATE_WORDS),
+    browser_regression: word(o.browser_regression, BROWSER_REGRESSION_WORDS),
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
@@ -216,7 +221,8 @@ export function cleanRepair(r) {
     host_key_confirmation: n(r.host_key_confirmation, 100_000), waiting_access_profile: n(r.waiting_access_profile, 100_000),
     adapter_registry: r.adapter_registry && typeof r.adapter_registry === "object" ? { status: word(r.adapter_registry.status, ["ACTIVE"]),
       adapters: (Array.isArray(r.adapter_registry.adapters) ? r.adapter_registry.adapters : []).filter((a) => REGISTRY_ADAPTERS.includes(a)),
-      ssh_library: bool(r.adapter_registry.ssh_library), host_key_verifier: word(r.adapter_registry.host_key_verifier, ["ACTIVE", "UNAVAILABLE"]) } : null,
+      ssh_library: bool(r.adapter_registry.ssh_library), host_key_verifier: word(r.adapter_registry.host_key_verifier, ["ACTIVE", "UNAVAILABLE"]),
+      browser_validator: word(r.adapter_registry.browser_validator, ["ACTIVE", "UNAVAILABLE"]) } : null,
     states, orders };
 }
 // Payment Worker (TF-041): nur Zähler und CHF-Summen aus dem Ledger – nie payment_ids, Referenzen, Quellen oder Domains.

@@ -18,10 +18,13 @@
     "mail-once": "node mail-worker.js --once",
     "lead-finder": "node lead-finder.js --once",
     "build:persona": "node scripts/build-persona.mjs",
-    "setup-sync": "node scripts/setup-sync.mjs"
+    "setup-sync": "node scripts/setup-sync.mjs",
+    "test:browser-integration": "node scripts/test-repair-integration.mjs --browser",
+    "test:release-045": "npm test && npm run test:repair-integration && npm run test:browser-integration"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",
+    "playwright-core": "1.60.0",
     "ssh2": "1.17.0"
   }
 }

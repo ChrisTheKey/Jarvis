@@ -32,6 +32,12 @@
 //     Zugangsprofil selbst – nur lesend, nur bei eindeutigem Ergebnis (PROFILE_READY). Unbekannter SSH-Host-Key → nie vertrauen,
 //     Kunde bestätigt über einen sicheren Link (HOST_KEY_CONFIRMATION_REQUIRED); unklarer Webroot → WAITING_FOR_ACCESS_PROFILE
 //     (Chris ergänzt das Profil, der Auftrag läuft danach selbst weiter). Nie raten, nie schreiben vor PROFILE_READY.
+//   - BROWSER-GATE (TF-045): vor der ersten Änderung entsteht eine Browser-Baseline (Chromium, Desktop 1440×900 + Smartphone
+//     390×844) der betroffenen Seiten; nach der Reparatur prüft derselbe echte Browser Laden, Navigation, Bilder, Overflow,
+//     JS-/Console-Fehler, Netzwerkfehler und den reparierten Befund (repair-browser-validator.js, nur passiv). Regression MEDIUM/HIGH
+//     → Rollback → Browser-Retest → REPAIR_FAILED (bzw. MANUAL_REVIEW_REQUIRED + Chris, wenn der Ausgangszustand nicht bestätigt ist).
+//     Nicht eindeutig → MANUAL_REVIEW_REQUIRED. Ohne verfügbaren Browser: fail closed (keine Reparatur bzw. kein Abschluss).
+//     COMPLETED nur mit Adapter-Validierung UND HTTP-Retest UND Desktop- UND Mobile-Browser-Gate (completionGate).
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +51,7 @@ import { profileRecord, profileReason, HOST_KEY_CONFIRMED_SOURCES, PROFILE_STATU
 import { REPAIR_TYPES, selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { createAuditor } from "./site-auditor.js";
 import { MAX_AUTO_FIXES_PER_ORDER, hasCapabilities, onlyCapabilities } from "./repair-adapters/common.js";
+import { combineDecisions, rollbackMatchesBaseline, safeSnapshot, browserRuntimeStatus } from "./repair-browser-validator.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 export const REPAIR_OFFER = "REPAIR_FIX_500"; // Kundenbezeichnung „Check & Reparatur“, Preis aus OFFERS (CHF 480). Keine dritte Preisstufe.
@@ -198,12 +205,33 @@ export function authorizeRepair(store, orderId, { authorized_domain, source, ref
   return saveOrder(store, order);
 }
 
+// TF-045: Abschluss-Gate. COMPLETED (und vorher READY_FOR_DELIVERY) nur, wenn die technische Adapter-Validierung, der öffentliche
+// HTTP-Retest und – sobald für den Auftrag ein Browser-Gate gilt – Desktop- UND Mobile-Browser-Validierung bestanden sind und
+// keine Regression offen ist. Ohne Browser-Gate (kein Plan/ältere Aufträge) gelten Desktop- und Smartphone-Retest wie bisher.
+export function completionGate(order = {}) {
+  const missing = [];
+  if ((order.plan || []).length && order.validation?.build_ok !== true) missing.push("adapter_validation");
+  if (!order.retest || order.retest.http_ok === false) missing.push("http_retest");
+  const g = order.browser_gate;
+  if (g?.required) {
+    if (g.desktop !== "JA") missing.push("browser_desktop");
+    if (g.mobile !== "JA") missing.push("browser_mobile");
+    if (g.regression !== "KEINE") missing.push("browser_regression");
+  } else {
+    if (order.retest?.desktop?.ok !== true) missing.push("desktop_retest");
+    if (order.retest?.mobile?.ok !== true) missing.push("mobile_retest");
+  }
+  return { ok: !missing.length, missing };
+}
+
 // Abnahme/Abschluss durch Chris: erst damit wird der Auftrag ERLEDIGT.
 export function completeOrder(store, orderId, { now = new Date() } = {}) {
   const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
   const order = data.orders?.[orderId];
   if (!order) throw new Error("Auftrag nicht gefunden.");
   if (order.state !== "READY_FOR_DELIVERY") throw new Error(`Nur ein Auftrag in READY_FOR_DELIVERY kann abgeschlossen werden (aktuell ${order.state}).`);
+  const gate = completionGate(order);
+  if (!gate.ok) throw new Error(`Abschluss-Gate nicht erfüllt (${gate.missing.join(", ")}) – kein COMPLETED.`);
   transition(order, "COMPLETED", "Abschluss bestätigt", now);
   destroyOrderSecret(store, order, now); // Secret-Lebenszyklus (TF-041): nach COMPLETED kein Zugang mehr im Tresor
   return saveOrder(store, order);
@@ -245,6 +273,9 @@ function destroyOrderSecret(store, order, now) {
 //   deployProduction(order)           → { ok, deploy_ref? }          (optional; ohne = Chris deployt selbst über den bestehenden Kanal)
 //   rollback(order)                   → { ok }                       (optional; bei Regression Pflichtversuch, wenn vorhanden)
 // deps.retester(url) → { ok, method, issues? } (optional, z. B. echter Smartphone-/Desktop-Rendertest).
+// TF-045: deps.browserValidator (repair-browser-validator.js) = echtes Browser-Gate (Baseline vor der Änderung, Retest danach,
+// Browser-Retest nach Rollback). requireBrowser = true (Produktivbetrieb über runRepairOrders): ohne Validator wird nichts
+// repariert/abgeschlossen (fail closed). Ist ein Validator übergeben, gilt das Gate immer.
 // TF-042: deps.router (repair-adapters/router.js) wählt bei sicher übermitteltem Zugang den Adapter nach tatsächlichen
 // Fähigkeiten (order.route). Contract-Adapter (WordPress/SFTP/SSH) kommen über die Brücke mit identischer Aufrufform und
 // direct_live = true (Änderungen sind sofort live → jede fehlgeschlagene Prüfung führt zum Rollback). Allen Adapter-Aufrufen
@@ -252,7 +283,7 @@ function destroyOrderSecret(store, order, now) {
 // TF-043: deps.preflight (repair-adapters/profile-builder.js, über createAdapterRegistry) erzeugt nach erhaltenem Zugang das
 // Zugangsprofil automatisch (ACCESS_PROFILE_PREFLIGHT). Ohne preflight bleibt alles wie in TF-042 (Profil von Chris).
 export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir), adapters = {}, auditor = null, retester = null,
-  gmail = null, intake = null, router = null, preflight = null, alert = null, now = () => new Date(), log = () => {} } = {}) {
+  gmail = null, intake = null, router = null, preflight = null, alert = null, browserValidator = null, requireBrowser = false, now = () => new Date(), log = () => {} } = {}) {
 
   const adapterOf = (order) => (order.stack ? adapters[order.route?.adapter || order.stack.type] || null : null);
   const block = (order, state, reason) => {
@@ -338,16 +369,50 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     const had = new Set(Object.values(before?.issues || {}).map(issueKey));
     return Object.values(after?.issues || {}).filter((i) => RELEVANT.has(i.severity) && !had.has(issueKey(i))).map((i) => ({ type: i.type, page: i.page, severity: i.severity, evidence: i.evidence }));
   };
+  // ---------- TF-045: Browser-Gate ----------
+  const browserRequired = () => requireBrowser === true || !!browserValidator;
+  const pathKey = (u) => { try { return new URL(u).pathname || "/"; } catch { return "/"; } };
+  const issuePage = (order, item) => pathKey(order.issues?.[item.issue_id]?.page || order.website);
+  // Geprüfte Seiten: Startseite + Seiten der geplanten Reparaturen (max. 3), nur als Pfade (gleiche URLs für VORHER/NACHHER/Rollback).
+  const browserPages = (order) => [...new Set(["/", ...(order.plan || []).map((p) => issuePage(order, p))])].slice(0, 3);
+  const browserFindings = (order, page) => (order.plan || []).filter((p) => issuePage(order, p) === page).map((p) => {
+    const i = order.issues?.[p.issue_id] || {};
+    const rep = typeof p.fix?.replacement === "string" && p.fix.replacement.startsWith("/") ? p.fix.replacement.split(/[?#]/)[0] : null;
+    return { type: i.type, broken_path: ["broken_link", "broken_image", "contact_page_broken"].includes(i.type) ? pathKey(i.url) : null, expected_path: rep };
+  });
+  // phase: baseline (vor der Änderung) | after (nach der Reparatur, mit VORHER-Vergleich) | rollback (Ausgangszustand bestätigen).
+  const runBrowser = async (order, base, phase) => {
+    const u = new URL(base);
+    const pages = {}, decisions = [];
+    for (const p of order.browser_baseline?.pages ? Object.keys(order.browser_baseline.pages) : browserPages(order)) {
+      const before = order.browser_baseline?.pages?.[p] || { desktop: null, mobile: null };
+      const r = await browserValidator.validate({ url: u.origin + p, expected_domain: u.hostname, findings: browserFindings(order, p), phase,
+        before_snapshot: phase === "after" ? before : null, validation_scope: { desktop: true, mobile: true, navigation: true } });
+      pages[p] = { desktop: safeSnapshot(r.desktop), mobile: safeSnapshot(r.mobile) };
+      if (phase === "after") decisions.push(r.decision);
+    }
+    return { pages, decision: phase === "after" ? combineDecisions(decisions) : null };
+  };
+  const navOkOf = (pages) => Object.values(pages).every((p) => ["desktop", "mobile"].every((vp) => (p[vp]?.nav?.links_visible || 0) > 0 && (p[vp]?.nav?.targets_failed || 0) === 0));
+
   const rollbackThen = async (order, adapter, failReason) => {
     const can = typeof adapter?.rollback === "function";
     const r = can ? await adapter.rollback(order, accessCtx(order)).catch(() => ({ ok: false })) : { ok: false };
     order.regression = { ...(order.regression || {}), rolled_back: r.ok === true };
+    if (order.browser_gate) order.browser_gate = { ...order.browser_gate, regression: "ROLLBACK" };
     if (r.ok === true && adapter?.direct_live) {
       // Direkt-live-Adapter: Rollback danach erneut prüfen (Website erreichbar, keine neuen relevanten Befunde gegenüber VORHER).
       const after = await audit(order.website).catch(() => ({ ok: false, issues: {} }));
       const reg = after.ok ? regression(order.audit_before, after) : [{ type: "unreachable" }];
       order.regression.rollback_verified = !reg.length;
       if (reg.length) { await informChris(order, "rollback_unverified", failReason); return manual(order, `${failReason} – Rollback ausgeführt, aber die Prüfung danach ist nicht sauber; Website-Zustand manuell prüfen.`); }
+    }
+    if (r.ok === true && order.browser_baseline && browserRequired()) {
+      // TF-045: Browser neu starten, dieselben URLs prüfen und den ursprünglichen Zustand bestätigen (gegenüber der Baseline).
+      const rb = browserValidator ? await runBrowser(order, order.website, "rollback").catch(() => null) : null;
+      const same = !!rb && Object.entries(order.browser_baseline.pages).every(([p, base]) => rollbackMatchesBaseline(base, rb.pages[p] || {}));
+      order.regression.browser_rollback_verified = same;
+      if (!same) { await informChris(order, "rollback_unverified", failReason); return manual(order, `${failReason} – Rollback ausgeführt, aber der Browser-Retest bestätigt den Ausgangszustand nicht; Website-Zustand manuell prüfen.`); }
     }
     if (r.ok === true) return block(order, "REPAIR_FAILED", `${failReason} – auf den letzten sicheren Stand zurückgerollt.`);
     await informChris(order, "rollback_failed", failReason);
@@ -607,6 +672,15 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       // Keine automatischen Massenänderungen.
       if (plan.length > MAX_AUTO_FIXES_PER_ORDER) { for (const p of plan) order.issues[p.issue_id].repair_status = "needs_review"; order.plan = []; manual(order, `${plan.length} automatisch behebbare Befunde – mehr als ${MAX_AUTO_FIXES_PER_ORDER} je Auftrag, keine Massenänderung, manuelle Prüfung.`); return false; }
       if (!plan.length && repairables.length) { manual(order, "Kein Befund mit eindeutiger Ursache automatisch reparierbar – manuelle Prüfung nötig."); return false; }
+      if (plan.length && browserRequired()) {
+        // TF-045: Browser-Baseline der betroffenen Seiten VOR jeder Änderung (Desktop + Smartphone, nur sichere Metadaten).
+        // Ohne echten Browser keine automatische CHF-480-Reparatur – fail closed, es wurde nichts verändert.
+        if (!browserValidator) { await informChris(order, "browser_unavailable", "Browser-Validierung nicht verfügbar"); manual(order, "Browser-Validierung (Chromium) nicht verfügbar – ohne echten Browser-Retest keine automatische Reparatur (fail closed). Nichts verändert."); return false; }
+        const base = await runBrowser(order, order.website, "baseline").catch(() => null);
+        if (!base || Object.values(base.pages).some((p) => p.desktop?.load_ok !== true || p.mobile?.load_ok !== true)) { manual(order, "Browser-Baseline nicht erstellbar (Seite lädt im Browser nicht wie erwartet) – Zustand unklar, nichts verändert."); return false; }
+        order.browser_baseline = { pages: base.pages, created_at: t.toISOString() };
+        order.browser_gate = { required: true, desktop: "WARTET", mobile: "WARTET", navigation: "WARTET", regression: null, level: null };
+      }
       transition(order, plan.length ? "REPAIRING" : "VALIDATION", plan.length ? `Plan: ${plan.length} Reparaturen` : "Keine automatisch behebbaren Befunde – nur Prüfung/Bericht", t);
       saveOrder(store, order); return true;
     }
@@ -662,7 +736,28 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       const desktopAudit = await audit(target);
       const passiveOk = desktopAudit.ok && !regression(order.audit_before, desktopAudit).length;
       let desktop, mobile;
-      if (typeof retester === "function") {
+      if (order.browser_gate?.required) {
+        // TF-045: echter Browser (Chromium) – Desktop + Smartphone, Navigation, reparierter Befund, VORHER/NACHHER-Vergleich.
+        const r = browserValidator ? await runBrowser(order, target, "after").catch(() => null) : null;
+        if (!r) {
+          order.browser_gate = { ...order.browser_gate, desktop: "NEIN", mobile: "NEIN" };
+          order.retest = { desktop: { ok: false, method: "Browser-Prüfung nicht verfügbar" }, mobile: { ok: false, method: "Browser-Prüfung nicht verfügbar" }, http_ok: passiveOk, browser: false, tested_at: t.toISOString(), target };
+          await informChris(order, "browser_unavailable", "Browser-Retest nicht verfügbar");
+          manual(order, "Browser-Retest nicht verfügbar – kein Abschluss ohne Desktop-/Mobile-Browserprüfung (fail closed); Website-Zustand manuell prüfen."); return false;
+        }
+        const dec = r.decision;
+        order.browser_validation = { pages: r.pages, verdict: dec.verdict, level: dec.level, codes: dec.codes, tested_at: t.toISOString() };
+        order.browser_gate = { ...order.browser_gate, desktop: dec.desktop_ok ? "JA" : "NEIN", mobile: dec.mobile_ok ? "JA" : "NEIN", navigation: navOkOf(r.pages) ? "JA" : "NEIN",
+          level: dec.level, regression: dec.verdict === "PASS" ? "KEINE" : "GEFUNDEN", checked_at: t.toISOString() };
+        desktop = { ok: passiveOk && dec.desktop_ok, method: "Browser-Prüfung Desktop 1440×900", problems: dec.codes };
+        mobile = { ok: dec.mobile_ok, method: "Browser-Prüfung Smartphone 390×844", problems: dec.codes };
+        if (dec.verdict === "ROLLBACK") order.regression = { found: dec.codes.map((c) => ({ type: c })), browser: true, level: dec.level };
+        else if (dec.verdict === "MANUAL_REVIEW" && desktop.ok && mobile.ok) {
+          order.retest = { desktop, mobile, http_ok: passiveOk, browser: true, tested_at: t.toISOString(), target };
+          await informChris(order, "browser_unclear", `Visuelle Bewertung nicht eindeutig (${dec.codes.join(", ").slice(0, 120)})`);
+          manual(order, "Visuelle Bewertung im Browser nicht eindeutig – manuelle Prüfung, kein automatischer Abschluss."); return false;
+        }
+      } else if (typeof retester === "function") {
         // Echter Browser-Rendertest (Playwright): Desktop 1440×900 + Smartphone 390×844, nur lesend.
         const r = await retester(target).catch((e) => ({ ok: false, error: String(e.message || e).slice(0, 160) }));
         desktop = { ok: passiveOk && r?.desktop?.ok === true, method: r?.desktop?.viewport ? `Playwright Rendertest ${r.desktop.viewport}` : r?.method || "Rendertest Desktop",
@@ -675,7 +770,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         const mobileIssues = Object.values(desktopAudit.issues).filter((i) => /^mobile_/.test(i.type));
         mobile = { ok: !noViewport && !mobileIssues.length, method: "passive Prüfung (Viewport + bekannte Mobile-Befunde); kein echter Geräte-Rendertest" };
       }
-      order.retest = { desktop, mobile, tested_at: t.toISOString(), target };
+      order.retest = { desktop, mobile, http_ok: passiveOk, ...(order.browser_gate?.required ? { browser: true } : {}), tested_at: t.toISOString(), target };
       if (!desktop.ok || !mobile.ok) {
         const why = `Retest nicht bestanden (Desktop ${desktop.ok ? "ok" : "fehlgeschlagen"}, Smartphone ${mobile.ok ? "ok" : "fehlgeschlagen"}).`;
         if (adapter.direct_live && changedWebsite(order)) { saveOrder(store, order); await rollbackThen(order, adapter, why); return false; }
@@ -691,10 +786,21 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         const live = await audit(order.website);
         const liveReg = live.ok ? regression(order.audit_before, live) : [{ type: "unreachable", severity: "critical", page: order.website, evidence: "Website nach dem Deployment nicht erreichbar" }];
         if (liveReg.length) { order.regression = { found: liveReg, live: true }; saveOrder(store, order); await rollbackThen(order, adapter, "Live-Retest nach Deployment fehlgeschlagen"); return false; }
+        if (order.browser_gate?.required && normDomain(target) !== normDomain(order.website)) {
+          // Preview bestanden → nach dem Deployment dieselben Browser-Prüfungen auf der Live-Website.
+          const lr = browserValidator ? await runBrowser(order, order.website, "after").catch(() => null) : null;
+          if (!lr || lr.decision.verdict !== "PASS") {
+            order.regression = { found: (lr?.decision.codes || ["browser_unavailable"]).map((c) => ({ type: c })), browser: true, live: true };
+            order.browser_gate = { ...order.browser_gate, regression: "GEFUNDEN", desktop: lr?.decision.desktop_ok ? "JA" : "NEIN", mobile: lr?.decision.mobile_ok ? "JA" : "NEIN" };
+            saveOrder(store, order); await rollbackThen(order, adapter, "Browser-Retest nach Deployment fehlgeschlagen"); return false;
+          }
+        }
         order.deployment.live_retest_ok = true;
       } else if (order.plan.length) {
         order.deployment = { deployed: false, note: `Änderungen liegen im Branch ${order.backup.branch} – Produktions-Deployment über den bestehenden Kanal durch Chris.` };
       }
+      const gate = completionGate(order);
+      if (!gate.ok) { manual(order, `Abschluss-Gate nicht erfüllt (${gate.missing.join(", ")}) – kein Abschluss.`); return false; }
       order.report = buildCustomerReport(order);
       transition(order, "READY_FOR_DELIVERY", "Retest bestanden, Bericht erstellt", t); saveOrder(store, order); return true;
     }
@@ -825,6 +931,9 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
     "Abschlusskontrolle:",
     `Desktop: ${order.retest?.desktop?.ok ? "geprüft, in Ordnung" : "siehe Hinweis"} (${order.retest?.desktop?.method || "–"}).`,
     `Smartphone: ${order.retest?.mobile?.ok ? "geprüft, in Ordnung" : "siehe Hinweis"} (${order.retest?.mobile?.method || "–"}).`,
+    // TF-045: nur nach bestandenem Browser-Gate – einfache Sätze, keine Logs, Requests, Screenshots, Pfade oder Debugdaten.
+    ...(order.browser_gate?.desktop === "JA" && order.browser_gate?.mobile === "JA" && order.browser_gate?.regression === "KEINE"
+      ? ["", "Desktop geprüft: Ja", "Mobile geprüft: Ja", `Navigation geprüft: ${order.browser_gate.navigation === "JA" ? "Ja" : "Nein"}`, "Keine neuen relevanten Darstellungsfehler gefunden."] : []),
     "",
     order.deployment?.deployed ? "Die Korrekturen sind auf Ihrer Website live und wurden danach erneut geprüft."
       : order.plan?.length ? "Die Korrekturen sind vorbereitet und werden nach Rücksprache aufgeschaltet." : "An Ihrer Website wurde nichts verändert.",
@@ -879,7 +988,11 @@ export function repairPhase(o, pay) {
 export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domain", "offer_class", "price_chf", "state", "phase", "findings",
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
-  "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified", "created_at", "updated_at"]);
+  "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified",
+  "browser_desktop", "browser_mobile", "browser_regression", "created_at", "updated_at"]);
+// TF-045: Browser-Gate fürs Dashboard – nur feste Wörter (nie URLs, Screenshots, Logs, Codes oder Requests).
+const gateWord = (v) => (v === "JA" || v === "NEIN" ? v : "WARTET");
+const regressionWord = (g) => (["KEINE", "GEFUNDEN", "ROLLBACK"].includes(g.regression) ? g.regression : null);
 // Adapter-Anzeige (TF-042): feste Wörter – nie Connector-Strings (enthalten z. B. Repo-Namen), nie Hosts/Pfade.
 const ADAPTER_WORDS = { github_netlify: "GITHUB_NETLIFY", wordpress: "WORDPRESS", sftp: "SFTP", ssh: "SSH" };
 const adapterWord = (o) => (o.state === "BLOCKED_UNSUPPORTED_STACK" || (o.route && !o.route.adapter) ? "UNSUPPORTED"
@@ -914,6 +1027,9 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         profile_status: PROFILE_STATUSES.includes(o.access_profile?.profile_status) ? o.access_profile.profile_status : null,
         // TF-044: nur JA/NEIN (SSH/SFTP) – nie Fingerprint, Algorithmus, Host, IP oder Benutzer.
         host_key_verified: ["sftp", "ssh"].includes(o.access_profile?.interface) ? o.access_profile.host_key_verified === true : null,
+        // TF-045: JA / NEIN / WARTET bzw. KEINE / GEFUNDEN / ROLLBACK – null, wenn für den Auftrag kein Browser-Gate gilt.
+        browser_desktop: o.browser_gate ? gateWord(o.browser_gate.desktop) : null, browser_mobile: o.browser_gate ? gateWord(o.browser_gate.mobile) : null,
+        browser_regression: o.browser_gate ? regressionWord(o.browser_gate) : null,
         created_at: o.created_at, updated_at: o.updated_at,
       };
     });
@@ -925,7 +1041,8 @@ let registryCache = null;
 function registryStatus() {
   if (!registryCache) {
     let ssh = false; try { createRequire(import.meta.url).resolve("ssh2"); ssh = true; } catch {}
-    registryCache = { status: "ACTIVE", adapters: ["github_netlify", "wordpress", "sftp", "ssh"], ssh_library: ssh, host_key_verifier: ssh ? "ACTIVE" : "UNAVAILABLE" };
+    registryCache = { status: "ACTIVE", adapters: ["github_netlify", "wordpress", "sftp", "ssh"], ssh_library: ssh, host_key_verifier: ssh ? "ACTIVE" : "UNAVAILABLE",
+      browser_validator: browserRuntimeStatus().status }; // TF-045: ACTIVE nur mit playwright-core + ausführbarem Chromium
   }
   return registryCache;
 }
@@ -940,7 +1057,10 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
   try { const reg = await (await import("./repair-adapters/router.js")).createAdapterRegistry({ dir, legacy: adapters }); adapters = reg.adapters; router = reg.router; preflight = reg.preflight; } catch {}
   let retester = null;
   try { retester = await (await import("./repair-render-test.js")).loadRenderRetester(); } catch {}
-  return { adapters, retester, router, preflight };
+  // TF-045: echter Browser-Validator (Chromium). Nicht ladbar → null; der Produktivlauf ist dann fail closed (requireBrowser).
+  let browserValidator = null;
+  try { browserValidator = await (await import("./repair-browser-validator.js")).loadBrowserValidator(); } catch {}
+  return { adapters, retester, router, preflight, browserValidator };
 }
 
 // ---------- Worker-Hook (eigenes Lock, nie zwei Läufe; ohne explizite Deps werden die Standard-Deps geladen) ----------
@@ -948,7 +1068,8 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
 // intake (optional, access-intake.js intakeClient): sicherer One-Time-Link; vor dem Engine-Lauf werden eingegangene
 // Einreichungen abgeholt (nur wenn ein Auftrag darauf wartet – kein Netzverkehr ohne Grund). Ohne gmail/intake bleibt
 // fehlender Zugang wie bisher BLOCKED_NO_ACCESS – es wird nie etwas erraten.
-export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
+// TF-045: requireBrowser = true – CHF-480-Reparaturen im Produktivbetrieb nur mit echtem Browser-Gate (fail closed).
+export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, browserValidator = null, requireBrowser = true, gmail = null, intake = null, log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
@@ -959,13 +1080,14 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
       retester = retester || defaults.retester;
       router = router || defaults.router;
       preflight = preflight || defaults.preflight;
+      browserValidator = browserValidator || defaults.browserValidator;
     }
     const store = createStore(dir);
     let access = null;
     const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => (o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED")
       || (o.state === "HOST_KEY_CONFIRMATION_REQUIRED" && o.host_key_request?.sent_at && !o.host_key_request.received_at));
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
-    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, gmail, intake, log });
+    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, gmail, intake, log });
     return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }

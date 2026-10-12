@@ -1,0 +1,15 @@
+body { font-family: sans-serif; margin: 0; }
+.site-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 12px 16px; background: #234; }
+.site-header a { color: #fff; }
+.menu-toggle { display: none; }
+.site-nav a { margin-left: 1rem; }
+main { padding: 16px; }
+.hero { width: 1400px; }
+img { max-width: 100%; height: auto; }
+footer { padding: 16px; background: #eee; }
+@media (max-width: 700px) {
+  .menu-toggle { display: inline-block; }
+  .site-nav { display: none; width: 100%; }
+  .site-nav.open { display: block; }
+  .site-nav a { display: block; margin: 8px 0; }
+}
