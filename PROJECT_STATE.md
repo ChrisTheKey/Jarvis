@@ -4,6 +4,49 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-12
 
+## JARVIS REAL REPAIR ADAPTER INTEGRATION LAB + HOST KEY TYPE SAFETY — TF-044 (2026-10-12, Unit 558/558 + Lab 18/18 grün)
+- **TF-043-Einschränkung behoben**: Bestätigt der Kunde den Fingerprint eines anderen Host-Key-Typs (z. B. RSA, während der
+  Server Ed25519 bevorzugt), findet Jarvis den passenden Schlüssel jetzt selbst – ohne Login, ohne Blind-Trust.
+- **Neu `repair-adapters/host-key.js`** (Host-Key-Verifier): nur moderne Algorithmen ssh-ed25519, ecdsa-sha2-nistp256/384/521,
+  rsa-sha2-512/256 (Schnittmenge mit ssh2). **Nie** ssh-rsa (SHA-1) oder ssh-dss – auch die TF-043-Probe ist jetzt darauf
+  beschränkt (ssh2 hätte ssh-rsa im Default gehabt). Discovery: je Algorithmus eine eigene Verbindung nur bis zur Host-Key-
+  Prüfung (hostVerifier lehnt ab → kein Login, keine Credentials); max. 5 Pre-Auth-Verbindungen (rsa-sha2-256 nur, wenn -512 fehlt,
+  gleicher Schlüssel) – wichtig wegen OpenSSH ≥ 9.8 `PerSourcePenalties` (im Lab nachgewiesen: ~16 Pre-Auth-Verbindungen sperren
+  die Quell-IP). Match: genau EIN Schlüssel = `host_key_verified=true` + `host_key_algorithm`; kein Treffer → MANUAL_REVIEW_REQUIRED;
+  mehrere Schlüsseltypen mit gleichem Fingerprint → fail closed (MANUAL_REVIEW_REQUIRED); nur Legacy-Schlüssel → BLOCKED_UNSAFE_ACCESS.
+- **Login-Pinning** (`sftp.js ssh2Session`): Login nur mit `serverHostKey=[verifizierter Algorithmus]` + Fingerprint + Schlüsseltyp.
+  Fehlt der Algorithmus (Profil von Chris), wird er vorher OHNE Login ermittelt (Ergebnis 30 min im Prozess-Cache, jede Anmeldung prüft
+  trotzdem neu). Abweichung von Fingerprint oder Algorithmus → `HOST_KEY_CHANGED` → neuer Endzustand **BLOCKED_HOST_KEY_CHANGED**
+  (Chris informiert, 0 Login, 0 Write; Rollback über einen nicht mehr vertrauenswürdigen Kanal ausgeschlossen). Pre-Write-Check
+  `assertHostKeyPinned` bei jeder Verbindung und vor jedem SFTP-Write/Rollback-Write. Credentials stehen in der ssh2-Konfiguration,
+  werden aber erst nach bestandener hostVerifier-Prüfung gesendet (im Lab per sshd-Log belegt).
+- **Profil** (`profile-builder.js`): zusätzlich `host_key_algorithm`, `host_key_verified`, `profile_hash` (SHA-256 über interface,
+  port, remote_root, host_key_sha256, host_key_algorithm, capabilities – nie Passwort/Key/Passphrase/Token/Host/Benutzer). Chris-
+  Profil: optional `router.js --host-key-alg` (nur sichere Algorithmen, nur mit --host-key); sonst ermittelt der Preflight ihn einmalig.
+- **Mehrere Befunde in derselben Datei/demselben WordPress-Objekt** (Lab-Fund): zweiter Fix wird jetzt erlaubt, wenn die Änderung seit
+  dem Plan exakt der eigene, bereits angewendete Fix ist (sonst weiterhin «verändert – kein Write»); Validierung vergleicht mit dem
+  letzten Fix je Objekt; Rollback rückwärts bis zum Original. Vorher: zweiter Fix scheiterte, Retest → Rollback → REPAIR_FAILED.
+- **Dashboard**: Zustand «HOST-KEY GEÄNDERT» (zählt in «Kein Zugang»), je Auftrag nur «HOST KEY VERIFIED JA/NEIN» (SFTP/SSH) – nie
+  Fingerprint, Algorithmus, Host, IP, Benutzer. Registry meldet `host_key_verifier` ACTIVE. Lokal 390×844 ohne Overflow.
+- **Repair Integration Lab** (`test/integration/repair-lab/`, nur Tests, nie im Produktions-Image): lokal per Docker Desktop, je Lauf
+  eigene Netze (`--internal` für MariaDB/WordPress, Ports nur 127.0.0.1), OpenSSH 10.0 (modern Ed25519+ECDSA+RSA; legacy nur ssh-rsa),
+  WordPress 6.8 + MariaDB 11.4 (WP-CLI-Setup, Testseite/-post, kaputter Link + Bild, Editor + Application Password), Caddy-HTTPS mit
+  Test-CA, statische Testseite (kaputt + erwartet repariert als Fixtures). Alle Credentials/Host-Keys/Client-Keys zur Laufzeit,
+  nichts im Repo. Nach dem Lauf: Container, Volumes, Netze, Temp-Verzeichnisse entfernt (geprüft: 0/0/0).
+- **Befehle**: `npm test` (schnell, Lab übersprungen) · `npm run test:repair-integration` (Docker, 18 Tests, ~4 min) ·
+  **Release-Gate TF-044: `npm run test:release-044`** (beides; ohne Docker schlägt das Gate fehl statt zu überspringen).
+- **Lab-Nachweise**: Fingerprints = `ssh-keygen -lf`; Ed25519/RSA/ECDSA gepinnt + Login; falscher/rotierter Key, falscher Algorithmus →
+  HOST_KEY_CHANGED ohne einen einzigen Auth-Eintrag im sshd-Log; Legacy → kein Login; Private Key (Ed25519+Passphrase) per publickey;
+  SFTP-Sandbox (../, /etc, /root, .ssh, .env, Symlinks) + 0 Write ausserhalb (Hash-Snapshot); Temp-Upload → posix-rename → Re-Read;
+  Rollback before_hash == restored_hash; SSH nur php -l als allowlisted Build/Health (keine Shell, eingeschleuste Befehle abgelehnt);
+  WordPress Fix/Validation/Rollback, Plugins/Themes/User/Settings unverändert, kein HTTP-Downgrade, keine Credentials an fremde
+  Domain/Redirect; Volle Aufträge WordPress, SFTP (RSA bestätigt, Server bevorzugt Ed25519) und SSH/SFTP bis COMPLETED, Tresor danach
+  zerstört (nur connector_type/received_at/destroyed_at/revoked_required); CHF 239 → 0 Verbindung, CHF 240 → Preflight; Freigabe=false →
+  0 Write; Gmail nur Attrappe (0 Sends).
+- **Tests**: neu `test/repair-integration-044.test.js` (17, In-Process-ssh2-Server) + Lab (18). Angepasst: 035 (BLOCKED_STATES +
+  BLOCKED_HOST_KEY_CHANGED). Mutationen: A «Host-Key blind vertrauen» → Unit 2 + Lab 2 rot; B «Credentials vor Verifikation» → Unit 2 +
+  Lab 2 rot; Code danach wiederhergestellt. Secret-Scan 0.
+
 ## JARVIS AUTOMATIC REPAIR ACCESS PROFILE & PREFLIGHT — TF-043 (2026-10-12, Tests 539/539 grün)
 - **Ziel erreicht**: normale SFTP/SSH-Aufträge brauchen kein `router.js --profile/--root/--host-key` mehr. Ablauf: ACCESS RECEIVED →
   ACCESS_CHECK (Routing) → **ACCESS_PROFILE_PREFLIGHT** (nur lesend) → PROFILE_READY → ACCESS_CHECK (Adapter) → BACKUP → …
@@ -59,7 +102,7 @@ Letzte Aktualisierung: 2026-10-12
   unbekannter Token (info + host_key-submit) → generisches 404, pull/register ohne Worker-Token → 401, GET → 405. Production-Mobile
   390×844: Startseite und Access-Formular (SSH-Felder + Host-Key-Ansicht) ohne Overflow, Token aus URL entfernt, kein Storage,
   keine Cookies. Keine echte Zahlung, Mail, Zugangsdaten, Host-Key-Bestätigung, SFTP/SSH-/WordPress-Verbindung, kein Intake registriert.
-- **Bekannte sichere Einschränkung**: ssh2 handelt den Host-Key-Typ selbst aus. Liefert ein Kunde den Fingerprint eines anderen
+- **Bekannte sichere Einschränkung (in TF-044 behoben)**: ssh2 handelt den Host-Key-Typ selbst aus. Liefert ein Kunde den Fingerprint eines anderen
   Typs (z. B. RSA statt Ed25519), endet das fail closed in MANUAL_REVIEW_REQUIRED (unnötige manuelle Prüfung, nie unsicher).
   Bewusst KEIN Typ-Durchprobieren/Auto-Trust in TF-043.
 

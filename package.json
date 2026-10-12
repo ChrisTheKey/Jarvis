@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
+    "test:repair-integration": "node scripts/test-repair-integration.mjs",
+    "test:release-044": "npm test && npm run test:repair-integration",
     "gmail": "node gmail.js",
     "mail-worker": "node mail-worker.js",
     "mail-plan": "node mail-worker.js --plan",

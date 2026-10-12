@@ -61,8 +61,10 @@ export const ORDER_STATES = Object.freeze(["ORDER_RECEIVED", "AUTHORIZATION_REQU
   "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
   "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]);
 export const BLOCKED_STATES = Object.freeze(["BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK",
-  "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS"]);
+  "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS", "BLOCKED_HOST_KEY_CHANGED"]);
 // TF-042: BLOCKED_UNSAFE_ACCESS = Zugang technisch möglich, aber unsicher (root-Login, Systemverzeichnis als Webroot, Symlink-Root).
+// TF-044: BLOCKED_HOST_KEY_CHANGED = SSH-Host-Key bzw. Host-Key-Algorithmus weicht vom bestätigten/gepinnten Stand ab – STOP,
+// keine Zugangsdaten gesendet, kein Write. Chris prüft (möglicher Angriff oder Server-Neuinstallation).
 // Von Chris storniert: terminal, Zugangsdaten werden zerstört, Datensatz bleibt (nie von Hand löschen).
 export const REPAIR_CANCELLED = "CANCELLED";
 const TERMINAL = new Set(["COMPLETED", REPAIR_CANCELLED, ...BLOCKED_STATES]);
@@ -70,6 +72,8 @@ const TERMINAL = new Set(["COMPLETED", REPAIR_CANCELLED, ...BLOCKED_STATES]);
 const WORK_STATES = new Set(["ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
   "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY"]);
 const MAX_PREFLIGHT_ATTEMPTS = 6; // vorübergehende Fehler (Server nicht erreichbar) – danach Chris
+// TF-044: Fehlercodes der Host-Key-Prüfung (repair-adapters/host-key.js, sftp.js), die einen Auftrag sofort stoppen.
+const HOST_KEY_STOP_CODES = new Set(["HOST_KEY_CHANGED", "HOST_KEY_UNVERIFIED", "HOST_KEY_UNSAFE", "HOST_KEY_AMBIGUOUS"]);
 // Zugangsart aus dem sicheren Formular → passender Adapter-Schlüssel (nur wenn ein solcher Adapter konfiguriert ist).
 const CONNECTOR_ADAPTER = { github_netlify: "github_netlify", wordpress_cms: "wordpress" };
 
@@ -221,8 +225,9 @@ export function cancelRepairOrder(store, orderId, { reason = null, now = new Dat
 // TF-043: auch das Auftragsprofil wird auf Status/Quellen reduziert – Webroot und Fingerprint werden nicht mehr gebraucht.
 function destroyOrderSecret(store, order, now) {
   if (order.access_profile && !order.access_profile.cleared_at) {
-    const { profile_status, interface: iface, host_key_source, webroot_source, profile_created_at } = order.access_profile;
-    order.access_profile = { profile_status, interface: iface, host_key_source, webroot_source, profile_created_at, cleared_at: now.toISOString() };
+    const { profile_status, interface: iface, host_key_source, host_key_verified, webroot_source, profile_created_at } = order.access_profile;
+    order.access_profile = { profile_status, interface: iface, host_key_source, ...(host_key_verified != null ? { host_key_verified: host_key_verified === true } : {}),
+      webroot_source, profile_created_at, cleared_at: now.toISOString() };
   }
   if (!order.access_intake || order.access_intake.status === "DESTROYED") return;
   const existed = destroyAccessSecret(store.dir, order.order_id);
@@ -322,6 +327,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     return false;
   };
   const manual = (order, reason) => { order.manual_review.push({ at: now().toISOString(), reason }); return block(order, "MANUAL_REVIEW_REQUIRED", reason); };
+  // TF-044: Host-Key-Fehler der SSH/SFTP-Transporte nie als «normaler» Fehler schlucken – bis zum Schritt durchreichen.
+  const hostKeyStop = (e) => { if (HOST_KEY_STOP_CODES.has(e?.code)) throw e; return e; };
   const audit = (website) => fullSiteAudit(website, { auditor, now });
   // Wurde an der Website bereits etwas verändert (angewendete Fixes oder Deployment)?
   const changedWebsite = (order) => !!order.deployment || Object.values(order.issues || {}).some((i) => ["repaired", "still_broken"].includes(i.repair_status) || i.change_ref);
@@ -448,7 +455,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       if (!a || typeof a.checkAccess !== "function") return requestAccessOrBlock(order, intakeReceived(order)
         ? `Zugang (${order.access_intake.connector_type}) erhalten, aber kein automatischer Reparaturweg für Stack "${order.stack.type}" – Chris übernimmt manuell.`
         : `Kein sicherer Zugangsweg für Stack "${order.stack.type}" konfiguriert. Zugangsdaten werden nie erraten.`);
-      const acc = await a.checkAccess(order, accessCtx(order)).catch((e) => ({ ok: false, error: e.message }));
+      const acc = await a.checkAccess(order, accessCtx(order)).catch((e) => ({ ok: false, error: hostKeyStop(e).message }));
       // Unsicherer Zugang (root, Systemverzeichnis …) wird nie „repariert“ – eigener Endzustand, keine zweite Anfrage.
       if (acc?.ok !== true && ["BLOCKED_UNSAFE_ACCESS", "BLOCKED_UNSUPPORTED_STACK"].includes(acc?.blocked_state)) { block(order, acc.blocked_state, `Zugang abgelehnt (${String(acc.reason || "unsicher").slice(0, 60)}) – keine automatische Reparatur.`); return false; }
       if (acc?.ok !== true) return requestAccessOrBlock(order, `Zugangsprüfung fehlgeschlagen${acc?.reason ? ` (${String(acc.reason).slice(0, 60)})` : ""} – keine Änderung ohne sicheren Zugang.`);
@@ -483,7 +490,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       // Alternativ: Freigabe liegt vor und Chris hat den sicher erhaltenen Zugang als Adapter konfiguriert.
       const a = adapterOf(order);
       if (authorizationOk(order) && a && typeof a.checkAccess === "function") {
-        const acc = await a.checkAccess(order, accessCtx(order)).catch(() => ({ ok: false }));
+        const acc = await a.checkAccess(order, accessCtx(order)).catch((e) => { hostKeyStop(e); return { ok: false }; });
         if (acc?.ok === true) {
           order.access = { connector: acc.connector || order.stack.type, ok: true, checked_at: t.toISOString() }; // nie Secrets
           transition(order, "BACKUP", "Sicherer Zugang erhalten und geprüft", t); saveOrder(store, order); return true;
@@ -555,7 +562,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
 
     if (order.state === "BACKUP") {
       const branch = `repair/${order.order_id}`;
-      const b = await adapter.backup(order, { branch }, accessCtx(order)).catch((e) => ({ error: e.message }));
+      const b = await adapter.backup(order, { branch }, accessCtx(order)).catch((e) => ({ error: hostKeyStop(e).message }));
       if (!b || !b.production_ref || !b.backup_ref || !b.rollback_point) { manual(order, "Backup unvollständig (Produktionsstand/Backup/Rollback-Punkt) – ohne Rollback keine Reparatur."); return false; }
       order.backup = { production_ref: String(b.production_ref), backup_ref: String(b.backup_ref), rollback_point: String(b.rollback_point),
         branch: String(b.branch || branch), created_at: t.toISOString() };
@@ -575,7 +582,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       for (const i of Object.values(order.issues)) if (i.protected) order.manual_review.push({ at: t.toISOString(), reason: `Befund ${i.issue_id} liegt auf einer geschützten Seite (${i.page}) – nur mit zusätzlicher expliziter Freigabe.`, issue_id: i.issue_id });
       const plan = [];
       for (const i of repairables) {
-        const loc = await adapter.locate(i, order, accessCtx(order)).catch(() => null);
+        const loc = await adapter.locate(i, order, accessCtx(order)).catch((e) => { hostKeyStop(e); return null; });
         const review = (reason) => { order.issues[i.issue_id].repair_status = "needs_review"; order.manual_review.push({ at: t.toISOString(), reason, issue_id: i.issue_id }); };
         if (!loc || !loc.target || !loc.cause) { review(`Ursache für ${i.type} (${i.page}) nicht eindeutig – keine automatische Reparatur.`); continue; } // nie raten
         const caps = order.access?.capabilities || null;
@@ -610,7 +617,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         if (order.issues[item.issue_id].repair_status === "repaired") { okCount++; continue; } // nach Neustart nie doppelt schreiben
         // Domain-Bindung unmittelbar vor JEDEM Write (der Adapter prüft zusätzlich Zugangs- und Live-Domain).
         if (!domainBound(order)) { if (changedWebsite(order)) { await rollbackThen(order, adapter, "Domain-Bindung vor dem Schreiben verletzt – STOP"); return false; } block(order, "BLOCKED_NO_AUTHORIZATION", "Domain-Bindung vor dem Schreiben verletzt – STOP."); return false; }
-        const r = await adapter.applyFix(item, order, accessCtx(order)).catch((e) => ({ ok: false, error: e.message }));
+        const r = await adapter.applyFix(item, order, accessCtx(order)).catch((e) => ({ ok: false, error: hostKeyStop(e).message }));
         if (r?.domain_mismatch) { order.issues[item.issue_id].repair_status = "repair_failed"; saveOrder(store, order);
           if (changedWebsite(order)) { await rollbackThen(order, adapter, "Weiterleitung/Domain stimmt vor dem Schreiben nicht – STOP"); return false; }
           manual(order, "Weiterleitung/Domain stimmt vor dem Schreiben nicht – STOP, nichts verändert."); return false; }
@@ -628,7 +635,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       let v;
       // Direkt-live-Adapter (WordPress/SFTP/SSH, kein Preview): jede fehlgeschlagene Prüfung → sofort Rollback, nie „liegen lassen“.
       const failValidation = async (reason) => { if (adapter.direct_live && changedWebsite(order)) { saveOrder(store, order); await rollbackThen(order, adapter, reason); return false; } block(order, "VALIDATION_FAILED", reason); return false; };
-      if (typeof adapter.validate === "function") v = await adapter.validate(order, accessCtx(order)).catch((e) => ({ build_ok: false, error: e.message }));
+      if (typeof adapter.validate === "function") v = await adapter.validate(order, accessCtx(order)).catch((e) => ({ build_ok: false, error: hostKeyStop(e).message }));
       else if (order.plan.length && !["static", "github_netlify"].includes(order.stack.type)) { manual(order, `Stack "${order.stack.type}" ohne Build-/Prüfschritt – Validierung nicht eindeutig, nicht experimentieren.`); return false; }
       else v = { build_ok: true };
       if (v?.build_ok !== true) return failValidation("Build/Prüfung nach der Reparatur nicht erfolgreich.");
@@ -695,6 +702,17 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     return false; // READY_FOR_DELIVERY/terminal: wartet auf completeOrder() bzw. nichts mehr zu tun
   }
 
+  // TF-044: Host-Key weicht vom bestätigten Fingerprint/Algorithmus ab → STOP (Zugangsdaten wurden nicht gesendet). Wurde bereits
+  // etwas verändert, ist ein Rollback über diesen (nicht mehr vertrauenswürdigen) Kanal ausgeschlossen → Chris prüft manuell.
+  async function hostKeyBlocked(order, e) {
+    const changed = changedWebsite(order);
+    if (order.access_profile) order.access_profile = { ...order.access_profile, host_key_verified: false, host_key_blocked_at: now().toISOString() };
+    await informChris(order, "host_key_changed", `Host-Key-Prüfung: ${e.code}${changed ? " – Website bereits verändert, Rollback über diesen Kanal gesperrt" : ""}`);
+    if (e.code === "HOST_KEY_UNSAFE") return block(order, "BLOCKED_UNSAFE_ACCESS", "Server bietet keinen sicheren SSH-Host-Key (nur veraltete Algorithmen) – keine Verbindung mit Zugangsdaten.");
+    if (e.code === "HOST_KEY_AMBIGUOUS") return manual(order, "Mehrere Server-Schlüssel passen zum bestätigten Fingerprint – nicht automatisch entschieden.");
+    return block(order, "BLOCKED_HOST_KEY_CHANGED", `SSH-Host-Key oder Host-Key-Algorithmus hat sich geändert – STOP, keine Zugangsdaten gesendet, kein Write${changed ? "; Website war bereits verändert – Chris prüft manuell" : ""}.`);
+  }
+
   // Alle offenen Aufträge weiterarbeiten – nach Neustart exakt am gespeicherten Zustand. Ein Fehler stoppt nie die anderen.
   async function processAll() {
     const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
@@ -703,7 +721,11 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     for (const stored of open) {
       const order = structuredClone(stored);
       try { for (let guard = 0; guard < 20 && await step(order); guard++) advanced++; }
-      catch (e) { log("error", "repair_order_failed", { order_id: order.order_id, state: order.state, error: e.message }); manual(order, `Unerwarteter Fehler im Zustand ${order.state}: ${e.message}`); }
+      catch (e) {
+        log("error", "repair_order_failed", { order_id: order.order_id, state: order.state, error: e.message, ...(e?.code ? { code: String(e.code).slice(0, 40) } : {}) });
+        if (HOST_KEY_STOP_CODES.has(e?.code)) await hostKeyBlocked(order, e);
+        else manual(order, `Unerwarteter Fehler im Zustand ${order.state}: ${e.message}`);
+      }
     }
     const after = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
     const states = {};
@@ -823,7 +845,7 @@ export function repairOrdersStatus(dir = WORKER_DIR) {
     waiting_authorization: states.AUTHORIZATION_REQUIRED || 0, waiting_payment: states.PAYMENT_REQUIRED || 0,
     access_requested: states.ACCESS_REQUESTED || 0, payment_review: states.PAYMENT_REVIEW_REQUIRED || 0,
     ready_for_delivery: states.READY_FOR_DELIVERY || 0, cancelled: states[REPAIR_CANCELLED] || 0,
-    manual_review: states.MANUAL_REVIEW_REQUIRED || 0, unsafe_access: states.BLOCKED_UNSAFE_ACCESS || 0,
+    manual_review: states.MANUAL_REVIEW_REQUIRED || 0, unsafe_access: states.BLOCKED_UNSAFE_ACCESS || 0, host_key_changed: states.BLOCKED_HOST_KEY_CHANGED || 0,
     host_key_confirmation: states.HOST_KEY_CONFIRMATION_REQUIRED || 0, waiting_access_profile: states.WAITING_FOR_ACCESS_PROFILE || 0 };
 }
 
@@ -857,7 +879,7 @@ export function repairPhase(o, pay) {
 export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domain", "offer_class", "price_chf", "state", "phase", "findings",
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
-  "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "created_at", "updated_at"]);
+  "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified", "created_at", "updated_at"]);
 // Adapter-Anzeige (TF-042): feste Wörter – nie Connector-Strings (enthalten z. B. Repo-Namen), nie Hosts/Pfade.
 const ADAPTER_WORDS = { github_netlify: "GITHUB_NETLIFY", wordpress: "WORDPRESS", sftp: "SFTP", ssh: "SSH" };
 const adapterWord = (o) => (o.state === "BLOCKED_UNSUPPORTED_STACK" || (o.route && !o.route.adapter) ? "UNSUPPORTED"
@@ -890,6 +912,8 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         auto_fixable: (o.plan || []).length, manual_review: (o.manual_review || []).length,
         // TF-043: nur das Statuswort des Zugangsprofils – nie Host, Benutzer, IP, Webroot/Pfade oder Fingerprint.
         profile_status: PROFILE_STATUSES.includes(o.access_profile?.profile_status) ? o.access_profile.profile_status : null,
+        // TF-044: nur JA/NEIN (SSH/SFTP) – nie Fingerprint, Algorithmus, Host, IP oder Benutzer.
+        host_key_verified: ["sftp", "ssh"].includes(o.access_profile?.interface) ? o.access_profile.host_key_verified === true : null,
         created_at: o.created_at, updated_at: o.updated_at,
       };
     });
@@ -901,7 +925,7 @@ let registryCache = null;
 function registryStatus() {
   if (!registryCache) {
     let ssh = false; try { createRequire(import.meta.url).resolve("ssh2"); ssh = true; } catch {}
-    registryCache = { status: "ACTIVE", adapters: ["github_netlify", "wordpress", "sftp", "ssh"], ssh_library: ssh };
+    registryCache = { status: "ACTIVE", adapters: ["github_netlify", "wordpress", "sftp", "ssh"], ssh_library: ssh, host_key_verifier: ssh ? "ACTIVE" : "UNAVAILABLE" };
   }
   return registryCache;
 }

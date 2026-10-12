@@ -21,6 +21,7 @@ import { CAPABILITIES, hasCapabilities, onlyCapabilities, pickMeta, sanitizeErro
 import { validateRemoteRoot } from "./sftp.js";
 import { validateChecks } from "./ssh.js";
 import { createProfilePreflight, PROFILE_ROUTING_KEYS, repairMappingsFor } from "./profile-builder.js";
+import { hostKeyVerifierStatus, isSafeHostKeyAlgorithm } from "./host-key.js";
 
 export const ACCESS_PROFILES_FILE = "repair_access_profiles.json";
 export const ADAPTER_KEYS = Object.freeze(["github_netlify", "wordpress", "sftp", "ssh"]);
@@ -32,7 +33,7 @@ const INTERFACES = Object.freeze({ github_netlify: "github_netlify", wordpress_r
 export const LEGACY_CAPABILITIES = Object.freeze({ github_netlify: ["READ_FILES", "WRITE_FILES", "ATOMIC_REPLACE", "BACKUP", "ROLLBACK", "BUILD_TEST", "HEALTH_CHECK"] });
 // Gebaute JS-Apps: HTML-Dateien sind Build-Artefakte – direkte Dateiänderungen würden beim nächsten Build verschwinden.
 const BUILT_STACKS = new Set(["nextjs", "react"]);
-const PROFILE_KEYS = new Set(["interface", "port", "remote_root", "host_key_sha256", "wp_api_base", "checks"]);
+const PROFILE_KEYS = new Set(["interface", "port", "remote_root", "host_key_sha256", "host_key_algorithm", "wp_api_base", "checks"]);
 
 // ---------- Zugangsprofile (nur Metadaten, nie Secrets) ----------
 export function loadAccessProfiles(store) { return store.read(ACCESS_PROFILES_FILE, { schema: 1, profiles: {} }).profiles || {}; }
@@ -45,6 +46,8 @@ export function setAccessProfile(store, domain, input = {}) {
   if (input.port != null) { const n = Number(input.port); if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error("Port ungültig."); p.port = n; }
   if (input.remote_root != null) { const v = validateRemoteRoot(input.remote_root); if (!v.ok) throw new Error(`remote_root ungültig (${v.reason}).`); p.remote_root = v.root; }
   if (input.host_key_sha256 != null) { const fp = normFingerprint(input.host_key_sha256); if (!fp || !/^SHA256:/.test(input.host_key_sha256)) throw new Error("Host-Key als SHA256:<43 Zeichen> angeben (ssh-keygen -lf)."); p.host_key_sha256 = fp; }
+  // TF-044: optional der Host-Key-Algorithmus (nur moderne, sichere Algorithmen; sonst ermittelt der Login ihn ohne Zugangsdaten).
+  if (input.host_key_algorithm != null) { if (!isSafeHostKeyAlgorithm(input.host_key_algorithm) || !p.host_key_sha256) throw new Error("Host-Key-Algorithmus nur zusammen mit --host-key und nur ssh-ed25519, ecdsa-sha2-nistp256/384/521, rsa-sha2-512/256."); p.host_key_algorithm = input.host_key_algorithm; }
   if (input.wp_api_base != null) {
     let u; try { u = new URL(input.wp_api_base); } catch { throw new Error("wp_api_base ungültig."); }
     if (u.protocol !== "https:" || normDomain(u.hostname) !== d || u.username || u.password) throw new Error("wp_api_base: nur HTTPS auf der Auftrags-Domain, ohne Zugangsdaten.");
@@ -74,7 +77,8 @@ export function buildCredentialContext(order, accessCtx, profile = null) {
     scheme: h.scheme, host: h.hostname, port: profile?.port || h.port || formPort || null, username: raw.username || null,
     password: isKey ? null : secret, private_key: isKey ? secret : null, passphrase: isKey ? passphrase : null,
     api_base: profile?.wp_api_base || (h.scheme === "https" || (!h.scheme && h.hostname) ? h.raw : null),
-    remote_root: profile?.remote_root || null, host_key_sha256: profile?.host_key_sha256 || null, checks: profile?.checks || null,
+    remote_root: profile?.remote_root || null, host_key_sha256: profile?.host_key_sha256 || null,
+    host_key_algorithm: profile?.host_key_sha256 && isSafeHostKeyAlgorithm(profile?.host_key_algorithm) ? profile.host_key_algorithm : null, checks: profile?.checks || null,
     secrets: [secret, passphrase, raw.username && secret ? `${raw.username}:${secret}` : null, secret ? Buffer.from(`${raw.username || ""}:${secret}`).toString("base64") : null].filter(Boolean),
   };
   ctx.wipe = () => { ctx.password = null; ctx.private_key = null; ctx.passphrase = null; ctx.username = null; ctx.secrets.length = 0; };
@@ -182,7 +186,7 @@ export function bridgeAdapter(key, contract, { profileFor = () => null } = {}) {
 const require = createRequire(import.meta.url);
 export const sshLibraryAvailable = () => { try { require.resolve("ssh2"); return true; } catch { return false; } };
 export function adapterRegistryStatus() {
-  return { status: "ACTIVE", adapters: [...ADAPTER_KEYS], ssh_library: sshLibraryAvailable() };
+  return { status: "ACTIVE", adapters: [...ADAPTER_KEYS], ssh_library: sshLibraryAvailable(), host_key_verifier: hostKeyVerifierStatus() };
 }
 
 // Standard-Registry für den Produktivbetrieb: alle vier Adapter + Router. contract-Adapter erhalten ihren Kontext über die Brücke.
@@ -217,7 +221,8 @@ export { CAPABILITIES, sha256, parseHost };
 
 // Kommandozeile (nie Secrets): Zugangsprofil je Domain pflegen; Checks als JSON-Datei ({ "build": { id: { binary, args } } }).
 //   node repair-adapters/router.js --profile <domain> [--interface sftp|ssh|wordpress_rest|github_netlify] [--root /pfad]
-//                                  [--host-key SHA256:…] [--port 22] [--wp-api https://<domain>/wp-json] [--checks checks.json]
+//                                  [--host-key SHA256:…] [--host-key-alg ssh-ed25519|rsa-sha2-512|…] [--port 22]
+//                                  [--wp-api https://<domain>/wp-json] [--checks checks.json]
 //   node repair-adapters/router.js --list | --status
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
@@ -227,7 +232,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (argv.includes("--list")) console.log(JSON.stringify(loadAccessProfiles(store), null, 2));
     else if (argv.includes("--status")) console.log(JSON.stringify(adapterRegistryStatus(), null, 2));
     else if (flag("profile")) {
-      const p = setAccessProfile(store, flag("profile"), Object.fromEntries(Object.entries({ interface: flag("interface"), remote_root: flag("root"), host_key_sha256: flag("host-key"),
+      const p = setAccessProfile(store, flag("profile"), Object.fromEntries(Object.entries({ interface: flag("interface"), remote_root: flag("root"), host_key_sha256: flag("host-key"), host_key_algorithm: flag("host-key-alg"),
         port: flag("port"), wp_api_base: flag("wp-api"), checks: flag("checks") ? JSON.parse(fs.readFileSync(flag("checks"), "utf8")) : undefined }).filter(([, v]) => v !== undefined)));
       console.log(`Zugangsprofil gespeichert: ${normDomain(flag("profile"))} → ${JSON.stringify(p)}`);
     } else { console.log("Befehle: --profile <domain> [...] | --list | --status"); process.exit(1); }

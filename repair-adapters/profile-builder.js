@@ -21,10 +21,14 @@
 //     statisch = index.html + Inhalt passt zur öffentlich abgerufenen Domain. 0 oder >1 Kandidaten → WAITING_FOR_ACCESS_PROFILE.
 //   - Login als root, Login-Root in einem Systemverzeichnis, unsicheres remote_root → BLOCKED_UNSAFE_ACCESS.
 //   - Kein Write: der Preflight liest nur (stat/readdir, index.html). Fehler enthalten nie Zugangsdaten (nur feste Codes).
-import crypto from "node:crypto";
+//   - TF-044 Host-Key-Typ: der Server wird je sicherem Algorithmus (host-key.js: Ed25519, ECDSA, RSA-SHA2 – nie ssh-rsa/SHA-1,
+//     nie ssh-dss) OHNE Login abgefragt. Genau EIN angebotener Schlüssel = vertrauenswürdiger Fingerprint → host_key_verified
+//     + host_key_algorithm (für das Login-Pinning). Kein Treffer bzw. mehrere → MANUAL_REVIEW_REQUIRED; nur Legacy-Schlüssel →
+//     BLOCKED_UNSAFE_ACCESS. Zugangsdaten erst danach – und nur an diesen Schlüssel/Algorithmus gebunden.
 import path from "node:path";
 import { validateRemoteRoot, ssh2SftpConnector, SYSTEM_DIRS } from "./sftp.js";
 import { liveTarget, normDomain, onlyCapabilities, parseHost, normFingerprint, sha256 } from "./common.js";
+import { ssh2ProbeHostKeyAlgorithm, discoverHostKeys, matchHostKey, safeHostKeyAlgorithms, isSafeHostKeyAlgorithm, fingerprintOf } from "./host-key.js";
 
 const P = path.posix;
 export const PROFILE_STATUSES = Object.freeze(["PROFILE_READY", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
@@ -34,10 +38,15 @@ export const SECRET_FIELDS = Object.freeze(["secret", "passphrase"]);
 export const ACCESS_META_FIELDS = Object.freeze(["access_type", "host", "port", "username", "remote_root", "host_key_sha256", "website_stack_hint", "provider_name"]);
 export const STACK_HINTS = Object.freeze(["unknown", "wordpress", "static", "php", "other"]);
 // Felder, die vom Auftragsprofil in den Credential-Kontext gelangen dürfen (router.js effectiveProfile).
-export const PROFILE_ROUTING_KEYS = Object.freeze(["interface", "port", "remote_root", "host_key_sha256"]);
+export const PROFILE_ROUTING_KEYS = Object.freeze(["interface", "port", "remote_root", "host_key_sha256", "host_key_algorithm"]);
 // Felder, die am Auftrag gespeichert werden (Allowlist) – nie Host, Benutzer, Passwörter, Schlüssel.
-export const PROFILE_RECORD_KEYS = Object.freeze(["interface", "port", "remote_root", "host_key_sha256", "host_key_source", "host_key_candidate",
-  "host_key_seen_at", "webroot_source", "webroot_signals", "capabilities", "profile_created_at"]);
+export const PROFILE_RECORD_KEYS = Object.freeze(["interface", "port", "remote_root", "host_key_sha256", "host_key_algorithm", "host_key_verified",
+  "host_key_source", "host_key_candidate", "host_key_seen_at", "webroot_source", "webroot_signals", "capabilities", "profile_hash", "profile_created_at"]);
+// Profil-Hash (TF-044): nur nicht geheime Verbindungs-Metadaten – nie password/private_key/passphrase/token, nie Host/Benutzer.
+export const PROFILE_HASH_KEYS = Object.freeze(["interface", "port", "remote_root", "host_key_sha256", "host_key_algorithm", "capabilities"]);
+export function profileHash(p = {}) {
+  return sha256(JSON.stringify(PROFILE_HASH_KEYS.map((k) => [k, k === "capabilities" ? [...(p[k] || [])].sort() : p[k] ?? null])));
+}
 export const HOST_KEY_CONFIRMED_SOURCES = Object.freeze(["customer_confirmation", "chris_confirmation"]);
 export const WEBROOT_CANDIDATES = Object.freeze(["public_html", "www", "htdocs", "httpdocs", "web", "site"]);
 // Quelle C (künftig): Provider, deren API Host-Keys verlässlich liefert. Bewusst leer – nie stillschweigend erweitern.
@@ -55,6 +64,8 @@ export const PROFILE_REASONS = Object.freeze({
   remote_root_invalid: "Website-Verzeichnis im Formular ungültig.",
   host_key_unavailable: "Server-Fingerprint nicht ermittelbar (Server nicht erreichbar) – neuer Versuch im nächsten Lauf.",
   host_key_mismatch: "Fingerprint des Servers weicht von der vertrauenswürdigen Angabe ab – keine Verbindung mit Zugangsdaten.",
+  host_key_multiple_matches: "Mehrere Server-Schlüssel passen zum Fingerprint – nicht automatisch entschieden, keine Verbindung mit Zugangsdaten.",
+  host_key_legacy_only: "Server bietet nur veraltete Host-Key-Algorithmen (ssh-rsa/SHA-1, ssh-dss) – unsicher, keine Verbindung mit Zugangsdaten.",
   host_key_unconfirmed: "Server-Fingerprint unbekannt – Bestätigung durch den Kunden nötig, bis dahin keine Verbindung mit Zugangsdaten.",
   auth_failed: "Anmeldung mit den übermittelten Zugangsdaten fehlgeschlagen.",
   connect_failed: "Verbindung zum Server fehlgeschlagen – neuer Versuch im nächsten Lauf.",
@@ -103,8 +114,10 @@ export async function ssh2HostKeyProbe({ host, port = 22, timeoutMs = 15_000 } =
     conn.on("error", () => done(() => (fp ? resolve(fp) : reject(new Error("Host-Key nicht ermittelbar.")))));
     conn.on("ready", () => done(() => reject(new Error("Unerwartete Anmeldung – abgebrochen."))));
     conn.on("close", () => done(() => (fp ? resolve(fp) : reject(new Error("Host-Key nicht ermittelbar.")))));
+    // TF-044: nur sichere Algorithmen (nie ssh-rsa/SHA-1, nie ssh-dss – ssh2 hätte ssh-rsa sonst im Default).
     conn.connect({ host, port: Number(port) || 22, username: "jarvis-hostkey-probe", readyTimeout: timeoutMs, tryKeyboard: false,
-      hostVerifier: (key) => { fp = "SHA256:" + crypto.createHash("sha256").update(key).digest("base64").replace(/=+$/, ""); return false; } });
+      algorithms: { serverHostKey: [...safeHostKeyAlgorithms()] },
+      hostVerifier: (key) => { fp = fingerprintOf(key); return false; } });
   });
 }
 
@@ -187,9 +200,16 @@ export async function discoverWebroot(c, { loginRoot, domain, liveHtml = async (
 
 // ---------- Preflight ----------
 export function createProfilePreflight({ adapters = {}, capabilitiesOf = () => [], manualProfileFor = () => null, mappingsFor = () => [],
-  probeHostKey = ssh2HostKeyProbe, connect = ssh2SftpConnector(), fetchFn = globalThis.fetch, now = () => new Date() } = {}) {
+  probeHostKey = ssh2ProbeHostKeyAlgorithm, connect = ssh2SftpConnector(), fetchFn = globalThis.fetch, now = () => new Date() } = {}) {
 
-  const result = (profile_status, reason, profile = {}) => ({ profile_status, reason, profile });
+  const result = (profile_status, reason, profile = {}) => ({ profile_status, reason, profile: profile_status === "PROFILE_READY" ? { ...profile, profile_hash: profileHash(profile) } : profile });
+  // Host-Keys OHNE Zugangsdaten erfassen: je sicherem Algorithmus eine eigene Probe (TF-044). Eine Attrappe ohne Algorithmus-
+  // Unterstützung liefert genau einen Fingerprint (Algorithmus unbekannt → beim Login per Discovery bestimmt, nie Legacy).
+  const discover = async (target) => {
+    if (probeHostKey.algorithmAware) return discoverHostKeys(target, { probe: probeHostKey });
+    try { const fp = normFingerprint(await probeHostKey(target)); return fp ? { ok: true, keys: [{ algorithm: null, fingerprint: fp, key_type: null }] } : { ok: false, reason: "host_key_unavailable", keys: [] }; }
+    catch { return { ok: false, reason: "host_key_unavailable", keys: [] }; }
+  };
 
   async function run(order, { adapter, accessCtx } = {}) {
     const at = now().toISOString();
@@ -230,28 +250,43 @@ export function createProfilePreflight({ adapters = {}, capabilitiesOf = () => [
       const base = { interface: adapter === "ssh" ? "ssh" : "sftp", port, capabilities: caps, profile_created_at: at };
       // Quelle B: vollständiges Profil von Chris – der Adapter erzwingt den Host-Key bei jeder Verbindung (hostVerifier).
       if (manual.remote_root && manual.host_key_sha256) {
+        // TF-044: Algorithmus zum Fingerprint von Chris einmalig OHNE Login ermitteln (sonst müsste jede Verbindung neu suchen).
+        let alg = isSafeHostKeyAlgorithm(manual.host_key_algorithm) ? manual.host_key_algorithm : null;
+        if (!alg && probeHostKey.algorithmAware) {
+          const d = await discover({ host: h.hostname, port });
+          if (!d.ok) return d.reason === "host_key_legacy_only" ? result("BLOCKED_UNSAFE_ACCESS", "host_key_legacy_only", { ...base, host_key_verified: false }) : result("PREFLIGHT_RETRY", "host_key_unavailable");
+          const m = matchHostKey(d.keys, manual.host_key_sha256);
+          if (!m.ok) return result("MANUAL_REVIEW_REQUIRED", m.reason === "host_key_no_match" ? "host_key_mismatch" : m.reason, { ...base, host_key_candidate: d.keys[0].fingerprint, host_key_seen_at: at, host_key_verified: false });
+          alg = m.algorithm;
+        }
         return result("PROFILE_READY", "chris_profile", { ...base, remote_root: manual.remote_root, host_key_sha256: normFingerprint(manual.host_key_sha256),
+          ...(alg ? { host_key_algorithm: alg, host_key_verified: true } : {}),
           host_key_source: "chris_profile", webroot_source: "chris_profile", webroot_signals: ["chris_profile"] });
       }
 
-      // Host-Key: präsentierten Fingerprint OHNE Zugangsdaten erfassen, dann nur gegen vertrauenswürdige Quellen prüfen.
-      let presented;
-      try { presented = normFingerprint(await probeHostKey({ host: h.hostname, port })); } catch { presented = null; }
-      if (!presented) return result("PREFLIGHT_RETRY", "host_key_unavailable");
+      // Host-Key: angebotene Schlüssel OHNE Zugangsdaten erfassen (je sicherem Algorithmus), dann nur gegen vertrauenswürdige
+      // Quellen prüfen. Erst nach eindeutigem Treffer gehen Zugangsdaten an den Server – gepinnt auf Fingerprint + Algorithmus.
+      const d = await discover({ host: h.hostname, port });
+      if (!d.ok && d.reason === "host_key_legacy_only") return result("BLOCKED_UNSAFE_ACCESS", "host_key_legacy_only", { ...base, host_key_verified: false });
+      if (!d.ok) return result("PREFLIGHT_RETRY", "host_key_unavailable");
+      const presented = d.keys[0].fingerprint; // bevorzugter sicherer Schlüssel = Kandidat für die Bestätigung
       const ap = order.access_profile || {};
       const sources = [
         ["chris_profile", manual.host_key_sha256],
         ["customer_form", meta.host_key_sha256],
         ...(HOST_KEY_CONFIRMED_SOURCES.includes(ap.host_key_source) ? [[ap.host_key_source, ap.host_key_sha256]] : []),
       ].map(([source, v]) => ({ source, fp: normFingerprint(v) })).filter((s) => s.fp);
-      if (sources.some((s) => s.fp !== presented)) return result("MANUAL_REVIEW_REQUIRED", "host_key_mismatch", { ...base, host_key_candidate: presented, host_key_seen_at: at });
-      if (!sources.length) return result("HOST_KEY_CONFIRMATION_REQUIRED", "host_key_unconfirmed", { ...base, host_key_candidate: presented, host_key_seen_at: at });
-      const keyProfile = { host_key_sha256: presented, host_key_source: sources[0].source };
+      const review = (reason) => result("MANUAL_REVIEW_REQUIRED", reason, { ...base, host_key_candidate: presented, host_key_seen_at: at, host_key_verified: false });
+      if (new Set(sources.map((s) => s.fp)).size > 1) return review("host_key_mismatch"); // Quellen widersprechen sich
+      if (!sources.length) return result("HOST_KEY_CONFIRMATION_REQUIRED", "host_key_unconfirmed", { ...base, host_key_candidate: presented, host_key_seen_at: at, host_key_verified: false });
+      const m = matchHostKey(d.keys, sources[0].fp);
+      if (!m.ok) return review(["host_key_multiple_matches", "host_key_legacy_only"].includes(m.reason) ? m.reason : "host_key_mismatch");
+      const keyProfile = { host_key_sha256: m.fingerprint, ...(m.algorithm ? { host_key_algorithm: m.algorithm } : {}), host_key_verified: true, host_key_source: sources[0].source };
 
       // Ab hier: Verbindung MIT Zugangsdaten, aber nur zum Server mit vertrauenswürdigem Host-Key – und nur lesend.
       const isKey = /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(secret.secret);
       const cred = { host: h.hostname, port, username: meta.username, password: isKey ? null : secret.secret, private_key: isKey ? secret.secret : null,
-        passphrase: isKey ? secret.passphrase : null, host_key_sha256: presented };
+        passphrase: isKey ? secret.passphrase : null, host_key_sha256: m.fingerprint, host_key_algorithm: m.algorithm || null };
       let c;
       try { c = await connect(cred); }
       catch (e) { return /authenticat|auth/i.test(String(e?.message)) ? result("BLOCKED_NO_ACCESS", "auth_failed") : result("PREFLIGHT_RETRY", "connect_failed"); }
@@ -299,6 +334,8 @@ export function profileRecord(r, { prev = {}, now = new Date() } = {}) {
     const v = p[k];
     if (v == null) continue;
     if (k === "port" && Number.isInteger(v)) out.port = v;
+    else if (k === "host_key_verified") out.host_key_verified = v === true;
+    else if (k === "host_key_algorithm") { if (isSafeHostKeyAlgorithm(v)) out.host_key_algorithm = v; }
     else if (k === "capabilities" || k === "webroot_signals") out[k] = (Array.isArray(v) ? v : []).filter((x) => typeof x === "string").slice(0, 12);
     else if (typeof v === "string") out[k] = v.slice(0, 500);
   }

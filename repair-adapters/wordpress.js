@@ -162,11 +162,15 @@ export function wordpressAdapter({ dir = WORKER_DIR, fetchFn = globalThis.fetch,
         for (const obj of location.objects.slice(0, MAX_FILES_PER_FIX)) {
           if (!WP_OBJECT_TYPES.includes(obj.object_type)) throw new Error("Objekttyp nicht erlaubt.");
           const cur = await getObject(cred, b.base, obj.object_type, obj.object_id);
-          if (sha256(cur.raw) !== obj.before_hash) throw new Error("Objekt wurde seit dem Plan verändert – kein Write.");
+          const curHash = sha256(cur.raw);
+          // TF-044: seit dem Plan nur durch einen EIGENEN, bereits angewendeten Fix dieses Auftrags verändert (mehrere Befunde im
+          // selben Objekt) – jede fremde Änderung → kein Write.
+          if (curHash !== obj.before_hash && !bk.entries().some((e) => e.object_type === `wp_${obj.object_type}` && e.object_id === String(obj.object_id) && e.status === "applied" && e.after_hash === curHash))
+            throw new Error("Objekt wurde seit dem Plan verändert – kein Write.");
           if (isProtectedText(cur.slug, cur.title)) throw new Error("Geschütztes Objekt – kein Write.");
           const p = patchReference(cur.raw, { attr: location.attr, brokenPath: location.brokenPath, fullUrl: location.fullUrl, replacement: location.replacement, domain: order.domain, blockJson: true });
           if (!p.ok) throw new Error(`Verweis nicht exakt patchbar (${p.reason}).`);
-          const entry = bk.add({ object_type: `wp_${obj.object_type}`, object_id: obj.object_id, original_hash: obj.before_hash, original_content: cur.raw, modified_at: cur.modified });
+          const entry = bk.add({ object_type: `wp_${obj.object_type}`, object_id: obj.object_id, original_hash: curHash, original_content: cur.raw, modified_at: cur.modified });
           const afterHash = await writeObject(cred, b.base, obj.object_type, obj.object_id, p.text);
           if (afterHash !== sha256(p.text)) { bk.update(entry.backup_id, { after_hash: afterHash, status: "applied" }); done.push(entry.backup_id); throw new Error("Gespeicherter Inhalt weicht ab."); }
           bk.update(entry.backup_id, { after_hash: afterHash, status: "applied" });
@@ -188,7 +192,7 @@ export function wordpressAdapter({ dir = WORKER_DIR, fetchFn = globalThis.fetch,
       const b = baseOf(cred, order);
       const applied = backups(order).entries().filter((e) => e.status === "applied");
       for (const obj of loc.objects) {
-        const e = applied.find((x) => x.object_type === `wp_${obj.object_type}` && x.object_id === String(obj.object_id));
+        const e = applied.filter((x) => x.object_type === `wp_${obj.object_type}` && x.object_id === String(obj.object_id)).pop(); // letzter Fix des Objekts
         if (!e) return { build_ok: false };
         const cur = await getObject(cred, b.base, obj.object_type, obj.object_id);
         if (sha256(cur.raw) !== e.after_hash) return { build_ok: false };

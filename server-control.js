@@ -183,7 +183,8 @@ export function cleanCheck150(r) {
 const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK", "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT",
   "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "BACKUP",
   "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "BLOCKED_NO_ACCESS",
-  "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED_UNSAFE_ACCESS"];
+  "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED_UNSAFE_ACCESS",
+  "BLOCKED_HOST_KEY_CHANGED"];
 const NAME_RE = /^[\p{L}\p{N} .,&'’()\/+-]{1,80}$/u;
 const DOMAIN_RE = /^[a-z0-9.-]{3,253}$/;
 export function cleanRepair(r) {
@@ -205,6 +206,7 @@ export function cleanRepair(r) {
     adapter: word(o.adapter, REPAIR_ADAPTER_WORDS), access_ok: bool(o.access_ok), rollback_ok: bool(o.rollback_ok),
     auto_fixable: o.auto_fixable == null ? null : n(o.auto_fixable, 10_000), manual_review: o.manual_review == null ? null : n(o.manual_review, 10_000),
     profile_status: word(o.profile_status, PROFILE_STATUS_WORDS),
+    host_key_verified: bool(o.host_key_verified), // TF-044: nur JA/NEIN
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
@@ -214,7 +216,7 @@ export function cleanRepair(r) {
     host_key_confirmation: n(r.host_key_confirmation, 100_000), waiting_access_profile: n(r.waiting_access_profile, 100_000),
     adapter_registry: r.adapter_registry && typeof r.adapter_registry === "object" ? { status: word(r.adapter_registry.status, ["ACTIVE"]),
       adapters: (Array.isArray(r.adapter_registry.adapters) ? r.adapter_registry.adapters : []).filter((a) => REGISTRY_ADAPTERS.includes(a)),
-      ssh_library: bool(r.adapter_registry.ssh_library) } : null,
+      ssh_library: bool(r.adapter_registry.ssh_library), host_key_verifier: word(r.adapter_registry.host_key_verifier, ["ACTIVE", "UNAVAILABLE"]) } : null,
     states, orders };
 }
 // Payment Worker (TF-041): nur Zähler und CHF-Summen aus dem Ledger – nie payment_ids, Referenzen, Quellen oder Domains.

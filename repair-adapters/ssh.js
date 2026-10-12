@@ -9,7 +9,7 @@
 //     node (nur `--check <datei.js in root>`). Jedes Argument: nur [A-Za-z0-9_.,/:=@%+-], keine Shell-Metazeichen
 //     (; && || | ` $() > < Zeilenumbruch Leerzeichen Quotes Wildcards), kein ../, nichts ausserhalb von remote_root.
 import { WORKER_DIR } from "../mail-worker.js";
-import { sftpAdapter, ssh2Session, sandboxPath, validateRemoteRoot, SandboxError, FORBIDDEN_SEGMENT_RE } from "./sftp.js";
+import { sftpAdapter, ssh2Session, sandboxPath, validateRemoteRoot, SandboxError, FORBIDDEN_SEGMENT_RE, assertHostKeyPinned } from "./sftp.js";
 import { sha256 } from "./common.js";
 
 export const SAFE_ARG_RE = /^[A-Za-z0-9_.,/:=@%+-]{1,200}$/;
@@ -68,6 +68,7 @@ export const ssh2Connector = (opts = {}) => async (cred) => {
   const s = await ssh2Session(cred, opts);
   return {
     sftp: s.client,
+    host_key: s.host_key, // TF-044: verifizierter Fingerprint + Algorithmus dieser Sitzung (Pinning)
     exec: (argv, { timeoutMs = 10 * 60_000 } = {}) => new Promise((resolve, reject) => {
       try { assertSafeArgv(argv); } catch (e) { reject(e); return; }
       // Alle Argumente sind metazeichenfrei geprüft – das Leerzeichen-Join erzeugt keine Shell-Semantik.
@@ -90,7 +91,7 @@ export function sshAdapter({ dir = WORKER_DIR, connect = ssh2Connector(), fetchF
     return { ...s.sftp, close: () => s.close?.() };
   } });
   const { listTree, readText, atomicWrite, rootOf } = files._internals;
-  const withSession = async (cred, fn) => { const s = await connect(cred); try { return await fn(s); } finally { try { await s.close?.(); } catch {} } };
+  const withSession = async (cred, fn) => { const s = await connect(cred); try { assertHostKeyPinned(s, cred); return await fn(s); } finally { try { await s.close?.(); } catch {} } };
 
   // Typisierte Operationen – die EINZIGE Schnittstelle zum Server. Kein exec(string), keine freie Shell.
   function typedOps(session, cred) {

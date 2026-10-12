@@ -4,7 +4,8 @@
 // Sicherheitsmodell:
 //   - Nur SFTP (SSH-Dateiübertragung, verschlüsselt). Kein FTP, keine Shell. Host-Key MUSS vorab im Zugangsprofil stehen
 //     (SHA256-Fingerprint: von Chris, vom Kunden im sicheren Formular oder vom Kunden über den Bestätigungslink – TF-043,
-//     profile-builder.js) – sonst keine Verbindung (kein Trust-on-first-use).
+//     profile-builder.js) – sonst keine Verbindung (kein Trust-on-first-use). TF-044: Login nur mit dem verifizierten
+//     Host-Key-Algorithmus (host-key.js, Pinning), nie ssh-rsa/ssh-dss; Pre-Write-Check vor jedem Write.
 //   - Zugangsdaten (Passwort/Private Key) nur zur Laufzeit im Credential-Kontext; nie gespeichert, nie geloggt.
 //   - Login als root → BLOCKED_UNSAFE_ACCESS. remote_root Pflicht, kanonisch, kein Systemverzeichnis.
 //   - Jeder Pfad bleibt kanonisch in remote_root: kein ../, kein absoluter Escape, kein Symlink-Escape, keine .ssh/.env/
@@ -16,7 +17,8 @@ import path from "node:path";
 import { WORKER_DIR } from "../mail-worker.js";
 import { uniqueReplacement, uniqueImageReplacement } from "./github-netlify.js";
 import { ISSUE_FIX_MATRIX, fixSpecFor, requiredCapabilities, patchReference, patchExact, isProtectedText, assertDomainBinding, liveTarget,
-  objectBackups, sha256, normDomain, MAX_FILES_PER_FIX } from "./common.js";
+  objectBackups, sha256, normDomain, normFingerprint, MAX_FILES_PER_FIX } from "./common.js";
+import { HostKeyError, discoverHostKeys, matchHostKey, pinnedHostKeyOptions, isSafeHostKeyAlgorithm } from "./host-key.js";
 
 const P = path.posix;
 export const WRITABLE_EXT = /\.(html?|css)$/i;
@@ -74,25 +76,63 @@ export async function resolveSafe(client, root, rel, { mustExist = true, forWrit
   return { full, st };
 }
 
+// TF-044: vor jedem Write (und bei jeder Verbindung) erneut prüfen, dass die Sitzung genau gegen den bestätigten Fingerprint
+// + den verifizierten Host-Key-Algorithmus aufgebaut wurde. Abweichung → HOST_KEY_CHANGED (STOP, 0 Write).
+export function assertHostKeyPinned(c, cred) {
+  const hk = c?.host_key;
+  if (!hk) { if (cred?.host_key_algorithm) throw new HostKeyError("HOST_KEY_UNVERIFIED", "Sitzung ohne verifizierten Host-Key – STOP."); return true; }
+  if (normFingerprint(hk.sha256) !== normFingerprint(cred?.host_key_sha256) || (cred?.host_key_algorithm && hk.algorithm !== cred.host_key_algorithm))
+    throw new HostKeyError("HOST_KEY_CHANGED", "Host-Key oder Host-Key-Algorithmus hat sich geändert – STOP.");
+  return true;
+}
+
 // ---------- Transport (ssh2, nur SFTP-Subsystem) ----------
 // Liefert einen normalisierten Client: realpath, lstat, stat, readFile, writeFile, rename (atomar, posix-rename@openssh.com),
 // unlink, chmod, readdir, close. Fehler enthalten nie Zugangsdaten. Host-Key-Prüfung ist Pflicht.
 const statOf = (s) => (s ? { isSymlink: s.isSymbolicLink?.() === true, isDir: s.isDirectory?.() === true, isFile: s.isFile?.() === true, mode: s.mode, size: s.size, mtime: s.mtime } : null);
-export async function ssh2Session(cred, { timeoutMs = 20_000, withSftp = true } = {}) {
-  const expected = String(cred?.host_key_sha256 || "").replace(/^SHA256:/, "").replace(/=+$/, "");
-  if (!expected) throw new Error("Host-Key nicht hinterlegt – keine Verbindung (kein Trust-on-first-use).");
+// Verifizierter Algorithmus je Server + bestätigtem Fingerprint (nur Prozess-Speicher, 30 min): spart wiederholte Pre-Auth-
+// Discovery (OpenSSH PerSourcePenalties). Sicherheit unverändert – jede Anmeldung prüft Fingerprint + Algorithmus erneut.
+const pinnedAlgorithmCache = new Map();
+const PIN_CACHE_MS = 30 * 60_000;
+export async function ssh2Session(cred, { timeoutMs = 20_000, withSftp = true, discover = discoverHostKeys } = {}) {
+  const expected = normFingerprint(cred?.host_key_sha256);
+  if (!expected) throw new HostKeyError("HOST_KEY_MISSING", "Host-Key nicht hinterlegt – keine Verbindung (kein Trust-on-first-use).");
   if (!cred.host || !cred.username || (!cred.password && !cred.private_key)) throw new Error("Zugangsdaten unvollständig.");
+  // TF-044: Host-Key-Algorithmus aus dem verifizierten Profil (Pinning). Fehlt er (Profil von Chris/TF-043), wird er VOR dem
+  // Login ohne Zugangsdaten ermittelt (Discovery über sichere Algorithmen + Match) – nie frei ausgehandelt, nie Legacy.
+  let algorithm = cred.host_key_algorithm || null;
+  if (algorithm && !isSafeHostKeyAlgorithm(algorithm)) throw new HostKeyError("HOST_KEY_UNSAFE", "Host-Key-Algorithmus nicht erlaubt – keine Verbindung.");
+  const cacheKey = `${cred.host}:${Number(cred.port) || 22}|${expected}`;
+  const cached = pinnedAlgorithmCache.get(cacheKey);
+  if (!algorithm && cached && Date.now() - cached.at < PIN_CACHE_MS) algorithm = cached.algorithm;
+  if (!algorithm) {
+    const d = await discover({ host: cred.host, port: Number(cred.port) || 22 }, { timeoutMs });
+    if (!d.ok && d.reason === "host_key_legacy_only") throw new HostKeyError("HOST_KEY_UNSAFE", "Server bietet keinen sicheren Host-Key – keine Verbindung.");
+    if (!d.ok) throw new Error("SSH-Verbindung fehlgeschlagen (Host-Key nicht ermittelbar).");
+    const m = matchHostKey(d.keys, expected);
+    if (!m.ok) throw new HostKeyError(m.reason === "host_key_multiple_matches" ? "HOST_KEY_AMBIGUOUS" : "HOST_KEY_CHANGED", "Host-Key stimmt nicht mit dem bestätigten Fingerprint überein – keine Anmeldung.");
+    algorithm = m.algorithm;
+    pinnedAlgorithmCache.set(cacheKey, { algorithm, at: Date.now() });
+  }
+  const pinned = pinnedHostKeyOptions({ fingerprint: expected, algorithm });
   const mod = await import("ssh2");
   const Client = mod.Client || mod.default?.Client;
   const conn = new Client();
   await new Promise((resolve, reject) => {
     const t = setTimeout(() => { conn.end(); reject(new Error("SSH-Verbindung: Zeitüberschreitung.")); }, timeoutMs + 1000);
-    conn.once("ready", () => { clearTimeout(t); resolve(); });
-    conn.once("error", (e) => { clearTimeout(t); reject(new Error(`SSH-Verbindung fehlgeschlagen (${e?.level || e?.code || "error"}).`)); });
+    conn.once("ready", () => { clearTimeout(t); if (pinned.state.verified) resolve(); else { conn.end(); reject(new HostKeyError("HOST_KEY_UNVERIFIED", "Host-Key nicht verifiziert – abgebrochen.")); } });
+    conn.once("error", (e) => {
+      clearTimeout(t);
+      // Gepinnter Schlüssel/Algorithmus weicht ab bzw. wird nicht mehr angeboten → Zugangsdaten wurden NICHT gesendet.
+      if (pinned.state.changed || (!pinned.state.verified && /no matching host key/i.test(String(e?.message)))) { pinnedAlgorithmCache.delete(cacheKey); reject(new HostKeyError("HOST_KEY_CHANGED", "Host-Key oder Host-Key-Algorithmus hat sich geändert – STOP.")); }
+      else reject(new Error(`SSH-Verbindung fehlgeschlagen (${e?.level || e?.code || "error"}).`));
+    });
+    // Zugangsdaten stehen in der Konfiguration, ssh2 sendet sie aber erst NACH bestandener Host-Key-Prüfung (hostVerifier).
     conn.connect({ host: cred.host, port: Number(cred.port) || 22, username: cred.username, readyTimeout: timeoutMs, tryKeyboard: false,
       ...(cred.private_key ? { privateKey: cred.private_key, ...(cred.passphrase ? { passphrase: cred.passphrase } : {}) } : { password: cred.password }),
-      hostVerifier: (key) => crypto.createHash("sha256").update(key).digest("base64").replace(/=+$/, "") === expected });
+      ...pinned.options });
   });
+  const host_key = Object.freeze({ ...pinned.state.verified });
   let sftp = null;
   if (withSftp) sftp = await new Promise((resolve) => conn.sftp((err, s) => resolve(err ? null : s)));
   const op = (name, fn) => new Promise((resolve, reject) => fn((err, v) => (err ? reject(new Error(`SFTP ${name} fehlgeschlagen (${err.code ?? "error"}).`)) : resolve(v))));
@@ -107,8 +147,9 @@ export async function ssh2Session(cred, { timeoutMs = 20_000, withSftp = true } 
     chmod: (p, mode) => op("chmod", (cb) => sftp.chmod(p, mode, cb)),
     readdir: async (p) => (await op("readdir", (cb) => sftp.readdir(p, cb))).map((e) => ({ filename: e.filename, attrs: statOf(e.attrs) })),
     close: () => conn.end(),
+    host_key,
   };
-  return { conn, client, close: () => conn.end() };
+  return { conn, client, host_key, close: () => conn.end() };
 }
 export const ssh2SftpConnector = (opts = {}) => async (cred) => {
   const s = await ssh2Session(cred, opts);
@@ -122,7 +163,7 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
   const backups = (order) => objectBackups(dir, order.order_id);
   const rootOf = (cred) => { const v = validateRemoteRoot(cred?.remote_root); if (!v.ok) throw new SandboxError(`remote_root ungültig (${v.reason}).`); return v.root; };
   // Verbindung nur für die Dauer eines Aufrufs; danach geschlossen.
-  const withClient = async (cred, fn) => { const c = await connect(cred); try { return await fn(c); } finally { try { await c.close?.(); } catch {} } };
+  const withClient = async (cred, fn) => { const c = await connect(cred); try { assertHostKeyPinned(c, cred); return await fn(c); } finally { try { await c.close?.(); } catch {} } };
 
   // Begrenzter Verzeichnisbaum (relativ), Symlinks/verbotene Ordner werden nie betreten.
   async function listTree(c, root) {
@@ -163,7 +204,7 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
     return after;
   }
 
-  async function restore(c, root, bk, ids) {
+  async function restore(c, root, bk, ids, cred) {
     let ok = true;
     for (const id of [...ids].reverse()) {
       const e = bk.entries().find((x) => x.backup_id === id);
@@ -171,6 +212,7 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
       const cur = sha256(await readText(c, root, e.object_id));
       if (cur === e.original_hash) { bk.update(id, { status: "restored" }); continue; }
       if (cur !== e.after_hash) { ok = false; continue; } // fremde Änderung → nie überschreiben
+      assertHostKeyPinned(c, cred);
       const h = await atomicWrite(c, root, e.object_id, bk.content(e), e.mode);
       if (h === e.original_hash) bk.update(id, { status: "restored" }); else ok = false;
     }
@@ -275,17 +317,22 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
             const { full, st } = await resolveSafe(c, root, f.path, { forWrite: true });
             if (!st?.isFile) throw new SandboxError("Ziel ist keine reguläre Datei.");
             const text = Buffer.from(await c.readFile(full)).toString("utf8");
-            if (sha256(text) !== f.before_hash) throw new Error("Datei wurde seit dem Plan verändert – kein Write.");
+            const cur = sha256(text);
+            // TF-044: Seit dem Plan darf die Datei nur durch einen EIGENEN, bereits angewendeten Fix dieses Auftrags verändert
+            // worden sein (mehrere Befunde in derselben Datei) – jede fremde Änderung → kein Write.
+            if (cur !== f.before_hash && !bk.entries().some((e) => e.object_type === "file" && e.object_id === f.path && e.status === "applied" && e.after_hash === cur))
+              throw new Error("Datei wurde seit dem Plan verändert – kein Write.");
             const p = location.fix_type === "css_exact" ? patchExact(text, location.css || {})
               : patchReference(text, { attr: location.attr, brokenPath: location.brokenPath, fullUrl: location.fullUrl, replacement: location.replacement, domain: order.domain });
             if (!p.ok) throw new Error(`Stelle nicht exakt patchbar (${p.reason}).`);
-            const entry = bk.add({ object_type: "file", object_id: f.path, original_hash: f.before_hash, original_content: text, mode: st.mode ?? null, modified_at: st.mtime ? new Date(Number(st.mtime) * 1000).toISOString() : null });
+            const entry = bk.add({ object_type: "file", object_id: f.path, original_hash: cur, original_content: text, mode: st.mode ?? null, modified_at: st.mtime ? new Date(Number(st.mtime) * 1000).toISOString() : null });
+            assertHostKeyPinned(c, cred); // Pre-Write-Check: Fingerprint + Algorithmus
             const after = await atomicWrite(c, root, f.path, p.text, st.mode ?? null);
             bk.update(entry.backup_id, { after_hash: after, status: "applied" });
             done.push(entry.backup_id);
           }
         } catch (e) {
-          if (done.length) await restore(c, root, bk, done).catch(() => {});
+          if (done.length) await restore(c, root, bk, done, cred).catch(() => {});
           throw e;
         }
         const last = bk.entries().find((x) => x.backup_id === done[done.length - 1]);
@@ -300,7 +347,7 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
       const applied = backups(order).entries().filter((e) => e.status === "applied" && e.object_type === "file");
       const filesOk = await withClient(cred, async (c) => {
         for (const f of loc.files) {
-          const e = applied.find((x) => x.object_id === f.path);
+          const e = applied.filter((x) => x.object_id === f.path).pop(); // letzter angewendeter Fix dieser Datei
           if (!e || sha256(await readText(c, root, f.path)) !== e.after_hash) return false;
         }
         return true;
@@ -323,7 +370,7 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
       const bk = backups(order);
       const ids = bk.entries().filter((e) => e.status === "applied" && e.object_type === "file").map((e) => e.backup_id);
       if (!ids.length) return { ok: true };
-      return { ok: await withClient(cred, (c) => restore(c, root, bk, ids)) };
+      return { ok: await withClient(cred, (c) => restore(c, root, bk, ids, cred)) };
     },
 
     async cleanup() { return { ok: true, revoked_required: true }; },
