@@ -55,6 +55,12 @@ Letzte Aktualisierung: 2026-10-12
 - **Tests**: `test/payments-041.test.js` (13), `test/secure-access-041.test.js` (6, E2E über echten Netlify-Handler + VPS-Client +
   Browser-Krypto), angepasst 035/036/038/039. Gesamt 488/488 grün, Secret-Scan 0 Treffer. Keine echte Zahlung, keine echte Mail,
   keine echte Kundenwebsite, keine Production-Testorder.
+- **LIVE 2026-10-12 (64f6aa8)**: Push → GitHub (origin verifiziert); VPS `deploy/vps/deploy.sh fiverr` OHNE --with-secrets:
+  DEPLOYED_COMMIT 64f6aa8, Container healthy, 0 Restarts, worker_started role=vps, authority holder=vps; im Container laden
+  check-150-workflow/repair-workflow/payments (0 offene Aufträge, Ledger leer). /opt/fiverr unberührt. Netlify Production autodeployt:
+  `/` 200, `/access.html` 200 mit CSP/no-store/noindex, `/api/access-intake` antwortet für unbekannte Tokens generisch 404 und
+  verweigert pull ohne Worker-Token (401). Mobile 390×844 auf Production: kein Overflow, kein Browser-Storage. Keine echte
+  Registrierung/Zahlung/Mail ausgelöst. Discovery-«Overpass HTTP 504» vor dem Deploy = externe Störung (Backoff aktiv).
 
 ## JARVIS SALE VOID / TEST-SALE REVERSAL (TF-040, 2026-10-12, Tests 469/469 grün)
 - **Verkäufe werden NIEMALS gelöscht**: `node sales.js void-sale <domain> --reason "<grund>"` (`voidSale` in sales.js) markiert
