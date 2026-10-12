@@ -24,6 +24,10 @@
 //                 bestätigt keinen Workflow. Fail closed: exakte Domain, Grund Pflicht, offene/abgeschlossene Aufträge blockieren.
 //   node sales.js status <domain> <replied|not_interested>
 //   node sales.js work <domain> <open|in_progress|delivered>
+//
+// VERKAUF != ZAHLUNG (TF-041): sale / direct-sale / create-confirmed / ORDER_CONFIRMED bestätigen nur den AUFTRAG –
+// Geldeingang wird ausschliesslich im Payment-Ledger (payments.js, an die ORDER_ID gebunden) verbucht. Die Workflows
+// starten die bezahlte Leistung erst ab der Zahlungsschwelle (CHF 75 bzw. CHF 240 = erste Hälfte des Festpreises).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, legalBasis, normEmail } from "./mail-worker.js";

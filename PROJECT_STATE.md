@@ -4,6 +4,58 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-12
 
+## JARVIS PAYMENT GATES + SECURE CUSTOMER ACCESS — TF-041 (2026-10-12, Tests 488/488 grün)
+- **VERKAUF != ZAHLUNG**: sale / direct-sale / create-confirmed / ORDER_CONFIRMED bestätigen nur den Auftrag. Geldeingang nur im
+  Payment-Ledger `payments.js` → `.secrets/mail_worker/payments.json` (atomar, im verschlüsselten State-Backup). Felder je Zahlung:
+  payment_id, order_id, domain, offer_class, amount_chf, currency, received_at, source, reference, status, created_at.
+  Status RECEIVED / VOIDED / REFUNDED – nie löschen, Korrektur nur markieren (Grund Pflicht). Nur RECEIVED + CHF zählt; primär an die
+  ORDER_ID gebunden (nie nur Domain); unbekannte order_id → Fehler. **Duplikatschutz**: gleiche Referenz (normalisiert, auftrags-
+  übergreifend) zählt nie doppelt; nach void wieder frei.
+- **CLI**: `node payments.js record <order_id> --amount <CHF> --reference "<ref>" [--currency CHF] [--source manual_bank_confirmation]`
+  (Referenz Pflicht), `show <order_id>` (Alias status), `list [order_id]`, `void|refund <payment_id> --reason "<grund>"`.
+- **Abgeleiteter Zahlungsstatus** (paymentSummary, Preis/Deposit aus OFFERS, kein CHF-500-Preis): UNPAID / PARTIAL / DEPOSIT_MET /
+  PAID_FULL / REFUNDED / PAYMENT_REVIEW_REQUIRED. REPAIR_CHECK_150: 150 / Deposit 75. REPAIR_FIX_500: 480 / Deposit 240.
+- **CHF 150** (check-150-workflow.js): vor kumulativ CHF 75 → BLOCKED_PAYMENT_NOT_RECEIVED (je Lauf neu geprüft): kein Audit, keine
+  Anleitung, kein Bericht, kein Versand. Ab CHF 75: Audit → Anleitung → Bericht → Entwurf → DELIVERY_SENDING → automatischer Versand
+  (CUSTOMER_ORDER_FULFILLMENT, an die bestätigte delivery_email) → COMPLETED. Vor dem Send fail closed erneut: Verkauf bestätigt/nicht
+  voided, Zahlung ≥ 75, REPAIR_CHECK_150, delivery_email gültig und = Entwurfsadresse, Bericht + report_hash + Entwurf zur selben
+  Berichtsversion, noch nicht gesendet. **Langer Bericht (Anhang nötig)**: die Gmail-Schicht hängt keine Dateien an → nie Auto-Send,
+  READY_FOR_DELIVERY mit «ATTACHMENT_REQUIRED», Chris hängt an und sendet. **Send-Idempotenz**: `delivery_send_attempted_at` wird vor
+  dem Send persistiert; unklarer Vorversuch → nie erneut senden (Übergabe an Chris); transiente Fehler (429/5xx) → Marker frei, Retry.
+- **CHF 480** (repair-workflow.js): vor kumulativ CHF 240 keine Zugangs-Anfrage, kein Login, kein Intake, keine Reparatur. Ab CHF 240
+  genau EINE Service-Mail CUSTOMER_ACCESS_REQUEST an die verifizierte Kundenadresse (Teilzahlung eingegangen, temporärer sicherer
+  Zugang, KEINE Passwörter per E-Mail, orderspezifischer One-Time-Link, temporärer Benutzer mit minimalen Rechten; keine Werbung,
+  keine interne ID). Send-Idempotenz wie CHF 150 (`send_attempted_at`/`send_unclear`). Abgelaufener Link: neue Anfrage nur durch Chris
+  (`--reissue-access <id> --reason`). **Zahlung ist keine Freigabe.** Start nur mit Zahlung ≥ 240 + Freigabe + sicherem Zugang +
+  erfolgreicher Zugangsprüfung + Backup/Rollback-Punkt; order.domain = authorized_domain = Zugangsdomain, sonst fail closed.
+  Zahlung fällt nach Start unter 240: vor einer Änderung → PAYMENT_REQUIRED; nach einer Änderung → PAYMENT_REVIEW_REQUIRED (neu in
+  BLOCKED_STATES), nie automatischer Rollback. Neuer terminaler Zustand CANCELLED (`--cancel <id> --reason`). Bestehende Repair-Safety
+  (Backup, Branch, Minimal Fix, Validierung, Desktop/Mobile-Retest, Regression-/Production-Gate, Live-Retest, Rollback) unverändert.
+  Der CHF-480-Workflow liest sales.json weiterhin nie (TF-040-Invariante).
+- **Secure Access Intake**: Netlify `/api/access-intake` (access-intake-api.js, Blobs «jarvis-access-intake») + Kundenseite
+  `public/access.html` (strikte CSP, no-store, noindex) + VPS-Seite `access-intake.js`. Token 32 Zufallsbytes, nur im URL-Fragment
+  der Mail; gespeichert/registriert nur sha256. Gebunden an Auftrag + Domain, Ablauf 72 h, nach einer Einreichung ungültig (ETag-atomar).
+  Pflicht-Zustimmung im Formular («Ich bestätige, dass ich berechtigt bin … Reparaturen auf <domain> …») → customer_authorized_repair,
+  authorization_at, authorization_source=secure_order_access_form, authorized_domain, scope. Zugangsarten github_netlify,
+  wordpress_cms, sftp, ssh, hosting, other (Formular empfiehlt Collaborator → temporärer CMS-Benutzer → temporärer SFTP/SSH-Benutzer →
+  verschlüsselte Eingabe). **Verschlüsselung im Browser** (RSA-OAEP-256 + AES-256-GCM, gleiches Verfahren wie backup.js) mit dem
+  Public Key des VPS; Private Key nur auf dem VPS (`mail_worker/access_intake_private.pem`, 600, beim ersten Bedarf erzeugt). Der VPS
+  holt Einreichungen nur ab, wenn ein Auftrag wartet, prüft fail closed (Token-Hash, Ablauf, Domain, Freigabe, Zahlung,
+  entschlüsselbar), legt nur Chiffrat in `mail_worker/access_vault/<order_id>.json` ab und quittiert (Cloud-Eintrag gelöscht).
+  Entschlüsselung nur im Speicher für den Adapter. Nach COMPLETED/CANCELLED wird der Tresor-Eintrag überschrieben + gelöscht; nur
+  Metadaten bleiben (connector_type, received_at, destroyed_at, revoked_required). Tresor + Key nicht im State-Backup.
+  Werkzeug: `node access-intake.js status|destroy <order_id>` / `reveal <order_id> --confirm` (nur stdout auf dem VPS).
+- **Dashboard/Snapshot**: je Auftrag Preis, bezahlt, Deposit, Rest bis Deposit, Zahlungsstatus, Phase (CHF 150: WAITING FOR DEPOSIT /
+  DEPOSIT RECEIVED / AUDITING / REPORT / SENT / COMPLETED; CHF 480: WAITING FOR DEPOSIT / ACCESS REQUEST SENT / WAITING FOR ACCESS /
+  ACCESS RECEIVED / REPAIRING / VALIDATING / COMPLETED), Zugang ja/nein + Zugangsart; neue Zeile «Payment Worker» (snapshot.payments:
+  nur Zähler/CHF-Summen). Whitelists in server-control.js (cleanCheck150/cleanRepair/cleanPayments) – nie Referenzen, payment_ids,
+  Links, Tokens, Token-Hashes oder Zugangsdaten. Mobile 390×844 lokal geprüft (Dashboard + Formular): kein horizontaler Overflow.
+- **Cold Outreach unverändert**: COLD_LEAD_DRAFT_ONLY, automatic_send_allowed=false, gmail.sendDraft verweigert Cold-Entwürfe. Gmail-
+  Register vermerkt nur die zwei Service-Klassen (SERVICE_MESSAGE_CLASSES) und nie an einem Cold-Entwurf.
+- **Tests**: `test/payments-041.test.js` (13), `test/secure-access-041.test.js` (6, E2E über echten Netlify-Handler + VPS-Client +
+  Browser-Krypto), angepasst 035/036/038/039. Gesamt 488/488 grün, Secret-Scan 0 Treffer. Keine echte Zahlung, keine echte Mail,
+  keine echte Kundenwebsite, keine Production-Testorder.
+
 ## JARVIS SALE VOID / TEST-SALE REVERSAL (TF-040, 2026-10-12, Tests 469/469 grün)
 - **Verkäufe werden NIEMALS gelöscht**: `node sales.js void-sale <domain> --reason "<grund>"` (`voidSale` in sales.js) markiert
   nur – `sale_status=voided`, `voided=true`, `voided_at`, `void_reason` (Grund Pflicht). Alle Originaldaten bleiben unverändert

@@ -1,7 +1,10 @@
 // CHECK & ANLEITUNG CHF 150 — AUTOMATED FULFILLMENT (038): Start NUR mit bestätigtem Verkauf (sales.json) – Cold-Lead/Draft/
 // manuell gesendete Cold-Mail/QUALIFIED starten nie etwas. Vollständiger PASSIVER Audit, ALLE relevanten belegten Findings
-// (kein 3er-Deckel), kundenspezifische Anleitung je Befund, Bericht + genau EIN Gmail-Lieferentwurf (nie gesendet),
+// (kein 3er-Deckel), kundenspezifische Anleitung je Befund, Bericht + genau EIN Gmail-Lieferentwurf,
 // 0 Website-Schreiboperationen. Keine Mail, kein Netz – Auditor und Gmail sind Attrappen.
+// Seit TF-041: Verkauf != Zahlung – die Fixtures hier verbuchen zusätzlich die Zahlungsschwelle (CHF 75, pay()),
+// danach sendet der Workflow die Service-Mail AUTOMATISCH an den bestätigten Kunden (COMPLETED).
+// Die Gate-Fälle selbst (Blockade vor CHF 75, Re-Check vor dem Versand, voided Zahlungen) stehen in payments-041.test.js.
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -17,6 +20,7 @@ import {
 } from "../check-150-workflow.js";
 import { cleanCheck150 } from "../server-control.js";
 import { fullSiteAudit } from "../repair-workflow.js";
+import { recordPayment } from "../payments.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const T0 = new Date("2026-10-12T09:00:00Z");
@@ -44,10 +48,13 @@ function fakeGmail() {
     calls,
     createDraft: async (x) => { calls.push({ op: "create", to: x.to, subject: x.subject, body: x.body }); return { draftId: "dr" + calls.length, threadId: "t" + calls.length, messageId: "m" + calls.length }; },
     updateDraft: async (id, x) => { calls.push({ op: "update", id, ...x }); return { draftId: id }; },
-    sendDraft: async () => { calls.push({ op: "SEND" }); throw new Error("darf nie aufgerufen werden"); },
+    // TF-041: nach erfüllter Zahlungsschwelle sendet der Workflow die Service-Mail automatisch über sendDraft.
+    sendDraft: async (id) => { calls.push({ op: "SEND", id }); return { messageId: "sent-" + id }; },
   };
 }
 const sale150 = () => store.write("sales.json", { records: { "muster.ch": { status: "customer", sale: { selected_offer: "REPAIR_CHECK_150", sale_date: "2026-10-12", sale_value: 150, currency: "CHF", customer_status: "customer", work_status: "open", evidence: [] } } } });
+// Zahlungsschwelle CHF 75 (TF-041) erfüllen – die Gate-Fälle selbst testet payments-041.test.js.
+const pay = (order) => recordPayment(store, { order_id: order.order_id, amount_chf: 75, now: T0 });
 const sale480 = () => store.write("sales.json", { records: { "muster.ch": { status: "customer", sale: { selected_offer: "REPAIR_FIX_500", sale_date: "2026-10-12", sale_value: 480, currency: "CHF", customer_status: "customer", work_status: "open", evidence: [] } } } });
 const newOrder = (over = {}) => createCheck150Order(store, { domain: "muster.ch", website: HOME, company: "Muster AG", delivery_email: "auftrag@muster.ch", contact_name: "Frau Muster", now: T0, ...over });
 const readOrder = (id) => store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[id];
@@ -56,8 +63,8 @@ const engine = (issues, gmail = fakeGmail(), opts = {}) => { const auditor = fak
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-c150-")); store = createStore(dir); });
 
 test("Zustandsmodell wie vorgegeben; Auftrag draft-only mit Pflicht-Lieferadresse; CHF 150 aus OFFERS", () => {
-  assert.deepEqual(CHECK150_STATES, ["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT", "FINDINGS_ANALYSIS", "INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "READY_FOR_DELIVERY", "COMPLETED"]);
-  assert.deepEqual(CHECK150_BLOCKED, ["BLOCKED_ORDER_NOT_CONFIRMED", "AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED"]);
+  assert.deepEqual(CHECK150_STATES, ["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT", "FINDINGS_ANALYSIS", "INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "DELIVERY_SENDING", "READY_FOR_DELIVERY", "COMPLETED"]);
+  assert.deepEqual(CHECK150_BLOCKED, ["BLOCKED_ORDER_NOT_CONFIRMED", "BLOCKED_PAYMENT_NOT_RECEIVED", "AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED"]);
   const o = newOrder();
   assert.deepEqual([o.offer_class, o.price_chf, o.delivery, o.automatic_send_allowed], ["REPAIR_CHECK_150", OFFERS.REPAIR_CHECK_150.price, "draft", false]);
   assert.equal(o.price_chf, 150);
@@ -80,10 +87,18 @@ test("ORDER GATE: Cold-Lead/Draft/manuell gesendet/QUALIFIED starten NIE; nur er
   await eng.processAll();
   assert.equal(readOrder(o.order_id).state, "BLOCKED_ORDER_NOT_CONFIRMED");
   assert.equal(confirmedCheck150Sale(store, "muster.ch"), null);
-  // Erfasster CHF-150-Verkauf (bestehende Order-Logik) → Auftrag läuft automatisch weiter (Fortsetzung = Re-Check je Lauf).
+  // Erfasster CHF-150-Verkauf (bestehende Order-Logik) → bestätigt, aber VERKAUF != ZAHLUNG (TF-041): ohne verbuchte
+  // Zahlung bleibt der Auftrag stehen – kein Audit für die bezahlte Leistung, kein Entwurf.
   sale150();
   await eng.processAll();
-  assert.equal(readOrder(o.order_id).state, "READY_FOR_DELIVERY");
+  assert.equal(readOrder(o.order_id).state, "BLOCKED_PAYMENT_NOT_RECEIVED");
+  assert.equal(auditor.calls.length, 0, "vor der Zahlungsschwelle wird nicht einmal auditiert");
+  assert.equal(gmail.calls.length, 0, "kein Entwurf vor der Zahlungsschwelle");
+  // Zahlung verbucht (CHF 75 = erste Hälfte) → Auftrag läuft automatisch durch bis zum automatischen Versand.
+  pay(o);
+  await eng.processAll();
+  assert.equal(readOrder(o.order_id).state, "COMPLETED");
+  assert.equal(readOrder(o.order_id).delivery_status, "sent");
 });
 
 test("recordSale aus sales.js ist die bestehende Bestätigungslogik", () => {
@@ -149,20 +164,23 @@ test("ANLEITUNG: unbekannter Stack → keine erfundenen CMS-Menüs; WordPress si
   assert.ok(!r2.text.includes("CHF 480"), "kein Upselling ohne Fachperson-Punkte");
 });
 
-test("E2E Muster AG (Spec 28): 4 Probleme → 4 Anleitungen → Bericht → genau 1 Gmail-Draft → 0 Sends → 0 Website-Writes; Duplikatschutz; Neustart", async () => {
+test("E2E Muster AG (Spec 28): 4 Probleme → 4 Anleitungen → Bericht → genau 1 Gmail-Draft → automatischer Versand (TF-041) → 0 Website-Writes; Duplikatschutz; Neustart", async () => {
   sale150();
   const o = newOrder();
+  pay(o);
   const issues = [LINK(), IMAGE(), BUTTON, FORM];
   const { eng, gmail, auditor } = engine(issues);
   await eng.processAll();
   const saved = readOrder(o.order_id);
-  assert.equal(saved.state, "READY_FOR_DELIVERY");
+  assert.equal(saved.state, "COMPLETED");
   assert.equal(saved.report_findings_count, 4);
   assert.equal(saved.report.summary.total, 4);
   assert.equal(saved.report.findings.length, 4);
   assert.ok(saved.audit_completed_at && saved.report_generated_at && saved.delivery_draft_created_at);
-  assert.equal(saved.delivery_status, "draft_ready");
-  // Genau EIN Draft an die Lieferadresse des Auftrags (nicht an eine Cold-Adresse).
+  assert.equal(saved.delivery_status, "sent");
+  assert.ok(saved.delivery_sent_at, "Zeitpunkt des automatischen Versands dokumentiert");
+  assert.equal(saved.automatic_send_allowed, true, "Versand erst nach erfüllter Zahlungsschwelle erlaubt");
+  // Genau EIN Draft an die Lieferadresse des Auftrags (nicht an eine Cold-Adresse) – und genau EIN automatischer Versand.
   const creates = gmail.calls.filter((c) => c.op === "create");
   assert.equal(creates.length, 1);
   assert.equal(creates[0].to, "auftrag@muster.ch");
@@ -172,40 +190,45 @@ test("E2E Muster AG (Spec 28): 4 Probleme → 4 Anleitungen → Bericht → gena
   assert.ok(body.includes("Schritt-für-Schritt"));
   assert.ok(body.includes("PROBLEM 1"), "vollständiger Bericht inline");
   for (const verboten of ["HTTP 404", "evidence", o.order_id, "I0", "git:", "C:\\", "/data/secrets", "reproduziert"]) assert.ok(!body.includes(verboten), `Draft enthält "${verboten}"`);
-  assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 0, "0 Auto-Send-Events");
-  // Duplikatschutz: weitere Läufe erzeugen keinen zweiten Draft (READY wartet auf Chris).
+  assert.deepEqual(gmail.calls.filter((c) => c.op === "SEND").map((c) => c.id), ["dr1"], "genau EIN automatischer Versand des eigenen Lieferentwurfs");
+  // Duplikatschutz: weitere Läufe erzeugen keinen zweiten Draft und keinen zweiten Versand (COMPLETED ist terminal).
   await eng.processAll();
   await createCheck150Engine({ store, gmail, auditor, now: () => T0 }).processAll(); // „Neustart“: neue Engine, gleicher Store
   assert.equal(gmail.calls.filter((c) => c.op === "create").length, 1, "kein Draft-Duplikat");
+  assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 1, "kein Doppel-Versand");
   assert.equal(auditor.calls.length, 1, "kein erneuter Audit nach Abschluss der Prüfung");
-  // Abschluss nur explizit; Historie lückenlos persistiert.
-  assert.equal(completeCheck150(store, o.order_id, { now: T0 }).state, "COMPLETED");
+  // Historie lückenlos persistiert; ein erneuter Abschluss ist nicht möglich (bereits COMPLETED).
   assert.ok(readOrder(o.order_id).state_history.some((h) => h.to === "FULL_AUDIT"));
+  assert.ok(readOrder(o.order_id).state_history.some((h) => h.to === "DELIVERY_SENDING"));
+  assert.throws(() => completeCheck150(store, o.order_id, { now: T0 }), /READY_FOR_DELIVERY/);
 });
 
 test("KEINE REPARATUR: Modul kennt keinerlei Schreibpfade an Kundenwebsites (Quelle + Laufzeit)", async () => {
   const src = fs.readFileSync(path.join(ROOT, "check-150-workflow.js"), "utf8");
   for (const verboten of ["applyFix", "deployProduction", "rollback", "repair-adapters", "checkAccess", "/merges", "netlify.com", "api.github.com"])
     assert.ok(!src.includes(verboten), `check-150-workflow.js enthält "${verboten}"`);
-  // Laufzeit: ausser Gmail-Draft-Aufrufen passiert nichts nach aussen (Auditor ist lesend, wie ein Besucher).
+  // Laufzeit: ausser Gmail-Draft/Versand-Aufrufen passiert nichts nach aussen (Auditor ist lesend, wie ein Besucher).
   sale150();
   const o = newOrder();
+  pay(o);
   const { eng, gmail } = engine([LINK()]);
   await eng.processAll();
-  assert.ok(gmail.calls.every((c) => ["create", "update"].includes(c.op)));
-  assert.equal(readOrder(o.order_id).state, "READY_FOR_DELIVERY");
+  assert.ok(gmail.calls.every((c) => ["create", "update", "SEND"].includes(c.op)));
+  assert.equal(readOrder(o.order_id).state, "COMPLETED");
 });
 
 test("Audit nicht erreichbar → AUDIT_FAILED; Gmail 429 beim Draft → bleibt im Zustand (Retry), kein Datenverlust", async () => {
   sale150();
   const o = newOrder();
+  pay(o);
   await engine([], undefined, { reachable: false }).eng.processAll();
   assert.equal(readOrder(o.order_id).state, "AUDIT_FAILED");
-  // Transienter Gmail-Fehler: Zustand DELIVERY_DRAFT_CREATED bleibt, nächster Lauf legt den Entwurf an.
+  // Transienter Gmail-Fehler: Zustand DELIVERY_DRAFT_CREATED bleibt, nächster Lauf legt den Entwurf an und sendet.
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-c150b-"));
   const store2 = createStore(dir2);
   store2.write("sales.json", store.read("sales.json", {}));
   const o2 = createCheck150Order(store2, { domain: "muster.ch", website: HOME, company: "Muster AG", delivery_email: "auftrag@muster.ch", now: T0 });
+  recordPayment(store2, { order_id: o2.order_id, amount_chf: 75, now: T0 });
   const flaky = fakeGmail();
   let fail = true;
   const orig = flaky.createDraft;
@@ -214,43 +237,54 @@ test("Audit nicht erreichbar → AUDIT_FAILED; Gmail 429 beim Draft → bleibt i
   await e2.processAll();
   assert.equal(store2.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o2.order_id].state, "DELIVERY_DRAFT_CREATED");
   await e2.processAll();
-  assert.equal(store2.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o2.order_id].state, "READY_FOR_DELIVERY");
+  assert.equal(store2.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o2.order_id].state, "COMPLETED");
+  assert.equal(store2.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o2.order_id].delivery_status, "sent");
 });
 
 test("DASHBOARD: Allowlist ohne Lieferadresse/Bericht/Pfade; cleanCheck150 strippt Fremdfelder; HUD-Kachel reine Anzeige; Worker/Dockerfile verdrahtet", async () => {
   sale150();
   const o = newOrder();
+  pay(o);
   await engine([LINK(), CERT]).eng.processAll();
   const pub = publicCheck150Orders(dir);
   assert.equal(pub.orders.length, 1);
   assert.deepEqual([pub.orders[0].state, pub.orders[0].findings, pub.orders[0].report_available, pub.orders[0].draft_available, pub.orders[0].delivery_status],
-    ["READY_FOR_DELIVERY", 2, true, true, "draft_ready"]);
+    ["COMPLETED", 2, true, true, "sent"]);
+  // Zahlungsstand als reine Zahlen/Flag (TF-041) – nie Referenzen/Zahlungsdetails im Dashboard.
+  assert.deepEqual([pub.orders[0].paid_chf, pub.orders[0].payment_required_chf, pub.orders[0].payment_ok], [75, 75, true]);
   const raw = JSON.stringify(pub);
-  for (const verboten of ["auftrag@muster.ch", "steps", "evidence", "report_text_file", "reports", "Schritt"]) assert.ok(!raw.includes(verboten), `Dashboard-Sicht enthält "${verboten}"`);
+  for (const verboten of ["auftrag@muster.ch", "steps", "evidence", "report_text_file", "reports", "Schritt", "payment_id", "reference", "bank"]) assert.ok(!raw.includes(verboten), `Dashboard-Sicht enthält "${verboten}"`);
   const cleaned = cleanCheck150({ ...pub, secret: "x", orders: [{ ...pub.orders[0], delivery_email: "geheim@x.ch", report_text_file: "/data/x" }] });
   const craw = JSON.stringify(cleaned);
   assert.ok(!craw.includes("geheim") && !craw.includes("report_text_file") && !craw.includes("secret"));
-  assert.equal(cleaned.orders[0].state, "READY_FOR_DELIVERY");
+  assert.equal(cleaned.orders[0].state, "COMPLETED");
+  assert.deepEqual([cleaned.orders[0].paid_chf, cleaned.orders[0].payment_required_chf, cleaned.orders[0].payment_ok], [75, 75, true], "Whitelist kennt den Zahlungsstand");
   const html = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
   assert.ok(html.includes('id="check150Panel"') && html.includes("renderCheck150"));
+  assert.ok(html.includes('id="c150Unpaid"') && html.includes("WARTET AUF ZAHLUNG"), "HUD zeigt den Zahlungs-Wartezustand neutral");
   const panel = html.slice(html.indexOf('id="check150Panel"'), html.indexOf("</section>", html.indexOf('id="check150Panel"')));
   assert.ok(!/data-action/.test(panel), "keine Server-Control-Aktionen im CHF-150-Panel");
   assert.ok(fs.readFileSync(path.join(ROOT, "mail-worker.js"), "utf8").includes("runCheck150Orders"));
   assert.ok(fs.readFileSync(path.join(ROOT, "server-agent.js"), "utf8").includes("o.check150"));
   assert.ok(fs.readFileSync(path.join(ROOT, "deploy", "vps", "Dockerfile"), "utf8").includes("check-150-workflow.js"));
-  assert.equal(check150Status(dir).ready_for_delivery, 1);
+  assert.ok(fs.readFileSync(path.join(ROOT, "deploy", "vps", "Dockerfile"), "utf8").includes("payments.js"), "Payment-Ledger läuft auch im Container");
+  assert.equal(check150Status(dir).states.COMPLETED, 1);
 });
 
-test("Langer Bericht → Zusammenfassung in der Mail + Berichtsdatei (kein neuer Dateidienst), fullSiteAudit bleibt die gemeinsame Audit-Basis", async () => {
+test("Langer Bericht → Anhang nötig → KEIN Auto-Versand, Entwurf bleibt für Chris (fail safe); fullSiteAudit bleibt die gemeinsame Audit-Basis", async () => {
   sale150();
   const o = newOrder();
+  pay(o);
   const many = [];
   for (let i = 0; i < 14; i++) many.push(LINK("seite" + i));
   many.push(IMAGE()); // mehrere fehlende Bilder derselben Seite wären korrekt EIN Finding (Dedupe)
   const { eng, gmail } = engine(many);
   await eng.processAll();
   const saved = readOrder(o.order_id);
+  // Der Bericht braucht einen Anhang, den nur Chris anhängen kann → trotz erfüllter Zahlungsschwelle kein blinder Auto-Versand.
   assert.equal(saved.state, "READY_FOR_DELIVERY");
+  assert.equal(saved.delivery_status, "draft_ready");
+  assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 0, "Mail mit fehlendem Anhang wird nie automatisch gesendet");
   assert.equal(saved.report_findings_count, 15);
   const body = gmail.calls.find((c) => c.op === "create").body;
   assert.ok(body.length <= 6000, "Mail bleibt unter der Entwurfsgrenze");

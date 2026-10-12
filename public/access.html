@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Sicherer Website-Zugang</title>
+<link rel="stylesheet" href="access.css">
+</head>
+<body>
+<main>
+  <h1>Sicherer Website-Zugang</h1>
+  <p class="lead">Auftrag «Check &amp; Reparatur» · Helvetic Webdesign</p>
+
+  <section id="loading"><p>Link wird geprüft …</p></section>
+  <section id="invalid" hidden><p class="err" id="invalidMsg">Link ungültig, bereits verwendet oder abgelaufen. Bitte melden Sie sich bei uns.</p></section>
+  <section id="done" hidden>
+    <p class="ok">Vielen Dank – Ihr Zugang wurde verschlüsselt übermittelt. Dieser Link ist jetzt ungültig.</p>
+    <p>Wir erstellen zuerst eine vollständige Sicherung Ihrer Website und beginnen danach mit der vereinbarten Reparatur.
+       Nach Abschluss bitten wir Sie, den temporären Zugang wieder zu entfernen.</p>
+  </section>
+
+  <form id="form" hidden autocomplete="off" novalidate>
+    <p>Website: <b id="domain"></b> · Link gültig bis <span id="expires"></span></p>
+    <div class="note">
+      <b>Bitte so wenig wie möglich freigeben – in dieser Reihenfolge:</b>
+      <ol>
+        <li>Uns als Mitarbeiter/Collaborator einladen (z. B. GitHub, Netlify, Ihr Website-System) – dann ist kein Passwort nötig.</li>
+        <li>Einen temporären Benutzer im Website-System (CMS) mit nur den nötigen Rechten anlegen.</li>
+        <li>Einen temporären SFTP/SSH-Benutzer nur für das Website-Verzeichnis anlegen.</li>
+        <li>Nur wenn nichts davon möglich ist: Zugangsdaten hier eingeben.</li>
+      </ol>
+      Bitte <b>keine</b> Haupt- oder Master-Passwörter und keine Passwörter per E-Mail. Ihre Angaben werden in Ihrem Browser
+      verschlüsselt, bevor sie gesendet werden.
+    </div>
+
+    <label for="type">Zugangsart</label>
+    <select id="type" required>
+      <option value="github_netlify">GitHub / Netlify (Einladung als Collaborator)</option>
+      <option value="wordpress_cms">WordPress / Website-System (CMS)</option>
+      <option value="sftp">SFTP</option>
+      <option value="ssh">SSH</option>
+      <option value="hosting">Hosting-Konto (Zugriffsberechtigung)</option>
+      <option value="other">Andere</option>
+    </select>
+    <p class="hint" id="typeHint"></p>
+
+    <label for="host">Login-Adresse / Server / Repository (optional)</label>
+    <input id="host" type="text" maxlength="300" spellcheck="false" autocapitalize="off">
+    <label for="user">Benutzername / eingeladener Benutzer (optional)</label>
+    <input id="user" type="text" maxlength="200" spellcheck="false" autocapitalize="off">
+    <label for="secret">Temporäres Passwort / Token / Einladungscode (optional)</label>
+    <input id="secret" type="password" maxlength="2000" autocomplete="new-password">
+    <label for="notes">Hinweise (optional)</label>
+    <textarea id="notes" maxlength="2000" rows="3"></textarea>
+
+    <label for="dom">Domain der Website (bitte bestätigen)</label>
+    <input id="dom" type="text" maxlength="253" required spellcheck="false" autocapitalize="off">
+
+    <label class="consent"><input id="consent" type="checkbox" required> <span id="consentText"></span></label>
+
+    <p class="err" id="formErr" hidden></p>
+    <button id="send" type="submit">Verschlüsselt übermitteln</button>
+  </form>
+</main>
+<script type="module" src="access.js"></script>
+</body>
+</html>

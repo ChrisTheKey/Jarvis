@@ -20,6 +20,7 @@ import {
   createCheck150Engine, check150Status, publicCheck150Orders, confirmedCheck150Sale,
 } from "../check-150-workflow.js";
 import { cleanCheck150 } from "../server-control.js";
+import { recordPayment } from "../payments.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const T0 = new Date("2026-10-12T12:00:00Z");
@@ -37,7 +38,8 @@ function fakeGmail() {
   return { calls,
     createDraft: async (x) => { calls.push({ op: "create", to: x.to }); return { draftId: "dr1", threadId: "t1", messageId: "m1" }; },
     updateDraft: async (id) => { calls.push({ op: "update", id }); return { draftId: id }; },
-    sendDraft: async () => { calls.push({ op: "SEND" }); throw new Error("darf nie aufgerufen werden"); } };
+    // TF-041: nach erfüllter Zahlungsschwelle sendet der CHF-150-Workflow die Service-Mail automatisch über sendDraft.
+    sendDraft: async (id) => { calls.push({ op: "SEND", id }); return { messageId: "sent-" + id }; } };
 }
 function fakeAuditor() {
   const calls = [];
@@ -116,17 +118,24 @@ test("E/F: direct-sale blockiert falsches Offer und ungültige E-Mail", () => {
     assert.throws(() => directSale({ domain: bad }), /Domain/);
 });
 
-// G) Direkter CHF-150-Kunde → check-150-workflow wird über die bestehende Order-Logik bestätigt und läuft bis zum Entwurf.
-test("G: Direktverkauf bestätigt den CHF-150-Auftrag (create-confirmed-Pfad)", async () => {
+// G) Direkter CHF-150-Kunde → check-150-workflow wird über die bestehende Order-Logik bestätigt; VERKAUF != ZAHLUNG (TF-041):
+// erst die verbuchte Zahlung (CHF 75) startet Check/Bericht und den automatischen Versand der Service-Mail.
+test("G: Direktverkauf bestätigt den CHF-150-Auftrag (create-confirmed-Pfad), Zahlung startet die Erfüllung", async () => {
   store.write("sales.json", { records: directSale() });
   assert.ok(confirmedCheck150Sale(store, "neuerkunde.ch"), "Verkauf = Bestätigung (bestehende Order-Logik)");
   const o = createCheck150Order(store, { domain: "neuerkunde.ch", website: "https://neuerkunde.ch/", company: "Neuer Kunde AG", delivery_email: "kunde@neuerkunde.ch", contact_name: "Herr Kunde", now: T0 });
   const gmail = fakeGmail(), auditor = fakeAuditor();
   await createCheck150Engine({ store, gmail, auditor, now: () => T0 }).processAll();
-  const saved = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o.order_id];
-  assert.equal(saved.state, "READY_FOR_DELIVERY");
+  let saved = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o.order_id];
+  assert.equal(saved.state, "BLOCKED_PAYMENT_NOT_RECEIVED", "bestätigter Auftrag ohne Zahlung wartet");
   assert.ok(saved.confirmed, "über erfassten Verkauf bestätigt");
-  assert.deepEqual(gmail.calls.map((c) => c.op), ["create"], "genau ein Lieferentwurf, 0 Sends");
+  assert.equal(auditor.calls.length, 0, "kein Audit vor der Zahlungsschwelle");
+  recordPayment(store, { order_id: o.order_id, amount_chf: 75, now: T0 });
+  await createCheck150Engine({ store, gmail, auditor, now: () => T0 }).processAll();
+  saved = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o.order_id];
+  assert.equal(saved.state, "COMPLETED");
+  assert.equal(saved.delivery_status, "sent");
+  assert.deepEqual(gmail.calls.map((c) => c.op), ["create", "SEND"], "genau ein Lieferentwurf + genau ein automatischer Versand");
   assert.equal(gmail.calls[0].to, "kunde@neuerkunde.ch");
   // Dashboard-Quelle: Direktkunde (nie technische Interna).
   assert.equal(publicCheck150Orders(dir).orders[0].source, "direct_customer");
@@ -181,11 +190,12 @@ test("J: cancelCheck150Order storniert nur nicht abgeschlossene Aufträge", asyn
   assert.throws(() => cancelCheck150Order(store, o.order_id, { now: T0 }), /bereits storniert/);
   assert.throws(() => completeCheck150(store, o.order_id, { now: T0 }), /READY_FOR_DELIVERY/);
   assert.throws(() => cancelCheck150Order(store, "CA150-99999999-ffffff", { now: T0 }), /nicht gefunden/);
-  // Abgeschlossene Aufträge sind tabu.
+  // Abgeschlossene Aufträge sind tabu (mit Zahlung läuft der Auftrag bis COMPLETED inkl. automatischem Versand, TF-041).
   store.write("sales.json", { records: directSale({ domain: "fertig.ch", delivery_email: "k@fertig.ch" }) });
   const done = createCheck150Order(store, { domain: "fertig.ch", delivery_email: "k@fertig.ch", now: T0 });
+  recordPayment(store, { order_id: done.order_id, amount_chf: 75, now: T0 });
   await createCheck150Engine({ store, gmail: fakeGmail(), auditor: fakeAuditor(), now: () => T0 }).processAll();
-  completeCheck150(store, done.order_id, { now: T0 });
+  assert.equal(store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[done.order_id].state, "COMPLETED");
   assert.throws(() => cancelCheck150Order(store, done.order_id, { now: T0 }), /Abgeschlossene/);
 });
 
@@ -232,6 +242,8 @@ test("M/N: neue Pfade kennen weder Versand noch Website-Schreiboperationen", () 
     const src = fs.readFileSync(path.join(ROOT, f), "utf8");
     for (const verboten of ["applyFix", "deployProduction", "rollback(", "repair-adapters", "netlify.com", "api.github.com"]) assert.ok(!src.includes(verboten), `${f} enthält "${verboten}"`);
   }
+  // sendDraft ist seit TF-041 der bewusst erlaubte automatische Versand der Service-Mail NACH erfüllter Zahlungsschwelle –
+  // Website-Schreibpfade bleiben für den CHF-150-Workflow weiterhin verboten.
   const c150 = fs.readFileSync(path.join(ROOT, "check-150-workflow.js"), "utf8");
-  for (const verboten of ["applyFix", "deployProduction", "repair-adapters", "netlify.com", "api.github.com", "sendDraft"]) assert.ok(!c150.includes(verboten), `check-150-workflow.js enthält "${verboten}"`);
+  for (const verboten of ["applyFix", "deployProduction", "repair-adapters", "netlify.com", "api.github.com"]) assert.ok(!c150.includes(verboten), `check-150-workflow.js enthält "${verboten}"`);
 });

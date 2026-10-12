@@ -1,0 +1,60 @@
+// Kundenformular für den sicheren Website-Zugang (TF-041). Der Link-Token steht im URL-Fragment (#t=…), wird sofort aus
+// der Adresszeile entfernt und nur an /api/access-intake geschickt. Zugangsdaten werden hier verschlüsselt (access-crypto.js);
+// der Server bekommt nur Chiffrat und antwortet nie mit Zugangsdaten. Nach dem Senden werden alle Felder geleert.
+import { sealForVps } from "./access-crypto.js";
+
+const $ = (id) => document.getElementById(id);
+const hash = new URLSearchParams(location.hash.slice(1));
+const token = hash.get("t") || "";
+try { history.replaceState(null, "", location.pathname); } catch {}
+
+const HINTS = {
+  github_netlify: "Empfohlen: laden Sie uns als Collaborator ein und tragen Sie unten nur das Repository bzw. die Site ein – kein Passwort nötig.",
+  wordpress_cms: "Bitte einen temporären Benutzer mit nur den nötigen Rechten anlegen – kein Haupt-Administrator-Passwort.",
+  sftp: "Bitte einen temporären SFTP-Benutzer nur für das Website-Verzeichnis anlegen.",
+  ssh: "Bitte einen temporären SSH-Benutzer mit minimalen Rechten anlegen (kein root).",
+  hosting: "Bitte beim Hosting-Anbieter eine eigene Zugriffsberechtigung bzw. einen Mitarbeiterzugang für uns einrichten.",
+  other: "Beschreiben Sie kurz den Zugangsweg. Bitte nur temporäre Zugänge mit minimalen Rechten.",
+};
+const show = (id) => { for (const s of ["loading", "invalid", "done", "form"]) $(s).hidden = s !== id; };
+const api = async (body) => {
+  const r = await fetch("/api/access-intake", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" });
+  const j = await r.json().catch(() => ({}));
+  return { ok: r.ok, body: j };
+};
+
+let info = null;
+async function start() {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return show("invalid");
+  const r = await api({ op: "info", token }).catch(() => ({ ok: false, body: {} }));
+  if (!r.ok) { if (r.body?.error) $("invalidMsg").textContent = r.body.error; return show("invalid"); }
+  info = r.body;
+  $("domain").textContent = info.domain;
+  $("expires").textContent = new Date(info.expires_at).toLocaleString("de-CH", { dateStyle: "medium", timeStyle: "short" });
+  $("dom").value = info.domain;
+  $("consentText").textContent = info.consent_text;
+  const hint = () => { $("typeHint").textContent = HINTS[$("type").value] || ""; };
+  $("type").addEventListener("change", hint); hint();
+  show("form");
+}
+
+$("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const err = (m) => { $("formErr").textContent = m; $("formErr").hidden = false; };
+  $("formErr").hidden = true;
+  if (!$("consent").checked) return err("Bitte bestätigen Sie die Berechtigung und die Reparaturfreigabe.");
+  const dom = $("dom").value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+  if (dom !== info.domain) return err(`Die Domain muss genau ${info.domain} lauten.`);
+  $("send").disabled = true;
+  try {
+    const payload = { access_type: $("type").value, host: $("host").value.trim() || null, username: $("user").value.trim() || null,
+      secret: $("secret").value || null, notes: $("notes").value.trim() || null };
+    const envelope = await sealForVps(info.public_key, payload);
+    const r = await api({ op: "submit", token, access_type: payload.access_type, access_domain: dom, consent: true, envelope });
+    if (!r.ok) { $("send").disabled = false; return err(r.body?.error || "Übermittlung fehlgeschlagen. Bitte erneut versuchen."); }
+    for (const id of ["host", "user", "secret", "notes"]) $(id).value = ""; // Klartext aus dem Formular entfernen
+    show("done");
+  } catch { $("send").disabled = false; err("Verschlüsselung oder Übermittlung fehlgeschlagen. Bitte erneut versuchen."); }
+});
+
+start();

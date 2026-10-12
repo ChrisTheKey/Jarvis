@@ -1071,6 +1071,8 @@ async function loop() {
   const finderMod = await import("./lead-finder.js");
   const repairMod = await import("./repair-workflow.js");
   const check150Mod = await import("./check-150-workflow.js");
+  const paymentsMod = await import("./payments.js");
+  const accessMod = await import("./access-intake.js");
   if (role === "vps") (await import("./server-agent.js")).startServerControl({
     dir: WORKER_DIR, secretsDir: SECRETS, startedAt, log, core, zurichDay, backupPublicKey, healthy: () => healthy(WORKER_DIR),
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
@@ -1089,6 +1091,11 @@ async function loop() {
     repair: () => repairMod.publicRepairOrders(WORKER_DIR),
     // Check & Anleitung CHF 150 (TF-038): Allowlist-Sicht fürs Dashboard – reine Anzeige, keine Aktionen aus der Cloud.
     check150: () => check150Mod.publicCheck150Orders(WORKER_DIR),
+    // Payment Worker (TF-041): Ledger-Zähler + offene Zahlungsschwellen beider Workflows – nie Referenzen/payment_ids.
+    payments: () => {
+      const c = check150Mod.check150Status(WORKER_DIR), r = repairMod.repairOrdersStatus(WORKER_DIR);
+      return { status: "ACTIVE", ...paymentsMod.paymentsStatus(WORKER_DIR), waiting_deposit: (c.waiting_payment || 0) + (r.waiting_payment || 0), payment_review: r.payment_review || 0 };
+    },
     setDiscovery: (op) => { const r = finderMod.setDiscoveryPaused(WORKER_DIR, op === "pause"); wake(); return { ok: true, ...r, status: r.paused ? "PAUSED" : "ACTIVE" }; },
   });
   log("info", "worker_started", { pid: process.pid, role, dryRun: worker.config().dryRun !== false });
@@ -1123,14 +1130,17 @@ async function loop() {
     // CHF-480-Reparaturaufträge (TF-035, repair-workflow.js): persistente Orders im Hintergrund weiterarbeiten – eigenes Lock,
     // nie zwei Läufe, blockiert weder Mail-Takt noch Discovery. Ohne offene Aufträge ist der Aufruf ein No-op.
     // Ohne konfigurierte Stack-Adapter bleibt es beim passiven Audit bzw. BLOCKED_NO_ACCESS – es wird nie etwas verändert.
+    // gmail + intake nur für die automatische Zugangs-Anfrage NACH erfüllter CHF-240-Zahlungsschwelle (TF-041, payments.js):
+    // genau eine CUSTOMER_ACCESS_REQUEST-Mail mit sicherem One-Time-Link (access-intake.js); intake nur mit Worker-Token (VPS).
     if (!repairRunning) {
-      repairRunning = repairMod.runRepairOrders({ log })
+      repairRunning = repairMod.runRepairOrders({ gmail, intake: accessMod.intakeClient({ config: shared.syncConfig() }), log })
         .then((r) => { if (r && !r.busy && r.advanced) log("info", "repair_orders_processed", r); }, (e) => log("error", "repair_orders_failed", { error: e.message }))
         .finally(() => { repairRunning = null; });
     }
-    // Check & Anleitung CHF 150 (TF-038, check-150-workflow.js): bezahlte Aufträge im Hintergrund erfüllen – rein passiver
-    // Audit + Bericht + Gmail-LIEFERENTWURF (nie Versand, nie Website-Änderung). Eigenes Lock, No-op ohne offene Aufträge,
-    // blockiert weder Mail-Takt noch Discovery noch den CHF-480-Workflow. Fehler stoppen den Worker nie.
+    // Check & Anleitung CHF 150 (TF-038 + TF-041, check-150-workflow.js): bezahlte Aufträge im Hintergrund erfüllen –
+    // rein passiver Audit + Bericht + Gmail-Lieferentwurf; die Service-Mail geht erst NACH erfüllter CHF-75-Zahlungsschwelle
+    // (payments.js) automatisch an den bestätigten Kunden raus (nie Website-Änderung). Eigenes Lock, No-op ohne offene
+    // Aufträge, blockiert weder Mail-Takt noch Discovery noch den CHF-480-Workflow. Fehler stoppen den Worker nie.
     if (!check150Running) {
       check150Running = check150Mod.runCheck150Orders({ gmail, log })
         .then((r) => { if (r && !r.busy && r.advanced) log("info", "check150_orders_processed", r); }, (e) => log("error", "check150_orders_failed", { error: e.message }))

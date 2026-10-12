@@ -28,6 +28,8 @@ export const LABEL = "JARVIS";
 // TF-025: Cold-Lead-Entwürfe – Jarvis legt sie an, sendet sie aber NIE (weder Worker, VPS, Kampagne noch Cloud-Queue).
 // Nur Chris versendet sie selbst in Gmail. Diese Sperre sitzt hier, auf der untersten Ebene vor jedem Send.
 export const COLD_DRAFT_MODE = "COLD_LEAD_DRAFT_ONLY";
+// Einzige automatisch sendbare Service-Klassen für echte, bezahlte Kundenaufträge (TF-041, nach Zahlungsschwelle).
+export const SERVICE_MESSAGE_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST"]);
 
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } };
 function writeSecret(file, data) {
@@ -272,7 +274,9 @@ export async function createDraft(fields) {
   if (fields.threadId && info.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
   const reply = fields.inReplyTo ? { inReplyTo: fields.inReplyTo, references: fields.references } : {};
   const cold = fields.mode === COLD_DRAFT_MODE ? { mode: COLD_DRAFT_MODE, leadId: fields.leadId || null, draftHash: fields.draftHash || null, legalBasis: "NONE" } : {};
-  updateRegistry((r) => { r.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, ...cold, createdAt: new Date().toISOString() }; });
+  // Service-Mails bezahlter Kundenaufträge (TF-041) tragen ihre Nachrichtenklasse – nie zusammen mit einem Cold-Entwurf.
+  const service = !cold.mode && SERVICE_MESSAGE_CLASSES.includes(fields.messageClass) ? { messageClass: fields.messageClass } : {};
+  updateRegistry((r) => { r.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, ...cold, ...service, createdAt: new Date().toISOString() }; });
   return { draftId: draft.id, ...info };
 }
 

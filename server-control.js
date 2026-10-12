@@ -134,13 +134,21 @@ export function cleanSnapshot(s) {
     discovery: cleanDiscovery(s.discovery),
     repair: cleanRepair(s.repair),
     check150: cleanCheck150(s.check150),
+    payments: cleanPayments(s.payments),
   };
 }
 // Check & Anleitung CHF 150 (TF-038): gleiche Whitelist-Disziplin wie cleanRepair – nur Zähler, feste Zustandswörter,
 // ungefährliche Auftragsfelder. Nie Berichte, Draft-Inhalte, Adressen, Evidence, Pfade oder Tokens.
 const CHECK150_STATE_WORDS = ["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT", "FINDINGS_ANALYSIS", "INSTRUCTIONS_GENERATION",
-  "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "READY_FOR_DELIVERY", "COMPLETED", "CANCELLED",
-  "BLOCKED_ORDER_NOT_CONFIRMED", "AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED"];
+  "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "DELIVERY_SENDING", "READY_FOR_DELIVERY", "COMPLETED", "CANCELLED",
+  "BLOCKED_ORDER_NOT_CONFIRMED", "BLOCKED_PAYMENT_NOT_RECEIVED", "AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED"];
+// Zahlungs-/Phasen-Wörter (TF-041) – bewusst hier dupliziert (kein Import von payments.js in die Netlify-Funktion).
+const PAYMENT_STATE_WORDS = ["UNPAID", "PARTIAL", "DEPOSIT_MET", "PAID_FULL", "REFUNDED", "PAYMENT_REVIEW_REQUIRED"];
+const CHECK150_PHASE_WORDS = ["WAITING_FOR_CONFIRMATION", "WAITING_FOR_DEPOSIT", "DEPOSIT_RECEIVED", "AUDITING", "REPORT", "READY_FOR_DELIVERY", "SENT", "COMPLETED", "CANCELLED", "BLOCKED"];
+const REPAIR_PHASE_WORDS = ["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "REPAIRING", "VALIDATING", "READY_FOR_DELIVERY", "COMPLETED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"];
+const ACCESS_TYPE_WORDS = ["github_netlify", "wordpress_cms", "sftp", "ssh", "hosting", "other"];
+const payFields = (o, n) => ({ paid_chf: o.paid_chf == null ? null : n(o.paid_chf, 10_000), payment_required_chf: o.payment_required_chf == null ? null : n(o.payment_required_chf, 10_000),
+  rest_to_deposit_chf: o.rest_to_deposit_chf == null ? null : n(o.rest_to_deposit_chf, 10_000), payment_status: word(o.payment_status, PAYMENT_STATE_WORDS), payment_ok: bool(o.payment_ok) });
 export function cleanCheck150(r) {
   if (!r || typeof r !== "object") return null;
   const n = (v, max = 1e6) => num(v, max);
@@ -155,18 +163,21 @@ export function cleanCheck150(r) {
     critical: o.critical == null ? null : n(o.critical, 10_000), high: o.high == null ? null : n(o.high, 10_000),
     medium: o.medium == null ? null : n(o.medium, 10_000), low: o.low == null ? null : n(o.low, 10_000),
     report_available: bool(o.report_available), draft_available: bool(o.draft_available),
-    delivery_status: word(o.delivery_status, ["none", "draft_ready", "delivered"]),
+    delivery_status: word(o.delivery_status, ["none", "draft_ready", "sent", "delivered"]),
+    // Zahlungsstand (TF-041): nur Zahlen/Flag/Zustandswort – nie Referenzen oder Zahlungsdetails.
+    ...payFields(o, n), phase: word(o.phase, CHECK150_PHASE_WORDS),
     source: word(o.source, ["direct_customer", "jarvis_lead"]),
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), ready_for_delivery: n(r.ready_for_delivery, 100_000),
-    waiting_confirmation: n(r.waiting_confirmation, 100_000), cancelled: n(r.cancelled, 100_000), states, orders };
+    waiting_confirmation: n(r.waiting_confirmation, 100_000), waiting_payment: n(r.waiting_payment, 100_000),
+    cancelled: n(r.cancelled, 100_000), states, orders };
 }
 // Reparaturaufträge (TF-036): nur Zähler, feste Zustandswörter und ungefährliche Auftragsfelder – nie Evidence, Branches,
 // Commits, Preview-URLs, Freigabe-Referenzen oder Tokens. Die Cloud erzwingt die Whitelist erneut (wie bei den Leads).
-const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING",
-  "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK",
-  "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED"];
+const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK", "ACCESS_REQUESTED", "BACKUP",
+  "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "BLOCKED_NO_ACCESS",
+  "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED"];
 const NAME_RE = /^[\p{L}\p{N} .,&'’()\/+-]{1,80}$/u;
 const DOMAIN_RE = /^[a-z0-9.-]{3,253}$/;
 export function cleanRepair(r) {
@@ -182,10 +193,22 @@ export function cleanRepair(r) {
     state: word(o.state, REPAIR_STATES), findings: n(o.findings, 10_000), repaired: n(o.repaired, 10_000), needs_review: n(o.needs_review, 10_000),
     backup_ok: bool(o.backup_ok), desktop_retest: bool(o.desktop_retest), mobile_retest: bool(o.mobile_retest),
     production: word(o.production, ["DEPLOYED", "BRANCH_ONLY", "UNCHANGED"]), report_available: bool(o.report_available),
+    // Zahlungsstand + Zugang (TF-041): nur Zahlen/Flags/Zustandswörter – nie Referenzen, Links, Tokens oder Zugangsdaten.
+    ...payFields(o, n), phase: word(o.phase, REPAIR_PHASE_WORDS),
+    access_requested: bool(o.access_requested), access_received: bool(o.access_received), access_type: word(o.access_type, ACCESS_TYPE_WORDS),
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
+    waiting_payment: n(r.waiting_payment, 100_000), access_requested: n(r.access_requested, 100_000),
+    payment_review: n(r.payment_review, 100_000), cancelled: n(r.cancelled, 100_000),
     ready_for_delivery: n(r.ready_for_delivery, 100_000), states, orders };
+}
+// Payment Worker (TF-041): nur Zähler und CHF-Summen aus dem Ledger – nie payment_ids, Referenzen, Quellen oder Domains.
+export function cleanPayments(p) {
+  if (!p || typeof p !== "object") return null;
+  const n = (v) => num(v, 1e7);
+  return { status: word(p.status, ["ACTIVE"]), total: n(p.total), received: n(p.received), voided: n(p.voided), refunded: n(p.refunded),
+    received_chf: n(p.received_chf), refunded_chf: n(p.refunded_chf), waiting_deposit: n(p.waiting_deposit), payment_review: n(p.payment_review) };
 }
 // 24/7-Discovery (VPS): nur Zähler, Zeitpunkte, feste Wörter; Fehlertext bereinigt und gekürzt.
 export function cleanDiscovery(d) {

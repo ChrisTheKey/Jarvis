@@ -1,6 +1,8 @@
 // CHECK & REPARATUR CHF 480 — AUTOPILOT (035): persistenter Reparatur-Workflow. Ohne dokumentierte Kundenfreigabe wird NIE etwas
 // verändert (nur passiver Audit); Cold-Outreach ist nie eine Freigabe; ohne Zugang/Stack/Backup wird blockiert (fail closed);
 // Regression → Rollback; Zustand überlebt einen Neustart. Keine Mail, kein Netzwerk – Auditor und Adapter sind Attrappen.
+// Seit TF-041 gilt zusätzlich die Zahlungsschwelle (CHF 240) VOR jedem Zugang – die Fixtures hier verbuchen sie (pay);
+// die Gate-Fälle selbst stehen in payments-041.test.js.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -14,6 +16,7 @@ import {
   buildCustomerReport, repairOrdersStatus, isProtectedChange, normDomain,
 } from "../repair-workflow.js";
 import { CUSTOMER_JARGON_RE } from "../swiss-repair.js";
+import { recordPayment } from "../payments.js";
 
 const T0 = new Date("2026-10-11T08:00:00Z");
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-repair-"));
@@ -52,12 +55,14 @@ function fakeAdapter(over = {}) {
 
 const newOrder = (store) => createRepairOrder(store, { domain: "muster.ch", website: HOME, company: "Muster AG", now: T0 });
 const authorize = (store, id) => authorizeRepair(store, id, { authorized_domain: "muster.ch", source: "customer_reply_email", reference: "Antwort vom 2026-10-11", now: T0 });
+// Zahlungsschwelle CHF 240 (TF-041) erfüllen – die Gate-Fälle selbst testet payments-041.test.js.
+const pay = (store, id) => recordPayment(store, { order_id: id, amount_chf: 240, now: T0 });
 const readOrder = (store, id) => store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders[id];
 
 test("Zustandsmodell entspricht der Vorgabe", () => {
-  assert.deepEqual(ORDER_STATES, ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN",
-    "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]);
-  assert.deepEqual(BLOCKED_STATES, ["BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED"]);
+  assert.deepEqual(ORDER_STATES, ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK", "ACCESS_REQUESTED",
+    "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]);
+  assert.deepEqual(BLOCKED_STATES, ["BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED"]);
 });
 
 test("Auftrag: REPAIR_FIX_500, CHF 480 aus OFFERS, persistiert; nur ein offener Auftrag je Domain", () => {
@@ -97,7 +102,7 @@ test("Cold-Outreach ist NIE eine Freigabe; Domain muss exakt übereinstimmen; Qu
   assert.throws(() => authorizeRepair(store, o.order_id, { authorized_domain: "andere-firma.ch", source: "customer_reply_email" }), /stimmt nicht mit dem Auftrag/);
   assert.equal(readOrder(store, o.order_id).customer_authorized_repair, false);
   assert.ok(AUTHORIZATION_SOURCES.every((s) => !["cold_outreach", "cold_mail"].includes(s)));
-  const ok = authorize(store, o.order_id);
+  const ok = authorize(store, o.order_id); pay(store, o.order_id);
   assert.equal(ok.customer_authorized_repair, true);
   assert.equal(ok.state, "ACCESS_CHECK");
 });
@@ -105,12 +110,12 @@ test("Cold-Outreach ist NIE eine Freigabe; Domain muss exakt übereinstimmen; Qu
 test("Unbekannter Stack → BLOCKED_UNSUPPORTED_STACK; bekannter Stack ohne Adapter → BLOCKED_NO_ACCESS", async () => {
   // other
   let store = createStore(tmp());
-  let o = newOrder(store); authorize(store, o.order_id);
+  let o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   await createRepairEngine({ store, adapters: {}, auditor: fakeAuditor({ "*": { issues: [], html: "" } }), now: () => T0 }).processAll();
   assert.equal(readOrder(store, o.order_id).state, "BLOCKED_UNSUPPORTED_STACK");
   // wordpress erkannt, aber kein Adapter/Zugang konfiguriert
   store = createStore(tmp());
-  o = newOrder(store); authorize(store, o.order_id);
+  o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   await createRepairEngine({ store, adapters: {}, auditor: fakeAuditor({ "*": { issues: [], html: "<html><link href=/wp-content/a.css></html>" } }), now: () => T0 }).processAll();
   const saved = readOrder(store, o.order_id);
   assert.equal(saved.state, "BLOCKED_NO_ACCESS");
@@ -120,7 +125,7 @@ test("Unbekannter Stack → BLOCKED_UNSUPPORTED_STACK; bekannter Stack ohne Adap
 
 test("Adapter-Antworten werden nie mit Secrets gespeichert (nur connector/ok/checked_at)", async () => {
   const store = createStore(tmp());
-  const o = newOrder(store); authorize(store, o.order_id);
+  const o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   await createRepairEngine({ store, adapters: { static: fakeAdapter() }, auditor: fakeAuditor({ "*": { issues: [] } }), now: () => T0 }).processAll();
   const saved = readOrder(store, o.order_id);
   assert.deepEqual(Object.keys(saved.access).sort(), ["checked_at", "connector", "ok"]);
@@ -129,7 +134,7 @@ test("Adapter-Antworten werden nie mit Secrets gespeichert (nur connector/ok/che
 
 test("Backup unvollständig (kein Rollback-Punkt) → MANUAL_REVIEW_REQUIRED, keine Reparatur", async () => {
   const store = createStore(tmp());
-  const o = newOrder(store); authorize(store, o.order_id);
+  const o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   const adapter = fakeAdapter({ backup: async () => ({ production_ref: "deploy-42" }) });
   await createRepairEngine({ store, adapters: { static: adapter }, auditor: fakeAuditor({ "*": { issues: [BROKEN_LINK, BROKEN_IMAGE] } }), now: () => T0 }).processAll();
   const saved = readOrder(store, o.order_id);
@@ -139,7 +144,7 @@ test("Backup unvollständig (kein Rollback-Punkt) → MANUAL_REVIEW_REQUIRED, ke
 
 test("Happy Path: Backup → Voll-Audit → Plan → Minimal-Fix → Validierung → Retest → Bericht → READY → COMPLETED", async () => {
   const store = createStore(tmp());
-  const o = newOrder(store); authorize(store, o.order_id);
+  const o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   const adapter = fakeAdapter();
   // Vorher 2 Befunde, nach der Reparatur 0.
   let repaired = false;
@@ -170,7 +175,7 @@ test("Happy Path: Backup → Voll-Audit → Plan → Minimal-Fix → Validierung
 
 test("Geschützte Seite (Impressum): Befund wird nie automatisch repariert → manuelle Prüfung", async () => {
   const store = createStore(tmp());
-  const o = newOrder(store); authorize(store, o.order_id);
+  const o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   const adapter = fakeAdapter();
   await createRepairEngine({ store, adapters: { static: adapter }, auditor: fakeAuditor({ "*": { issues: [IMPRESSUM_LINK] } }), now: () => T0 }).processAll();
   const saved = readOrder(store, o.order_id);
@@ -186,7 +191,7 @@ test("Geschützte Seite (Impressum): Befund wird nie automatisch repariert → m
 
 test("Ursache unklar (locate = null) → keine Reparatur, MANUAL_REVIEW_REQUIRED", async () => {
   const store = createStore(tmp());
-  const o = newOrder(store); authorize(store, o.order_id);
+  const o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   const adapter = fakeAdapter({ locate: async () => null });
   await createRepairEngine({ store, adapters: { static: adapter }, auditor: fakeAuditor({ "*": { issues: [BROKEN_LINK] } }), now: () => T0 }).processAll();
   const saved = readOrder(store, o.order_id);
@@ -197,7 +202,7 @@ test("Ursache unklar (locate = null) → keine Reparatur, MANUAL_REVIEW_REQUIRED
 
 test("Reparierter Befund weiterhin vorhanden → VALIDATION_FAILED", async () => {
   const store = createStore(tmp());
-  const o = newOrder(store); authorize(store, o.order_id);
+  const o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   await createRepairEngine({ store, adapters: { static: fakeAdapter() }, auditor: fakeAuditor({ "*": { issues: [BROKEN_LINK] } }), now: () => T0 }).processAll();
   const saved = readOrder(store, o.order_id);
   assert.equal(saved.state, "VALIDATION_FAILED");
@@ -207,7 +212,7 @@ test("Reparierter Befund weiterhin vorhanden → VALIDATION_FAILED", async () =>
 test("Regression (neuer relevanter Befund nach der Reparatur) → Rollback → REPAIR_FAILED; ohne Rollback → MANUAL_REVIEW_REQUIRED", async () => {
   const mk = async (withRollback) => {
     const store = createStore(tmp());
-    const o = newOrder(store); authorize(store, o.order_id);
+    const o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
     let repaired = false;
     const NEW_PROBLEM = rawIssue("contact_page_broken", "high", "https://muster.ch/kontakt");
     const auditor = { audit: async (website) => ({ website, host: "muster.ch", reachable: true, finalUrl: website, title: "x",
@@ -229,7 +234,7 @@ test("Regression (neuer relevanter Befund nach der Reparatur) → Rollback → R
 
 test("Production-Deploy nur nach bestandenen Tests; Live-Retest danach; Deploy-Fehler → Rollback", async () => {
   const store = createStore(tmp());
-  const o = newOrder(store); authorize(store, o.order_id);
+  const o = newOrder(store); authorize(store, o.order_id); pay(store, o.order_id);
   let repaired = false, deployed = false;
   const order = [];
   const auditor = { audit: async (w) => { order.push(w); return { website: w, host: "muster.ch", reachable: true, finalUrl: w, title: "x",
@@ -246,7 +251,7 @@ test("Production-Deploy nur nach bestandenen Tests; Live-Retest danach; Deploy-F
 
   // Deploy-Fehler: Rollback wird versucht → REPAIR_FAILED, nie „erfolgreich“.
   const store2 = createStore(tmp());
-  const o2 = newOrder(store2); authorize(store2, o2.order_id);
+  const o2 = newOrder(store2); authorize(store2, o2.order_id); pay(store2, o2.order_id);
   let rep2 = false;
   const auditor2 = { audit: async (w) => ({ website: w, host: "muster.ch", reachable: true, finalUrl: w, title: "x",
     issues: rep2 ? [] : [BROKEN_LINK, BROKEN_IMAGE], pages: { home: "<html><head><meta name=viewport content=x></head></html>" }, requests: 1 }) };
@@ -267,7 +272,7 @@ test("Neustart: Engine arbeitet exakt am gespeicherten Zustand weiter", async ()
   await createRepairEngine({ store, adapters: {}, auditor: fakeAuditor({ "*": { issues: [BROKEN_LINK, BROKEN_IMAGE] } }), now: () => T0 }).processAll();
   assert.equal(readOrder(store, o.order_id).state, "AUTHORIZATION_REQUIRED");
   // „Neustart“: neue Engine-Instanz auf demselben Verzeichnis, Freigabe kommt dazwischen.
-  authorize(createStore(dir), o.order_id);
+  authorize(createStore(dir), o.order_id); pay(createStore(dir), o.order_id);
   let repaired = false;
   const auditor = { audit: async (w) => ({ website: w, host: "muster.ch", reachable: true, finalUrl: w, title: "x",
     issues: repaired ? [] : [BROKEN_LINK, BROKEN_IMAGE], pages: { home: "<html><head><meta name=viewport content=x></head></html>" }, requests: 1 }) };

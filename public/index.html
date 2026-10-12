@@ -378,6 +378,9 @@ form.cmd button.stop { color: var(--red); }
       <div class="kv">
         <span>Offen</span><b id="repOpen" title="Aufträge «Check & Reparatur» (CHF 480), die noch nicht abgeschlossen oder blockiert sind">–</b>
         <span>Warten auf Freigabe</span><b id="repAuth" title="Ohne dokumentierte Kundenfreigabe wird nie etwas verändert – nur geprüft">–</b>
+        <span>Wartet auf Zahlung</span><b id="repUnpaid" title="Zahlungsschwelle CHF 240 (erste Hälfte) – vorher kein Zugang, kein Login, keine Reparatur">–</b>
+        <span>Zugang angefragt</span><b id="repAccessReq" title="Genau eine Service-Mail mit sicherem One-Time-Link (72 h) – nie Passwörter per Mail">–</b>
+        <span>Payment Worker</span><b id="payWorker" title="Zahlungsbuch (payments.js): nur Summen/Zähler – nie Referenzen">–</b>
         <span>Kein Zugang</span><b id="repNoAccess" title="Kein sicherer Zugangsweg (Mapping/Token) oder Stack nicht unterstützt">–</b>
         <span>In Reparatur</span><b id="repWorking">–</b>
         <span>Validierung</span><b id="repValidating" title="Prüfung und Retest (Desktop + Smartphone) nach der Reparatur">–</b>
@@ -392,9 +395,10 @@ form.cmd button.stop { color: var(--red); }
       <div class="kv">
         <span>Offen</span><b id="c150Open" title="Aufträge «Check & Anleitung» (CHF 150), die noch nicht abgeschlossen oder blockiert sind">–</b>
         <span>Wartet auf Bestätigung</span><b id="c150Unconfirmed" title="Start erst mit erfasstem Verkauf (sales.js) – Cold-Outreach genügt nie">–</b>
+        <span>Wartet auf Zahlung</span><b id="c150Unpaid" title="Zahlungsschwelle CHF 75 (erste Hälfte) – vorher kein Check, kein Bericht, keine Liefermail">–</b>
         <span>Website wird geprüft</span><b id="c150Auditing">–</b>
         <span>Bericht wird erstellt</span><b id="c150Reporting">–</b>
-        <span>Lieferentwurf bereit</span><b id="c150Ready" title="Gmail-Entwurf liegt bereit – Versand entscheidet Chris">–</b>
+        <span>Bereit zur Übergabe</span><b id="c150Ready" title="Entwurf liegt für Chris bereit (z. B. langer Bericht mit Anhang) – sonst sendet Jarvis nach CHF 75 automatisch">–</b>
         <span>Abgeschlossen</span><b id="c150Done">–</b>
         <span>Storniert</span><b id="c150Cancelled" title="Von Chris stornierte Aufträge (z. B. Testaufträge) – kein Fehler, zählt nicht als offen">–</b>
         <span>Fehler</span><b id="c150Failed">–</b>
@@ -1548,39 +1552,58 @@ function renderServer(data, note = "") {
   renderDiscovery(m.online ? data?.snapshot?.discovery : null, m.online ? "" : note || m.server);
   renderRepair(m.online ? data?.snapshot?.repair : null);
   renderCheck150(m.online ? data?.snapshot?.check150 : null);
+  renderPayments(m.online ? data?.snapshot?.payments : null);
   set("dCpu", m.online ? r.cpu : "–", m.online ? ok.cpu : undefined); set("dRam", m.online ? r.ram : "–", m.online ? ok.ram : undefined); // VPS-Auslastung aus dem Server-Snapshot
 }
 // Reparaturaufträge (CHF 480, TF-036): Zähler + Auftragsliste aus der Allowlist-Sicht des VPS. Reine Anzeige – es gibt
 // bewusst KEINE Aktionen aus dem Browser (Freigabe/Abschluss nur per Kommandozeile bei Chris). Nie Secrets/Branches/URLs.
-const REPAIR_LABELS = { ORDER_RECEIVED: "AUFTRAG ERFASST", AUTHORIZATION_REQUIRED: "WARTET AUF FREIGABE", ACCESS_CHECK: "ZUGANG PRÜFEN",
+const REPAIR_LABELS = { ORDER_RECEIVED: "AUFTRAG ERFASST", AUTHORIZATION_REQUIRED: "WARTET AUF FREIGABE",
+  PAYMENT_REQUIRED: "WARTET AUF ZAHLUNG", ACCESS_CHECK: "ZUGANG PRÜFEN", ACCESS_REQUESTED: "ZUGANG BEIM KUNDEN ANGEFRAGT",
   BACKUP: "BACKUP", FULL_AUDIT: "VOLL-AUDIT", REPAIR_PLAN: "REPARATURPLAN", REPAIRING: "IN REPARATUR", VALIDATION: "VALIDIERUNG",
   RETEST: "RETEST", READY_FOR_DELIVERY: "BEREIT ZUR ÜBERGABE", COMPLETED: "ABGESCHLOSSEN", BLOCKED_NO_ACCESS: "KEIN ZUGANG",
   BLOCKED_NO_AUTHORIZATION: "KEINE FREIGABE", BLOCKED_UNSUPPORTED_STACK: "STACK NICHT UNTERSTÜTZT", REPAIR_FAILED: "REPARATUR FEHLGESCHLAGEN",
-  VALIDATION_FAILED: "VALIDIERUNG FEHLGESCHLAGEN", MANUAL_REVIEW_REQUIRED: "MANUELLE PRÜFUNG" };
+  VALIDATION_FAILED: "VALIDIERUNG FEHLGESCHLAGEN", MANUAL_REVIEW_REQUIRED: "MANUELLE PRÜFUNG",
+  PAYMENT_REVIEW_REQUIRED: "ZAHLUNG PRÜFEN (CHRIS)", CANCELLED: "STORNIERT" };
+// Kundenphase + Zahlungsstatus (TF-041): feste Wörter vom VPS – nie Referenzen, Links, Tokens oder Zugangsdaten.
+const PHASE_LABELS = { WAITING_FOR_CONFIRMATION: "WAITING FOR CONFIRMATION", WAITING_FOR_DEPOSIT: "WAITING FOR DEPOSIT", DEPOSIT_RECEIVED: "DEPOSIT RECEIVED",
+  AUDITING: "AUDITING", REPORT: "REPORT", READY_FOR_DELIVERY: "READY FOR DELIVERY", SENT: "SENT", COMPLETED: "COMPLETED", CANCELLED: "CANCELLED", BLOCKED: "BLOCKED",
+  WAITING_FOR_ACCESS: "WAITING FOR ACCESS", ACCESS_REQUEST_SENT: "ACCESS REQUEST SENT", ACCESS_RECEIVED: "ACCESS RECEIVED", REPAIRING: "REPAIRING",
+  VALIDATING: "VALIDATING", PAYMENT_REVIEW_REQUIRED: "PAYMENT REVIEW REQUIRED" };
+const PAY_LABELS = { UNPAID: "UNBEZAHLT", PARTIAL: "TEILZAHLUNG", DEPOSIT_MET: "DEPOSIT ERREICHT", PAID_FULL: "VOLL BEZAHLT", REFUNDED: "RÜCKERSTATTET", PAYMENT_REVIEW_REQUIRED: "PRÜFUNG NÖTIG" };
+const payLine = (o, price, deposit) => o.paid_chf == null ? "" : `Phase ${PHASE_LABELS[o.phase] || "–"} · Preis CHF ${o.price_chf ?? price} · bezahlt CHF ${o.paid_chf} · Deposit CHF ${o.payment_required_chf ?? deposit} · Rest bis Deposit CHF ${o.rest_to_deposit_chf ?? "–"} · Zahlung ${PAY_LABELS[o.payment_status] || (o.payment_ok ? "OK" : "AUSSTEHEND")}`;
+function renderPayments(p) {
+  const el = $("payWorker");
+  if (!p) { el.textContent = "–"; el.className = ""; return; }
+  el.textContent = `${p.status === "ACTIVE" ? "ACTIVE" : "–"} · CHF ${p.received_chf ?? 0} eingegangen · ${p.waiting_deposit ?? 0} warten${p.payment_review ? ` · ${p.payment_review} PRÜFEN` : ""}`;
+  el.className = p.payment_review ? "on-bad" : p.status === "ACTIVE" ? "on-ok" : "";
+}
 function renderRepair(rep) {
   const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
   const st = rep?.states || {};
   const sum = (...keys) => keys.reduce((a, k) => a + (st[k] || 0), 0);
-  if (!rep) { for (const id of ["repOpen", "repAuth", "repNoAccess", "repWorking", "repValidating", "repReady", "repDone", "repFailed"]) set(id, "–");
+  if (!rep) { for (const id of ["repOpen", "repAuth", "repUnpaid", "repAccessReq", "repNoAccess", "repWorking", "repValidating", "repReady", "repDone", "repFailed"]) set(id, "–");
     $("repSeen").textContent = ""; $("repairList").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine Daten vom VPS." })); return; }
   set("repOpen", String(rep.open ?? 0), rep.open ? "on-idle" : "");
   set("repAuth", String(rep.waiting_authorization ?? 0), rep.waiting_authorization ? "on-idle" : "");
+  set("repUnpaid", String(rep.waiting_payment ?? st.PAYMENT_REQUIRED ?? 0), (rep.waiting_payment ?? st.PAYMENT_REQUIRED) ? "on-idle" : ""); // Warten auf Zahlung = neutral, nie ein Fehler
+  set("repAccessReq", String(rep.access_requested ?? st.ACCESS_REQUESTED ?? 0), (rep.access_requested ?? st.ACCESS_REQUESTED) ? "on-idle" : "");
   set("repNoAccess", String(sum("BLOCKED_NO_ACCESS", "BLOCKED_UNSUPPORTED_STACK")), sum("BLOCKED_NO_ACCESS", "BLOCKED_UNSUPPORTED_STACK") ? "on-bad" : "");
-  set("repWorking", String(sum("ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING")));
+  set("repWorking", String(sum("ACCESS_CHECK", "ACCESS_REQUESTED", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING")));
   set("repValidating", String(sum("VALIDATION", "RETEST")));
   set("repReady", String(rep.ready_for_delivery ?? 0), rep.ready_for_delivery ? "on-ok" : "");
   set("repDone", String(st.COMPLETED || 0), st.COMPLETED ? "on-ok" : "");
-  set("repFailed", String(sum("REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "BLOCKED_NO_AUTHORIZATION")),
-    sum("REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "BLOCKED_NO_AUTHORIZATION") ? "on-bad" : "");
+  set("repFailed", String(sum("REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "BLOCKED_NO_AUTHORIZATION", "PAYMENT_REVIEW_REQUIRED")),
+    sum("REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "BLOCKED_NO_AUTHORIZATION", "PAYMENT_REVIEW_REQUIRED") ? "on-bad" : "");
   const orders = Array.isArray(rep.orders) ? rep.orders : [];
   if (!orders.length) { $("repairList").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine Reparaturaufträge. Ein Auftrag entsteht erst nach Bestellung und ausdrücklicher Kundenfreigabe." })); return; }
   $("repairList").replaceChildren(...orders.map((o) => {
     const li = document.createElement("li");
-    li.className = ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|BLOCKED|MANUAL/.test(o.state || "") ? "bad" : "wait";
+    li.className = o.state === "CANCELLED" ? "" : ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|BLOCKED|MANUAL|REVIEW/.test(o.state || "") ? "bad" : "wait";
     const yn = (v) => (v === true ? "JA" : v === false ? "NEIN" : "–");
     const prod = o.production === "DEPLOYED" ? "LIVE" : o.production === "BRANCH_ONLY" ? "NUR BRANCH" : "UNVERÄNDERT";
-    li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span>`;
+    li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span><span class="why pay"></span>`;
     li.querySelector(".st").textContent = `${REPAIR_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 480}`;
+    li.querySelector(".pay").textContent = payLine(o, 480, 240) + (o.access_requested ? ` · Zugang ${o.access_received ? "ERHALTEN" : "ANGEFRAGT"}${o.access_type ? ` (${o.access_type})` : ""}` : "");
     li.querySelector(".sub").textContent = ` ${[o.company, o.domain].filter(Boolean).join(" · ")}`;
     li.querySelector(".why").textContent = `Befunde ${o.findings ?? 0} · repariert ${o.repaired ?? 0} · Backup ${yn(o.backup_ok)} · Desktop ${yn(o.desktop_retest)} · Mobile ${yn(o.mobile_retest)} · Production ${prod} · Bericht ${o.report_available ? "JA" : "NEIN"}`;
     return li;
@@ -1619,9 +1642,11 @@ function renderDiscovery(d, note = "") {
 // Check & Anleitung CHF 150 (TF-038): Zähler + Auftragsliste aus der Allowlist-Sicht des VPS. Reine Anzeige – Erstellen,
 // Bestätigen (Verkauf erfassen) und Abschliessen laufen bewusst NUR über die Kommandozeile bei Chris. Nie Secrets/Berichte.
 const C150_LABELS = { ORDER_RECEIVED: "AUFTRAG ERHALTEN", BLOCKED_ORDER_NOT_CONFIRMED: "WARTET AUF BESTÄTIGUNG",
+  BLOCKED_PAYMENT_NOT_RECEIVED: "WARTET AUF ZAHLUNG",
   ORDER_CONFIRMED: "BESTÄTIGT", FULL_AUDIT: "WEBSITE WIRD GEPRÜFT", FINDINGS_ANALYSIS: "BEFUNDE WERDEN AUSGEWERTET",
   INSTRUCTIONS_GENERATION: "ANLEITUNG WIRD ERSTELLT", CUSTOMER_REPORT_READY: "BERICHT WIRD ERSTELLT",
-  DELIVERY_DRAFT_CREATED: "LIEFERENTWURF WIRD ERSTELLT", READY_FOR_DELIVERY: "BEREIT ZUR ÜBERGABE", COMPLETED: "ABGESCHLOSSEN",
+  DELIVERY_DRAFT_CREATED: "LIEFERENTWURF WIRD ERSTELLT", DELIVERY_SENDING: "SERVICE-MAIL WIRD GESENDET",
+  READY_FOR_DELIVERY: "BEREIT ZUR ÜBERGABE", COMPLETED: "ABGESCHLOSSEN",
   CANCELLED: "STORNIERT", AUDIT_FAILED: "CHECK FEHLGESCHLAGEN", REPORT_FAILED: "BERICHT FEHLGESCHLAGEN",
   DELIVERY_DRAFT_FAILED: "ENTWURF FEHLGESCHLAGEN", MANUAL_REVIEW_REQUIRED: "MANUELLE PRÜFUNG" };
 const C150_SOURCE = { direct_customer: "Direktkunde", jarvis_lead: "Jarvis Lead" };
@@ -1629,12 +1654,13 @@ function renderCheck150(rep) {
   const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
   const st = rep?.states || {};
   const sum = (...keys) => keys.reduce((a, k) => a + (st[k] || 0), 0);
-  if (!rep) { for (const id of ["c150Open", "c150Unconfirmed", "c150Auditing", "c150Reporting", "c150Ready", "c150Done", "c150Cancelled", "c150Failed"]) set(id, "–");
+  if (!rep) { for (const id of ["c150Open", "c150Unconfirmed", "c150Unpaid", "c150Auditing", "c150Reporting", "c150Ready", "c150Done", "c150Cancelled", "c150Failed"]) set(id, "–");
     $("c150Seen").textContent = ""; $("check150List").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine Daten vom VPS." })); return; }
   set("c150Open", String(rep.open ?? 0), rep.open ? "on-idle" : "");
   set("c150Unconfirmed", String(rep.waiting_confirmation ?? 0), rep.waiting_confirmation ? "on-idle" : "");
+  set("c150Unpaid", String(rep.waiting_payment ?? st.BLOCKED_PAYMENT_NOT_RECEIVED ?? 0), (rep.waiting_payment ?? st.BLOCKED_PAYMENT_NOT_RECEIVED) ? "on-idle" : ""); // Warten auf Zahlung = neutral, nie ein Fehler
   set("c150Auditing", String(sum("ORDER_CONFIRMED", "FULL_AUDIT", "FINDINGS_ANALYSIS")));
-  set("c150Reporting", String(sum("INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED")));
+  set("c150Reporting", String(sum("INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "DELIVERY_SENDING")));
   set("c150Ready", String(rep.ready_for_delivery ?? 0), rep.ready_for_delivery ? "on-ok" : "");
   set("c150Done", String(st.COMPLETED || 0), st.COMPLETED ? "on-ok" : "");
   set("c150Cancelled", String(rep.cancelled ?? st.CANCELLED ?? 0)); // storniert = neutral, nie ein Fehler
@@ -1645,12 +1671,13 @@ function renderCheck150(rep) {
   $("check150List").replaceChildren(...orders.map((o) => {
     const li = document.createElement("li");
     li.className = o.state === "CANCELLED" ? "" : ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|MANUAL/.test(o.state || "") ? "bad" : "wait";
-    li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span>`;
+    li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span><span class="why pay"></span>`;
     li.querySelector(".st").textContent = `${C150_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 150}`;
+    li.querySelector(".pay").textContent = payLine(o, 150, 75);
     li.querySelector(".sub").textContent = ` ${[o.company, o.domain, C150_SOURCE[o.source]].filter(Boolean).join(" · ")}`;
     const sev = o.findings == null ? "Befunde –" : `Befunde ${o.findings} (kritisch ${o.critical ?? 0} · hoch ${o.high ?? 0} · mittel ${o.medium ?? 0} · gering ${o.low ?? 0})`;
     li.querySelector(".why").textContent = o.state === "CANCELLED" ? "Von Chris storniert – keine weitere Verarbeitung"
-      : `${sev} · Bericht ${o.report_available ? "JA" : "NEIN"} · Gmail-Entwurf ${o.draft_available ? "JA" : "NEIN"} · Lieferung ${o.delivery_status === "draft_ready" ? "ENTWURF BEREIT" : o.delivery_status === "delivered" ? "ÜBERGEBEN" : "OFFEN"}`;
+      : `${sev} · Bericht ${o.report_available ? "JA" : "NEIN"} · Gmail-Entwurf ${o.draft_available ? "JA" : "NEIN"} · Lieferung ${o.delivery_status === "draft_ready" ? "ENTWURF BEREIT" : o.delivery_status === "sent" ? "AUTOMATISCH GESENDET" : o.delivery_status === "delivered" ? "ÜBERGEBEN" : "OFFEN"}`;
     return li;
   }));
 }

@@ -13,6 +13,7 @@ import { githubNetlifyAdapter, setRepairMapping, loadRepairMappings, uniqueRepla
   REPAIR_MAPPINGS_FILE, GITHUB_TOKEN_ENV, NETLIFY_TOKEN_ENV } from "../repair-adapters/github-netlify.js";
 import { createRenderRetester, checkViewport, VIEWPORTS, RENDER_METHOD } from "../repair-render-test.js";
 import { cleanRepair } from "../server-control.js";
+import { recordPayment } from "../payments.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const T0 = new Date("2026-10-12T08:00:00Z");
@@ -189,6 +190,7 @@ function e2e({ failMobile = false, state = {} } = {}) {
   mapMuster(store);
   const o = createRepairOrder(store, { domain: "muster.ch", website: HOME, company: "Muster AG", now: T0 });
   authorizeRepair(store, o.order_id, { authorized_domain: "muster.ch", source: "customer_order_form", reference: "Bestellung 2026-10-12", now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 240, now: T0 }); // Zahlungsschwelle CHF 240 (TF-041)
   const f = mkFetch(state);
   const adapter = githubNetlifyAdapter({ store, env: ENV, fetchFn: f.fetchFn, sleep: async () => {}, pollMs: 0, buildTimeoutMs: 500, now: () => T0 });
   const issue = { type: "broken_link", url: "https://muster.ch/team-alt", page: HOME, label: "Unser Team",
@@ -265,10 +267,17 @@ test("HUD: Repair-Kachel vorhanden, reine Anzeige (keine Repair-Aktionen aus dem
 });
 
 test("Repair-Module können keine Mail senden: kein Gmail-Import, kein Send-Aufruf", () => {
-  for (const f of ["repair-workflow.js", path.join("repair-adapters", "github-netlify.js"), "repair-render-test.js"]) {
+  for (const f of [path.join("repair-adapters", "github-netlify.js"), "repair-render-test.js"]) {
     const src = fs.readFileSync(path.join(ROOT, f), "utf8");
     assert.ok(!/gmail|sendDraft|messages\.send|smtp/i.test(src), `${f} enthält Mail-/Send-Verweise`);
   }
+  // TF-041: repair-workflow.js sendet genau EINE Mail-Art – die Bitte um sicheren Zugang nach erfüllter CHF-240-Schwelle –
+  // nur über das injizierte gmail-Objekt (kein statischer Gmail-Import, keine SMTP-/messages.send-Wege).
+  const src = fs.readFileSync(path.join(ROOT, "repair-workflow.js"), "utf8");
+  assert.ok(!/^import .*gmail/im.test(src) && !/messages\.send|smtp/i.test(src), "kein statischer Gmail-Import, keine Direkt-Sendewege");
+  assert.equal(src.match(/gmail\.sendDraft\(/g)?.length, 1, "genau ein Send-Aufruf (Zugangs-Anfrage)");
+  const sendAt = src.indexOf("gmail.sendDraft(");
+  assert.ok(src.lastIndexOf('order.state === "ACCESS_REQUESTED"', sendAt) > src.lastIndexOf('order.state === "ACCESS_CHECK"', sendAt), "Send nur im ACCESS_REQUESTED-Schritt");
 });
 
 test("Dockerfile kopiert Adapter + Rendertest", () => {

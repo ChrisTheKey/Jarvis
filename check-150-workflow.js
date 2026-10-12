@@ -1,12 +1,20 @@
-// CHECK & ANLEITUNG (CHF 150) — automatische Erfüllung (TF-038). Vollständiger PASSIVER Webseiten-Check plus verständliche,
-// kundenspezifische Schritt-für-Schritt-Anleitung zu den tatsächlich gefundenen, belegten Problemen. Lieferung ausschliesslich
-// als Gmail-ENTWURF – Chris prüft und sendet. Der CHF-480-Reparaturworkflow (repair-workflow.js) bleibt unberührt.
+// CHECK & ANLEITUNG (CHF 150) — automatische Erfüllung (TF-038) + ZAHLUNGSSCHWELLE (TF-041). Vollständiger PASSIVER
+// Webseiten-Check plus verständliche, kundenspezifische Schritt-für-Schritt-Anleitung zu den tatsächlich gefundenen,
+// belegten Problemen. Ab erfüllter Zahlungsschwelle wird die Service-E-Mail AUTOMATISCH an den bestätigten Kunden
+// gesendet (vorher bleibt alles stehen). Der CHF-480-Reparaturworkflow (repair-workflow.js) bleibt unberührt.
 //
 // Harte Regeln (fail closed):
 //   - Start NUR mit tatsächlich bestätigtem CHF-150-Auftrag = erfasster Verkauf in sales.json (recordSale, bestehende
 //     Order-Logik). Cold-Lead, Cold-Draft, manuell gesendete Cold-Mail, QUALIFIED, Interesse: NIE ein Start.
 //     Ein REPAIR_FIX_500-Verkauf startet diesen Workflow ebenfalls nicht. Ohne Auftrag: BLOCKED_ORDER_NOT_CONFIRMED
 //     (wird bei jedem Lauf erneut geprüft – erfasst Chris den Verkauf später, läuft der Auftrag automatisch weiter).
+//   - VERKAUF != ZAHLUNG (TF-041): ein bestätigter Auftrag kann mit paid_chf = 0 existieren und MUSS dann warten.
+//     Erst wenn kumulativ mindestens CHF 75 (erste Hälfte des Festpreises, payments.js) tatsächlich als eingegangen
+//     verbucht sind: bezahlter Check, Anleitung, Kundenbericht und automatischer Versand der Service-E-Mail an den
+//     bestätigten Kunden. Vorher: KEIN Audit für die bezahlte Leistung, KEIN Bericht, KEINE Anleitung, KEINE Liefermail
+//     (BLOCKED_PAYMENT_NOT_RECEIVED, wird je Lauf neu geprüft). Unmittelbar vor dem Versand wird die Schwelle erneut
+//     geprüft (voided/refunded Zahlungen zählen nicht mehr); scheitert der automatische Versand dauerhaft, bleibt der
+//     Entwurf fail safe in READY_FOR_DELIVERY für Chris liegen.
 //   - NIE eine Website-Änderung: dieses Modul kennt keine Adapter und keinerlei Fix-, Deploy- oder Rollback-Funktionen,
 //     keine Schreiboperation an fremden Systemen. Nur lesender Audit (bestehender site-auditor) + Bericht + Gmail-Entwurf.
 //   - Nur belegte Probleme (bestehendes Evidence-/Jargon-Gate aus swiss-repair.js), ALLE relevanten (kein 3er-Deckel),
@@ -20,21 +28,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale } from "./sales.js";
+import { paymentGateForOrder, paymentThresholdChf, paymentSummary } from "./payments.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { fullSiteAudit, detectStack, normDomain } from "./repair-workflow.js";
 
 export const CHECK150_ORDERS_FILE = "check150_orders.json";
 export const CHECK150_OFFER = "REPAIR_CHECK_150"; // Kundenbezeichnung «Check & Anleitung», Preis aus OFFERS (CHF 150)
 export const CHECK150_STATES = Object.freeze(["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT", "FINDINGS_ANALYSIS",
-  "INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "READY_FOR_DELIVERY", "COMPLETED"]);
-export const CHECK150_BLOCKED = Object.freeze(["BLOCKED_ORDER_NOT_CONFIRMED", "AUDIT_FAILED", "REPORT_FAILED",
-  "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED"]);
+  "INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "DELIVERY_SENDING", "READY_FOR_DELIVERY", "COMPLETED"]);
+export const CHECK150_BLOCKED = Object.freeze(["BLOCKED_ORDER_NOT_CONFIRMED", "BLOCKED_PAYMENT_NOT_RECEIVED", "AUDIT_FAILED",
+  "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED"]);
 // Von Chris storniert (z. B. versehentlich angelegter Testauftrag): terminal, KEIN Fehler, zählt nie als offen.
 // Der Datensatz bleibt aus Nachvollziehbarkeit gespeichert (nie JSON von Hand löschen); Audit/Bericht/Entwurf stoppen,
 // es folgt keine Gmail- und keine Website-Aktion.
 export const CHECK150_CANCELLED = "CANCELLED";
-const TERMINAL = new Set(["COMPLETED", CHECK150_CANCELLED, ...CHECK150_BLOCKED.filter((s) => s !== "BLOCKED_ORDER_NOT_CONFIRMED")]);
+// BLOCKED_ORDER_NOT_CONFIRMED und BLOCKED_PAYMENT_NOT_RECEIVED sind NICHT terminal – sie werden je Lauf neu geprüft
+// (verbucht Chris den Verkauf bzw. die Zahlung später, läuft der Auftrag automatisch weiter).
+const RECHECKED = new Set(["BLOCKED_ORDER_NOT_CONFIRMED", "BLOCKED_PAYMENT_NOT_RECEIVED"]);
+const TERMINAL = new Set(["COMPLETED", CHECK150_CANCELLED, ...CHECK150_BLOCKED.filter((s) => !RECHECKED.has(s))]);
 const WAITING = new Set(["READY_FOR_DELIVERY"]);
+// Nachrichtenklasse der Liefermail: Erfüllung eines bezahlten Kundenauftrags – NIE Cold-Outreach/Marketing (TF-041).
+export const FULFILLMENT_CLASS = "CUSTOMER_ORDER_FULFILLMENT";
 const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i;
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
@@ -61,7 +75,8 @@ export function createCheck150Order(store, { domain, website = null, company = n
   const order = {
     order_id, offer_class: CHECK150_OFFER, price_chf: OFFERS[CHECK150_OFFER].price, currency: "CHF",
     domain: d, website: website || `https://${d}/`, company, delivery_email: delivery_email.toLowerCase(), contact_name,
-    delivery: "draft", automatic_send_allowed: false, // Harte Regel: Lieferung ist IMMER ein Gmail-Entwurf
+    delivery: "draft", automatic_send_allowed: false, // wird erst true, wenn die Zahlungsschwelle erfüllt ist (TF-041)
+    payment: { required_chf: OFFERS[CHECK150_OFFER].price / 2, paid_chf: 0, satisfied: false },
     confirmed: null, state: "ORDER_RECEIVED",
     state_history: [{ at: now.toISOString(), from: null, to: "ORDER_RECEIVED", reason: "Auftrag erfasst" }],
     stack: null, audit: null, findings: [], report: null, report_text_file: null, delivery_draft: null,
@@ -259,7 +274,7 @@ export function buildCheck150Report(order, { now = new Date() } = {}) {
   };
 }
 
-// ---------- Gmail-Lieferentwurf (NUR Entwurf; Chris sendet) ----------
+// ---------- Gmail-Lieferentwurf (Versand automatisch NACH erfüllter Zahlungsschwelle; sonst bleibt er für Chris) ----------
 const MAX_INLINE_REPORT = 5200; // passt in die bestehende 6000-Zeichen-Grenze für Entwürfe
 export function buildDeliveryDraft(order, reportText) {
   const f = order.findings || [];
@@ -309,7 +324,26 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
       transition(order, "ORDER_CONFIRMED", `Verkauf erfasst (${sale.sale_date})`, t); saveOrder(store, order); return true;
     }
 
-    if (order.state === "ORDER_CONFIRMED") { transition(order, "FULL_AUDIT", "Start vollständiger passiver Check", t); saveOrder(store, order); return true; }
+    if (order.state === "ORDER_CONFIRMED" || order.state === "BLOCKED_PAYMENT_NOT_RECEIVED") {
+      // ZAHLUNGSSCHWELLE (TF-041): Verkauf != Zahlung. Erst wenn kumulativ mindestens CHF 75 (erste Hälfte, payments.js)
+      // tatsächlich als eingegangen verbucht sind, beginnt die bezahlte Leistung. Vorher: kein Audit, kein Bericht,
+      // keine Anleitung, keine Liefermail. Wird je Lauf neu geprüft; voided/refunded Zahlungen zählen nicht.
+      const sale = confirmedCheck150Sale(store, order.domain);
+      if (!sale) { block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – Auftrag wartet."); return false; }
+      const gate = paymentGateForOrder(store, order);
+      if (!gate.satisfied) {
+        if (order.state !== "BLOCKED_PAYMENT_NOT_RECEIVED") {
+          order.payment = gate;
+          block(order, "BLOCKED_PAYMENT_NOT_RECEIVED", `Zahlung ausstehend: CHF ${gate.paid_chf} von mind. CHF ${gate.required_chf} eingegangen (payments.js record ${order.order_id}).`);
+        } else if (order.payment?.paid_chf !== gate.paid_chf) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
+        return false; // wird bei jedem Lauf erneut geprüft
+      }
+      order.payment = gate;
+      order.automatic_send_allowed = true; // Schwelle erfüllt → die Service-Mail darf automatisch an den bestätigten Kunden
+      order.blocked_reason = null;
+      transition(order, "FULL_AUDIT", `Zahlungsschwelle erfüllt (CHF ${gate.paid_chf} ≥ ${gate.required_chf}) – Start vollständiger passiver Check`, t);
+      saveOrder(store, order); return true;
+    }
 
     if (order.state === "FULL_AUDIT") {
       const a = await fullSiteAudit(order.website, { auditor, now });
@@ -354,17 +388,18 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
       // Pro Auftrag höchstens EIN aktiver Lieferentwurf; bei neuem Bericht wird der bestehende aktualisiert, nie verdoppelt.
       if (order.delivery_draft?.draft_id && order.delivery_draft.report_hash === order.report_text_hash) {
         order.delivery_status = "draft_ready";
-        transition(order, "READY_FOR_DELIVERY", "Lieferentwurf bereits vorhanden (gleiche Berichtsversion)", t); saveOrder(store, order); return true;
+        transition(order, "DELIVERY_SENDING", "Lieferentwurf bereits vorhanden (gleiche Berichtsversion)", t); saveOrder(store, order); return true;
       }
       const text = order.report_text_file && fs.existsSync(order.report_text_file) ? fs.readFileSync(order.report_text_file, "utf8") : buildCheck150Report(order, { now: t }).text;
       const { subject, body, inline } = buildDeliveryDraft(order, text);
       try {
         if (order.delivery_draft?.draft_id && typeof gmail.updateDraft === "function") {
           await gmail.updateDraft(order.delivery_draft.draft_id, { subject, body });
-          order.delivery_draft = { ...order.delivery_draft, report_hash: order.report_text_hash, updated_at: t.toISOString() };
+          order.delivery_draft = { ...order.delivery_draft, report_hash: order.report_text_hash, inline, updated_at: t.toISOString() };
         } else {
-          const d = await gmail.createDraft({ to: order.delivery_email, subject, body });
-          order.delivery_draft = { draft_id: d.draftId, report_hash: order.report_text_hash, inline, created_at: t.toISOString() };
+          const d = await gmail.createDraft({ to: order.delivery_email, subject, body, messageClass: FULFILLMENT_CLASS });
+          order.delivery_draft = { draft_id: d.draftId, to: order.delivery_email, message_class: FULFILLMENT_CLASS,
+            report_hash: order.report_text_hash, inline, created_at: t.toISOString() };
           order.delivery_draft_created_at = t.toISOString();
         }
       } catch (e) {
@@ -373,7 +408,53 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
       }
       order.delivery_status = "draft_ready";
       if (!order.delivery_draft.inline) log("info", "check150_attachment_needed", { order_id: order.order_id, note: "Bericht zu lang für die Mail – Chris hängt die Berichtsdatei beim Senden an." });
-      transition(order, "READY_FOR_DELIVERY", "Gmail-Lieferentwurf bereit – Versand entscheidet Chris", t); saveOrder(store, order); return true;
+      transition(order, "DELIVERY_SENDING", "Gmail-Lieferentwurf bereit – automatischer Versand folgt (Zahlungsschwelle erfüllt)", t); saveOrder(store, order); return true;
+    }
+
+    if (order.state === "DELIVERY_SENDING") {
+      // Automatischer Versand der Service-E-Mail an den BESTÄTIGTEN Kunden (TF-041) – unmittelbar davor wird fail closed
+      // erneut geprüft: Verkauf weiterhin bestätigt (nicht voided) UND Zahlungsschwelle weiterhin erfüllt.
+      if (!confirmedCheck150Sale(store, order.domain)) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – kein Versand."); return false; }
+      const gate = paymentGateForOrder(store, order);
+      order.payment = gate;
+      if (!gate.satisfied) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_PAYMENT_NOT_RECEIVED", `Zahlungsschwelle nicht mehr erfüllt (CHF ${gate.paid_chf} von mind. CHF ${gate.required_chf}) – kein Versand.`); return false; }
+      // Weitere Pflichtbedingungen (fail closed) – jede fehlende Bedingung übergibt den Entwurf an Chris statt zu senden:
+      const handOver = (reason) => { order.delivery_status = "draft_ready"; transition(order, "READY_FOR_DELIVERY", reason, t); saveOrder(store, order); return false; };
+      if (order.delivery_sent_at) return handOver("Service-Mail wurde bereits gesendet – nie ein zweiter Versand");
+      // Send-Idempotenz: ein früherer Versuch ohne gesicherten Ausgang (z. B. Neustart mitten im Versand) wird NIE
+      // blind wiederholt – Chris prüft im Gesendet-Ordner, ob die Mail raus ist.
+      if (order.delivery_send_attempted_at) return handOver("Versandstatus unklar (früherer Versuch ohne Bestätigung) – kein erneuter Versand, Chris prüft «Gesendet»");
+      if (order.offer_class !== CHECK150_OFFER) return handOver("Kein CHF-150-Auftrag – kein automatischer Versand");
+      if (!EMAIL_RE.test(String(order.delivery_email || "")) || (order.delivery_draft?.to && order.delivery_draft.to !== order.delivery_email))
+        return handOver("Lieferadresse fehlt oder weicht vom Entwurf ab – kein automatischer Versand");
+      if (!order.report || !order.report_text_hash || !order.delivery_draft?.draft_id || order.delivery_draft.report_hash !== order.report_text_hash)
+        return handOver("Bericht/Berichts-Hash/Entwurf unvollständig – kein automatischer Versand");
+      // Bericht zu lang für die Mail → Anhang nötig, den die Gmail-Schicht nicht sicher automatisch anhängen kann:
+      // nie eine Mail senden, die einen fehlenden Anhang voraussetzt – fail safe als Entwurf für Chris (ATTACHMENT_REQUIRED).
+      if (order.delivery_draft.inline !== true) {
+        order.delivery_attachment_required = true;
+        return handOver("ATTACHMENT_REQUIRED: Bericht braucht einen Anhang – Chris hängt die Berichtsdatei an und sendet den Entwurf");
+      }
+      if (!gmail || typeof gmail.sendDraft !== "function") return handOver("Kein automatischer Versandweg verfügbar – Entwurf bleibt für Chris");
+      order.delivery_send_attempted_at = t.toISOString();
+      saveOrder(store, order); // VOR dem Versand persistieren – ein Absturz danach führt nie zu einem Doppel-Versand
+      try { await gmail.sendDraft(order.delivery_draft.draft_id); }
+      catch (e) {
+        if (TRANSIENT_RE.test(e.message)) { // nächster Lauf
+          order.delivery_send_attempted_at = null; saveOrder(store, order);
+          log("warn", "check150_send_deferred", { order_id: order.order_id, error: String(e.message).slice(0, 160) }); return false;
+        }
+        // Dauerhafter Fehler: NIE blind weiterversuchen – Entwurf bleibt fail safe für Chris liegen.
+        order.delivery_status = "draft_ready";
+        transition(order, "READY_FOR_DELIVERY", `Automatischer Versand fehlgeschlagen (${String(e.message).slice(0, 120)}) – Entwurf bleibt für Chris`, t);
+        saveOrder(store, order); return false;
+      }
+      order.delivery_status = "sent";
+      order.delivery_sent_at = t.toISOString();
+      order.delivery_message_class = FULFILLMENT_CLASS; // Service-Mail eines bezahlten Auftrags – nie Cold-Outreach
+      log("info", "check150_delivery_sent", { order_id: order.order_id });
+      transition(order, "COMPLETED", "Service-E-Mail automatisch an den bestätigten Kunden gesendet (Zahlungsschwelle erfüllt)", t);
+      saveOrder(store, order); return false;
     }
 
     return false; // READY_FOR_DELIVERY/terminal: wartet auf completeCheck150()
@@ -403,7 +484,21 @@ export function check150Status(dir = WORKER_DIR) {
   for (const o of orders) states[o.state] = (states[o.state] || 0) + 1;
   return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state)).length, states,
     ready_for_delivery: states.READY_FOR_DELIVERY || 0, waiting_confirmation: states.BLOCKED_ORDER_NOT_CONFIRMED || 0,
-    cancelled: states[CHECK150_CANCELLED] || 0 };
+    waiting_payment: states.BLOCKED_PAYMENT_NOT_RECEIVED || 0, cancelled: states[CHECK150_CANCELLED] || 0 };
+}
+// Kundenphase fürs Dashboard (TF-041) – feste Wörter aus Zustand + Zahlung.
+export const CHECK150_PHASES = Object.freeze(["WAITING_FOR_CONFIRMATION", "WAITING_FOR_DEPOSIT", "DEPOSIT_RECEIVED", "AUDITING", "REPORT",
+  "READY_FOR_DELIVERY", "SENT", "COMPLETED", "CANCELLED", "BLOCKED"]);
+export function check150Phase(o, pay) {
+  if (o.state === CHECK150_CANCELLED) return "CANCELLED";
+  if (o.state === "COMPLETED") return o.delivery_status === "sent" ? "SENT" : "COMPLETED";
+  if (o.state === "READY_FOR_DELIVERY") return "READY_FOR_DELIVERY";
+  if (o.state === "BLOCKED_ORDER_NOT_CONFIRMED" || o.state === "ORDER_RECEIVED") return "WAITING_FOR_CONFIRMATION";
+  if (o.state === "BLOCKED_PAYMENT_NOT_RECEIVED" || !["DEPOSIT_MET", "PAID_FULL"].includes(pay.payment_status)) return TERMINAL.has(o.state) ? "BLOCKED" : "WAITING_FOR_DEPOSIT";
+  if (o.state === "ORDER_CONFIRMED") return "DEPOSIT_RECEIVED";
+  if (["FULL_AUDIT", "FINDINGS_ANALYSIS"].includes(o.state)) return "AUDITING";
+  if (["INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY", "DELIVERY_DRAFT_CREATED", "DELIVERY_SENDING"].includes(o.state)) return "REPORT";
+  return "BLOCKED";
 }
 export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
   const store = createStore(dir);
@@ -413,9 +508,14 @@ export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
     .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, max)
     .map((o) => {
       const s = o.report?.summary || {};
+      const pay = paymentSummary(store, o);
       return { order_id: o.order_id, company: o.company || null, domain: o.domain, offer_class: o.offer_class, price_chf: o.price_chf,
         state: o.state, findings: o.report_findings_count ?? null, critical: s.critical ?? null, high: s.high ?? null, medium: s.medium ?? null, low: s.low ?? null,
         report_available: !!o.report, draft_available: !!o.delivery_draft?.draft_id, delivery_status: o.delivery_status || "none",
+        // Zahlungsstand (TF-041): nur Zahlen/Flag/Zustandswort aus dem Ledger – nie Referenzen oder Zahlungsdetails im Dashboard.
+        paid_chf: pay.paid_chf, payment_required_chf: pay.deposit_chf, rest_to_deposit_chf: pay.rest_to_deposit_chf,
+        payment_status: pay.payment_status, payment_ok: pay.deposit_chf != null && pay.paid_chf >= pay.deposit_chf,
+        phase: check150Phase(o, pay),
         source: records[normDomain(o.domain)]?.direct_sale?.source === "direct_customer" ? "direct_customer" : "jarvis_lead",
         created_at: o.created_at, updated_at: o.updated_at };
     });
@@ -432,6 +532,7 @@ export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, log = 
 }
 
 // ---------- Kommandozeile ----------
+// Zahlung verbuchen (TF-041): node payments.js record <order_id> --amount 75 – erst ab CHF 75 läuft der Auftrag.
 // node check-150-workflow.js --list | --show <id> | --create <domain> --email <lieferadresse> [--website URL] [--company NAME]
 //                            [--name ANREDE] | --create-confirmed <domain> --email <adresse> [--company] [--name] [--website]
 //                            | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>
@@ -454,6 +555,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       try {
         const o = createCheck150Order(store, { domain, website: flag("website"), company: flag("company"), delivery_email: flag("email"), contact_name: flag("name") });
         console.log(`Auftrag angelegt: ${o.order_id} (${o.state}) – der Worker bestätigt ihn automatisch über den erfassten Verkauf.`);
+        console.log(`Zahlungsschwelle (TF-041): Start erst ab kumulativ CHF ${paymentThresholdChf(CHECK150_OFFER)} – Zahlung verbuchen: node payments.js record ${o.order_id} --amount ${paymentThresholdChf(CHECK150_OFFER)} --reference Bank`);
       } catch (e) {
         if (!/läuft bereits/.test(e.message)) throw e;
         console.log(`Kein neuer Auftrag: ${e.message} Der erfasste Verkauf bestätigt den bestehenden Auftrag beim nächsten Lauf.`);
@@ -471,6 +573,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (flag("create")) {
       const o = createCheck150Order(store, { domain: flag("create"), website: flag("website"), company: flag("company"), delivery_email: flag("email"), contact_name: flag("name") });
       console.log(`Auftrag angelegt: ${o.order_id} (${o.state}). Bestätigung = erfasster Verkauf: node sales.js sale ${o.domain} REPAIR_CHECK_150`);
+      console.log(`Zahlungsschwelle (TF-041): Start erst ab kumulativ CHF ${paymentThresholdChf(CHECK150_OFFER)} – Zahlung verbuchen: node payments.js record ${o.order_id} --amount ${paymentThresholdChf(CHECK150_OFFER)} --reference Bank`);
       return 0;
     }
     if (argv.includes("--run")) { const gmail = await import("./gmail.js"); console.log(JSON.stringify(await runCheck150Orders({ gmail }), null, 2)); return 0; }
