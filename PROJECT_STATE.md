@@ -35,7 +35,13 @@ Letzte Aktualisierung: 2026-10-11
   nie, invalid-historyId-Recovery, Quota→DEGRADED+Stats+kein Backoff-Livelock+Erholung hinter dem Cursor, Draft-Queue intakt,
   Reply ohne Duplikate, 0 Sends); angepasst mail-worker (2× Tageslimit mit Budget 150) + always-online (Stats-Whitelist
   +mail_degraded). Gesamt 436/436, Secret-Scan 0 Treffer.
-- Live-Stand nach Deploy: siehe nächster Eintrag unten (wird nach der Live-Verifikation ergänzt).
+- **LIVE-VERIFIKATION 2026-10-12 07:54–07:58 UTC (de340c4)**: Deploy ohne --with-secrets, Container healthy, 0 Restarts.
+  Alter persistierter Fehler-Backoff (failures 9, backoffUntil 08:46 – Rest des behobenen Livelocks) einmalig atomar auf 0
+  zurückgesetzt (exakt was der erste erfolgreiche Tick selbst getan hätte). Erster erfolgreicher Tick seit 02:18 um 07:57:40 mit
+  `gmail:"OK"` (nicht einmal DEGRADED – Pacing+Budget reichen); gmail_sync_state.json live (history_id + cold_cursor gesetzt,
+  Cold-Sync 07:56:50), state.threadScanCursor gesetzt, failures 0. Cloud 07:58: Heartbeat 07:57:41 (frisch), HUD SYSTEM ONLINE /
+  Core CLOUD ONLINE / Mail VPS ACTIVE / Authority VPS / Windows STANDBY / Queue 0 / AI ONLINE. Discovery lief durchgehend weiter
+  (1115 Websites heute), Repair-Hook No-op (keine Orders), 0 Send-Events, keine echte Mail. Incident behoben.
 
 ## JARVIS CHECK & REPARATUR CHF 480 — PRODUCTION READY (TF-036, 2026-10-12, Tests 428/428 grün; VPS-Deploy wartet auf SSH-Key)
 Alles Folgende ist mit Attrappen (Mock-Fetch, Browser-Attrappe, Test-Fixtures) getestet – KEINE echte Kundenwebsite verändert, keine Mail.
