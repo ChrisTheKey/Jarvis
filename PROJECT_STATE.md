@@ -40,6 +40,11 @@ Letzte Aktualisierung: 2026-10-12
 - Tests: `test/void-sale-040.test.js` (10 Tests, decken die 17 Pflichtfälle: Blockaden 1–3, Void+Historie 4/8, Doppel-Void 5,
   Kennzahlen 6/7/17, Auftrags-Guard 9–11, CHECK150 12, CHF-480 13, Outreach-Reentry 14, CLI/0-Sends/0-Website-Writes 15/16,
   Lifecycle). Gesamt 469/469 grün, Secret-Scan 0 Treffer.
+- **LIVE 2026-10-12 (a3953ac)**: Push → GitHub (origin verifiziert); VPS `deploy/vps/deploy.sh fiverr` OHNE --with-secrets:
+  DEPLOYED_COMMIT a3953ac, Container healthy, 0 Restarts. Netlify Production autodeployt vom Push (Dashboard-HTML unverändert;
+  lead-db-Änderung ist abwärtskompatibel – ein älteres Function-Bundle zeigt voided_test_customer schlimmstenfalls als «none»,
+  nie als Kunde). Der Testverkauf echtefirma.ch existierte NUR lokal (wie die Testaufträge, TF-039) – der VPS-Zustand enthält
+  ihn nicht. Keine Mail gesendet, keine Kundenwebsite verändert, /opt/fiverr unberührt.
 
 ## JARVIS DIRECT CUSTOMER ORDER INTAKE (TF-039, 2026-10-12, Tests 459/459 grün)
 - **Bestehender Lead ist für echte Direktkunden nicht mehr zwingend**: Ein Kunde kann über Website-Formular, Direktanfrage,
