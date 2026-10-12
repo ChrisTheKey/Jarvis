@@ -50,6 +50,15 @@ Letzte Aktualisierung: 2026-10-12
   geleert, keine Attrappen-Werte im DOM, kein local/sessionStorage, keine Cookies, keine Konsolenausgabe; Token nach Laden aus
   der URL entfernt; Server sah nur Chiffrat + Metadaten; Host-Key-Seite: Fingerprint, Pflicht-Häkchen, Bestätigung, Link danach
   ungültig; CSP/no-store/noindex-Header wie netlify.toml.
+- **LIVE 2026-10-12 (ce336aa)**: Push → GitHub (origin = HEAD verifiziert); VPS `deploy/vps/deploy.sh fiverr` OHNE --with-secrets:
+  DEPLOYED_COMMIT ce336aa, Container healthy, 0 Restarts, worker_started role=vps 16:08:38 UTC, authority holder=vps self=true;
+  im Container (read-only rootfs, Prüfskript per stdin): payments, check-150-workflow, repair-workflow, router, profile-builder,
+  wordpress, sftp, ssh, github-netlify ladbar; Standard-Deps = github_netlify, wordpress, sftp, ssh + Router + Preflight; Registry
+  ACTIVE (ssh2 ladbar); 16 Order-Zustände; 0 Reparaturaufträge. /opt/fiverr unberührt. Netlify Production autodeployt: `/` 200
+  (Zeile «Zugangsprofil», neue Phasen), `/access.html` 200 mit CSP/no-store/noindex und neuen Server-Feldern; `/api/access-intake`:
+  unbekannter Token (info + host_key-submit) → generisches 404, pull/register ohne Worker-Token → 401, GET → 405. Production-Mobile
+  390×844: Startseite und Access-Formular (SSH-Felder + Host-Key-Ansicht) ohne Overflow, Token aus URL entfernt, kein Storage,
+  keine Cookies. Keine echte Zahlung, Mail, Zugangsdaten, Host-Key-Bestätigung, SFTP/SSH-/WordPress-Verbindung, kein Intake registriert.
 - **Bekannte sichere Einschränkung**: ssh2 handelt den Host-Key-Typ selbst aus. Liefert ein Kunde den Fingerprint eines anderen
   Typs (z. B. RSA statt Ed25519), endet das fail closed in MANUAL_REVIEW_REQUIRED (unnötige manuelle Prüfung, nie unsicher).
   Bewusst KEIN Typ-Durchprobieren/Auto-Trust in TF-043.
