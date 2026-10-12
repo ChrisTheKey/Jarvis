@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
-import { OFFERS } from "./sales.js";
+import { OFFERS, isVoidedSale } from "./sales.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { fullSiteAudit, detectStack, normDomain } from "./repair-workflow.js";
 
@@ -43,7 +43,8 @@ const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 export function confirmedCheck150Sale(store, domain) {
   const rec = store.read("sales.json", { records: {} }).records?.[normDomain(domain)];
   const sale = rec?.sale;
-  if (!sale || sale.selected_offer !== CHECK150_OFFER || sale.sale_value !== OFFERS[CHECK150_OFFER].price) return null;
+  // Ein stornierter (voided) Verkauf ist NIE eine Auftragsbestätigung (TF-040) – der Auftrag bleibt BLOCKED_ORDER_NOT_CONFIRMED.
+  if (!sale || isVoidedSale(sale) || sale.selected_offer !== CHECK150_OFFER || sale.sale_value !== OFFERS[CHECK150_OFFER].price) return null;
   return { sale_date: sale.sale_date, work_status: sale.work_status || "open", source: "sales.json" };
 }
 

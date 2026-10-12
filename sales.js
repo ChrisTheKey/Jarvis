@@ -18,6 +18,10 @@
 //                 Tatsächlich bestätigter Kundenauftrag (Formular/Direktanfrage/Empfehlung/Kontakt) – nur bewusst von
 //                 Chris über die Kommandozeile. Braucht KEINEN bestehenden Discovery-Lead; erfindet nie Discovery-,
 //                 Outreach- oder Versandgrundlagen-Historie (source = direct_customer, Basis = manual_confirmed_order).
+//   node sales.js void-sale <domain> --reason "<grund>"
+//                 Versehentlich erfassten Verkauf stornieren (TF-040): NIE löschen, nur markieren (sale_status=voided,
+//                 voided_at, void_reason). Historie bleibt vollständig; voided zählt nirgends mehr als Umsatz/Kunde und
+//                 bestätigt keinen Workflow. Fail closed: exakte Domain, Grund Pflicht, offene/abgeschlossene Aufträge blockieren.
 //   node sales.js status <domain> <replied|not_interested>
 //   node sales.js work <domain> <open|in_progress|delivered>
 import path from "node:path";
@@ -84,7 +88,8 @@ export function classifyOffer(lead = {}) {
 }
 
 // ---------- Pipeline (Verkäufe, Antwort-/Absage-Status) ----------
-// .secrets/mail_worker/sales.json: { records: { <domain>: { status?, statusAt?, sale?: { selected_offer, sale_date, sale_value, currency, customer_status, work_status, evidence[] } } } }
+// .secrets/mail_worker/sales.json: { records: { <domain>: { status?, statusAt?, sale?: { selected_offer, sale_date, sale_value, currency, customer_status, work_status, evidence[],
+//   sale_status?="voided", voided?, voided_at?, void_reason? } } } } – voided-Felder nur nach `void-sale` (TF-040); Original bleibt erhalten.
 
 const keyOf = (l = {}) => l.domain || (l.website ? safeDomain(l.website) : "") || normEmail(l.email || "");
 function safeDomain(u) { try { return new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; } }
@@ -141,8 +146,48 @@ export function setWorkStatus(records, key, work_status) {
   return { ...records, [key]: { ...records[key], sale: { ...records[key].sale, work_status } } };
 }
 
+// ---------- VOID / Storno eines versehentlich erfassten Verkaufs (TF-040) ----------
+// Ein Verkauf wird NIE gelöscht, nur markiert (sale_status=voided + Zeitpunkt + Pflicht-Grund). Alle ursprünglichen Daten
+// (Angebot, Betrag, Datum, Evidence, direct_sale-Stammdaten) bleiben unverändert erhalten – die Historie ist nachvollziehbar.
+// Fail closed: nur exakter Domain-Treffer (nie ein „ähnlicher“ Datensatz), Grund Pflicht, bereits voided blockiert erneutes Void.
+// Verknüpfte Aufträge schützen: offene Aufträge → zuerst stornieren; COMPLETED (echter gelieferter Auftrag) → manuelle Prüfung.
+// Nur CANCELLED (bzw. bei CHF-480 terminal gescheiterte BLOCKED_*-Aufträge ohne Storno-Weg) stehen einem Void nicht im Weg.
+const VOID_SAFE_ORDER_STATES = new Set(["CANCELLED", "BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED"]);
+export const VOIDED_TEST_CUSTOMER = "voided_test_customer";
+
+export function voidSale(records, domain, { reason, relatedOrders = [], now = new Date() } = {}) {
+  const key = safeDomain(String(domain || ""));
+  if (!key || !key.includes(".")) throw new Error(`Ungültige Domain "${domain}".`);
+  const r = String(reason || "").replace(/\s+/g, " ").trim();
+  if (!r) throw new Error("Begründung ist Pflicht: --reason \"<grund>\".");
+  const rec = records[key]; // nur exakter Treffer – nie automatische Auswahl eines ähnlichen Datensatzes
+  if (!rec) throw new Error(`Kein Verkaufs-Datensatz für "${key}" vorhanden – nichts wird erraten oder angelegt.`);
+  if (!rec.sale) throw new Error(`Für "${key}" ist kein Verkauf erfasst – nichts zu stornieren.`);
+  if (isVoidedSale(rec.sale)) throw new Error(`Verkauf für "${key}" ist bereits storniert (voided am ${rec.sale.voided_at || "unbekannt"}).`);
+  for (const o of relatedOrders) {
+    if (!o || safeDomain(String(o.domain || "")) !== key) continue;
+    if (o.state === "COMPLETED") throw new Error(`Abgeschlossener Auftrag ${o.order_id} (COMPLETED) vorhanden – kein automatisches Void, manuelle Prüfung nötig.`);
+    if (!VOID_SAFE_ORDER_STATES.has(o.state)) throw new Error(`Offener Auftrag ${o.order_id} (${o.state}) vorhanden – zuerst Auftrag stornieren.`);
+  }
+  const sale = { ...rec.sale, sale_status: "voided", voided: true, voided_at: now.toISOString(), void_reason: r.slice(0, 300) };
+  return { ...records, [key]: { ...rec, sale, status: "sale_voided", statusAt: now.toISOString() } };
+}
+
+// Alle Aufträge (CHF 150 und CHF 480) zu einer Domain – Dateinamen bewusst lokal, damit kein Import-Zyklus mit den
+// Workflow-Modulen entsteht (check-150-workflow.js und repair-workflow.js importieren beide aus sales.js).
+export function collectDomainOrders(store, domain) {
+  const key = safeDomain(String(domain || ""));
+  const out = [];
+  for (const file of ["check150_orders.json", "repair_orders.json"])
+    for (const o of Object.values(store.read(file, { orders: {} }).orders || {}))
+      if (o && safeDomain(String(o.domain || "")) === key) out.push({ order_id: o.order_id, state: o.state, domain: o.domain, file });
+  return out;
+}
+
 // Ein Verkauf zählt nur mit einem der zwei Angebote und dem dazu gehörenden Preis – alles andere wird ignoriert.
-const validSale = (s) => s && isOfferClass(s.selected_offer) && s.sale_value === OFFERS[s.selected_offer].price;
+// Stornierte (voided) Verkäufe bleiben gespeichert, zählen aber NIRGENDS mehr: kein Umsatz, kein Kunde, keine Workflow-Bestätigung.
+export const isVoidedSale = (s) => !!s && (s.sale_status === "voided" || s.voided === true);
+const validSale = (s) => s && isOfferClass(s.selected_offer) && s.sale_value === OFFERS[s.selected_offer].price && !isVoidedSale(s);
 
 // ---------- Lebenszyklus (abgeleitet, ohne Migration bestehender Daten) ----------
 
@@ -295,9 +340,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       // Lead-Datenbank sofort über die BESTEHENDE sichere reconcile-Logik nachführen (idempotent, additiv, nie löschend).
       try { const { reconcileRegistry } = await import("./lead-registry.js"); reconcileRegistry(store, { gmailRegistry: registry, force: true }); } catch (e) { console.error("Hinweis: Lead-Datenbank-Abgleich folgt beim nächsten Worker-Lauf (" + e.message + ")"); }
     }
+    else if (cmd === "void-sale") {
+      // Storno durch Chris (CLI): markiert den Verkauf als voided (nie löschen), prüft vorher verknüpfte Aufträge beider
+      // Workflows. Danach nur Kennzahlen + Lead-Datenbank nachführen – KEIN Cold-Outreach, keine Gmail-, keine Website-Aktion.
+      const k = safeDomain(key || "");
+      const next = voidSale(data.records, key, { reason: opt("reason"), relatedOrders: collectDomainOrders(store, k) });
+      store.write("sales.json", { records: next });
+      const s = next[k].sale;
+      console.log(`Verkauf storniert: ${k} → VOIDED (CHF ${s.sale_value}). Grund: ${s.void_reason}`);
+      persistMetrics({ registry });
+      try { const { reconcileRegistry } = await import("./lead-registry.js"); reconcileRegistry(store, { gmailRegistry: registry, force: true }); } catch (e) { console.error("Hinweis: Lead-Datenbank-Abgleich folgt beim nächsten Worker-Lauf (" + e.message + ")"); }
+    }
     else if (cmd === "status") { lead(); store.write("sales.json", { records: setPipelineStatus(data.records, key, value) }); console.log("Status gesetzt:", key, value); persistMetrics({ registry }); }
     else if (cmd === "work") { store.write("sales.json", { records: setWorkStatus(data.records, key, value) }); console.log("Arbeitsstatus gesetzt:", key, value); }
-    else { console.log("Befehle: report | leads | sale <domain> <REPAIR_CHECK_150|REPAIR_FIX_500> [--date JJJJ-MM-TT] | direct-sale <domain> <offer> --email <adresse> [--company] [--name] [--website] | status <domain> <replied|not_interested> | work <domain> <open|in_progress|delivered>"); return 1; }
+    else { console.log("Befehle: report | leads | sale <domain> <REPAIR_CHECK_150|REPAIR_FIX_500> [--date JJJJ-MM-TT] | direct-sale <domain> <offer> --email <adresse> [--company] [--name] [--website] | void-sale <domain> --reason \"<grund>\" | status <domain> <replied|not_interested> | work <domain> <open|in_progress|delivered>"); return 1; }
     return 0;
   };
   run().then((c) => process.exit(c), (e) => { console.error("Fehler: " + e.message); process.exit(1); });

@@ -35,7 +35,7 @@ const TERMINAL = new Set(["COMPLETED", ...BLOCKED_STATES]);
 // Nur eine ausdrückliche, dokumentierte Kundenhandlung zählt. Deny by default – alles andere wird abgelehnt.
 export const AUTHORIZATION_SOURCES = Object.freeze(["customer_reply_email", "customer_order_form", "signed_offer", "written_confirmation"]);
 // Diese Quellen sind NIE eine Freigabe (werden auch bei Tippfehlern von Chris hart abgelehnt).
-export const NEVER_AUTHORIZATION = Object.freeze(["cold_outreach", "cold_mail", "cold_draft", "lead_database", "public_website", "audit", "discovery"]);
+export const NEVER_AUTHORIZATION = Object.freeze(["cold_outreach", "cold_mail", "cold_draft", "lead_database", "public_website", "audit", "discovery", "voided_sale", "sales_record"]);
 
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 export const normDomain = (d = "") => String(d).trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");

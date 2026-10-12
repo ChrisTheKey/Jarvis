@@ -4,6 +4,43 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-12
 
+## JARVIS SALE VOID / TEST-SALE REVERSAL (TF-040, 2026-10-12, Tests 469/469 grün)
+- **Verkäufe werden NIEMALS gelöscht**: `node sales.js void-sale <domain> --reason "<grund>"` (`voidSale` in sales.js) markiert
+  nur – `sale_status=voided`, `voided=true`, `voided_at`, `void_reason` (Grund Pflicht). Alle Originaldaten bleiben unverändert
+  (Angebot, Betrag, Datum, Evidence, `direct_sale`-Stammdaten/Quelle); `rec.status=sale_voided`. Historie vollständig nachvollziehbar.
+- **Fail closed**: nur exakter Domain-Treffer (nie Auswahl eines ähnlichen Datensatzes), unbekannte Domain / kein Verkauf /
+  bereits voided / fehlender Grund / ungültige Domain → Fehler, nichts verändert.
+- **Umsatzberechnung ignoriert voided Sales**: zentrales `validSale` (sales.js) schliesst voided aus → total_revenue,
+  revenue_150/500, sales_150/500, customers, Lifecycle `customer`, loadPipeline.sale und damit auch Dashboard-Umsatz
+  (metrics.json → HUD) fallen automatisch korrekt zurück. Historischer Datensatz bleibt in sales.json gespeichert.
+- **Voided bestätigt keine Workflows**: `confirmedCheck150Sale` lehnt voided ab (`isVoidedSale`) → Auftrag bleibt/wird
+  BLOCKED_ORDER_NOT_CONFIRMED, kein Audit, kein Bericht, kein Gmail-Entwurf. CHF-480: liest sales.json nie (testbewiesen);
+  NEVER_AUTHORIZATION zusätzlich um `voided_sale`/`sales_record` erweitert – ein Verkauf ist dort NIE eine Reparaturfreigabe.
+  CHF-480-Workflow sonst unverändert.
+- **Verknüpfte Aufträge schützen vor versehentlichem Void** (`collectDomainOrders`, prüft check150_orders.json UND
+  repair_orders.json): offener Auftrag → «Offener Auftrag … – zuerst Auftrag stornieren»; COMPLETED → fail closed
+  (manuelle Prüfung, kein automatisches Void); CANCELLED (und bei CHF-480 terminal gescheiterte BLOCKED_*-Aufträge ohne
+  Storno-Weg) stehen dem Void nicht im Weg.
+- **Customer-Status korrigiert, nie blind gelöscht**: reconcile (lead-registry.js Schritt 6) stuft bei voided per
+  `authoritative: ["customer_status"]` herab – Direkt-/Testkunde ohne anderen aktiven Verkauf → `voided_test_customer`
+  (neu in CUSTOMER_STATES, deriveStatus → DISCARDED «verworfen»), sonst `none`. mergeLead erlaubt die Herabstufung NUR
+  authoritative (Rang bleibt klebrig); ein späterer echter Verkauf macht wieder `customer`. Kunden mit anderen aktiven
+  Verkäufen bleiben Kunde (validSale je Verkauf).
+- **Kein Cold-Outreach-Reentry nach Void**: contactBlockReason/registryBlock → «stornierter Testverkauf»; zusätzlich
+  blockiert der Draft-Worker Kundendomains weiterhin über sales.json (isCustomer prüft bewusst auch voided – konservativ).
+  source/discovery_source bleiben nachvollziehbar (direct_customer). Keine Gmail-, keine Discovery-, keine Website-Aktion im Void-Pfad.
+- **Testverkauf echtefirma.ch sauber voided (2026-10-12, lokal)**: Vorbedingungen exakt verifiziert (REPAIR_CHECK_150,
+  source=direct_customer, basis=manual_confirmed_order; Aufträge CA150-20261012-9a1c7e und CA150-20261012-63e315 beide
+  CANCELLED, keine CHF-480-Aufträge) → `void-sale echtefirma.ch --reason "Testverkauf mit Platzhalterdaten"`. Danach:
+  sale_status=voided + Grund + Zeitpunkt, direct_sale erhalten, metrics 0/0/0 (CHF 0 aktiver Umsatz), Registry
+  voided_test_customer/DISCARDED, registryBlock «stornierter Testverkauf», confirmedCheck150Sale=null. Keine anderen
+  Verkäufe verändert (einziger Datensatz).
+- Dashboard: keine HTML-Änderung nötig – Umsatz/Kunden kommen aus metrics.json/leadStats und sind damit korrekt; CANCELLED-
+  Aufträge zeigen weiterhin «STORNIERT» (TF-039), kein roter Systemfehler.
+- Tests: `test/void-sale-040.test.js` (10 Tests, decken die 17 Pflichtfälle: Blockaden 1–3, Void+Historie 4/8, Doppel-Void 5,
+  Kennzahlen 6/7/17, Auftrags-Guard 9–11, CHECK150 12, CHF-480 13, Outreach-Reentry 14, CLI/0-Sends/0-Website-Writes 15/16,
+  Lifecycle). Gesamt 469/469 grün, Secret-Scan 0 Treffer.
+
 ## JARVIS DIRECT CUSTOMER ORDER INTAKE (TF-039, 2026-10-12, Tests 459/459 grün)
 - **Bestehender Lead ist für echte Direktkunden nicht mehr zwingend**: Ein Kunde kann über Website-Formular, Direktanfrage,
   Empfehlung oder persönlichen Kontakt bestellen, ohne je durch Discovery gelaufen zu sein. `node sales.js sale` bleibt

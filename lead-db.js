@@ -6,7 +6,9 @@
 export const LEAD_STATUSES = Object.freeze(["DISCOVERED", "AUDITED", "QUALIFIED", "WAITING_FOR_DRAFT", "DRAFT_CREATED", "MANUALLY_SENT", "REPLIED", "CUSTOMER",
   "NOT_INTERESTED", "SUPPRESSED", "OPT_OUT", "DO_NOT_CONTACT", "DISCARDED"]);
 export const DRAFT_STATES = Object.freeze(["none", "blocked", "queued", "draft_created", "discarded", "manually_sent"]);
-export const CUSTOMER_STATES = Object.freeze(["none", "not_interested", "customer"]);
+// voided_test_customer: Direkt-/Testkunde, dessen einziger Verkauf storniert (voided) wurde – zählt nie als zahlender Kunde,
+// bleibt aber nachvollziehbar und wird NIE automatisch wieder Cold-Outreach-Kandidat (TF-040).
+export const CUSTOMER_STATES = Object.freeze(["none", "not_interested", "customer", "voided_test_customer"]);
 export const OFFER_CLASSES = Object.freeze(["REPAIR_CHECK_150", "REPAIR_FIX_500", "NONE"]);
 export const LANGUAGES = Object.freeze(["de", "fr", "it", "rm"]);
 export const CANTON_CODES = Object.freeze(["ZH", "BE", "LU", "UR", "SZ", "OW", "NW", "GL", "ZG", "FR", "SO", "BS", "BL", "SH", "AR", "AI", "SG", "GR", "AG", "TG", "TI", "VD", "VS", "NE", "GE", "JU"]);
@@ -34,7 +36,7 @@ const oneOf = (v, list, d = null) => (list.includes(v) ? v : d);
 const minIso = (a, b) => (!a ? b || null : !b ? a : a < b ? a : b);
 const maxIso = (a, b) => (!a ? b || null : !b ? a : a > b ? a : b);
 const DRAFT_RANK = { none: 0, blocked: 1, queued: 2, discarded: 3, draft_created: 4, manually_sent: 5 };
-const CUSTOMER_RANK = { none: 0, not_interested: 1, customer: 2 };
+const CUSTOMER_RANK = { none: 0, not_interested: 1, customer: 2, voided_test_customer: 0 }; // voided nur authoritative (reconcile), nie per Rang
 
 // Status aus den (nie zurückgenommenen) Fakten. Sperren haben IMMER Vorrang, dann der späteste Vertriebsschritt.
 export function deriveStatus(l = {}) {
@@ -43,6 +45,7 @@ export function deriveStatus(l = {}) {
   if (l.suppressed) return "SUPPRESSED";
   if (l.customer_status === "customer") return "CUSTOMER";
   if (l.customer_status === "not_interested") return "NOT_INTERESTED";
+  if (l.customer_status === "voided_test_customer") return "DISCARDED"; // stornierter Testverkauf: kein Kunde, kein neuer Lead
   if (l.reply_status === "replied") return "REPLIED";
   if (l.manual_send_detected || l.first_contacted_at || l.gmail_draft_status === "manually_sent") return "MANUALLY_SENT";
   if (l.gmail_draft_status === "draft_created") return "DRAFT_CREATED";
@@ -61,6 +64,7 @@ export function contactBlockReason(l) {
   if (l.suppressed) return "suppression";
   if (l.customer_status === "customer") return "bestehender Kunde";
   if (l.customer_status === "not_interested") return "kein Interesse";
+  if (l.customer_status === "voided_test_customer") return "stornierter Testverkauf"; // nie automatischer Outreach-Reentry nach Void
   if (l.reply_status === "replied") return "Antwort erhalten";
   if (contacted(l)) return "bereits angeschrieben";
   return null;
@@ -93,7 +97,9 @@ export function mergeLead(cur = null, inc = {}, { now = new Date(), source = nul
   for (const k of ["suppressed", "opt_out", "do_not_contact", "manual_send_detected", "qualified", "audited"]) out[k] = !!(out[k] || inc[k]);
   if (inc.reply_status === "replied") out.reply_status = "replied";
   out.reply_at = minIso(out.reply_at, inc.reply_at);
-  if (CUSTOMER_RANK[inc.customer_status] > CUSTOMER_RANK[out.customer_status || "none"]) out.customer_status = inc.customer_status;
+  // customer_status ist klebrig (Rang) – NUR das reconcile aus sales.json darf per authoritative herabstufen (Void, TF-040).
+  if (authoritative.includes("customer_status") && CUSTOMER_STATES.includes(inc.customer_status)) out.customer_status = inc.customer_status;
+  else if (CUSTOMER_RANK[inc.customer_status] > CUSTOMER_RANK[out.customer_status || "none"]) out.customer_status = inc.customer_status;
   out.first_contacted_at = minIso(out.first_contacted_at, inc.first_contacted_at);
   out.last_contacted_at = maxIso(out.last_contacted_at, inc.last_contacted_at || inc.first_contacted_at);
   out.draft_created_at = maxIso(out.draft_created_at, inc.draft_created_at);

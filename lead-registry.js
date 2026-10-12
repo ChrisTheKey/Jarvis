@@ -169,15 +169,19 @@ export function reconcileRegistry(store, { gmailRegistry = { sent: {}, drafts: {
   // 6) Vertrieb: Kunde / kein Interesse / Antwort (sales.json). Direktkunden (direct_sale, von Chris bestätigt) bringen ihre
   //    Stammdaten mit (Firma, Lieferadresse, Kontakt, Website) – aber NIE eine Outreach-/Versand-/Discovery-Historie:
   //    kein first_contacted_at, kein manual_send_detected, kein gmail_draft_status. mergeLead füllt nur leere Felder.
+  //    Stornierte (voided) Verkäufe (TF-040): zählen nie als Kunde. Nur hier darf customer_status authoritative herabgestuft
+  //    werden – Direkt-/Testkunden ohne anderen Verkauf → voided_test_customer (nachvollziehbar, blockiert Outreach-Reentry).
   for (const [domain, rec] of Object.entries(store.read("sales.json", { records: {} }).records || {})) {
     if (!rec) continue;
-    const customer = !!rec.sale?.selected_offer;
+    const voided = !!rec.sale && (rec.sale.sale_status === "voided" || rec.sale.voided === true);
+    const customer = !!rec.sale?.selected_offer && !voided;
     const dc = rec.direct_sale && rec.direct_sale.source === "direct_customer" ? rec.direct_sale : null;
-    up.put({ lead_id: domain, domain: domain.includes("@") ? null : domain, customer_status: customer ? "customer" : rec.status === "not_interested" ? "not_interested" : "none",
+    up.put({ lead_id: domain, domain: domain.includes("@") ? null : domain,
+      customer_status: customer ? "customer" : voided ? (dc ? "voided_test_customer" : "none") : rec.status === "not_interested" ? "not_interested" : "none",
       reply_status: rec.status === "replied" || (customer && !dc) ? "replied" : undefined, reply_at: rec.status === "replied" ? rec.statusAt || null : undefined,
       offer_class: customer ? rec.sale.selected_offer : undefined,
       ...(dc ? { company: dc.company || null, website: dc.website || null, business_email: dc.delivery_email || null, contact_name: dc.contact_name || null, discovery_source: "direct_customer" } : {}) },
-      { source: dc ? "direct_sale" : "sales" });
+      { source: dc ? "direct_sale" : "sales", authoritative: voided ? ["customer_status"] : [] });
   }
   // 7) Suppression / Opt-out (Adresse und Firmen-Domain) – haben immer Vorrang
   for (const [addr, s] of Object.entries(store.read("suppression.json", {}))) {
