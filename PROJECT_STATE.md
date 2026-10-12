@@ -40,6 +40,10 @@ Letzte Aktualisierung: 2026-10-12
 - Tests: `test/direct-customer-039.test.js` (11: A alter sale-Fehler, B/D Direktkunde+CHF150, C kein Duplikat, E/F Offer/E-Mail
   blockiert, G create-confirmed→READY_FOR_DELIVERY, H Cold unverändert, I keine erfundene Historie, J/K/L Cancel/Worker-Skip/
   Dashboard, M/N 0 Sends + 0 Website-Writes). Gesamt 459/459 grün, Secret-Scan 0 Treffer.
+- **LIVE 2026-10-12 (ba4c122)**: Push → GitHub; VPS `deploy/vps/deploy.sh fiverr` OHNE --with-secrets: DEPLOYED_COMMIT ba4c122,
+  Container healthy, 0 Restarts. Netlify Production autodeployt (Storniert-Zähler/STORNIERT/Quelle im HUD verifiziert, 200).
+  VPS hat KEINE check150_orders.json (die zwei Testaufträge existierten nur lokal und sind dort CANCELLED; 0 offene Aufträge).
+  Keine Mail gesendet, keine Kundenwebsite verändert, /opt/fiverr unberührt.
 
 ## JARVIS CHECK & ANLEITUNG CHF 150 — AUTOMATED FULFILLMENT (TF-038, 2026-10-12, Tests 448/448 grün)
 - Neu `check-150-workflow.js`: automatische Erfüllung des CHF-150-Pakets (REPAIR_CHECK_150, Preis aus OFFERS; Angebot unverändert).
