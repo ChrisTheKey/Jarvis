@@ -43,14 +43,26 @@ async function accessToken() {
 }
 const token = await accessToken();
 let lastGmail = 0;
-async function getDraft(id) {
-  const wait = lastGmail + 200 - Date.now();
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastGmail = Date.now();
-  const r = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(id)}?format=full`, { headers: { authorization: `Bearer ${token}` } });
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`drafts.get ${r.status}`);
-  return r.json();
+// Gedrosselt (ein Aufruf zur Zeit, ≥ 600 ms Abstand) – der Mail-Worker nutzt dasselbe Kontingent. 429/rateLimitExceeded → Backoff.
+let gmailChain = Promise.resolve();
+function getDraft(id) {
+  const run = async () => {
+    for (let attempt = 0; ; attempt++) {
+      const wait = lastGmail + 600 - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      lastGmail = Date.now();
+      const r = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(id)}?format=full`, { headers: { authorization: `Bearer ${token}` } });
+      if (r.status === 404) return null;
+      if (r.ok) return r.json();
+      const body = await r.json().catch(() => ({}));
+      const limited = r.status === 429 || (r.status === 403 && /rateLimit|userRateLimit/i.test(JSON.stringify(body.error?.errors || "")));
+      if (!limited || attempt >= 6) throw new Error(`drafts.get ${r.status}`);
+      await new Promise((res) => setTimeout(res, Math.min(60_000, 2000 * 2 ** attempt)));
+    }
+  };
+  const p = gmailChain.then(run);
+  gmailChain = p.catch(() => {});
+  return p;
 }
 
 const registry = readJson(path.join(SECRETS, "gmail_jarvis.json"), { drafts: {}, sent: {} });

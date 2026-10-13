@@ -1,8 +1,30 @@
-# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025
+# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025 + COLD-DRAFT-QUALITY-050
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
 Letzte Aktualisierung: 2026-10-13
+
+## TF-050 – COLD DRAFT QUALITY UPDATE / EXISTING DRAFT REWRITE (2026-10-13, Code d4ea612 + Runner-Fix, NICHT auf dem Mail-Worker deployt)
+- **Regel (`swiss-repair.js`)**: `MIN_COLD_FINDINGS` = 1, `MAX_COLD_FINDINGS_IN_EMAIL` = 3. 0 belegte Befunde → kein Entwurf; 1 → Einzahl-
+  Vorlage („Kurzer Hinweis zu Ihrer Website – <domain>“); 2–3 → Mehrzahl („<n> konkrete Hinweise zu Ihrer Website – <domain>“); 4+ → die 3
+  wichtigsten (Severity, dann Besucherwirkung). Nie aufgefüllt. Je Punkt genau ein kurzer Satz, keine behauptete Folge. Danach Angebot
+  vollständiger Check, CHF 150/480 aus OFFERS, Landingpage, Signatur, neuer Abmeldesatz. Ersetzt die Regel „2–3 Findings“ vom 2026-10-11.
+- **Rewrite bestehender Entwürfe (`cold-draft-rewrite.js`, `scripts/tf050-rewrite-cold-drafts.mjs`)**: Besitz nur über Register
+  (individual_reviews COLD_LEAD_DRAFT_ONLY + gmail_jarvis.json gleicher Draft/Lead, keine messageClass); Gmail read-only geprüft (DRAFT,
+  Label JARVIS, gleicher Empfänger, kein CC/BCC, keine Anhänge, Text unverändert seit Jarvis-Fassung); Befunde öffentlich erneut geprüft
+  (Link/Bild noch vorhanden + Ziel 404/410/5xx, ungültiger mailto, TLS-Warnung; Netzfehler = kein Beleg). Übernahme nur via
+  `pending_update` → laufender Mail-Worker → `gmail.updateDraft` (in place, Empfänger/Thread bleiben). Kein Send-/Create-/Delete-Pfad.
+  Vor dem Deploy im Container als Bundle (Module nach /tmp/tf050, Imports auf /app) ausgeführt.
+- **Live-Lauf 2026-10-13 (~21:00–22:00 UTC)**: 345 Jarvis-Cold-Entwürfe gescannt → 307 aktualisiert (1 Befund 228, 2 Befunde 48,
+  3 Befunde 31), 19 ohne aktuell bestätigten Befund unverändert (nicht gelöscht/gesendet), 19 nicht mehr als Jarvis-Entwurf in Gmail
+  (übersprungen), 0 mehrdeutig, 0 Anhang, 0 in Gmail bearbeitet. Canary zuerst (1 Entwurf), dann Rest. Gmail-Nachkontrolle 307/307:
+  neuer Text, weiterhin DRAFT, Label JARVIS, gleicher Empfänger, gleicher Thread, 0 Anhänge. Sent-Register vorher = nachher (9),
+  Worker-Log ohne Send-/Fehler-Events. Gmail drafts.get format=full lief anfangs in rateLimitExceeded → Runner gedrosselt (600 ms, Backoff).
+- Tests: Unit 621/621 (632 inkl. 11 übersprungene Lab-Tests), neu `test/cold-rewrite-050.test.js` (A–L), Secret-Scan 0.
+- **OFFEN – MAIL WORKER DEPLOY REQUIRED**: Der Produktiv-Mail-Worker läuft weiter mit f868b5a (alte Regel MIN=2, alte Vorlage). Neue
+  Cold-Entwürfe aus der Discovery entstehen bis zum Deploy noch im alten Stil. Deploy (`deploy.sh fiverr`, ≈ 6 s Unterbrechung) nur mit
+  ausdrücklicher Freigabe von Chris. Danach kann der Runner erneut laufen (idempotent: bereits neue Entwürfe → UNCHANGED).
+- Unverändert: COLD_LEAD_DRAFT_ONLY, legal_basis NONE, automatic_send_allowed false, `gmail.sendDraft` verweigert Cold-Entwürfe, kein Auto-Send.
 
 ## TF-049 – GMAIL OAUTH RECOVERY + READINESS HARDENING (2026-10-13, Feature f868b5a, Mail- und Repair-Worker LIVE f868b5a)
 - **Gmail OAuth recovered**: lokal neu autorisiert (`node gmail.js auth`), `node gmail.js check` → MAIL AUTH READY. Ursache vorher:
