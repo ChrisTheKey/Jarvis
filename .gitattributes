@@ -2,3 +2,5 @@
 start.command text eol=lf
 deploy/vps/Dockerfile text eol=lf
 deploy/vps/*.yml text eol=lf
+deploy/vps/Dockerfile.repair text eol=lf
+deploy/vps/repair/*.yml text eol=lf

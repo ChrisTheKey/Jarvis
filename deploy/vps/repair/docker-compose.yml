@@ -1,0 +1,42 @@
+# Jarvis Repair-Service (TF-047) – EIGENES Compose-Projekt «jarvis-repair» unter /opt/jarvis-repair, getrennt vom Projekt
+# «jarvis-mail» (/opt/jarvis-mail). Ein Build/Start/Neustart hier kann den Mail-Worker (jarvis-mail-mail-worker-1) nicht
+# erfassen: anderes Projekt, genau ein Service, keine depends_on, kein gemeinsames Image, kein gemeinsames Netz.
+#   Deploy nur über deploy/vps/deploy-repair.sh (baut/startet ausschliesslich repair-worker, prüft den Mail-Worker vorher/nachher).
+name: jarvis-repair
+services:
+  repair-worker:
+    container_name: jarvis-repair-worker
+    build:
+      context: ./app
+      dockerfile: deploy/vps/Dockerfile.repair
+      args:
+        JARVIS_COMMIT: ${JARVIS_COMMIT:-unknown}
+        JARVIS_DEPLOYED_AT: ${JARVIS_DEPLOYED_AT:-}
+    image: jarvis-repair-worker:latest
+    restart: unless-stopped
+    # Nur: JARVIS_MAIL_WORKER_TOKEN (sicherer Zugangslink/Intake), optional JARVIS_SYNC_URL / JARVIS_WEB_ORIGIN. Datei mit Rechten 600.
+    # Nie ANTHROPIC_API_KEY oder Gmail-Secrets (der Service verweigert sonst den Start).
+    env_file: ./.env
+    volumes:
+      # Repair-Zustand: Aufträge, Zahlungen, Tresor (nur Chiffrat), Host-Keys, Backups – Verzeichnis 700, Dateien 600.
+      - ./state:/data/repair
+      # Repair-Outbox: einziger Versandweg (Mail-Worker liest und sendet genau einmal).
+      - ./outbox:/data/outbox
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "node", "repair-service.js", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

@@ -103,7 +103,8 @@ export const AUTHORIZATION_SOURCES = Object.freeze(["customer_reply_email", "cus
 export const NEVER_AUTHORIZATION = Object.freeze(["cold_outreach", "cold_mail", "cold_draft", "lead_database", "public_website", "audit", "discovery", "voided_sale", "sales_record"]);
 
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
-const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i;
+// TF-047: OUTBOX_PENDING = Service-Mail liegt in der Repair-Outbox, der Mail-Worker hat noch nicht bestätigt → nächster Lauf, nie «gesendet».
+const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network|OUTBOX_PENDING/i;
 export const normDomain = (d = "") => String(d).trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
 const issueKey = (i) => { let p = i.url; try { p = new URL(i.url).pathname; } catch {} return `${i.type}|${p}`; };
 const RELEVANT = new Set(["medium", "high", "critical"]);
@@ -1264,7 +1265,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
     if (flag("authorize")) { const o = authorizeRepair(store, flag("authorize"), { authorized_domain: flag("domain"), source: flag("source"), reference: flag("reference") }); console.log(`Freigabe gesetzt: ${o.order_id} → ${o.state}`); return 0; }
     if (argv.includes("--run")) {
-      const gmail = await import("./gmail.js").catch(() => null);
+      // TF-047: im separaten Repair-Service (kein Gmail) nur über die Repair-Outbox – der Mail-Worker sendet.
+      const gmail = process.env.JARVIS_WORKER_ROLE === "repair" ? (await import("./repair-outbox.js")).createOutboxMailer({ dir: (await import("./repair-service.js")).OUTBOX_DIR })
+        : await import("./gmail.js").catch(() => null);
       const { syncConfig } = await import("./local-state.js");
       console.log(JSON.stringify(await runRepairOrders({ gmail, intake: intakeClient({ config: syncConfig() }) }), null, 2)); return 0;
     }

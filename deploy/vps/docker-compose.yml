@@ -1,6 +1,8 @@
 # Jarvis Always-on Mail-Worker auf dem Hetzner-VPS – eigenes Compose-Projekt unter /opt/jarvis-mail,
 # unabhängig von anderen Diensten auf dem Server.
 #   cd /opt/jarvis-mail && sudo docker compose up -d --build
+# Reparaturaufträge (CHF 480/150) laufen seit TF-047 im separaten Projekt jarvis-repair (deploy/vps/deploy-repair.sh) – ein
+# Repair-Deploy berührt diesen Container nie. Achtung: dieser Mail-Deploy (deploy.sh) recreated den Mail-Worker = geplante Wartung.
 # Startet automatisch nach VPS-Neustart (Docker-Dienst), Container-Neustart und Prozessabsturz (restart: unless-stopped).
 name: jarvis-mail
 services:
@@ -19,6 +21,13 @@ services:
     volumes:
       # Gmail-Credentials, Token, Register, Leads, Suppression, Worker-Zustand – nur hier, Verzeichnis 700, Dateien 600.
       - ./secrets:/data/secrets
+      # TF-047: separater Repair-Service (/opt/jarvis-repair, eigenes Projekt). Outbox: Service-Mails, die NUR dieser Worker
+      # (Sender Authority) genau einmal sendet. Repair-Zustand nur lesend (Dashboard, Kunden-Dedupe).
+      - /opt/jarvis-repair/outbox:/data/repair-outbox
+      - /opt/jarvis-repair/state/mail_worker:/data/repair-state:ro
+    environment:
+      JARVIS_REPAIR_OUTBOX: /data/repair-outbox
+      JARVIS_REPAIR_STATE_DIR: /data/repair-state
     read_only: true
     tmpfs:
       - /tmp

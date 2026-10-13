@@ -1,0 +1,24 @@
+# Jarvis Repair-Service (TF-047) – eigener Container jarvis-repair-worker, getrennt vom 24/7-Mail-Worker (jarvis-mail).
+# Build-Kontext ist das Repository-Wurzelverzeichnis (siehe deploy/vps/repair/docker-compose.yml, auf dem VPS /opt/jarvis-repair/app).
+# Chromium (Browser-Gate TF-045) liegt NUR in diesem Image. Gmail-, Cloud-Mail- und Server-Control-Module sind bewusst NICHT im Image
+# (gmail.js, mail-requests.js, server-agent.js, server-control.js): der Repair-Service kann strukturell nicht senden und keine Sender
+# Authority beanspruchen – Service-Mails gehen über die Repair-Outbox an den Mail-Worker.
+# Secrets kommen nie ins Image: Repair-Zustand/Tresor im Volume /data/repair, Outbox im Volume /data/outbox (nur auf dem VPS).
+FROM node:22-alpine
+RUN apk add --no-cache tzdata
+RUN apk add --no-cache chromium font-dejavu
+ENV NODE_ENV=production TZ=Europe/Zurich JARVIS_SECRETS_DIR=/data/repair JARVIS_REPAIR_OUTBOX=/data/outbox JARVIS_WORKER_ROLE=repair JARVIS_REPAIR_POLL_SECONDS=120 JARVIS_CHROMIUM_PATH=/usr/bin/chromium
+WORKDIR /app
+COPY deploy/vps/backup-public.pem ./backup-public.pem
+COPY package.json package-lock.json /app/
+RUN npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund && npm cache clean --force
+COPY repair-service.js repair-outbox.js repair-workflow.js check-150-workflow.js repair-render-test.js repair-browser-validator.js production-readiness.js mail-worker.js human-contact.js swiss-repair.js cloud-leads.js lead-registry.js lead-db.js lead-finder.js site-auditor.js swiss-areas.js email-permission.js sales.js payments.js access-intake.js access-intake-api.js shared-state.js local-state.js cloud-core.js backup.js backup-api.js persona-version.js persona.md ./
+COPY repair-adapters ./repair-adapters
+COPY data/swiss-municipalities.json ./data/swiss-municipalities.json
+USER node
+ARG JARVIS_COMMIT=unknown
+ARG JARVIS_DEPLOYED_AT=
+ENV JARVIS_COMMIT=$JARVIS_COMMIT JARVIS_DEPLOYED_AT=$JARVIS_DEPLOYED_AT
+# Gesund, solange der Service sein Lock in den letzten 5 Minuten erneuert hat (Herzschlag jede Minute).
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 CMD ["node", "repair-service.js", "--healthcheck"]
+CMD ["node", "repair-service.js"]

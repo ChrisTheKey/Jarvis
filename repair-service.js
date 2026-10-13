@@ -1,0 +1,116 @@
+// Jarvis Repair-Service (TF-047) – eigener Container jarvis-repair-worker, getrennt vom 24/7-Mail-Worker.
+// Übernimmt ausschliesslich die Kundenaufträge: CHF-480 Check & Reparatur (repair-workflow.js: Freigabe-/Zahlungs-Gates, sicherer
+// Zugang/Tresor, Profile Builder, Host-Key, Adapter, Backups, Browser-Gate mit Chromium, Bericht) und CHF-150 Check & Anleitung
+// (check-150-workflow.js). Eigener Zustand (JARVIS_SECRETS_DIR, z. B. /data/repair → /data/repair/mail_worker), eigene Locks, eigener
+// Healthcheck, eigener Deploy (deploy/vps/deploy-repair.sh) – ein Neustart/Update hier berührt den Mail-Worker nie.
+//
+// KEINE Sender Authority: kein Gmail-Zugang, kein Cloud-Mail-Claim, kein Heartbeat als Mail-Worker. Service-Mails
+// (CUSTOMER_ACCESS_REQUEST / CUSTOMER_ORDER_FULFILLMENT) gehen ausschliesslich über die Repair-Outbox (repair-outbox.js) an den
+// Mail-Worker, der sie genau einmal sendet. Liegen Gmail-Secrets oder der Anthropic-Key in diesem Container, startet er nicht.
+//
+//   node repair-service.js               Service-Schleife (Lock gegen Doppelstart)
+//   node repair-service.js --once        genau ein Durchlauf
+//   node repair-service.js --healthcheck Exit 0, wenn der Service sich in den letzten 5 Minuten gemeldet hat (Docker)
+//   node repair-service.js --status      Zähler: Aufträge + Outbox (nie Adressen/Inhalte)
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { WORKER_DIR, createLogger, acquireLock, heartbeat, releaseLock, backupPublicKey, zurichDay } from "./mail-worker.js";
+import { createOutboxMailer, outboxStatus } from "./repair-outbox.js";
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
+export const SERVICE_LOCK = "repair-service.lock";
+export const OUTBOX_DIR = process.env.JARVIS_REPAIR_OUTBOX || path.join(SECRETS, "repair_outbox");
+export const SERVICE_ROLE = "repair";
+// Was in diesem Container nie liegen darf – sonst könnte er zur zweiten Sender Authority werden.
+export const FORBIDDEN_FILES = Object.freeze(["gmail_token.json", "gmail_credentials.json", "gmail_jarvis.json"]);
+export const FORBIDDEN_ENV = Object.freeze(["ANTHROPIC_API_KEY", "JARVIS_SERVER_CONTROL_TOKEN"]);
+export const pollMs = (env = process.env) => Math.max(30, Number(env.JARVIS_REPAIR_POLL_SECONDS) || 120) * 1000;
+
+// Isolation (fail closed): nur Namen, nie Werte.
+export function isolationViolations({ secretsDir = SECRETS, env = process.env } = {}) {
+  const v = [];
+  for (const f of FORBIDDEN_FILES) if (fs.existsSync(path.join(secretsDir, f))) v.push(`Datei ${f} im Repair-Service`);
+  for (const k of FORBIDDEN_ENV) if (env[k]) v.push(`Variable ${k} im Repair-Service`);
+  if (env.JARVIS_WORKER_ROLE && env.JARVIS_WORKER_ROLE !== SERVICE_ROLE) v.push("JARVIS_WORKER_ROLE ist nicht «repair»");
+  return v;
+}
+
+export function serviceHealthy(dir = WORKER_DIR, now = Date.now(), maxAgeMs = 5 * 60_000) {
+  try { const l = JSON.parse(fs.readFileSync(path.join(dir, SERVICE_LOCK), "utf8")); return now - (l.beat || 0) < maxAgeMs; } catch { return false; }
+}
+
+// Ein Durchlauf: CHF-480 und CHF-150 mit der Outbox als einzigem Versandweg. Fehler eines Workflows stoppen den anderen nie.
+export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR, intake = null, log = () => {}, runRepair = null, runCheck150 = null } = {}) {
+  const mailer = createOutboxMailer({ dir: outboxDir });
+  runRepair ||= (await import("./repair-workflow.js")).runRepairOrders;
+  runCheck150 ||= (await import("./check-150-workflow.js")).runCheck150Orders;
+  const out = {};
+  try { out.repair = await runRepair({ dir, gmail: mailer, intake, log }); if (out.repair?.advanced) log("info", "repair_orders_processed", out.repair); }
+  catch (e) { out.repair = { error: true }; log("error", "repair_orders_failed", { error: e.message }); }
+  try { out.check150 = await runCheck150({ dir, gmail: mailer, log }); if (out.check150?.advanced) log("info", "check150_orders_processed", out.check150); }
+  catch (e) { out.check150 = { error: true }; log("error", "check150_orders_failed", { error: e.message }); }
+  out.outbox = outboxStatus(outboxDir);
+  return out;
+}
+
+export async function serviceStatus({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR } = {}) {
+  const { repairOrdersStatus } = await import("./repair-workflow.js");
+  const { check150Status } = await import("./check-150-workflow.js");
+  return { role: SERVICE_ROLE, healthy: serviceHealthy(dir), commit: process.env.JARVIS_COMMIT || null, repair: repairOrdersStatus(dir), check150: check150Status(dir), outbox: outboxStatus(outboxDir) };
+}
+
+// Lokales, verschlüsseltes State-Backup des Repair-Zustands (kein Offsite-Upload: der Offsite-Schlüssel je Tag gehört dem Mail-Worker).
+async function backupLocal({ dir, log, first = false }) {
+  const pem = backupPublicKey();
+  if (!pem) return;
+  const backup = await import("./backup.js");
+  if (first && !backup.backupInfo(dir)) await backup.backupNow({ secretsDir: SECRETS, workerDir: dir, publicKeyPem: pem, zurichDay, log });
+  else await backup.dailyBackup({ secretsDir: SECRETS, workerDir: dir, publicKeyPem: pem, zurichDay, log });
+}
+
+async function loop() {
+  const dir = WORKER_DIR;
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const log = createLogger(dir);
+  const bad = isolationViolations();
+  if (bad.length) { log("error", "repair_service_isolation_refused", { reasons: bad }); console.error("Repair-Service verweigert den Start:\n  - " + bad.join("\n  - ")); return 2; }
+  if (!acquireLock(dir, { name: SERVICE_LOCK })) { log("info", "repair_service_already_running"); console.log("Repair-Service läuft bereits."); return 3; }
+  let stop = false, wake = () => {};
+  process.on("exit", () => releaseLock(dir, process.pid, SERVICE_LOCK));
+  for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { stop = true; wake(); });
+  const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
+  setInterval(() => heartbeat(dir, process.pid, SERVICE_LOCK), 60_000).unref();
+  const { intakeClient } = await import("./access-intake.js");
+  const { syncConfig } = await import("./local-state.js");
+  log("info", "repair_service_started", { pid: process.pid, commit: process.env.JARVIS_COMMIT || null, outbox: outboxStatus(OUTBOX_DIR).exists });
+  try { await backupLocal({ dir, log, first: true }); } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
+  while (!stop) {
+    heartbeat(dir, process.pid, SERVICE_LOCK);
+    await repairServiceIteration({ dir, intake: intakeClient({ config: syncConfig() }), log });
+    try { await backupLocal({ dir, log }); } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
+    if (!stop) await nap(pollMs());
+  }
+  log("info", "repair_service_stopped", { pid: process.pid });
+  return 0;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const arg = process.argv[2];
+  process.on("uncaughtException", (e) => { createLogger(WORKER_DIR)("error", "crash", { error: e.stack || e.message }); process.exit(1); });
+  process.on("unhandledRejection", (e) => { createLogger(WORKER_DIR)("error", "crash", { error: String(e?.stack || e) }); process.exit(1); });
+  const run = {
+    "--healthcheck": async () => (serviceHealthy() ? 0 : 1),
+    "--status": async () => { console.log(JSON.stringify(await serviceStatus(), null, 2)); return 0; },
+    "--once": async () => {
+      const bad = isolationViolations();
+      if (bad.length) { console.error("Repair-Service verweigert den Lauf:\n  - " + bad.join("\n  - ")); return 2; }
+      const { intakeClient } = await import("./access-intake.js");
+      const { syncConfig } = await import("./local-state.js");
+      console.log(JSON.stringify(await repairServiceIteration({ intake: intakeClient({ config: syncConfig() }), log: createLogger(WORKER_DIR) }), null, 2));
+      return 0;
+    },
+  }[arg] || loop;
+  run().then((code) => process.exit(code ?? 0));
+}

@@ -1,5 +1,7 @@
 // FIRST CUSTOMER PRODUCTION READINESS (TF-046) – read-only Preflight für Chris, bevor der erste echte CHF-480-/CHF-150-Kunde
-// durch Jarvis läuft. Auf dem VPS:  sudo docker exec jarvis-mail-mail-worker-1 node production-readiness.js
+// durch Jarvis läuft. Auf dem VPS (TF-047, separater Repair-Service):  sudo docker exec jarvis-repair-worker node production-readiness.js
+// Im Repair-Service (JARVIS_WORKER_ROLE=repair) prüft er statt Gmail/Authority: Isolation (keine Sender Authority) und den
+// Zustellweg über die Repair-Outbox (Mail-Worker bestätigt per Herzschlag).
 // Lokal (nur Entwicklungsstand):  node production-readiness.js
 //
 // Harte Regeln:
@@ -16,8 +18,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
-export const RELEASE_GATE = "TF-046";
-export const RELEASE_GATE_SCRIPT = "test:release-046";
+export const RELEASE_GATE = "TF-047";
+export const RELEASE_GATE_SCRIPT = "test:release-047";
 export const MIN_FREE_DISK_GB = 10; // konservativ: Chromium-Image + Temp-Profile + Zustand/Backups wachsen
 export const WARN_FREE_DISK_GB = 20;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +49,11 @@ export function diskCheck(freeGb) {
 }
 
 // Secret-Präsenz – nur YES/NO, nie Werte. required = für den ersten Kundenauftrag zwingend.
-export function secretsPresence({ env = process.env, secretsDir, workerDir }) {
+export function secretsPresence({ env = process.env, secretsDir, workerDir, service = "mail" }) {
+  if (service === "repair") return [
+    { name: "JARVIS_MAIL_WORKER_TOKEN", present: !!env.JARVIS_MAIL_WORKER_TOKEN, required: true, why: "sicherer Zugangslink (Intake)" },
+    { name: "access_intake_private.pem", present: exists(path.join(workerDir, "access_intake_private.pem")), required: false, why: "wird beim ersten Kundenzugang erzeugt" },
+  ];
   return [
     { name: "JARVIS_MAIL_WORKER_TOKEN", present: !!env.JARVIS_MAIL_WORKER_TOKEN, required: true, why: "send_authority + sicherer Zugangslink (Intake)" },
     { name: "ANTHROPIC_API_KEY", present: !!env.ANTHROPIC_API_KEY, required: false, why: "Antworttexte" },
@@ -60,7 +66,8 @@ export function secretsPresence({ env = process.env, secretsDir, workerDir }) {
 
 // Alle Prüfungen – read-only. deps erlauben Tests ohne VPS (env, Verzeichnisse, statfs, Chromium-Start).
 export async function readinessReport({ env = process.env, secretsDir = env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets"),
-  workerDir = path.join(secretsDir, "mail_worker"), statfs = fs.statfsSync, launchChromium = true, now = Date.now() } = {}) {
+  workerDir = path.join(secretsDir, "mail_worker"), statfs = fs.statfsSync, launchChromium = true, now = Date.now(),
+  service = env.JARVIS_WORKER_ROLE === "repair" ? "repair" : "mail", outboxDir = env.JARVIS_REPAIR_OUTBOX || path.join(secretsDir, "repair_outbox") } = {}) {
   const checks = [];
   const add = (c) => { checks.push(c); return c; };
   const load = async (name, spec) => { try { return await import(spec); } catch (e) { add(fail(name, `Modul nicht ladbar (${String(e.code || "Fehler").slice(0, 40)})`)); return null; } };
@@ -68,7 +75,25 @@ export async function readinessReport({ env = process.env, secretsDir = env.JARV
   // ---------- Core ----------
   const nodeMajor = Number(process.versions.node.split(".")[0]);
   const mw = await load("Core", "./mail-worker.js");
-  if (mw) {
+  if (service === "repair") {
+    // ---------- TF-047: Repair-Service (eigener Container) ----------
+    const rs = await load("Core", "./repair-service.js");
+    const ob = await load("Delivery", "./repair-outbox.js");
+    if (rs) {
+      if (nodeMajor < 18) add(fail("Core", `Node ${nodeMajor} – mindestens 18`));
+      else if (!exists(workerDir)) add(fail("Core", "Repair-Zustand fehlt"));
+      else if (!rs.serviceHealthy(workerDir, now)) add(fail("Core", "Repair-Service läuft nicht (kein Herzschlag in den letzten 5 Minuten)"));
+      else add(ok("Core", `Repair-Service läuft · Node ${nodeMajor}`));
+      const bad = rs.isolationViolations({ secretsDir, env });
+      add(bad.length ? fail("Isolation", `${bad.length} Verstoss/Verstösse – Repair-Service darf keine Sender Authority haben`) : ok("Isolation", "kein Gmail-Zugang, keine Sender Authority, kein Anthropic-Key"));
+    }
+    if (ob) {
+      const st = ob.outboxStatus(outboxDir, { now });
+      if (!st.exists || !st.writable) add(fail("Delivery", "Repair-Outbox fehlt oder ist nicht beschreibbar"));
+      else if (!st.consumer_online) add(fail("Delivery", "Mail-Worker stellt die Repair-Outbox (noch) nicht zu – kein Herzschlag (Mail-Worker-Update nötig)"));
+      else add(ok("Delivery", `Service-Mails über die Outbox → Mail-Worker (Sender Authority) · offen ${st.pending}`));
+    }
+  } else if (mw) {
     const beat = mw.healthy(workerDir, now);
     const role = mw.workerRole(env);
     if (nodeMajor < 18) add(fail("Core", `Node ${nodeMajor} – mindestens 18`));
@@ -77,20 +102,21 @@ export async function readinessReport({ env = process.env, secretsDir = env.JARV
     else add(ok("Core", `Worker läuft · Rolle ${role === "vps" ? "VPS" : "LOKAL"} · Node ${nodeMajor}`));
   }
 
-  // ---------- Authority (genau ein Sender: VPS) ----------
+  // ---------- Authority (genau ein Sender: VPS) – nur im Mail-Worker ----------
   const auth = readJson(path.join(workerDir, "authority.json"), null);
   const role = env.JARVIS_WORKER_ROLE === "vps" ? "vps" : "local";
-  if (role !== "vps") add(fail("Authority", "kein VPS-Worker (lokaler Stand hat keine Send Authority)"));
+  if (service === "repair") { /* Repair-Service ist nie Sender Authority (siehe Isolation/Delivery) */ }
+  else if (role !== "vps") add(fail("Authority", "kein VPS-Worker (lokaler Stand hat keine Send Authority)"));
   else if (auth?.holder !== "vps" || auth?.self !== true) add(fail("Authority", "VPS ist (noch) nicht als send_authority bestätigt"));
   else add(ok("Authority", "VPS hat send_authority"));
 
   // ---------- Secrets (nur YES/NO) ----------
-  const secrets = secretsPresence({ env, secretsDir, workerDir });
+  const secrets = secretsPresence({ env, secretsDir, workerDir, service });
 
   // ---------- Mail ----------
   const gmailReady = secrets.filter((s) => s.why === "Gmail").every((s) => s.present);
   const registryOk = parses(path.join(secretsDir, "gmail_jarvis.json"));
-  const gm = await load("Mail", "./gmail.js");
+  const gm = service === "repair" ? null : await load("Mail", "./gmail.js");
   if (gm) {
     const classes = gm.SERVICE_MESSAGE_CLASSES || [];
     if (!gmailReady) add(fail("Mail", "Gmail-Zugang fehlt (Credentials/Token)"));
@@ -180,6 +206,8 @@ export async function readinessReport({ env = process.env, secretsDir = env.JARV
     const ageH = info?.last_at ? (now - Date.parse(info.last_at)) / 3600e3 : Infinity;
     if (!pem) add(fail("Backup", "Backup-Public-Key fehlt"));
     else if (!info?.last_at) add(fail("Backup", "noch kein State-Backup"));
+    // Repair-Service: nur lokal verschlüsselt (Offsite je Tag gehört dem Mail-Worker) – kein Offsite ist hier kein Fehler.
+    else if (service === "repair" && ageH <= 48) add(ok("Backup", `letztes lokales State-Backup vor ${Math.max(0, Math.round(ageH))} h · Generationen ${info.generations ?? "–"} (verschlüsselt)`));
     else if (info.ok === false) add(fail("Backup", "letztes State-Backup fehlgeschlagen"));
     else if (ageH > 48) add(fail("Backup", `letztes State-Backup älter als 48 h (${Math.round(ageH)} h)`));
     else add(ok("Backup", `letztes State-Backup vor ${Math.max(0, Math.round(ageH))} h · Generationen ${info.generations ?? "–"}`));
@@ -195,13 +223,13 @@ export async function readinessReport({ env = process.env, secretsDir = env.JARV
 
   for (const s of secrets) if (s.required && !s.present) checks.push(fail("Secrets", `${s.name} fehlt (${s.why})`));
   const failed = checks.filter((c) => c.status === "FAIL");
-  return { release_gate: RELEASE_GATE, ready: failed.length === 0, checks, secrets: secrets.map(({ name, present, required }) => ({ name, present: yes(present), required })),
+  return { release_gate: RELEASE_GATE, service, ready: failed.length === 0, checks, secrets: secrets.map(({ name, present, required }) => ({ name, present: yes(present), required })),
     reasons: failed.map((c) => `${c.name}: ${c.detail}`) };
 }
 
 export function formatReport(r) {
-  const order = ["Core", "Mail", "Payments", "CHF150", "CHF480", "Access Intake", "Adapter Registry", "Profile Builder", "Host-Key", "Browser", "Chromium", "Backup", "Authority", "Disk", "Release Gate"];
-  const lines = [`JARVIS PRODUCTION READINESS (${r.release_gate}) – read-only, keine Aktion ausgelöst`, ""];
+  const order = ["Core", "Isolation", "Delivery", "Mail", "Payments", "CHF150", "CHF480", "Access Intake", "Adapter Registry", "Profile Builder", "Host-Key", "Browser", "Chromium", "Backup", "Authority", "Disk", "Release Gate"];
+  const lines = [`JARVIS PRODUCTION READINESS (${r.release_gate}${r.service === "repair" ? ", Repair-Service" : ""}) – read-only, keine Aktion ausgelöst`, ""];
   for (const name of order) for (const c of r.checks.filter((x) => x.name === name)) lines.push(`${(c.name + ":").padEnd(18)} ${c.status.padEnd(4)}  ${c.detail}`);
   lines.push("", "Secrets (nur vorhanden ja/nein):");
   for (const s of r.secrets) lines.push(`  ${s.name.padEnd(28)} ${s.present}${s.required ? "  (Pflicht)" : ""}`);

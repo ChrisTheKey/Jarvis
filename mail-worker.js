@@ -161,6 +161,17 @@ export function createLogger(dir) {
   };
 }
 
+// TF-047: Separater Repair-Service (jarvis-repair-worker). JARVIS_REPAIR_STATE_DIR = dessen Zustand (read-only eingebunden) – dann
+// laufen CHF-480/CHF-150 NICHT mehr im Mail-Worker, Dashboard-Sichten lesen dort. JARVIS_REPAIR_OUTBOX = Repair-Outbox: der
+// Mail-Worker (einzige Sender Authority) sendet die Service-Mails des Repair-Service genau einmal (repair-outbox.js).
+export const repairStateDir = (env = process.env) => env.JARVIS_REPAIR_STATE_DIR || null;
+export const repairOutboxDir = (env = process.env) => env.JARVIS_REPAIR_OUTBOX || null;
+function repairSalesRecords(env = process.env) {
+  const d = repairStateDir(env);
+  if (!d) return {};
+  try { return JSON.parse(fs.readFileSync(path.join(d, "sales.json"), "utf8")).records || {}; } catch { return {}; }
+}
+
 // ---------- Lock gegen Doppelstart ----------
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
@@ -662,7 +673,8 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const dwBackoff = !!dw.backoffUntil && Date.parse(dw.backoffUntil) > +t;
     if (dwBackoff && !dry && !readOnly) log("info", "draft_worker_backoff_wait", { until: dw.backoffUntil });
     // Kunden werden nie als Cold Lead angeschrieben – frisch gelesen direkt vor dem Gmail-Entwurf.
-    const salesRecords = store.read("sales.json", { records: {} }).records || {};
+    // TF-047: Kunden des separaten Repair-Service (eigener Zustand, read-only eingebunden) zählen genauso.
+    const salesRecords = { ...repairSalesRecords(), ...(store.read("sales.json", { records: {} }).records || {}) };
     const isCustomer = (domain) => !!salesRecords[domain]?.sale?.selected_offer;
     // Lead-Datenbank (frisch gelesen): bereits angeschrieben / Antwort / Kunde / kein Interesse / Suppression / Opt-out / Do-not-contact → nie ein Cold-Entwurf.
     let leadDb = null;
@@ -1073,6 +1085,9 @@ async function loop() {
   const check150Mod = await import("./check-150-workflow.js");
   const paymentsMod = await import("./payments.js");
   const accessMod = await import("./access-intake.js");
+  const outboxMod = await import("./repair-outbox.js");
+  // TF-047: Aufträge laufen im separaten Repair-Service; hier nur noch lesen (Dashboard) und die Outbox zustellen.
+  const repairDir = repairStateDir() || WORKER_DIR, repairExternal = !!repairStateDir(), outboxDir = repairOutboxDir();
   if (role === "vps") (await import("./server-agent.js")).startServerControl({
     dir: WORKER_DIR, secretsDir: SECRETS, startedAt, log, core, zurichDay, backupPublicKey, healthy: () => healthy(WORKER_DIR),
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
@@ -1088,13 +1103,13 @@ async function loop() {
     // Lead-Datenbank (Allowlist, lead-db.js) für Cloud/Handy: Suche, Filter, Detail, CSV-/JSON-Export – nie Gmail-IDs oder Roh-Evidence.
     leadDb: () => publicRegistry(createStore(WORKER_DIR)),
     // Reparaturaufträge (TF-036): Allowlist-Sicht (Zähler + ungefährliche Felder) fürs Dashboard – keine Aktionen aus der Cloud.
-    repair: () => repairMod.publicRepairOrders(WORKER_DIR),
+    repair: () => repairMod.publicRepairOrders(repairDir),
     // Check & Anleitung CHF 150 (TF-038): Allowlist-Sicht fürs Dashboard – reine Anzeige, keine Aktionen aus der Cloud.
-    check150: () => check150Mod.publicCheck150Orders(WORKER_DIR),
+    check150: () => check150Mod.publicCheck150Orders(repairDir),
     // Payment Worker (TF-041): Ledger-Zähler + offene Zahlungsschwellen beider Workflows – nie Referenzen/payment_ids.
     payments: () => {
-      const c = check150Mod.check150Status(WORKER_DIR), r = repairMod.repairOrdersStatus(WORKER_DIR);
-      return { status: "ACTIVE", ...paymentsMod.paymentsStatus(WORKER_DIR), waiting_deposit: (c.waiting_payment || 0) + (r.waiting_payment || 0), payment_review: r.payment_review || 0 };
+      const c = check150Mod.check150Status(repairDir), r = repairMod.repairOrdersStatus(repairDir);
+      return { status: "ACTIVE", ...paymentsMod.paymentsStatus(repairDir), waiting_deposit: (c.waiting_payment || 0) + (r.waiting_payment || 0), payment_review: r.payment_review || 0 };
     },
     setDiscovery: (op) => { const r = finderMod.setDiscoveryPaused(WORKER_DIR, op === "pause"); wake(); return { ok: true, ...r, status: r.paused ? "PAUSED" : "ACTIVE" }; },
   });
@@ -1132,7 +1147,7 @@ async function loop() {
     // Ohne konfigurierte Stack-Adapter bleibt es beim passiven Audit bzw. BLOCKED_NO_ACCESS – es wird nie etwas verändert.
     // gmail + intake nur für die automatische Zugangs-Anfrage NACH erfüllter CHF-240-Zahlungsschwelle (TF-041, payments.js):
     // genau eine CUSTOMER_ACCESS_REQUEST-Mail mit sicherem One-Time-Link (access-intake.js); intake nur mit Worker-Token (VPS).
-    if (!repairRunning) {
+    if (!repairRunning && !repairExternal) {
       repairRunning = repairMod.runRepairOrders({ gmail, intake: accessMod.intakeClient({ config: shared.syncConfig() }), log })
         .then((r) => { if (r && !r.busy && r.advanced) log("info", "repair_orders_processed", r); }, (e) => log("error", "repair_orders_failed", { error: e.message }))
         .finally(() => { repairRunning = null; });
@@ -1141,10 +1156,15 @@ async function loop() {
     // rein passiver Audit + Bericht + Gmail-Lieferentwurf; die Service-Mail geht erst NACH erfüllter CHF-75-Zahlungsschwelle
     // (payments.js) automatisch an den bestätigten Kunden raus (nie Website-Änderung). Eigenes Lock, No-op ohne offene
     // Aufträge, blockiert weder Mail-Takt noch Discovery noch den CHF-480-Workflow. Fehler stoppen den Worker nie.
-    if (!check150Running) {
+    if (!check150Running && !repairExternal) {
       check150Running = check150Mod.runCheck150Orders({ gmail, log })
         .then((r) => { if (r && !r.busy && r.advanced) log("info", "check150_orders_processed", r); }, (e) => log("error", "check150_orders_failed", { error: e.message }))
         .finally(() => { check150Running = null; });
+    }
+    // TF-047: Service-Mails des Repair-Service zustellen (nur hier, nur mit send_authority, genau einmal). Fehler stoppen den Worker nie.
+    if (outboxDir) {
+      try { const ob = await outboxMod.processRepairOutbox({ dir: outboxDir, gmail, log }); if (ob.processed) log("info", "repair_outbox_processed", ob); }
+      catch (e) { log("error", "repair_outbox_failed", { error: e.message }); }
     }
     // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.
     try {

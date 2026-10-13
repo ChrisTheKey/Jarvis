@@ -49,7 +49,8 @@ const TERMINAL = new Set(["COMPLETED", CHECK150_CANCELLED, ...CHECK150_BLOCKED.f
 const WAITING = new Set(["READY_FOR_DELIVERY"]);
 // Nachrichtenklasse der Liefermail: Erfüllung eines bezahlten Kundenauftrags – NIE Cold-Outreach/Marketing (TF-041).
 export const FULFILLMENT_CLASS = "CUSTOMER_ORDER_FULFILLMENT";
-const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i;
+// TF-047: OUTBOX_PENDING = Service-Mail liegt in der Repair-Outbox, der Mail-Worker hat noch nicht bestätigt → nächster Lauf, nie «gesendet».
+const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network|OUTBOX_PENDING/i;
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 
@@ -577,7 +578,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log(`Zahlungsschwelle (TF-041): Start erst ab kumulativ CHF ${paymentThresholdChf(CHECK150_OFFER)} – Zahlung verbuchen: node payments.js record ${o.order_id} --amount ${paymentThresholdChf(CHECK150_OFFER)} --reference Bank`);
       return 0;
     }
-    if (argv.includes("--run")) { const gmail = await import("./gmail.js"); console.log(JSON.stringify(await runCheck150Orders({ gmail }), null, 2)); return 0; }
+    if (argv.includes("--run")) {
+      // TF-047: im separaten Repair-Service (kein Gmail) nur über die Repair-Outbox – der Mail-Worker sendet.
+      const gmail = process.env.JARVIS_WORKER_ROLE === "repair" ? (await import("./repair-outbox.js")).createOutboxMailer({ dir: (await import("./repair-service.js")).OUTBOX_DIR }) : await import("./gmail.js");
+      console.log(JSON.stringify(await runCheck150Orders({ gmail }), null, 2)); return 0; }
     if (flag("report")) { const o = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders?.[flag("report")]; if (!o?.report_text_file || !fs.existsSync(o.report_text_file)) throw new Error("Kein Bericht vorhanden."); console.log(fs.readFileSync(o.report_text_file, "utf8")); return 0; }
     if (flag("complete")) { const o = completeCheck150(store, flag("complete")); console.log(`Abgeschlossen: ${o.order_id} → ${o.state}`); return 0; }
     console.log("Befehle: --list | --show <id> | --create <domain> --email <adresse> | --create-confirmed <domain> --email <adresse> | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>");

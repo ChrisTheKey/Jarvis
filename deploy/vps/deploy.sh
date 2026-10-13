@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Deploy des Always-on Mail-Workers auf den VPS. Gibt nie Secrets aus.
+# ACHTUNG: recreated jarvis-mail-mail-worker-1 (docker compose up -d --build) = Unterbrechung des 24/7-Mailings → nur als geplante
+# Wartung. Reparatur-Updates ohne Mail-Unterbrechung: deploy/vps/deploy-repair.sh (TF-047).
 #   deploy/vps/deploy.sh <ssh-host> [--with-secrets]
 # <ssh-host>: Host aus ~/.ssh/config mit sudo-Rechten (unter Windows Git Bash wird Windows-OpenSSH verwendet).
 # --with-secrets: einmalige Migration – kopiert Gmail-Credentials/Token/Register und den Worker-Zustand aus .secrets/
@@ -45,6 +47,10 @@ fi
 sudo chown root:root "$R/.env" && sudo chmod 600 "$R/.env"
 sudo chown -R 1000:1000 "$R/secrets" && sudo chmod 700 "$R/secrets"
 sudo find "$R/secrets" -type d -exec chmod 700 {} + && sudo find "$R/secrets" -type f -exec chmod 600 {} +
+# TF-047: Mount-Ziele des separaten Repair-Service anlegen (Besitz node, 700), falls deploy-repair.sh noch nie lief.
+sudo mkdir -p /opt/jarvis-repair/outbox /opt/jarvis-repair/state/mail_worker
+sudo chown 1000:1000 /opt/jarvis-repair/outbox /opt/jarvis-repair/state /opt/jarvis-repair/state/mail_worker
+sudo chmod 700 /opt/jarvis-repair/outbox /opt/jarvis-repair/state /opt/jarvis-repair/state/mail_worker
 cd "$R" && sudo JARVIS_COMMIT="$COMMIT" JARVIS_DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" docker compose up -d --build
 sleep 5
 sudo docker compose ps --format 'table {{.Name}}\t{{.Status}}'

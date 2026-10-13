@@ -278,7 +278,8 @@ test("Dashboard-Allowlist: Browser Desktop/Mobile JA/NEIN/WARTET, Regression KEI
 });
 
 test("Production-Image: Chromium reproduzierbar (apk) + playwright-core gepinnt + Validator im Image; Release-Gate 045 ohne Skip", () => {
-  const docker = read("deploy/vps/Dockerfile"), pkg = JSON.parse(read("package.json"));
+  // TF-047: Chromium + Browser-Gate laufen nur noch im separaten Repair-Service-Image.
+  const docker = read("deploy/vps/Dockerfile.repair"), pkg = JSON.parse(read("package.json"));
   assert.match(docker, /apk add --no-cache chromium/);
   assert.match(docker, /JARVIS_CHROMIUM_PATH=\/usr\/bin\/chromium/);
   assert.ok(docker.match(/^COPY (.+) \.\/$/m)[1].split(/\s+/).includes("repair-browser-validator.js"));
