@@ -2,7 +2,41 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-12
+Letzte Aktualisierung: 2026-10-13
+
+## JARVIS FIRST CUSTOMER PRODUCTION READINESS & FULL ORDER DRY-RUN — TF-046 (2026-10-13, Unit 593/593 + TF-044-Lab 18/18 + Browser-Lab 10/10 + Full-Order-Lab 8/8 grün, lokal; NOCH NICHT auf dem VPS)
+- **Kundenlieferung** (`repair-workflow.js`, `autoDeliver=true` in `runRepairOrders`): nach bestandenem Abschluss-Gate geht der Bericht
+  GENAU EINMAL als Service-Mail `CUSTOMER_ORDER_FULFILLMENT` an die verifizierte Kundenadresse. Draft-ID und Sendeversuch werden vor dem
+  Versand persistiert (Neustart sendet nie doppelt, unklarer Ausgang → «UNKLAR», Chris prüft); danach COMPLETED + Tresor zerstört.
+  Bericht zu lang → ATTACHMENT_REQUIRED, Bericht mit Interna (`reportUnsafe`: IPs, Pfade, URLs, Backup-/Git-/Auftrags-IDs, Secrets,
+  Debug) → BERICHT PRÜFEN, kein Versandweg → Chris liefert selbst (`completeOrder`, Lieferung «manual»). Nie eine Erfolgsmail nach
+  REPAIR_FAILED/MANUAL_REVIEW/PAYMENT_REVIEW. Zurückgerollte Fixes gelten als `rolled_back`, nicht als «repariert».
+- **Bestätigter Auftrag**: `createConfirmedRepairOrder` erfasst Direktverkauf (sales.json) + Auftrag in einem Schritt; ein stornierter
+  (voided) CHF-480-Verkauf stoppt den Auftrag (vor einer Änderung BLOCKED_NO_AUTHORIZATION + Credentials gelöscht, danach MANUAL_REVIEW).
+- **Dashboard**: zusätzlich «Freigabe JA/NEIN» und «Lieferung ENTWURF/GESENDET/ANHANG NÖTIG/UNKLAR – PRÜFEN/BERICHT PRÜFEN/CHRIS/DURCH
+  CHRIS» – nur feste Wörter, nie Draft-ID, Adresse oder Inhalt.
+- **Browser-Validator**: Formular-/POST-Navigationen werden lokal mit 204 beantwortet statt abgebrochen (kein chrome-error://, kein
+  falsches cross_domain_redirect), `goto` bis Commit + `document.readyState`, Messung bei zerstörtem JS-Kontext max. 2× wiederholt;
+  fremde Domain während der Messung → nur festgestellt.
+- **`production-readiness.js`** (neu, auch im VPS-Image): read-only Preflight vor dem ersten echten Kunden – nur OK/WARN/FAIL bzw.
+  YES/NO, nie Secret-Werte, kein Netz, keine Aktion (`--no-launch` ohne Chromium-Starttest). READY nur ohne FAIL; Exit 0/1.
+- **Tests**: neu `test/full-order-046.test.js` (12, hermetisch: CHF-480-Vollauftrag über `runRepairOrders`, Lieferungs-Idempotenz,
+  Fail-safe-Lieferung, Failure/Rollback, Payment-Reversal, Cancel, Void, CHF-150-Vollauftrag, Readiness) + Lab
+  `test/integration/full-order-046/` (8, Docker + echtes Chromium: CHF-480 WordPress und SFTP bis COMPLETED, fehlende Freigabe,
+  Failure-Flow, Rollback-Failure, Payment-Reversal, Cancel, CHF-150). **Release-Gate TF-046: `npm run test:release-046`**
+  (Unit + TF-044 + TF-045 + TF-046, kein Skip).
+- **RELEASE-GATE (2026-10-13 15:26–15:39 UTC, lokal)**: `npm run test:release-046` **PASS in einem zusammenhängenden Lauf, Exit 0,
+  777 s**: Unit 596 Tests / 593 pass / 0 fail / 3 skip (die 3 Lab-Suiten, laufen im Gate selbst), TF-044-Lab 18/18, TF-045-Browser-Lab
+  10/10, TF-046-Full-Order-Lab 8/8. Sequenziell, keine parallelen Labs; RAM überwacht, Minimum 2018 MB frei. Danach Lab-Cleanup:
+  0 Lab-Container/-Volumes/-Netze, 0 Chromium-Prozesse; Docker Desktop beendet, `wsl --shutdown`.
+- **Stabilität**: danach normale Unit-Suite 3× sequenziell, jeweils 593/593 (3 skip), 0 fail.
+- **Secret-Scan 0** (156 Dateien). Temp-Aufräumen: ~45 000 alte `jarvis-*`-Testverzeichnisse aus allen bisherigen Unit-Läufen (inkl.
+  Test-Intake-Schlüssel/Test-Tresore) + 3 alte Chromium-Temp-Profile + 1 verwaistes Test-Schlüsselverzeichnis gelöscht.
+  **Offen**: die Unit-Tests räumen ihre `mkdtemp`-Verzeichnisse nicht selbst auf (sammelt sich pro Lauf ~500 an).
+- **Readiness lokal (`--no-launch`)**: NOT READY – ausschliesslich VPS-spezifisch (kein VPS-Worker/Send Authority, kein
+  Worker-Token/sicherer Zugangslink, noch kein State-Backup); alle übrigen Punkte OK, Disk 55 GB.
+- **Nicht gemacht**: kein VPS-Deploy (live bleibt fb01df8), keine echte Mail, Zahlung, Kundenwebsite oder Zugangsdaten; 24/7-Mailing
+  unberührt. AgentZero-KeepAlive bleibt Disabled.
 
 ## JARVIS BROWSER REPAIR VALIDATION & VISUAL REGRESSION GATE — TF-045 (2026-10-12, Unit 581/581 + TF-044-Lab 18/18 + Browser-Lab 10/10 grün)
 - **Ziel**: Nach einer automatischen CHF-480-Reparatur beweist ein ECHTER Browser (Chromium über `playwright-core`), dass die Website für
