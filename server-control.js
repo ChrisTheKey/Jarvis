@@ -153,6 +153,7 @@ const ACCESS_TYPE_WORDS = ["github_netlify", "wordpress_cms", "sftp", "ssh", "ho
 // Zugangsprofil-Status (TF-043) – nur das Wort, nie Host, Benutzer, IP, Webroot/Pfade oder Fingerprint.
 const BROWSER_GATE_WORDS = ["JA", "NEIN", "WARTET"]; // TF-045
 const BROWSER_REGRESSION_WORDS = ["KEINE", "GEFUNDEN", "ROLLBACK"];
+const REPAIR_DELIVERY_WORDS = ["none", "draft_ready", "sent", "attachment_required", "unclear", "report_unsafe", "failed", "manual"]; // TF-046
 const PROFILE_STATUS_WORDS = ["PROFILE_READY", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "MANUAL_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS", "BLOCKED_NO_ACCESS", "PREFLIGHT_RETRY"];
 const payFields = (o, n) => ({ paid_chf: o.paid_chf == null ? null : n(o.paid_chf, 10_000), payment_required_chf: o.payment_required_chf == null ? null : n(o.payment_required_chf, 10_000),
   rest_to_deposit_chf: o.rest_to_deposit_chf == null ? null : n(o.rest_to_deposit_chf, 10_000), payment_status: word(o.payment_status, PAYMENT_STATE_WORDS), payment_ok: bool(o.payment_ok) });
@@ -212,6 +213,8 @@ export function cleanRepair(r) {
     // TF-045: Browser-Gate nur als feste Wörter – nie URLs, Screenshots, Logs, Codes oder Requests.
     browser_desktop: word(o.browser_desktop, BROWSER_GATE_WORDS), browser_mobile: word(o.browser_mobile, BROWSER_GATE_WORDS),
     browser_regression: word(o.browser_regression, BROWSER_REGRESSION_WORDS),
+    // TF-046: Freigabe nur JA/NEIN, Lieferung nur als festes Wort – nie Draft-ID, Adresse oder Inhalt.
+    authorized: bool(o.authorized), delivery_status: word(o.delivery_status, REPAIR_DELIVERY_WORDS),
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),

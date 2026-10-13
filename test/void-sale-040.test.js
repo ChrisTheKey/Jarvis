@@ -150,9 +150,13 @@ test("13: voided Sale autorisiert keinen CHF-480-Auftrag", () => {
   assert.throws(() => authorizeRepair(store, o.order_id, { authorized_domain: "echtefirma.ch", source: "voided_sale", now: T0 }), /NIE eine Reparaturfreigabe/);
   assert.throws(() => authorizeRepair(store, o.order_id, { authorized_domain: "echtefirma.ch", source: "sales_record", now: T0 }), /NIE eine Reparaturfreigabe/);
   assert.equal(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders[o.order_id].customer_authorized_repair, false);
-  // Der CHF-480-Workflow kennt sales.json nicht – ein Verkauf (voided oder nicht) kann dort nichts bestätigen.
+  // Ein Verkauf (voided oder nicht) ist NIE eine Reparaturfreigabe. TF-046: repair-workflow liest sales.json nur für den bestätigten
+  // Auftrag (createConfirmedRepairOrder) und das Void-Gate (repairSaleVoided → stoppt) – nie für die Freigabe.
   const src = fs.readFileSync(path.join(ROOT, "repair-workflow.js"), "utf8");
-  assert.ok(!src.includes("sales.json"), "repair-workflow liest nie sales.json");
+  const uses = [...src.matchAll(/"sales\.json"/g)].map((m) => src.lastIndexOf("export function", m.index));
+  assert.ok(uses.length >= 1 && uses.every((at) => /^export function (createConfirmedRepairOrder|repairSaleVoided)\(/.test(src.slice(at))), "sales.json nur in createConfirmedRepairOrder/repairSaleVoided");
+  const authSrc = src.slice(src.indexOf("export const authorizationOk"), src.indexOf("// Freigabe setzen"));
+  assert.ok(!/sale|sales/.test(authSrc), "Freigabe-Prüfung kennt keine Verkäufe");
 });
 
 // 14) Kein Cold-Outreach-Reentry: Registry stuft nachvollziehbar auf voided_test_customer herab und blockiert Entwürfe.

@@ -271,11 +271,17 @@ test("Repair-Module können keine Mail senden: kein Gmail-Import, kein Send-Aufr
     const src = fs.readFileSync(path.join(ROOT, f), "utf8");
     assert.ok(!/gmail|sendDraft|messages\.send|smtp/i.test(src), `${f} enthält Mail-/Send-Verweise`);
   }
-  // TF-041: repair-workflow.js sendet genau EINE Mail-Art – die Bitte um sicheren Zugang nach erfüllter CHF-240-Schwelle –
-  // nur über das injizierte gmail-Objekt (kein statischer Gmail-Import, keine SMTP-/messages.send-Wege).
+  // TF-041: repair-workflow.js sendet nur über das injizierte gmail-Objekt (kein statischer Gmail-Import, keine SMTP-/messages.send-Wege).
+  // TF-046: genau ZWEI Send-Aufrufe – der One-Time-Link-Helfer (Zugangs-Anfrage/Host-Key) und die Kundenlieferung (deliver,
+  // CUSTOMER_ORDER_FULFILLMENT, nur aus READY_FOR_DELIVERY mit bestandenem Abschluss-Gate). Nie in einem Arbeits-/Reparaturschritt.
   const src = fs.readFileSync(path.join(ROOT, "repair-workflow.js"), "utf8");
   assert.ok(!/^import .*gmail/im.test(src) && !/messages\.send|smtp/i.test(src), "kein statischer Gmail-Import, keine Direkt-Sendewege");
-  assert.equal(src.match(/gmail\.sendDraft\(/g)?.length, 1, "genau ein Send-Aufruf (One-Time-Link-Helfer)");
+  assert.equal(src.match(/gmail\.sendDraft\(/g)?.length, 2, "genau zwei Send-Aufrufe (One-Time-Link-Helfer + Kundenlieferung)");
+  const deliverAt = src.indexOf("async function deliver(order, t)"), deliverSend = src.indexOf("gmail.sendDraft(", deliverAt);
+  assert.ok(deliverAt > 0 && deliverSend > deliverAt && deliverSend < src.indexOf("async function step("), "zweiter Send nur im Helfer deliver");
+  assert.ok(src.slice(deliverAt, deliverSend).includes("messageClass: FULFILLMENT_CLASS") && src.slice(deliverAt, deliverSend).includes("completionGate(order)"), "Lieferung nur als CUSTOMER_ORDER_FULFILLMENT nach Abschluss-Gate");
+  assert.deepEqual([...src.matchAll(/return deliver\(order, t\)/g)].length, 1);
+  assert.ok(/if \(order\.state === "READY_FOR_DELIVERY" && autoDeliver\) return deliver\(order, t\);/.test(src), "deliver nur aus READY_FOR_DELIVERY");
   // TF-043: der einzige Send-Aufruf liegt im Helfer sendLinkMail; genutzt NUR für die Zugangs-Anfrage (ACCESS_REQUESTED) und die
   // Host-Key-Bestätigung (HOST_KEY_CONFIRMATION_REQUIRED) – beide mit One-Time-Link, nie in einem Arbeits-/Reparaturschritt.
   const sendAt = src.indexOf("gmail.sendDraft(");

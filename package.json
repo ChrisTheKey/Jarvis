@@ -20,7 +20,10 @@
     "build:persona": "node scripts/build-persona.mjs",
     "setup-sync": "node scripts/setup-sync.mjs",
     "test:browser-integration": "node scripts/test-repair-integration.mjs --browser",
-    "test:release-045": "npm test && npm run test:repair-integration && npm run test:browser-integration"
+    "test:release-045": "npm test && npm run test:repair-integration && npm run test:browser-integration",
+    "test:full-order-integration": "node scripts/test-repair-integration.mjs --full-order",
+    "test:release-046": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration",
+    "readiness": "node production-readiness.js"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",

@@ -164,6 +164,22 @@ async function locateElement(page, arg) {
   return { el, desc };
 }
 
+// TF-046: Navigiert die Seite während der Messung selbst (eigenes Skript, Weiterleitung), wird der JS-Kontext ersetzt – dann nach
+// dem Laden erneut messen (höchstens zweimal), statt den ganzen Lauf mit einem Fehler abzubrechen.
+const CONTEXT_LOST_RE = /Execution context was destroyed|Cannot find context|navigat/i;
+async function evaluateStable(page, fn, arg, timeoutMs = 5000) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await page.evaluate(fn, arg); }
+    catch (e) {
+      if (attempt >= 2 || !CONTEXT_LOST_RE.test(String(e?.message || ""))) throw e;
+      await documentLoaded(page, timeoutMs);
+    }
+  }
+}
+// Dokument vollständig geladen – direkt über document.readyState (Playwrights Load-Status kann an einer blockierten, nie
+// committenden Folgenavigation hängen bleiben, obwohl die Seite längst «complete» ist).
+const documentLoaded = (page, timeoutMs) => page.waitForFunction(() => document.readyState === "complete", null, { timeout: timeoutMs, polling: 100 }).then(() => true, () => false);
+
 // ---------- Ein Viewport ----------
 async function runViewport(browser, { vp, url, expected_domain, findings, timeoutMs, allowHosts, contextOptions, screenshotDir, navigation = true }) {
   const viewport = VIEWPORTS[vp];
@@ -179,7 +195,14 @@ async function runViewport(browser, { vp, url, expected_domain, findings, timeou
     // Guard: nur GET/HEAD verlassen den Browser. Jede andere Methode (Formular, Login, Bestellung, Upload …) wird abgebrochen.
     // allowHosts (Tests/Lab): nur diese Hosts sind erreichbar – jede andere Adresse wird im Browser abgebrochen.
     await context.route("**/*", async (route, request) => {
-      if (!["GET", "HEAD"].includes(request.method())) { out.blocked_requests++; return route.abort("blockedbyclient").catch(() => {}); }
+      if (!["GET", "HEAD"].includes(request.method())) {
+        out.blocked_requests++;
+        // TF-046: Navigation (z. B. Formular-Submit) nie absenden, aber auch keine Fehlerseite committen: ein abort() liesse Chromium
+        // auf chrome-error:// wechseln (falsches «cross_domain_redirect», zerstörter JS-Kontext mitten in der Messung). 204 lokal
+        // beantwortet = der Browser bleibt auf der Seite, der Server sieht nichts.
+        if (request.isNavigationRequest()) return route.fulfill({ status: 204, body: "" }).catch(() => {});
+        return route.abort("blockedbyclient").catch(() => {});
+      }
       if (allowHosts && /^https?:/.test(request.url()) && !allowHosts.includes(hostOf(request.url()))) { out.blocked_hosts++; return route.abort("blockedbyclient").catch(() => {}); }
       return route.continue().catch(() => {});
     });
@@ -202,8 +225,11 @@ async function runViewport(browser, { vp, url, expected_domain, findings, timeou
 
     out.interactions.push("open_page");
     let resp;
-    try { resp = await page.goto(url, { waitUntil: "load", timeout: timeoutMs }); }
+    // TF-046: goto nur bis zum Commit des Dokuments, danach auf dessen load-Event warten. Startet die Seite beim Laden selbst eine
+    // (vom Guard blockierte) Navigation, würde goto(waitUntil: "load") auf diese nie committende Navigation warten (Timeout).
+    try { resp = await page.goto(url, { waitUntil: "commit", timeout: timeoutMs }); }
     catch { out.error = "load_failed"; return finish(); }
+    if (!(await documentLoaded(page, timeoutMs))) { out.error = "load_failed"; return finish(); }
     await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
     out.status = resp ? resp.status() : null;
     const finalHost = hostOf(page.url());
@@ -217,7 +243,9 @@ async function runViewport(browser, { vp, url, expected_domain, findings, timeou
     const expected = [...new Set(findings.map((f) => f.expected_path).filter(Boolean))];
     out.interactions.push("measure_overflow");
     const probeArg = { broken, expected, tolerance: OVERFLOW_TOLERANCE_PX };
-    let probe = await page.evaluate(browserProbeScript, probeArg);
+    let probe = await evaluateStable(page, browserProbeScript, probeArg);
+    // Hat die Seite währenddessen auf eine fremde Domain navigiert: nur feststellen, nie weiter interagieren.
+    if (!sameDomain(hostOf(page.url()), expected_domain)) { out.final_same_domain = false; out.redirected_cross_domain = true; out.error = "cross_domain_redirect"; return finish(); }
     let navVisible = probe.nav_links.length;
     out.nav.menu_toggle = probe.menu_toggles > 0;
     // Navigation bedienbar: ist sie (z. B. auf dem Smartphone) eingeklappt, wird NUR der Menü-Button geöffnet – sonst nichts.
@@ -226,7 +254,7 @@ async function runViewport(browser, { vp, url, expected_domain, findings, timeou
       if (t && isSafeClickTarget(t.desc)) {
         await t.el.click({ timeout: 5000 }).then(() => { out.nav.menu_toggle_used = true; out.interactions.push("open_navigation"); }, () => {});
         await page.waitForTimeout(300);
-        const again = await page.evaluate(browserProbeScript, probeArg);
+        const again = await evaluateStable(page, browserProbeScript, probeArg);
         navVisible = again.nav_links.length;
         probe = { ...probe, nav_links: again.nav_links };
       }

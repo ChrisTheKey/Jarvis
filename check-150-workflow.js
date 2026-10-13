@@ -523,11 +523,12 @@ export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
 }
 
 // ---------- Worker-Hook (eigenes Lock, No-op ohne offene Aufträge; blockiert weder Mail noch Discovery noch CHF-480) ----------
-export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, log = createLogger(dir) } = {}) {
+// auditor nur für isolierte Tests (Lab-Auditor, TF-046); im Produktivbetrieb null = Standard-Auditor.
+export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, auditor = null, log = createLogger(dir) } = {}) {
   const status = check150Status(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "check150.lock" })) return { busy: true };
-  try { return { busy: false, ...(await createCheck150Engine({ dir, gmail, log }).processAll()) }; }
+  try { return { busy: false, ...(await createCheck150Engine({ dir, gmail, auditor, log }).processAll()) }; }
   finally { releaseLock(dir, process.pid, "check150.lock"); }
 }
 

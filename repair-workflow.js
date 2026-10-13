@@ -38,12 +38,19 @@
 //     → Rollback → Browser-Retest → REPAIR_FAILED (bzw. MANUAL_REVIEW_REQUIRED + Chris, wenn der Ausgangszustand nicht bestätigt ist).
 //     Nicht eindeutig → MANUAL_REVIEW_REQUIRED. Ohne verfügbaren Browser: fail closed (keine Reparatur bzw. kein Abschluss).
 //     COMPLETED nur mit Adapter-Validierung UND HTTP-Retest UND Desktop- UND Mobile-Browser-Gate (completionGate).
+//   - KUNDENLIEFERUNG (TF-046): im Produktivbetrieb (runRepairOrders, autoDeliver) geht der Abschlussbericht nach bestandenem
+//     Abschluss-Gate GENAU EINMAL als Service-Mail CUSTOMER_ORDER_FULFILLMENT an die verifizierte Kundenadresse (Draft-ID und
+//     Sendeversuch vor dem Versand persistiert – ein Neustart sendet nie doppelt, unklarer Ausgang wird nie wiederholt). Erst danach
+//     COMPLETED + Tresor zerstört. Bericht zu lang (Anhang nötig), Bericht mit unzulässigem Inhalt oder kein Versandweg → bleibt
+//     READY_FOR_DELIVERY für Chris (completeOrder). Nie eine Erfolgsmail nach REPAIR_FAILED/MANUAL_REVIEW/PAYMENT_REVIEW.
+//   - BESTÄTIGTER AUFTRAG (TF-046): createConfirmedRepairOrder erfasst Direktverkauf (sales.json) + Auftrag in einem Schritt. Ein
+//     stornierter (voided) CHF-480-Verkauf stoppt den Auftrag sofort: keine Zugangs-Anfrage, keine Reparatur, keine Lieferung.
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
-import { OFFERS } from "./sales.js";
+import { OFFERS, isVoidedSale, recordDirectSale } from "./sales.js";
 import { paymentGateForOrder, paymentSummary, paymentThresholdChf } from "./payments.js";
 import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIntakeToken, openAccessCredential, destroyAccessSecret,
   markSecretDestroyed, syncAccessIntake, intakeClient } from "./access-intake.js";
@@ -55,6 +62,11 @@ import { combineDecisions, rollbackMatchesBaseline, safeSnapshot, browserRuntime
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 export const REPAIR_OFFER = "REPAIR_FIX_500"; // Kundenbezeichnung „Check & Reparatur“, Preis aus OFFERS (CHF 480). Keine dritte Preisstufe.
+// Nachrichtenklasse der Liefermail (TF-046): Erfüllung eines bezahlten Kundenauftrags – nie Cold-Outreach/Marketing.
+export const FULFILLMENT_CLASS = "CUSTOMER_ORDER_FULFILLMENT";
+const MAX_INLINE_DELIVERY = 5200; // wie CHF 150: passt in die 6000-Zeichen-Grenze für Entwürfe – sonst Anhang nötig (Chris)
+// Lieferstatus fürs Dashboard – feste Wörter, nie Draft-IDs oder Inhalte.
+export const DELIVERY_STATUSES = Object.freeze(["none", "draft_ready", "sent", "attachment_required", "unclear", "report_unsafe", "failed", "manual"]);
 
 // ---------- Zustände ----------
 // PAYMENT_REQUIRED (TF-041): die Zahlungsschwelle (CHF 240) ist nicht erfüllt – wartet, je Lauf neu geprüft, kein Zugang/Login/
@@ -172,6 +184,26 @@ export function createRepairOrder(store, { domain, website = null, lead_id = nul
   return order;
 }
 
+// Bestätigter CHF-480-Auftrag (TF-046): der bewusste Aufruf durch Chris ist die betriebliche Bestätigung (wie
+// check-150-workflow --create-confirmed). Direktverkauf (sales.js recordDirectSale, Quelle direct_customer) + Auftrag; eine
+// Anfrage allein erzeugt NIE einen Auftrag. VERKAUF != ZAHLUNG: der Auftrag wartet danach auf kumulativ CHF 240.
+export function createConfirmedRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, date = null, now = new Date() } = {}) {
+  if (!DELIVERY_EMAIL_RE.test(String(delivery_email || ""))) throw new Error("Verifizierte Kundenadresse (--email) des bestätigten Auftrags erforderlich.");
+  const sales = store.read("sales.json", { records: {} });
+  const records = recordDirectSale(sales.records || {}, { domain, offer: REPAIR_OFFER, delivery_email, company, contact_name, website, date: date || undefined, now }); // validiert, schreibt nicht
+  const order = createRepairOrder(store, { domain, website, company, delivery_email, contact_name, now }); // wirft bei offenem Auftrag
+  store.write("sales.json", { ...sales, records });
+  const sale = records[normDomain(domain)]?.sale;
+  order.confirmed = { source: "sales.json", sale_date: sale?.sale_date || null, confirmed_at: now.toISOString() };
+  order.state_history.push({ at: now.toISOString(), from: order.state, to: order.state, reason: `ORDER_CONFIRMED – Direktverkauf ${REPAIR_OFFER} erfasst (CHF ${OFFERS[REPAIR_OFFER].price}); wartet auf Zahlung` });
+  return saveOrder(store, order);
+}
+// Stornierter (voided) CHF-480-Verkauf für die Domain des Auftrags (TF-040/TF-046) – dann nie Reparatur oder Lieferung.
+export function repairSaleVoided(store, order = {}) {
+  const sale = store.read("sales.json", { records: {} }).records?.[normDomain(order.domain)]?.sale;
+  return !!sale && sale.selected_offer === REPAIR_OFFER && isVoidedSale(sale);
+}
+
 function saveOrder(store, order) {
   const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
   data.orders = { ...(data.orders || {}), [order.order_id]: order };
@@ -232,6 +264,7 @@ export function completeOrder(store, orderId, { now = new Date() } = {}) {
   if (order.state !== "READY_FOR_DELIVERY") throw new Error(`Nur ein Auftrag in READY_FOR_DELIVERY kann abgeschlossen werden (aktuell ${order.state}).`);
   const gate = completionGate(order);
   if (!gate.ok) throw new Error(`Abschluss-Gate nicht erfüllt (${gate.missing.join(", ")}) – kein COMPLETED.`);
+  if (!order.delivery?.sent_at) order.delivery = { ...(order.delivery || {}), status: "manual", completed_by: "chris", completed_at: now.toISOString() }; // Chris liefert selbst
   transition(order, "COMPLETED", "Abschluss bestätigt", now);
   destroyOrderSecret(store, order, now); // Secret-Lebenszyklus (TF-041): nach COMPLETED kein Zugang mehr im Tresor
   return saveOrder(store, order);
@@ -283,7 +316,8 @@ function destroyOrderSecret(store, order, now) {
 // TF-043: deps.preflight (repair-adapters/profile-builder.js, über createAdapterRegistry) erzeugt nach erhaltenem Zugang das
 // Zugangsprofil automatisch (ACCESS_PROFILE_PREFLIGHT). Ohne preflight bleibt alles wie in TF-042 (Profil von Chris).
 export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir), adapters = {}, auditor = null, retester = null,
-  gmail = null, intake = null, router = null, preflight = null, alert = null, browserValidator = null, requireBrowser = false, now = () => new Date(), log = () => {} } = {}) {
+  gmail = null, intake = null, router = null, preflight = null, alert = null, browserValidator = null, requireBrowser = false, autoDeliver = false,
+  now = () => new Date(), log = () => {} } = {}) {
 
   const adapterOf = (order) => (order.stack ? adapters[order.route?.adapter || order.stack.type] || null : null);
   const block = (order, state, reason) => {
@@ -414,15 +448,75 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       order.regression.browser_rollback_verified = same;
       if (!same) { await informChris(order, "rollback_unverified", failReason); return manual(order, `${failReason} – Rollback ausgeführt, aber der Browser-Retest bestätigt den Ausgangszustand nicht; Website-Zustand manuell prüfen.`); }
     }
-    if (r.ok === true) return block(order, "REPAIR_FAILED", `${failReason} – auf den letzten sicheren Stand zurückgerollt.`);
+    if (r.ok === true) {
+      // Zurückgerollte Fixes gelten nicht mehr als «repariert» (Dashboard/Bericht behaupten nie eine Reparatur nach Rollback).
+      for (const i of Object.values(order.issues || {})) if (i.repair_status === "repaired") i.repair_status = "rolled_back";
+      return block(order, "REPAIR_FAILED", `${failReason} – auf den letzten sicheren Stand zurückgerollt.`);
+    }
     await informChris(order, "rollback_failed", failReason);
     return manual(order, `${failReason} – Rollback ${can ? "fehlgeschlagen" : "über diesen Kanal nicht verfügbar"}; Website-Zustand manuell prüfen.`);
   };
+
+  // ---------- TF-046: Kundenlieferung (CUSTOMER_ORDER_FULFILLMENT) ----------
+  // Nur aus READY_FOR_DELIVERY, nur mit bestandenem Abschluss-Gate, gültigem Bericht, verifizierter Adresse und Versandweg.
+  // Genau einmal: Draft-ID und Sendeversuch werden VOR dem Versand persistiert; unklarer Ausgang → nie wiederholen (Chris prüft).
+  const canDeliver = (order) => !!(order.delivery_email && gmail && typeof gmail.createDraft === "function" && typeof gmail.sendDraft === "function");
+  const handOver = (order, status, reason, t) => {
+    order.delivery = { ...(order.delivery || {}), status, handover_reason: String(reason).slice(0, 200), handover_at: t.toISOString() };
+    order.updated_at = t.toISOString();
+    order.state_history.push({ at: t.toISOString(), from: order.state, to: order.state, reason });
+    saveOrder(store, order); log("warn", "repair_delivery_handover", { order_id: order.order_id, status });
+    return false;
+  };
+  const finishDelivered = (order, t) => {
+    transition(order, "COMPLETED", "Abschlussbericht an den Kunden gesendet (CUSTOMER_ORDER_FULFILLMENT) – Auftrag abgeschlossen", t);
+    destroyOrderSecret(store, order, t); // Credential Cleanup unmittelbar nach dem Abschluss
+    saveOrder(store, order); log("info", "repair_delivery_completed", { order_id: order.order_id });
+    return false;
+  };
+  async function deliver(order, t) {
+    if (order.delivery?.sent_at) return finishDelivered(order, t); // gesendet, aber Abschluss noch nicht gespeichert (Neustart)
+    if (["attachment_required", "unclear", "report_unsafe", "failed"].includes(order.delivery?.status)) return false; // liegt bei Chris
+    if (!canDeliver(order)) return false; // kein automatischer Versandweg → Chris liefert selbst (completeOrder)
+    const gate = completionGate(order);
+    if (!gate.ok || !order.report?.body) return handOver(order, "failed", `Lieferung gestoppt: Abschluss-Gate/Bericht unvollständig (${gate.missing.join(", ") || "Bericht"}).`, t);
+    const unsafe = reportUnsafe(order.report.body, order);
+    if (unsafe) { await informChris(order, "report_unsafe", unsafe); return handOver(order, "report_unsafe", `Bericht enthält unzulässige Angaben (${unsafe}) – kein automatischer Versand, Chris prüft.`, t); }
+    const mail = buildRepairDeliveryMail(order);
+    if (!mail.inline) { order.delivery_attachment_required = true; return handOver(order, "attachment_required", "ATTACHMENT_REQUIRED: Bericht zu lang für die Mail – Chris hängt die Berichtsdatei an und sendet selbst.", t); }
+    if (order.delivery?.send_attempted_at) { await informChris(order, "delivery_unclear", "Versandstatus unklar"); return handOver(order, "unclear", "Versandstatus unklar (früherer Versuch ohne Bestätigung) – kein erneuter Versand, Chris prüft «Gesendet».", t); }
+    try {
+      if (!order.delivery?.draft_id) {
+        const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: FULFILLMENT_CLASS });
+        order.delivery = { ...(order.delivery || {}), status: "draft_ready", draft_id: d.draftId, to: order.delivery_email, message_class: FULFILLMENT_CLASS,
+          report_hash: sha(order.report.body), created_at: t.toISOString() };
+        saveOrder(store, order); // Draft-ID sofort persistieren – ein Neustart erzeugt nie ein Duplikat
+      }
+      order.delivery = { ...order.delivery, send_attempted_at: t.toISOString() };
+      saveOrder(store, order); // VOR dem Versand – ein Absturz danach führt nie zu einer zweiten Mail
+      await gmail.sendDraft(order.delivery.draft_id);
+    } catch (e) {
+      if (order.delivery?.send_attempted_at) { order.delivery = { ...order.delivery, send_attempted_at: null }; saveOrder(store, order); }
+      if (TRANSIENT_RE.test(e.message)) { log("warn", "repair_delivery_deferred", { order_id: order.order_id, error: String(e.message).slice(0, 160) }); return false; }
+      return handOver(order, "failed", `Automatischer Versand fehlgeschlagen (${String(e.message).slice(0, 120)}) – Bericht bleibt für Chris.`, t);
+    }
+    order.delivery = { ...order.delivery, status: "sent", sent_at: t.toISOString() };
+    saveOrder(store, order);
+    log("info", "repair_delivery_sent", { order_id: order.order_id, message_class: FULFILLMENT_CLASS });
+    return finishDelivered(order, t);
+  }
 
   // Genau einen Schritt ausführen. Rückgabe true = es ging weiter (erneut aufrufen), false = wartet/fertig/blockiert.
   async function step(order) {
     const t = now();
     const adapter = adapterOf(order);
+
+    // TF-046: stornierter (voided) Verkauf → nie Zugangs-Anfrage, Reparatur oder Lieferung. Schon verändert → Chris entscheidet.
+    if (!TERMINAL.has(order.state) && repairSaleVoided(store, order)) {
+      if (changedWebsite(order)) { await informChris(order, "sale_voided", "Verkauf storniert, Website bereits verändert"); manual(order, "Verkauf storniert (voided), Website wurde bereits verändert – kein automatischer Rollback, keine Lieferung; Chris entscheidet."); return false; }
+      block(order, "BLOCKED_NO_AUTHORIZATION", "Verkauf storniert (voided) – kein bestätigter Auftrag: keine Zugangs-Anfrage, keine Reparatur, keine Lieferung.");
+      destroyOrderSecret(store, order, t); saveOrder(store, order); return false;
+    }
 
     // Zahlung fiel während der Arbeit unter die Schwelle (void/refund): vor jeder Änderung → warten; danach → Chris entscheidet.
     if (WORK_STATES.has(order.state)) {
@@ -805,7 +899,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       transition(order, "READY_FOR_DELIVERY", "Retest bestanden, Bericht erstellt", t); saveOrder(store, order); return true;
     }
 
-    return false; // READY_FOR_DELIVERY/terminal: wartet auf completeOrder() bzw. nichts mehr zu tun
+    if (order.state === "READY_FOR_DELIVERY" && autoDeliver) return deliver(order, t);
+    return false; // READY_FOR_DELIVERY ohne autoDeliver/terminal: wartet auf completeOrder() bzw. nichts mehr zu tun
   }
 
   // TF-044: Host-Key weicht vom bestätigten Fingerprint/Algorithmus ab → STOP (Zugangsdaten wurden nicht gesendet). Wurde bereits
@@ -934,6 +1029,7 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
     // TF-045: nur nach bestandenem Browser-Gate – einfache Sätze, keine Logs, Requests, Screenshots, Pfade oder Debugdaten.
     ...(order.browser_gate?.desktop === "JA" && order.browser_gate?.mobile === "JA" && order.browser_gate?.regression === "KEINE"
       ? ["", "Desktop geprüft: Ja", "Mobile geprüft: Ja", `Navigation geprüft: ${order.browser_gate.navigation === "JA" ? "Ja" : "Nein"}`, "Keine neuen relevanten Darstellungsfehler gefunden."] : []),
+    ...(order.retest?.http_ok === true && order.retest?.desktop?.ok && order.retest?.mobile?.ok ? ["Erneute Prüfung nach der Reparatur (Retest): erfolgreich."] : []),
     "",
     order.deployment?.deployed ? "Die Korrekturen sind auf Ihrer Website live und wurden danach erneut geprüft."
       : order.plan?.length ? "Die Korrekturen sind vorbereitet und werden nach Rücksprache aufgeschaltet." : "An Ihrer Website wurde nichts verändert.",
@@ -942,6 +1038,38 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
     "Bei Fragen genügt eine kurze Antwort auf diese E-Mail.",
   ].join("\n");
   return { subject: `Webseiten-Check ${order.domain} – Abschlussbericht`, body, created_at: new Date().toISOString() };
+}
+
+// ---------- Liefermail CUSTOMER_ORDER_FULFILLMENT (TF-046): Abschlussbericht für den bestätigten, bezahlten Kunden ----------
+// Keine Werbung, keine internen IDs/Pfade/Referenzen; der Bericht selbst ist bereits kundentauglich (buildCustomerReport).
+export function buildRepairDeliveryMail(order) {
+  const report = order.report?.body || "";
+  const body = [
+    `Hallo ${order.contact_name || order.company || ""}`.trim(),
+    "",
+    `Ihr Auftrag «Check & Reparatur» für ${order.domain} ist abgeschlossen. Hier ist Ihr Abschlussbericht:`,
+    "",
+    report,
+    "",
+    "Freundliche Grüsse",
+    "Chris",
+    "Helvetic Webdesign",
+  ].join("\n");
+  return { subject: order.report?.subject || `Webseiten-Check ${order.domain} – Abschlussbericht`, body, inline: body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS };
+}
+// Letzte Sperre vor dem Versand: der Bericht darf nie Zugangsdaten, Tokens, Hosts/IPs, Serverpfade, Backup-IDs, Commit-/Git-
+// Referenzen, Auftrags-IDs oder Debugdaten enthalten. Rückgabe: Grund (String) oder null.
+const REPORT_FORBIDDEN = [
+  ["ip", /\b\d{1,3}(\.\d{1,3}){3}\b/], ["pfad", /(\/home\/|\/var\/|\/opt\/|\/srv\/|\/etc\/|public_html|wp-content\/|[A-Z]:\\)/i],
+  ["url", /\b(https?|s?ftp|ssh):\/\//i], ["backup_id", /\bB[0-9a-f]{12}\b|\brepair_backups\b|backup_ref|rollback_point/i],
+  ["git", /\b[0-9a-f]{40}\b|\brepair\/RF480|\bcommit\b|\bbranch\b/i], ["auftrags_id", /\bRF480-\d{8}-[0-9a-f]{6}\b/],
+  ["secret", /passwor[td]\s*[:=]|token\s*[:=]|-----BEGIN|api[_-]?key|bearer\s/i], ["debug", /\b(stack|trace|console\.|error:|undefined|null\b|\[object)/i],
+];
+export function reportUnsafe(text = "", order = {}) {
+  for (const [why, re] of REPORT_FORBIDDEN) if (re.test(text)) return why;
+  for (const v of [order.access_request?.token_hash, order.delivery?.draft_id, order.backup?.backup_ref, order.backup?.production_ref, order.access_profile?.host_key_sha256])
+    if (v && String(v).length >= 8 && text.includes(String(v))) return "interne_referenz";
+  return null;
 }
 
 // ---------- Status (nur Zähler, keine Secrets/Evidence – sicher für Dashboard/Cloud) ----------
@@ -989,7 +1117,7 @@ export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domai
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
   "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified",
-  "browser_desktop", "browser_mobile", "browser_regression", "created_at", "updated_at"]);
+  "browser_desktop", "browser_mobile", "browser_regression", "authorized", "delivery_status", "created_at", "updated_at"]);
 // TF-045: Browser-Gate fürs Dashboard – nur feste Wörter (nie URLs, Screenshots, Logs, Codes oder Requests).
 const gateWord = (v) => (v === "JA" || v === "NEIN" ? v : "WARTET");
 const regressionWord = (g) => (["KEINE", "GEFUNDEN", "ROLLBACK"].includes(g.regression) ? g.regression : null);
@@ -1030,6 +1158,8 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         // TF-045: JA / NEIN / WARTET bzw. KEINE / GEFUNDEN / ROLLBACK – null, wenn für den Auftrag kein Browser-Gate gilt.
         browser_desktop: o.browser_gate ? gateWord(o.browser_gate.desktop) : null, browser_mobile: o.browser_gate ? gateWord(o.browser_gate.mobile) : null,
         browser_regression: o.browser_gate ? regressionWord(o.browser_gate) : null,
+        // TF-046: Freigabe nur JA/NEIN; Lieferung nur als festes Wort – nie Draft-ID, Adresse oder Inhalt.
+        authorized: authorizationOk(o), delivery_status: DELIVERY_STATUSES.includes(o.delivery?.status) ? o.delivery.status : "none",
         created_at: o.created_at, updated_at: o.updated_at,
       };
     });
@@ -1069,7 +1199,10 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
 // Einreichungen abgeholt (nur wenn ein Auftrag darauf wartet – kein Netzverkehr ohne Grund). Ohne gmail/intake bleibt
 // fehlender Zugang wie bisher BLOCKED_NO_ACCESS – es wird nie etwas erraten.
 // TF-045: requireBrowser = true – CHF-480-Reparaturen im Produktivbetrieb nur mit echtem Browser-Gate (fail closed).
-export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, browserValidator = null, requireBrowser = true, gmail = null, intake = null, log = createLogger(dir) } = {}) {
+// TF-046: autoDeliver = true – nach bestandenem Abschluss-Gate geht der Bericht genau einmal an den Kunden (CUSTOMER_ORDER_FULFILLMENT).
+// auditor/alert nur für isolierte Tests (Lab-Auditor, Chris-Hinweis-Attrappe); im Produktivbetrieb null = Standard.
+export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, browserValidator = null, requireBrowser = true,
+  autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
@@ -1087,7 +1220,7 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
     const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => (o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED")
       || (o.state === "HOST_KEY_CONFIRMATION_REQUIRED" && o.host_key_request?.sent_at && !o.host_key_request.received_at));
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
-    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, gmail, intake, log });
+    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, log });
     return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }
@@ -1097,6 +1230,8 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
 // Jarvis (einmal, über den sicheren Link) nach Zugang. Zugangsdaten-Tresor: node access-intake.js status|destroy <order_id>.
 // node repair-workflow.js --list | --status | --show <order_id> | --create <domain> [--website URL] [--lead ID] [--company NAME]
 //                         [--email <kundenadresse>] [--name ANREDE]
+//                         | --create-confirmed <domain> --email <kundenadresse> [--company NAME] [--name ANREDE] [--website URL]
+//                           (TF-046: bestätigter Direktauftrag = Direktverkauf in sales.json + Auftrag; wartet danach auf CHF 240)
 //                         | --authorize <order_id> --domain <domain> --source <quelle> [--reference TEXT]
 //                         | --run | --complete <order_id> | --report <order_id> | --cancel <order_id> --reason TEXT
 //                         | --reissue-access <order_id> --reason TEXT   (abgelaufener Link: genau EINE neue Anfrage, nur durch Chris)
@@ -1113,6 +1248,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (!o) throw new Error("Auftrag nicht gefunden.");
       // Token-Hash nicht ausgeben (nicht geheim, aber unnötig); Zugangsdaten stehen ohnehin nie im Auftrag.
       console.log(JSON.stringify({ ...o, access_request: o.access_request ? { ...o.access_request, token_hash: o.access_request.token_hash ? "[gesetzt]" : null } : null }, null, 2)); return 0;
+    }
+    if (flag("create-confirmed")) {
+      const o = createConfirmedRepairOrder(store, { domain: flag("create-confirmed"), website: flag("website"), company: flag("company"), delivery_email: flag("email"), contact_name: flag("name") });
+      console.log(`Bestätigter CHF-480-Auftrag: ${o.order_id} (${o.state}) – Direktverkauf erfasst, wartet auf Zahlung (WAITING_FOR_DEPOSIT).`);
+      console.log(`Zahlung verbuchen: node payments.js record ${o.order_id} --amount ${paymentThresholdChf(REPAIR_OFFER)} --reference "<Bankreferenz>"`);
+      return 0;
     }
     if (flag("create")) {
       const o = createRepairOrder(store, { domain: flag("create"), website: flag("website"), lead_id: flag("lead"), company: flag("company"), delivery_email: flag("email"), contact_name: flag("name") });
@@ -1170,7 +1311,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       return 0;
     }
     if (flag("report")) { const o = store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders?.[flag("report")]; if (!o?.report) throw new Error("Kein Bericht vorhanden."); console.log(`${o.report.subject}\n\n${o.report.body}`); return 0; }
-    console.log("Befehle: --list | --show <id> | --create <domain> | --authorize <id> --domain <d> --source <q> | --run | --complete <id> | --cancel <id> --reason <r> | --reissue-access <id> --reason <r> | --confirm-host-key <id> --fingerprint SHA256:… | --report <id>");
+    console.log("Befehle: --list | --show <id> | --create <domain> | --create-confirmed <domain> --email <adresse> | --authorize <id> --domain <d> --source <q> | --run | --complete <id> | --cancel <id> --reason <r> | --reissue-access <id> --reason <r> | --confirm-host-key <id> --fingerprint SHA256:… | --report <id>");
     return 1;
   };
   run().then((c) => process.exit(c), (e) => { console.error("Fehler: " + e.message); process.exit(1); });

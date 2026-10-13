@@ -417,6 +417,14 @@ browserTest("ECHTER BROWSER: Formular/POST nie abgesendet – Auto-Submit + fetc
   live.seen = [];
   const r = await validator().validate({ url: "http://site.test/", expected_domain: "site.test", findings: [], phase: "baseline" });
   assert.ok(r.desktop.blocked_requests >= 1 && r.mobile.blocked_requests >= 1, JSON.stringify([r.desktop.blocked_requests, r.mobile.blocked_requests]));
+  // TF-046: der blockierte Submit darf keine Fehlerseite committen – der Browser bleibt auf der Seite und misst sie (früher: falsches
+  // «cross_domain_redirect» bzw. unter Last «Execution context was destroyed»).
+  for (const vp of ["desktop", "mobile"]) assert.deepEqual([r[vp].load_ok, r[vp].final_same_domain, r[vp].error ?? null, r[vp].nav.links_visible > 0], [true, true, null, true], vp);
+  // Deterministisch: Submit schon WÄHREND des Ladens (vor dem load-Event) – früher goto-Timeout → load_failed.
+  live.state = { extra: '<form id="g" method="post" action="/kontakt.html"></form><script>document.getElementById("g").submit()</script>' };
+  const early = await validator().validate({ url: "http://site.test/", expected_domain: "site.test", findings: [], phase: "baseline" });
+  for (const vp of ["desktop", "mobile"]) assert.deepEqual([early[vp].load_ok, early[vp].final_same_domain, early[vp].error ?? null, early[vp].blocked_requests >= 1], [true, true, null, true], `früh ${vp}`);
+  assert.ok(live.seen.every((s) => s.method === "GET" || s.method === "HEAD"));
   assert.ok(r.desktop.blocked_hosts >= 1, "fremder Host nie kontaktiert");
   assert.ok(live.seen.length > 0 && live.seen.every((s) => s.method === "GET" || s.method === "HEAD"), "kein POST hat den Server erreicht");
   assert.ok(!JSON.stringify(r).includes("x@example.test") && !JSON.stringify(r).includes("a=1"), "keine Formular-/POST-Daten im Ergebnis");

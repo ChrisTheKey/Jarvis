@@ -1585,6 +1585,7 @@ function renderPayments(p) {
   el.textContent = `${p.status === "ACTIVE" ? "ACTIVE" : "–"} · CHF ${p.received_chf ?? 0} eingegangen · ${p.waiting_deposit ?? 0} warten${p.payment_review ? ` · ${p.payment_review} PRÜFEN` : ""}`;
   el.className = p.payment_review ? "on-bad" : p.status === "ACTIVE" ? "on-ok" : "";
 }
+const DELIVERY_LABELS = { draft_ready: "ENTWURF", sent: "GESENDET", attachment_required: "ANHANG NÖTIG", unclear: "UNKLAR – PRÜFEN", report_unsafe: "BERICHT PRÜFEN", failed: "CHRIS", manual: "DURCH CHRIS" };
 function renderRepair(rep) {
   const set = (id, v, cls = "") => { $(id).textContent = v ?? "–"; $(id).className = cls; };
   const st = rep?.states || {};
@@ -1618,7 +1619,9 @@ function renderRepair(rep) {
     li.querySelector(".st").textContent = `${REPAIR_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 480}`;
     li.querySelector(".pay").textContent = payLine(o, 480, 240) + (o.access_requested ? ` · Zugang ${o.access_received ? "ERHALTEN" : "ANGEFRAGT"}${o.access_type ? ` (${o.access_type})` : ""}` : "")
       + (o.profile_status ? ` · Profil ${PROFILE_LABELS[o.profile_status] || "–"}` : "")
-      + (typeof o.host_key_verified === "boolean" ? ` · HOST KEY VERIFIED ${yn(o.host_key_verified)}` : ""); // TF-044: nur JA/NEIN
+      + (typeof o.host_key_verified === "boolean" ? ` · HOST KEY VERIFIED ${yn(o.host_key_verified)}` : "") // TF-044: nur JA/NEIN
+      + (typeof o.authorized === "boolean" ? ` · Freigabe ${yn(o.authorized)}` : "")
+      + (o.delivery_status && o.delivery_status !== "none" ? ` · Lieferung ${DELIVERY_LABELS[o.delivery_status] || "–"}` : ""); // TF-046: nur feste Wörter
     li.querySelector(".sub").textContent = ` ${[o.company, o.domain].filter(Boolean).join(" · ")}`;
     li.querySelector(".why").textContent = `Befunde ${o.findings ?? 0} · repariert ${o.repaired ?? 0} · Backup ${yn(o.backup_ok)} · Desktop ${yn(o.desktop_retest)} · Mobile ${yn(o.mobile_retest)} · Production ${prod} · Bericht ${o.report_available ? "JA" : "NEIN"}`;
     // TF-045: Browser-Gate – nur feste Wörter (JA/NEIN/WARTET, KEINE/GEFUNDEN/ROLLBACK); nie URLs, Screenshots oder Logs.
