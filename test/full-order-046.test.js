@@ -453,7 +453,11 @@ function readyEnv() {
   fs.writeFileSync(path.join(workerDir, "backup_status.json"), JSON.stringify({ last_at: new Date(Date.now() - 3600e3).toISOString(), ok: true, generations: 3 }));
   for (const f of ["gmail_credentials.json", "gmail_token.json"]) fs.writeFileSync(path.join(secretsDir, f), JSON.stringify({ secret: "readiness-test-secret-value" }));
   const env = { JARVIS_WORKER_ROLE: "vps", JARVIS_MAIL_WORKER_TOKEN: "rdy-worker-token-0123456789abcdef", ANTHROPIC_API_KEY: "sk-ant-readiness-test" };
-  return { secretsDir, workerDir, env };
+  // TF-049: Readiness verlangt aktiven Outbox-Consumer + funktionierendes Gmail OAuth (hier Fake-Check, kein Netz).
+  const outboxDir = path.join(secretsDir, "repair_outbox");
+  fs.mkdirSync(outboxDir);
+  fs.writeFileSync(path.join(outboxDir, "consumer.json"), JSON.stringify({ beat: Date.now(), role: "mail-worker" }));
+  return { secretsDir, workerDir, env, outboxDir, gmailCheck: async () => ({ ok: true }) };
 }
 const snapshotDir = (d) => fs.readdirSync(d, { recursive: true }).map(String).sort().map((f) => { const p = path.join(d, f); return fs.statSync(p).isFile() ? `${f}:${fs.readFileSync(p, "utf8")}` : f; }).join("\n");
 

@@ -259,8 +259,9 @@ test("READINESS Repair-Service: Isolation + Zustellweg (Mail-Worker-Herzschlag i
   const off = await readinessReport(opts);
   assert.equal(off.service, "repair");
   assert.ok(off.reasons.some((x) => /^Delivery: Mail-Worker stellt die Repair-Outbox/.test(x)), off.reasons.join(" | "));
-  assert.ok(!off.checks.some((x) => ["Mail", "Authority"].includes(x.name)), "keine Gmail-/Authority-Prüfung im Repair-Service");
-  fs.writeFileSync(path.join(ob, CONSUMER_FILE), JSON.stringify({ beat: Date.now() }));
+  assert.ok(!off.checks.some((x) => x.name === "Authority"), "keine Authority-Prüfung im Repair-Service");
+  // TF-049: Gmail-Status kommt nur aus dem Herzschlag des Mail-Workers (kein eigener Gmail-Zugang im Repair-Service).
+  fs.writeFileSync(path.join(ob, CONSUMER_FILE), JSON.stringify({ beat: Date.now(), gmail_auth: { ok: true, at: Date.now() } }));
   const on = await readinessReport(opts);
   const byName = Object.fromEntries(on.checks.map((x) => [x.name, x.status]));
   assert.deepEqual([byName.Core, byName.Isolation, byName.Delivery, byName.Backup], ["OK", "OK", "OK", "OK"]);
@@ -315,7 +316,7 @@ test("IMAGES: Chromium nur im Repair-Image; Repair-Image ohne Gmail-/Cloud-Mail-
   const mw = read("mail-worker.js");
   assert.match(mw, /if \(!repairRunning && !repairExternal\)/);
   assert.match(mw, /if \(!check150Running && !repairExternal\)/);
-  assert.match(mw, /processRepairOutbox\(\{ dir: outboxDir, gmail, log \}\)/);
+  assert.match(mw, /processRepairOutbox\(\{ dir: outboxDir, gmail, gmailAuth, log \}\)/);
   // Outbox-Zustellung nur nach der Standby-Prüfung (send_authority) – im Standby-Zweig steht sie nicht.
   const loopSrc = mw.slice(mw.indexOf("async function loop()"));
   assert.ok(loopSrc.indexOf("if (it.standby)") < loopSrc.indexOf("processRepairOutbox"), "Zustellung nur mit send_authority");

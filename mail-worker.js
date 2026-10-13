@@ -43,6 +43,7 @@ export const SEND_WINDOWS = [
   { id: "afternoon", start: "14:30", until: "18:00", limit: WINDOW_LIMIT },
 ];
 const DAY_MS = 86_400_000;
+const GMAIL_AUTH_CHECK_MS = 5 * 60_000; // TF-049: read-only Gmail-OAuth-Prüfung (Outbox-Herzschlag), Takt
 export const DEFAULT_CONFIG = {
   dryRun: true, // Standard: nur anzeigen, was vorbereitet würde
   sendMode: "drafts", // "drafts" = nur Entwürfe, "compliant_auto" = versandberechtigte Mails selbst senden
@@ -1076,7 +1077,7 @@ async function loop() {
   const startedAt = new Date().toISOString();
   // Server Control (nur VPS): Pause zwischen Durchläufen ist weckbar; Neustart des Cores = sauberes Ende nach dem Durchlauf,
   // Docker (restart: unless-stopped) startet den Container-Prozess neu. Nie mitten in einem Gmail-Durchlauf.
-  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false, discoveryRunning = null, repairRunning = null, check150Running = null;
+  let wake = () => {}, restartRequested = false, lastIt = null, standbyLogged = false, discoveryRunning = null, repairRunning = null, check150Running = null, gmailAuth = null;
   const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
   const core = () => cloudCore.coreStatus({ dir: WORKER_DIR, role, startedAt, windows: SEND_WINDOWS, zurichDay, backup: backup.backupInfo(WORKER_DIR) });
   const salesMod = await import("./sales.js");
@@ -1162,8 +1163,16 @@ async function loop() {
         .finally(() => { check150Running = null; });
     }
     // TF-047: Service-Mails des Repair-Service zustellen (nur hier, nur mit send_authority, genau einmal). Fehler stoppen den Worker nie.
+    // TF-049: Gmail OAuth höchstens alle 5 Minuten read-only prüfen (Refresh im Speicher + users.getProfile); Status geht in den
+    // Outbox-Herzschlag (Readiness des Repair-Service), bei FAIL bleiben Outbox-Aufträge offen statt endgültig zu scheitern.
+    if (outboxDir && Date.now() - (gmailAuth?.at || 0) >= GMAIL_AUTH_CHECK_MS) {
+      const prev = gmailAuth;
+      gmailAuth = { ...(await gmail.checkAuth().catch(() => ({ ok: false, category: "unknown_auth_error" }))), at: Date.now() };
+      if (!gmailAuth.ok && (prev?.ok !== false || prev.category !== gmailAuth.category)) log("error", "gmail_auth_failed", { category: gmailAuth.category });
+      else if (gmailAuth.ok && prev?.ok === false) log("info", "gmail_auth_recovered");
+    }
     if (outboxDir) {
-      try { const ob = await outboxMod.processRepairOutbox({ dir: outboxDir, gmail, log }); if (ob.processed) log("info", "repair_outbox_processed", ob); }
+      try { const ob = await outboxMod.processRepairOutbox({ dir: outboxDir, gmail, gmailAuth, log }); if (ob.processed) log("info", "repair_outbox_processed", ob); }
       catch (e) { log("error", "repair_outbox_failed", { error: e.message }); }
     }
     // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.

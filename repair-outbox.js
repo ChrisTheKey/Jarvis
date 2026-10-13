@@ -9,7 +9,7 @@
 //   <id>.request.json  Repair-Service   verbindlicher Versandauftrag (atomar aus .draft.json umbenannt), nach Abschluss gelöscht
 //   <id>.claim         Mail-Worker      exklusiv angelegt (wx) VOR dem Versand – ein Neustart sendet nie ein zweites Mal
 //   <id>.result.json   Mail-Worker      sent | failed | unclear | rejected – ohne Adresse, ohne Inhalt
-//   consumer.json      Mail-Worker      Herzschlag: Zustellweg aktiv (nur mit send_authority)
+//   consumer.json      Mail-Worker      Herzschlag: Zustellweg aktiv (nur mit send_authority) + Gmail-OAuth-Status (TF-049, ok/Kategorie)
 // Ohne Mail-Worker (offline/Standby) bleibt ein Auftrag offen: sendDraft meldet OUTBOX_PENDING (vorübergehend) – die Engines
 // markieren dann NIE «gesendet» und versuchen es im nächsten Lauf erneut (der Auftrag selbst bleibt derselbe, kein Duplikat).
 // Inhalte (Kundenadresse, Bericht, One-Time-Link) liegen nur in .draft/.request (Rechte 600) und werden nach dem Ergebnis gelöscht.
@@ -90,6 +90,10 @@ export function outboxStatus(dir, { now = Date.now() } = {}) {
   try { fs.accessSync(dir, fs.constants.W_OK); out.writable = true; } catch {}
   const c = readJson(path.join(dir, CONSUMER_FILE));
   if (c?.beat) { out.consumer_beat = new Date(c.beat).toISOString(); out.consumer_online = now - c.beat < CONSUMER_MAX_AGE_MS; }
+  // TF-049: Gmail-OAuth-Status des Mail-Workers (read-only geprüft) – nur ok + sichere Kategorie, frisch nur innerhalb CONSUMER_MAX_AGE_MS.
+  const ga = c?.gmail_auth;
+  out.gmail_auth = ga && Number.isFinite(ga.at) ? { ok: ga.ok === true, category: ga.ok === true ? null : String(ga.category || "unknown_auth_error").replace(/[^a-z_]/g, "").slice(0, 40),
+    fresh: now - ga.at < CONSUMER_MAX_AGE_MS } : null;
   for (const n of names) {
     if (n.endsWith(".draft.json")) out.staged++;
     else if (n.endsWith(".request.json") && !names.includes(n.replace(/\.request\.json$/, ".result.json"))) out.pending++;
@@ -102,11 +106,18 @@ export function outboxStatus(dir, { now = Date.now() } = {}) {
 // Sendet jeden verbindlichen Auftrag GENAU EINMAL über gmail.js (Service-Klasse). Claim vor dem Versand; ein Claim ohne Ergebnis
 // (Absturz/Neustart mitten im Versand) wird NIE erneut gesendet – Ergebnis «unclear» (bzw. «sent», wenn das Gmail-Register den
 // Versand belegt). Gibt nie Adressen/Inhalte in Logs aus.
-export async function processRepairOutbox({ dir, gmail, log = () => {}, now = () => new Date(), max = 10 } = {}) {
+// gmailAuth (TF-049): Ergebnis von gmail.checkAuth – landet im Herzschlag (nur ok/Kategorie). Ist Gmail OAuth kaputt, bleibt jeder
+// Auftrag unangetastet offen (kein Claim, kein «failed») – sonst gingen Service-Mails bei abgelaufenem Token endgültig verloren.
+export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = () => {}, now = () => new Date(), max = 10 } = {}) {
   const out = { processed: 0, sent: 0, failed: 0, unclear: 0, rejected: 0, deferred: 0 };
   let names;
   try { names = fs.readdirSync(dir); } catch { return { ...out, missing: true }; }
-  writeAtomic(path.join(dir, CONSUMER_FILE), { beat: +now(), role: "mail-worker" });
+  const auth = gmailAuth ? { ok: gmailAuth.ok === true, ...(gmailAuth.ok === true ? {} : { category: gmailAuth.category || "unknown_auth_error" }), at: gmailAuth.at ?? +now() } : undefined;
+  writeAtomic(path.join(dir, CONSUMER_FILE), { beat: +now(), role: "mail-worker", ...(auth && { gmail_auth: auth }) });
+  if (auth && !auth.ok) {
+    out.deferred = names.filter((x) => x.endsWith(".request.json") && !names.includes(x.replace(/\.request\.json$/, ".result.json"))).length;
+    return { ...out, gmail_auth_failed: true };
+  }
   const result = (id, status, extra = {}) => {
     writeAtomic(file(dir, id, "result.json"), { v: 1, id, status, at: now().toISOString(), ...extra });
     out[status]++; out.processed++;

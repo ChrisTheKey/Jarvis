@@ -25,7 +25,8 @@
     "test:release-046": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration",
     "readiness": "node production-readiness.js",
     "test:separation-integration": "node scripts/test-repair-integration.mjs --separation",
-    "test:release-047": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration && npm run test:separation-integration && node scripts/secret-scan.mjs && node scripts/lab-cleanup.mjs"
+    "test:release-047": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration && npm run test:separation-integration && node scripts/secret-scan.mjs && node scripts/lab-cleanup.mjs",
+    "test:release-049": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration && npm run test:separation-integration && node scripts/secret-scan.mjs && node scripts/lab-cleanup.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",

@@ -4,6 +4,7 @@
 // internen Register (.secrets/gmail_jarvis.json). Beides muss stimmen, sonst wird abgelehnt.
 //
 //   node gmail.js auth                                   einmalige OAuth-Anmeldung im Browser
+//   node gmail.js check                                  read-only Auth-Check (MAIL AUTH READY / MAIL AUTH FAIL (Kategorie))
 //   node gmail.js draft --to a@b.de --subject X --body Y  neuen Entwurf anlegen
 //   node gmail.js update <draftId> [--to ..] [--subject ..] [--body ..]
 //   node gmail.js send <draftId>
@@ -116,6 +117,46 @@ async function accessToken() {
   const fresh = await tokenRequest(loadClient(), { grant_type: "refresh_token", refresh_token: t.refresh_token });
   saveToken(fresh, t);
   return fresh.access_token;
+}
+
+// ---------- Read-only Auth-Check (TF-049) ----------
+// Prüft, ob Gmail OAuth wirklich funktioniert: Refresh am Token-Endpunkt (nur im Speicher, die Token-Datei bleibt unverändert)
+// und genau EIN read-only Aufruf users.getProfile. Nie Senden/Entwurf/Label/Nachricht, nie Inbox-Inhalte. Ergebnis ohne
+// Token und ohne Mailadresse: { ok: true } oder { ok: false, category } mit category aus AUTH_FAIL_CATEGORIES.
+export const AUTH_FAIL_CATEGORIES = Object.freeze(["expired_or_revoked", "missing_token", "missing_credentials", "scope_error", "network_error", "unknown_auth_error"]);
+export async function checkAuth({ secretsDir = SECRETS, fetchFn = (...a) => fetch(...a), timeoutMs = 20_000 } = {}) {
+  const fail = (category) => ({ ok: false, category });
+  const raw = readJson(path.join(secretsDir, "gmail_credentials.json"), null);
+  const client = raw?.installed || raw?.web;
+  if (!client?.client_id) return fail("missing_credentials");
+  const t = readJson(path.join(secretsDir, "gmail_token.json"), null);
+  if (!t?.refresh_token) return fail("missing_token");
+  if (t.scope && !SCOPES.every((s) => String(t.scope).split(/\s+/).includes(s))) return fail("scope_error");
+  let r, body;
+  try {
+    r = await fetchFn(client.token_uri || "https://oauth2.googleapis.com/token", {
+      method: "POST", signal: AbortSignal.timeout(timeoutMs), headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: client.client_id, client_secret: client.client_secret || "", grant_type: "refresh_token", refresh_token: t.refresh_token }),
+    });
+    body = await r.json().catch(() => ({}));
+  } catch { return fail("network_error"); }
+  if (!r.ok) {
+    const e = String(body?.error || "");
+    if (e === "invalid_grant") return fail("expired_or_revoked");
+    if (e === "invalid_client" || e === "unauthorized_client") return fail("missing_credentials");
+    if (e === "invalid_scope") return fail("scope_error");
+    return fail(r.status === 429 || r.status >= 500 ? "network_error" : "unknown_auth_error");
+  }
+  if (!body?.access_token) return fail("unknown_auth_error");
+  if (body.scope && !SCOPES.every((s) => String(body.scope).split(/\s+/).includes(s))) return fail("scope_error");
+  try {
+    r = await fetchFn(API + "/profile", { method: "GET", signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${body.access_token}` } });
+    body = await r.json().catch(() => ({}));
+  } catch { return fail("network_error"); }
+  if (r.ok) return body?.historyId || body?.emailAddress ? { ok: true } : fail("unknown_auth_error");
+  if (r.status === 401) return fail("expired_or_revoked");
+  if (r.status === 403) return fail(/scope|insufficient/i.test(String(body?.error?.message || "")) ? "scope_error" : "unknown_auth_error");
+  return fail(r.status === 429 || r.status >= 500 ? "network_error" : "unknown_auth_error");
 }
 
 // Quota-Schutz (TF-037): Gmail zählt „Total Query Cost / Units per minute per user“ – eine ununterbrochene Call-Salve
@@ -509,6 +550,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const f = parseFlags(rest);
   const run = {
     auth: async () => { await authorize(); const p = await gmail("GET", "/profile"); return `Gmail verbunden: ${p.emailAddress}`; },
+    // TF-049: read-only (Refresh im Speicher + users.getProfile) – gibt nur den Status aus, nie Token oder Mailadresse.
+    check: async () => { const r = await checkAuth(); if (!r.ok) process.exitCode = 1; return r.ok ? "MAIL AUTH READY" : `MAIL AUTH FAIL (${r.category})`; },
     draft: () => createDraft({ to: f.to, subject: f.subject, body: f.body }),
     update: () => updateDraft(f._[0], { to: f.to, subject: f.subject, body: f.body }),
     send: () => sendDraft(f._[0]),
@@ -517,7 +560,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     reply: () => replyToThread(f._[0], { body: f.body }),
   }[cmd];
   if (!run) {
-    console.log("Befehle: auth | draft --to --subject --body | update <draftId> [...] | send <draftId> | list | thread <threadId> | reply <threadId> --body");
+    console.log("Befehle: auth | check | draft --to --subject --body | update <draftId> [...] | send <draftId> | list | thread <threadId> | reply <threadId> --body");
     process.exit(1);
   }
   Promise.resolve(run()).then(

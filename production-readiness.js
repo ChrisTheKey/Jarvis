@@ -5,9 +5,13 @@
 // Lokal (nur Entwicklungsstand):  node production-readiness.js
 //
 // Harte Regeln:
-//   - LÖST NIE EINE AKTION AUS: keine Mail, kein Gmail-/Netlify-/Kunden-Aufruf, keine Zahlung, kein Auftrag, kein Schreiben in
-//     den Worker-Zustand, kein Schlüssel wird erzeugt (accessKeys wird bewusst NICHT aufgerufen). Netzwerk: keines. Einzige
-//     Nebenwirkung: optionaler Chromium-Starttest (about:blank, Temp-Profil in os.tmpdir(), danach gelöscht; --no-launch = ohne).
+//   - LÖST NIE EINE AKTION AUS: keine Mail, kein Entwurf, kein Netlify-/Kunden-Aufruf, keine Zahlung, kein Auftrag, kein Schreiben in
+//     den Worker-Zustand, kein Schlüssel wird erzeugt (accessKeys wird bewusst NICHT aufgerufen). Netzwerk: nur im Mail-Worker der
+//     read-only Gmail-Auth-Check (TF-049: Token-Refresh im Speicher + users.getProfile, gmail.checkAuth). Der Repair-Service liest den
+//     Gmail-Status nur aus dem Outbox-Herzschlag des Mail-Workers. Einzige weitere Nebenwirkung: optionaler Chromium-Starttest
+//     (about:blank, Temp-Profil in os.tmpdir(), danach gelöscht; --no-launch = ohne).
+//   - READY nur mit funktionierendem Gmail OAuth (TF-049): Mail-Worker gesund + Authority VPS + Outbox-Consumer aktiv + read-only
+//     Gmail-Check OK. Ein registrierter Outbox-Consumer allein reicht nie.
 //   - AUSGABE NUR STATUS: OK / WARN / FAIL bzw. YES / NO. Nie Token, API-Key, Passwort, Private Key, Fingerprint, Host, Benutzer,
 //     Bankdaten oder Kundendaten. Secrets nur als «vorhanden: YES/NO».
 //   - Ergebnis: «READY FOR FIRST CUSTOMER» nur, wenn kein Punkt FAIL ist; sonst «NOT READY» mit konkreten, sicheren Gründen.
@@ -18,8 +22,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
-export const RELEASE_GATE = "TF-047";
-export const RELEASE_GATE_SCRIPT = "test:release-047";
+export const RELEASE_GATE = "TF-049";
+export const RELEASE_GATE_SCRIPT = "test:release-049";
 export const MIN_FREE_DISK_GB = 10; // konservativ: Chromium-Image + Temp-Profile + Zustand/Backups wachsen
 export const WARN_FREE_DISK_GB = 20;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -67,7 +71,8 @@ export function secretsPresence({ env = process.env, secretsDir, workerDir, serv
 // Alle Prüfungen – read-only. deps erlauben Tests ohne VPS (env, Verzeichnisse, statfs, Chromium-Start).
 export async function readinessReport({ env = process.env, secretsDir = env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets"),
   workerDir = path.join(secretsDir, "mail_worker"), statfs = fs.statfsSync, launchChromium = true, now = Date.now(),
-  service = env.JARVIS_WORKER_ROLE === "repair" ? "repair" : "mail", outboxDir = env.JARVIS_REPAIR_OUTBOX || path.join(secretsDir, "repair_outbox") } = {}) {
+  service = env.JARVIS_WORKER_ROLE === "repair" ? "repair" : "mail", outboxDir = env.JARVIS_REPAIR_OUTBOX || path.join(secretsDir, "repair_outbox"),
+  gmailCheck = null } = {}) {
   const checks = [];
   const add = (c) => { checks.push(c); return c; };
   const load = async (name, spec) => { try { return await import(spec); } catch (e) { add(fail(name, `Modul nicht ladbar (${String(e.code || "Fehler").slice(0, 40)})`)); return null; } };
@@ -89,8 +94,16 @@ export async function readinessReport({ env = process.env, secretsDir = env.JARV
     }
     if (ob) {
       const st = ob.outboxStatus(outboxDir, { now });
+      // TF-049: Gmail OAuth des Mail-Workers – nur aus seinem Herzschlag (der Repair-Service hat bewusst keinen Gmail-Zugang).
+      const ga = st.gmail_auth;
+      const mailOk = !!(st.consumer_online && ga?.fresh && ga.ok);
+      if (!st.consumer_online || !ga) add(fail("Mail", "Mail-Worker meldet keinen Gmail-OAuth-Status (kein Herzschlag oder Mail-Worker-Update nötig)"));
+      else if (!ga.fresh) add(fail("Mail", "Gmail-OAuth-Status des Mail-Workers veraltet"));
+      else if (!ga.ok) add(fail("Mail", `Gmail OAuth FAIL (${ga.category})`));
+      else add(ok("Mail", "Gmail OAuth OK (read-only Prüfung durch den Mail-Worker)"));
       if (!st.exists || !st.writable) add(fail("Delivery", "Repair-Outbox fehlt oder ist nicht beschreibbar"));
       else if (!st.consumer_online) add(fail("Delivery", "Mail-Worker stellt die Repair-Outbox (noch) nicht zu – kein Herzschlag (Mail-Worker-Update nötig)"));
+      else if (!mailOk) add(fail("Delivery", "Zustellung unmöglich – Gmail OAuth des Mail-Workers nicht bestätigt"));
       else add(ok("Delivery", `Service-Mails über die Outbox → Mail-Worker (Sender Authority) · offen ${st.pending}`));
     }
   } else if (mw) {
@@ -117,12 +130,32 @@ export async function readinessReport({ env = process.env, secretsDir = env.JARV
   const gmailReady = secrets.filter((s) => s.why === "Gmail").every((s) => s.present);
   const registryOk = parses(path.join(secretsDir, "gmail_jarvis.json"));
   const gm = service === "repair" ? null : await load("Mail", "./gmail.js");
+  let mailAuthOk = false;
   if (gm) {
     const classes = gm.SERVICE_MESSAGE_CLASSES || [];
     if (!gmailReady) add(fail("Mail", "Gmail-Zugang fehlt (Credentials/Token)"));
     else if (!registryOk) add(fail("Mail", "Gmail-Register nicht lesbar"));
     else if (!["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST"].every((c) => classes.includes(c))) add(fail("Mail", "Service-Mailklassen fehlen"));
-    else add(ok("Mail", "Gmail-Zugang vorhanden · Service-Klassen CUSTOMER_ACCESS_REQUEST + CUSTOMER_ORDER_FULFILLMENT"));
+    else {
+      // TF-049: Gmail OAuth wirklich prüfen – read-only (Refresh im Speicher + users.getProfile), nie Senden/Entwurf/Label.
+      const cats = gm.AUTH_FAIL_CATEGORIES || [];
+      const check = gmailCheck || ((o) => gm.checkAuth(o));
+      const a = await Promise.resolve().then(() => check({ secretsDir })).catch(() => ({ ok: false, category: "unknown_auth_error" }));
+      mailAuthOk = a?.ok === true;
+      if (!mailAuthOk) add(fail("Mail", `Gmail OAuth FAIL (${cats.includes(a?.category) ? a.category : "unknown_auth_error"})`));
+      else add(ok("Mail", "Gmail OAuth OK (read-only users.getProfile) · Service-Klassen CUSTOMER_ACCESS_REQUEST + CUSTOMER_ORDER_FULFILLMENT"));
+    }
+  }
+  // ---------- Delivery (Mail-Worker): Repair-Outbox-Consumer aktiv + Gmail funktionsfähig ----------
+  if (service !== "repair") {
+    const ob = await load("Delivery", "./repair-outbox.js");
+    if (ob) {
+      const st = ob.outboxStatus(outboxDir, { now });
+      if (!st.exists) add(fail("Delivery", "Repair-Outbox fehlt (Mount /data/repair-outbox)"));
+      else if (!st.consumer_online) add(fail("Delivery", "Repair-Outbox-Consumer nicht aktiv (kein Herzschlag in den letzten 10 Minuten)"));
+      else if (!mailAuthOk) add(fail("Delivery", "Zustellung unmöglich – Gmail OAuth FAIL"));
+      else add(ok("Delivery", `Repair-Outbox-Consumer aktiv · Gmail OAuth OK · offen ${st.pending}`));
+    }
   }
 
   // ---------- Payments ----------
