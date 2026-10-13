@@ -4,6 +4,39 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-13
 
+## JARVIS SEPARATE REPAIR SERVICE / ZERO-MAILING-DOWNTIME DEPLOY — TF-047 (2026-10-13, Feature 9df3ee7, Release-Gate 047 lokal grün)
+- **Architektur-Befund**: CHF-480/150 liefen bisher im Mail-Worker-Prozess (runRepairOrders/runCheck150Orders) auf demselben
+  Zustand. Locks sind PID-basiert (über Container-PID-Namespaces nicht sicher), mehrere JSON-Dateien werden ohne Lock per
+  read-modify-write geschrieben → **kein gemeinsamer Schreib-Zustand** zwischen zwei Containern. Stattdessen minimaler IPC.
+- **Mail-Worker (jarvis-mail-mail-worker-1)**: unverändert Gmail, Outreach, Scheduler, Sender Authority, Mail-Queue. Neu im Code
+  (aktiv erst beim nächsten GEPLANTEN Mail-Deploy, `deploy.sh` recreated den Container): stellt die Repair-Outbox zu
+  (`JARVIS_REPAIR_OUTBOX`, nur mit send_authority), liest den Repair-Zustand read-only (`JARVIS_REPAIR_STATE_DIR`: Dashboard,
+  Kunden-Dedupe) und führt dann keine Aufträge mehr selbst aus. Mail-Image ohne Chromium.
+- **Repair-Service (jarvis-repair-worker, Projekt jarvis-repair, /opt/jarvis-repair)**: `repair-service.js` – CHF-480 + CHF-150,
+  Zahlungs-/Freigabe-Gates, Tresor, Profile Builder, Host-Key, Adapter, Backups (lokal verschlüsselt), Browser-Gate (Chromium nur
+  hier), Bericht, Readiness. Eigener Zustand (`state/` → /data/repair), eigenes Lock, Healthcheck, restart unless-stopped,
+  read-only rootfs, cap_drop ALL, mem 1 GB, kein Docker-Socket. **Keine Sender Authority**: gmail.js/mail-requests/server-agent
+  nicht im Image; Start verweigert bei Gmail-Secrets, Anthropic-Key oder Rolle ≠ repair. `.env` nur JARVIS_MAIL_WORKER_TOKEN
+  (+ Sync-URL) für den sicheren Zugangslink. CLI im Container: `docker exec jarvis-repair-worker node repair-workflow.js …` /
+  `node payments.js record …` / `node production-readiness.js`.
+- **IPC / Transactional Delivery (`repair-outbox.js`)**: Service-Mails (nur CUSTOMER_ACCESS_REQUEST / CUSTOMER_ORDER_FULFILLMENT)
+  als Dateien, ein Schreiber je Datei: `<id>.draft.json` → `<id>.request.json` (Repair), `<id>.claim` (wx, vor dem Versand) +
+  `<id>.result.json` + `consumer.json` (Mail-Worker). Genau einmal; Claim ohne Ergebnis → «unclear», nie Wiederholung. Mail-Worker
+  offline → OUTBOX_PENDING, Auftrag bleibt offen, nie «gesendet». Inhalte nach dem Ergebnis gelöscht.
+- **Deploy**: `deploy/vps/deploy-repair.sh <host>` → `repair-remote.sh`: Mail-Worker-Baseline read-only (ID, StartedAt,
+  RestartCount, Health, Scheduler-Herzschlag/Tick, Queue, Authority) → Ziel-Guard (eigenes Projekt, genau ein Service, kein
+  /opt/jarvis-mail-Mount, kein Docker-Socket, kein Mail-Image; sonst DEPLOY BLOCKED) → nur `build repair-worker` +
+  `up -d --no-deps --no-build repair-worker` → Vergleich; Abweichung = FAIL. Nie compose down / Docker-Neustart.
+- **Tests**: `test/service-separation-047.test.js` (9, hermetisch: Outbox-Protokoll + Crash-Semantik, CHF-480-Vollauftrag und
+  CHF-150 über die Outbox mit Mail-Worker offline/online, Isolation, Readiness, Deploy-/Image-Artefakte) + Lab
+  `test/integration/service-separation-047/` (8, Docker: echtes Dockerfile.repair + echtes repair-remote.sh gegen Lab-Mail-Worker).
+- **Temp-Leak behoben**: Unit-/Lab-Läufe laufen in einem eigenen `%TEMP%\jarvis-testrun-*` (TEMP/TMP/TMPDIR), das danach komplett
+  gelöscht wird; `scripts/lab-cleanup.mjs` räumt nur Lab-Label-Ressourcen + abgebrochene Testrun-Verzeichnisse. `jarvis-live-034-*`
+  wird nie angefasst.
+- **RELEASE-GATE (2026-10-13 17:04–17:22 UTC, lokal)**: `npm run test:release-047` **PASS in einem Lauf, Exit 0**: Unit 615 Tests /
+  604 pass / 0 fail / 11 skip (Lab-Suiten, laufen im Gate selbst), TF-044 18/18, TF-045 10/10, TF-046 8/8, TF-047-Separation 8/8,
+  Secret-Scan 0 Treffer, Cleanup 0 Container/Volumes/Netze/Images/Testrun-Verzeichnisse. Minimum freier RAM 1181 MB.
+
 ## JARVIS FIRST CUSTOMER PRODUCTION READINESS & FULL ORDER DRY-RUN — TF-046 (2026-10-13, Unit 593/593 + TF-044-Lab 18/18 + Browser-Lab 10/10 + Full-Order-Lab 8/8 grün, lokal; NOCH NICHT auf dem VPS)
 - **Kundenlieferung** (`repair-workflow.js`, `autoDeliver=true` in `runRepairOrders`): nach bestandenem Abschluss-Gate geht der Bericht
   GENAU EINMAL als Service-Mail `CUSTOMER_ORDER_FULFILLMENT` an die verifizierte Kundenadresse. Draft-ID und Sendeversuch werden vor dem
