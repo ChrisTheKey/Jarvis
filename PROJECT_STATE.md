@@ -4,7 +4,7 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-13
 
-## JARVIS SEPARATE REPAIR SERVICE / ZERO-MAILING-DOWNTIME DEPLOY — TF-047 (2026-10-13, Feature 9df3ee7, Release-Gate 047 lokal grün)
+## JARVIS SEPARATE REPAIR SERVICE / ZERO-MAILING-DOWNTIME DEPLOY — TF-047 (2026-10-13, Feature 9df3ee7, Release-Gate 047 lokal grün, Repair-Service LIVE efce58b, Mail-Worker unangetastet)
 - **Architektur-Befund**: CHF-480/150 liefen bisher im Mail-Worker-Prozess (runRepairOrders/runCheck150Orders) auf demselben
   Zustand. Locks sind PID-basiert (über Container-PID-Namespaces nicht sicher), mehrere JSON-Dateien werden ohne Lock per
   read-modify-write geschrieben → **kein gemeinsamer Schreib-Zustand** zwischen zwei Containern. Stattdessen minimaler IPC.
@@ -36,6 +36,12 @@ Letzte Aktualisierung: 2026-10-13
 - **RELEASE-GATE (2026-10-13 17:04–17:22 UTC, lokal)**: `npm run test:release-047` **PASS in einem Lauf, Exit 0**: Unit 615 Tests /
   604 pass / 0 fail / 11 skip (Lab-Suiten, laufen im Gate selbst), TF-044 18/18, TF-045 10/10, TF-046 8/8, TF-047-Separation 8/8,
   Secret-Scan 0 Treffer, Cleanup 0 Container/Volumes/Netze/Images/Testrun-Verzeichnisse. Minimum freier RAM 1181 MB.
+- **VPS LIVE (2026-10-13 17:53 UTC, `bash deploy/vps/deploy-repair.sh fiverr`)**: `jarvis-repair-worker` efce58b healthy, restarts 0.
+  Mail-Worker vorher/nachher identisch (verifiziert 17:59 UTC): ID f9de37935036, StartedAt 2026-10-12T19:50:53Z, RestartCount 0,
+  healthy, Code fb01df8, Scheduler aktiv (Log-Einträge < 1 min alt) → **24/7-Mailing nicht unterbrochen**.
+- **OFFEN (braucht Chris’ Freigabe)**: Outbox-Zustellung + Abschalten der Auftragsausführung im Mail-Worker greifen erst mit einem
+  GEPLANTEN Mail-Deploy (`deploy.sh` recreated jarvis-mail-mail-worker-1 = kurze Mailing-Unterbrechung). Bis dahin: Repair-Readiness
+  Delivery FAIL / NOT READY; der alte Mail-Worker (fb01df8) führt Aufträge aus seinem eigenen Zustand weiter selbst aus.
 
 ## JARVIS FIRST CUSTOMER PRODUCTION READINESS & FULL ORDER DRY-RUN — TF-046 (2026-10-13, Unit 593/593 + TF-044-Lab 18/18 + Browser-Lab 10/10 + Full-Order-Lab 8/8 grün, lokal; NOCH NICHT auf dem VPS)
 - **Kundenlieferung** (`repair-workflow.js`, `autoDeliver=true` in `runRepairOrders`): nach bestandenem Abschluss-Gate geht der Bericht
