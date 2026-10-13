@@ -4,6 +4,32 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-13
 
+## TF-049 – GMAIL OAUTH RECOVERY + READINESS HARDENING (2026-10-13, Feature f868b5a, Mail- und Repair-Worker LIVE f868b5a)
+- **Gmail OAuth recovered**: lokal neu autorisiert (`node gmail.js auth`), `node gmail.js check` → MAIL AUTH READY. Ursache vorher:
+  Token expired/revoked seit 2026-10-12 (tick_failed/cold_sync_failed im Mail-Worker-Log, Backoff).
+- **Token-Transfer**: nur `.secrets/gmail_token.json` per Windows-OpenSSH-scp unter temporärem Namen ins Secrets-Verzeichnis
+  (600, Owner wie bisher), alter Token kurz als Rollback-Kopie (600), atomar per `mv` gesetzt; Rollback-Kopie nach Verifikation mit
+  `shred -u` entfernt. Kein `--with-secrets`, kein Secret in Ausgabe/Log/Git. Aktiver Token 600.
+- **Repair-Deploy zuerst** (`deploy-repair.sh fiverr`, Image enthält repair-outbox.js + production-readiness.js): jarvis-repair-worker
+  f868b5a healthy; MAIL_WORKER_UNTOUCHED=YES (ID ba1b0a65dc27, StartedAt, RestartCount 0, Health, Scheduler, Queue, Authority gleich).
+- **Mail-Cutover** (`deploy.sh fiverr`, ohne Secrets, 2026-10-13 20:08 UTC, docker events): alter Worker gestoppt 20:08:00.440,
+  neuer gestartet 20:08:00.837, healthy 20:08:06.078 → **Unterbrechung ≈ 5.8 s** (Kill → healthy). Neuer Mail-Worker 4db200caf679,
+  f868b5a, healthy, restarts 0, Authority vps/self, Scheduler-Herzschlag aktiv. Repair-Worker durch den Mail-Deploy nicht recreated.
+- **VPS Gmail read-only** (im Produktiv-Container, `node gmail.js check`, users.getProfile): **MAIL AUTH READY**. Outbox-Herzschlag
+  meldet gmail_auth ok.
+- **Continuity**: Queue-Zähler, alle State-Dateien (Eintragszahlen), Backup-Status, Outbox, Authority vorher = nachher → Queue/State
+  nicht verloren, keine Duplikate, kein Reset.
+- **Architektur**: Repair-Image ohne gmail.js/mail-requests/server-agent, keine Gmail-Secrets, .env nur JARVIS_MAIL_WORKER_TOKEN;
+  Mail-Worker einziger Sender, konsumiert die Repair-Outbox (Herzschlag + Gmail-Status) → Repair Outbox ACTIVE, Exactly-one PASS.
+- **Production Readiness (VPS)**: Repair-Service `production-readiness.js` → **READY FOR FIRST CUSTOMER** (alle Punkte OK inkl. Mail/
+  Gmail OAuth über den Herzschlag, Delivery, CHF150/480, Chromium headless). Mail-Worker-Lauf: alle Punkte OK (Gmail OAuth read-only,
+  Delivery, Authority, Backup, Disk 26.2 GB, Release TF-049) ausser «Chromium nicht installiert» – erwartet, Chromium ist seit TF-047
+  bewusst nur im Repair-Image. Follow-up: Chromium-Check im Mail-Service nicht werten.
+- **Netlify** (read-only, headless): HTTP 200, Desktop + Mobile 390×844 ohne Overflow, keine JS-Fehler, keine Secrets/Adressen.
+- **Keine Testmail, kein Draft, keine Label-Änderung, keine Zahlung, keine Kundenverbindung, keine Production-Testorder.**
+- **Offen**: Google-OAuth-App Publishing-Status (Testing vs. Production) nicht technisch bestimmbar – Chris prüfen (im Testing-Modus
+  laufen Refresh-Tokens nach 7 Tagen ab).
+
 ## JARVIS SEPARATE REPAIR SERVICE / ZERO-MAILING-DOWNTIME DEPLOY — TF-047 (2026-10-13, Feature 9df3ee7, Release-Gate 047 lokal grün, Repair-Service LIVE efce58b, Mail-Worker unangetastet)
 - **Architektur-Befund**: CHF-480/150 liefen bisher im Mail-Worker-Prozess (runRepairOrders/runCheck150Orders) auf demselben
   Zustand. Locks sind PID-basiert (über Container-PID-Namespaces nicht sicher), mehrere JSON-Dateien werden ohne Lock per
