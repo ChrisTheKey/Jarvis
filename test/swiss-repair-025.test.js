@@ -133,7 +133,7 @@ test("benannter geschäftlicher Kontakt → bevorzugt (Web/Marketing/IT > Gesch�
   const q = qualifyRepairLead(lead({ email: c.business_email, contact_name: c.contact_name, contact_role: c.contact_role }), { now: T0 });
   assert.equal(q.draft_creation_eligible, true);
   const d = buildColdDraft(lead({ email: c.business_email }), q, SENDER);
-  assert.match(d.body, /^Hallo Beat Beispiel,\n/);
+  assert.match(d.body, /^Guten Tag Beat Beispiel,\n/);
   assert.doesNotMatch(d.body, /Frau|Herr/, "kein geratenes Geschlecht");
 });
 
@@ -199,7 +199,7 @@ test("Entwurf: konkreter Befund, richtiges Angebot (CHF 150/500), kein Redesign,
     assert.doesNotMatch(b, /redesign|neue website|neubau anbieten|komplettwebsite|2['’]?490|veraltet|dringend|sofort handeln|gefährlich|hacker/i);
     const prices = Object.values(OFFERS).map((o) => o.price).join("|");
     assert.doesNotMatch(b, new RegExp(`CHF (?!(?:${prices})\\b)\\d`), "nur die zwei Angebotspreise");
-    assert.match(b, /vollständigen Webseiten-Check/, "Angebot = vollständiger Webseiten-Check");
+    assert.match(b, /prüfe ich Ihre Website vollständig/, "Angebot = vollständiger Webseiten-Check");
     assert.ok(b.includes(COLD_FOOTER), "sachliche Abmeldemöglichkeit");
     assert.match(b, /Chris Kälin/);
   }

@@ -24,38 +24,38 @@ const lead = (over = {}) => ({
 const draft = (issues, over = {}) => buildColdDraft(lead({ websiteIssues: issues, ...over }), qualifyRepairLead(lead({ websiteIssues: issues, ...over }), { now: T0 }), SENDER);
 const customerPart = (body) => body.split("\nFreundliche Grüsse")[0].replace(LANDING_PAGE_URL, "");
 
-test("Standardvorlage: Anrede → Einstieg → 2–3 belegte Punkte → vollständiger Webseiten-Check → CHF 150 / CHF 480 → kurze Antwort → Signatur → Abmeldesatz", () => {
+test("Standardvorlage (TF-050): Anrede → 2–3 belegte Punkte → vollständiger Check → CHF 150 / CHF 480 → kurze Antwort → Signatur → Abmeldesatz", () => {
   const { subject, body } = draft([BROKEN, IMAGE], { contact_name: "Anna Muster" });
   const lines = body.split("\n");
-  assert.equal(lines[0], "Hallo Anna Muster,");
-  assert.match(lines[2], /^mein Name ist Chris Kälin von Helvetic Webdesign\. /, "kurzer persönlicher Einstieg");
-  assert.equal(lines[4], FINDINGS_INTRO);
-  assert.equal(FINDINGS_INTRO, "Bei einem kurzen Blick auf Ihre Website sind mir mehrere konkrete Punkte aufgefallen:");
-  assert.match(lines[6], /^• Auf Ihrer Startseite führt der Link «Unser Team» auf eine Fehlerseite\. Besucher landen dadurch /);
-  assert.match(lines[7], /^• Auf der Seite «Angebot» wird ein Bild nicht angezeigt\. /);
+  assert.equal(lines[0], "Guten Tag Anna Muster,");
+  assert.equal(lines[2], FINDINGS_INTRO);
+  assert.equal(FINDINGS_INTRO, "bei einer kurzen Prüfung Ihrer Website sind mir diese konkreten, für Besucher sichtbaren Punkte aufgefallen:");
+  assert.equal(lines[4], "• Auf Ihrer Startseite führt der Link «Unser Team» auf eine Fehlerseite.", "genau ein kurzer Satz je Punkt");
+  assert.equal(lines[5], "• Auf der Seite «Angebot» wird ein Bild nicht angezeigt.");
   const i = lines.indexOf(FULL_CHECK_TEXT);
-  assert.equal(i, 9, "vollständiger Webseiten-Check direkt nach den Punkten");
-  assert.equal(lines[i + 2], offer150Text());
-  assert.equal(lines[i + 4], offer480Text());
-  assert.equal(lines[i + 6], `Wenn das für Sie interessant ist, genügt eine kurze Antwort. Details: ${LANDING_PAGE_URL}`);
-  assert.equal(lines[i + 8], "Freundliche Grüsse");
-  assert.match(lines[i + 9], /Chris Kälin/);
+  assert.equal(i, 7, "vollständiger Webseiten-Check direkt nach den Punkten");
+  assert.equal(lines.slice(i + 2, i + 4).join("\n"), offer150Text());
+  assert.equal(lines.slice(i + 5, i + 7).join("\n"), offer480Text());
+  assert.deepEqual(lines.slice(i + 8, i + 11), ["Wenn das für Sie interessant ist, genügt eine kurze Antwort.", "Details:", LANDING_PAGE_URL]);
+  assert.equal(lines[i + 12], "Freundliche Grüsse");
+  assert.deepEqual(lines.slice(i + 13, i + 16), ["Chris Kälin", "Helvetic Webdesign", "chris@helvetic-webdesign.ch"]);
   assert.equal(lines.at(-1), COLD_FOOTER);
-  assert.equal(subject, "Kurzer Hinweis zu Ihrer Website muster.ch");
+  assert.equal(COLD_FOOTER, "Falls solche Hinweise für Sie nicht relevant sind, genügt eine kurze Antwort; dann melde ich mich dazu nicht erneut.");
+  assert.equal(subject, "2 konkrete Hinweise zu Ihrer Website – muster.ch");
 });
 
-test("Vollständiger Webseiten-Check wird genannt: gesamte Website, sichtbare Fehler, defekte Links, Smartphone, Desktop, verständliche Zusammenfassung", () => {
+test("Vollständiger Webseiten-Check wird angeboten: vollständige Prüfung, verständliche Zusammenfassung, Smartphone und Desktop", () => {
   const { body } = draft([BROKEN, IMAGE]);
-  assert.match(body, /vollständigen Webseiten-Check/);
-  for (const re of [/gesamte Website/, /sichtbare Fehler/, /defekte Links/, /Smartphone/, /Desktop/, /verständlich/]) assert.match(body, re, String(re));
+  assert.match(body, /prüfe ich Ihre Website vollständig/);
+  for (const re of [/vollständiger Webseiten-Check/, /verständlich zusammen/, /Smartphone/, /Desktop/]) assert.match(body, re, String(re));
   // Der Check ist der eigentliche Nutzen – er steht vor den Preisen und vor dem Link.
-  assert.ok(body.indexOf("vollständigen Webseiten-Check") < body.indexOf("CHF 150") && body.indexOf("CHF 150") < body.indexOf("CHF 480") && body.indexOf("CHF 480") < body.indexOf(LANDING_PAGE_URL));
+  assert.ok(body.indexOf(FULL_CHECK_TEXT) < body.indexOf("CHF 150") && body.indexOf("CHF 150") < body.indexOf("CHF 480") && body.indexOf("CHF 480") < body.indexOf(LANDING_PAGE_URL));
 });
 
 test("CHF 150 = Check + Anleitung, CHF 480 = Check + Reparatur + erneuter Test; Preise nur aus OFFERS, nichts erfunden", () => {
   const { body } = draft([BROKEN, IMAGE]);
-  assert.match(body, /«Check & Anleitung» kostet CHF 150: vollständiger Webseiten-Check plus verständliche Schritt-für-Schritt-Anleitung\./);
-  assert.match(body, /«Check & Reparatur» kostet CHF 480: vollständiger Webseiten-Check, Reparatur der im Rahmen des Angebots behebbaren gefundenen Fehler und anschliessender Test auf Smartphone und Desktop\./);
+  assert.match(body, /Check & Anleitung – CHF 150:\nvollständiger Webseiten-Check plus verständliche Schritt-für-Schritt-Anleitung\./);
+  assert.match(body, /Check & Reparatur – CHF 480:\nvollständiger Webseiten-Check, Behebung der im Rahmen des Angebots behebbaren Fehler und anschliessender Test auf Smartphone und Desktop\./);
   assert.equal(OFFERS.REPAIR_CHECK_150.price, 150); assert.equal(OFFERS.REPAIR_FIX_500.price, 480);
   assert.deepEqual(OFFER_CLASSES, ["REPAIR_CHECK_150", "REPAIR_FIX_500"], "genau zwei Angebote");
   assert.equal((body.match(/CHF \d+/g) || []).length, 2, "genau zwei Preisnennungen");
@@ -64,21 +64,19 @@ test("CHF 150 = Check + Anleitung, CHF 480 = Check + Reparatur + erneuter Test; 
   assert.ok(offer150Text().includes(String(OFFERS.REPAIR_CHECK_150.price)) && offer480Text().includes(String(OFFERS.REPAIR_FIX_500.price)));
 });
 
-test("Keine falsche Behauptung: erster Blick ≠ vollständige Prüfung; nie „bereits komplett geprüft“", () => {
-  for (const issues of [[BROKEN, IMAGE], [BROKEN, IMAGE, MAILTO, PRICES]]) {
+test("Keine falsche Behauptung: kurze Prüfung ≠ vollständige Prüfung; nie „bereits komplett geprüft“", () => {
+  for (const issues of [[BROKEN], [BROKEN, IMAGE], [BROKEN, IMAGE, MAILTO, PRICES]]) {
     const { body } = draft(issues);
-    assert.match(body, /beim ersten Blick direkt aufgefallen/);
+    assert.match(body, /bei einer kurzen Prüfung Ihrer Website/);
     assert.doesNotMatch(body, /komplette Website (bereits )?geprüft|gesamte Website (bereits |schon )?geprüft|vollständig geprüft|habe Ihre (gesamte|ganze|komplette) Website/i);
-    assert.match(body, /Mein Angebot umfasst einen vollständigen Webseiten-Check: Ich prüfe/, "Check ist Angebot (Zukunft), keine Vergangenheitsform");
+    assert.ok(body.includes(FULL_CHECK_TEXT), "Check ist Angebot (Zukunft), keine Vergangenheitsform");
   }
-  // Immer mindestens zwei Punkte → Plural.
-  assert.match(draft([BROKEN, IMAGE]).body, /Das sind nur die Punkte, die mir beim ersten Blick direkt aufgefallen sind\./);
 });
 
-test("2–3 Findings, nur belegte sichtbare Fehler, kein Jargon nach aussen, Evidence intern; ohne zwei sichtbare Fehler kein Entwurf", () => {
+test("höchstens 3 Findings, nur belegte sichtbare Fehler, kein Jargon nach aussen, Evidence intern; ohne sichtbaren Fehler kein Entwurf", () => {
   const { body } = draft([BROKEN, IMAGE, MAILTO, PRICES]);
   assert.equal((body.match(/^• /gm) || []).length, MAX_CUSTOMER_FINDINGS);
-  assert.deepEqual([MIN_COLD_FINDINGS, MAX_CUSTOMER_FINDINGS], [2, 3]);
+  assert.deepEqual([MIN_COLD_FINDINGS, MAX_CUSTOMER_FINDINGS], [1, 3]);
   assert.doesNotMatch(customerPart(body).replace(/CHF \d+/g, ""), CUSTOMER_JARGON_RE, "kein technischer Jargon (Preise sind keine Statuscodes)");
   assert.doesNotMatch(body, /HTTP \d|\b404\b|\bDOM\b|\bCLS\b|\bLCP\b|Lighthouse|Meta-Tag|Zertifikat|Framework|\bSEO\b|team-alt|img\/x\.jpg|mailto:/i);
   const urls = body.match(/https?:\/\/[^\s)]+/g) || [];
@@ -98,7 +96,7 @@ test("Vorlage ändert nichts an der Rechtslage: Cold Draft bleibt COLD_LEAD_DRAF
   const r = ensureColdDraft(store, lead(), { sender: SENDER, now: T0, contacted: new Set() });
   assert.equal(r.status, "queued"); assert.equal(r.draft_mode, COLD_MODE); assert.equal(r.legal_basis, "NONE");
   assert.equal(r.message_class, "DRAFT_ONLY"); assert.equal(r.automatic_send_allowed, false); assert.equal(r.manual_send_decision_required, true);
-  assert.match(r.body, /vollständigen Webseiten-Check/);
+  assert.match(r.body, /prüfe ich Ihre Website vollständig/);
   const q = qualifyRepairLead(lead(), { now: T0 });
   assert.equal(q.automatic_send_eligible, false); assert.equal(q.automatic_marketing_send_eligible, false); assert.equal(q.draft_creation_eligible, true);
   const ROOT = decodeURIComponent(new URL("..", import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1");

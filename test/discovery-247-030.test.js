@@ -77,7 +77,7 @@ test("Ein sichtbarer belegter Fehler → lokaler Cold-Entwurf (queued, COLD_LEAD
   assert.deepEqual(Object.keys(rv), ["muster.ch"]);
   assert.equal(rv["muster.ch"].status, "queued"); assert.equal(rv["muster.ch"].draft_mode, COLD_MODE); assert.equal(rv["muster.ch"].legal_basis, "NONE");
   assert.equal(rv["muster.ch"].automatic_send_allowed, false);
-  assert.match(rv["muster.ch"].body, /vollständigen Webseiten-Check/); assert.match(rv["muster.ch"].body, /CHF 150/); assert.match(rv["muster.ch"].body, /CHF 480/);
+  assert.match(rv["muster.ch"].body, /prüfe ich Ihre Website vollständig/); assert.match(rv["muster.ch"].body, /CHF 150/); assert.match(rv["muster.ch"].body, /CHF 480/);
   assert.doesNotMatch(rv["muster.ch"].body, /HTTP 404|team-alt/);
   const leads = readJ("discovered.json").leads;
   assert.equal(leads["sauber.ch"].status, "no_issues");

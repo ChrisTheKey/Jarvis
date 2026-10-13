@@ -238,8 +238,8 @@ export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, 
   const blocked = suppressed || ["do_not_contact"].includes(base);
   const customer_findings = customerFindings(lead.websiteIssues);
   let contact = contactBasis(lead, { candidate, now, suppressed: blocked });
-  // Cold-Entwurf nur mit mindestens MIN_COLD_FINDINGS unterschiedlichen, für Besucher sichtbaren, belegten Fehlern – sonst kein
-  // Entwurf. Ein fehlender zweiter Punkt wird nie ergänzt oder erfunden.
+  // Cold-Entwurf nur mit mindestens MIN_COLD_FINDINGS (= 1, TF-050) belegten, für Besucher sichtbaren Fehlern – sonst kein
+  // Entwurf. Weitere Punkte werden nie ergänzt oder erfunden.
   if (contact.contact_basis === CONTACT_BASIS.COLD_LEAD_DRAFT_ONLY && customer_findings.length < MIN_COLD_FINDINGS)
     contact = { ...contact, contact_basis: CONTACT_BASIS.NONE, draft_creation_eligible: false, individual_review_required: false, message_class: null,
       cold_block_reason: customer_findings.length ? "TOO_FEW_VISIBLE_ISSUES" : "NO_VISIBLE_ISSUE" };
@@ -270,14 +270,16 @@ export function qualifyRepairLead(lead = {}, { now = new Date(), review = null, 
 // ---------- 8) Individueller Entwurf ----------
 
 // Kundentext: Der Empfänger ist Inhaber/Mitarbeiter, kein Entwickler. Intern bleibt die technische Evidence (issue_evidence),
-// nach aussen gehen 2–3 einfache, sichtbare Probleme – ohne Statuscodes, Messwerte, Fachbegriffe oder Druck.
+// nach aussen gehen 1–3 einfache, sichtbare Probleme – ohne Statuscodes, Messwerte, Fachbegriffe oder Druck.
 // Evidence-Gate je Befund: (A) auf dieser Website beobachtet, (B) reproduzierbar, (C) für Besucher sichtbar, (D) in einem Satz
 // erklärbar (Vorlage existiert), (E) konkret prüfbar (Seite bzw. Bereich bekannt). Sonst wird der Befund nicht verwendet.
 // Nur intern (nie im Kundentext): missing_title, no_https, no_https_redirect, mixed_content, slow_response sowie alle Typen ohne
 // Vorlage (z. B. veraltete Technik, „altes Design“, Barrierefreiheits-/SEO-Details).
-// Cold-Regel (seit 2026-10-11): mindestens MIN_COLD_FINDINGS unterschiedliche Befunde, im Mailtext höchstens MAX_CUSTOMER_FINDINGS.
+// Cold-Regel (TF-050, seit 2026-10-13): 1 belegter Befund genügt, 2–3 unterschiedliche werden bevorzugt, im Mailtext höchstens
+// MAX_COLD_FINDINGS_IN_EMAIL (bei mehr Befunden die wichtigsten). Nie auf 3 auffüllen.
 export const MAX_CUSTOMER_FINDINGS = 3;
-export const MIN_COLD_FINDINGS = 2;
+export const MAX_COLD_FINDINGS_IN_EMAIL = MAX_CUSTOMER_FINDINGS;
+export const MIN_COLD_FINDINGS = 1;
 const pageName = (u) => {
   let p; try { p = new URL(u).pathname; } catch { return null; }
   let seg = p.split("/").filter(Boolean).pop() || "";
@@ -320,7 +322,7 @@ export const CUSTOMER_PRESSURE_RE = /kaputt|verlier|Umsatz|veraltet|unsicher|sch
 const unsafe = (t) => CUSTOMER_JARGON_RE.test(t) || CUSTOMER_PRESSURE_RE.test(t);
 
 // Technische Rohbefunde → höchstens `max` unterschiedliche, für Besucher sichtbare Aussagen (Default MAX_CUSTOMER_FINDINGS –
-// Cold-Mails bleiben bei 2–3; der bezahlte CHF-150-Bericht ruft mit max: Infinity ALLE relevanten belegten Punkte ab, TF-038).
+// Cold-Mails bleiben bei 1–3; der bezahlte CHF-150-Bericht ruft mit max: Infinity ALLE relevanten belegten Punkte ab, TF-038).
 // Nur belegte Befunde; LOW nur bei direkt sichtbaren (reproduzierten, mit Bereich benannten) Darstellungs-/Bedienfehlern.
 // Mehrere technische Meldungen desselben sichtbaren Fehlers werden zu einer Aussage zusammengeführt (höchster Schweregrad zählt).
 export function selectCustomerVisibleFindings(issues = [], { max = MAX_CUSTOMER_FINDINGS } = {}) {
@@ -352,20 +354,22 @@ export function selectCustomerVisibleFindings(issues = [], { max = MAX_CUSTOMER_
 // Bisheriger Name bleibt erhalten (Lead-Registry, Tests).
 export const customerFindings = selectCustomerVisibleFindings;
 
-export const COLD_FOOTER = "Falls solche Hinweise für Sie nicht relevant sind, genügt eine kurze Antwort und ich melde mich diesbezüglich nicht erneut.";
-// Standardvorlage (seit 2026-10-11): 2–3 belegte Befunde als Aufzählung sind nur der „erste Blick“ – das Angebot ist der VOLLSTÄNDIGE Webseiten-Check.
-// Nie behaupten, die ganze Website sei schon geprüft. Preise ausschliesslich aus OFFERS (genau zwei Angebote, nichts erfinden).
-export const FINDINGS_INTRO = "Bei einem kurzen Blick auf Ihre Website sind mir mehrere konkrete Punkte aufgefallen:";
-export const FULL_CHECK_TEXT = "Das sind nur die Punkte, die mir beim ersten Blick direkt aufgefallen sind. Mein Angebot umfasst einen vollständigen Webseiten-Check: Ich prüfe Ihre gesamte Website auf sichtbare Fehler, defekte Links sowie die Darstellung auf Smartphone und Desktop und fasse alle gefundenen Punkte verständlich zusammen.";
+export const COLD_FOOTER = "Falls solche Hinweise für Sie nicht relevant sind, genügt eine kurze Antwort; dann melde ich mich dazu nicht erneut.";
+// Standardvorlage (TF-050): 1 belegter Befund → Einzahl-Vorlage, 2–3 → Mehrzahl-Vorlage. Jeder Punkt ist genau ein kurzer Satz (keine
+// behauptete Folge). Das Angebot ist der VOLLSTÄNDIGE Webseiten-Check – nie behaupten, die ganze Website sei schon geprüft.
+// Preise ausschliesslich aus OFFERS (genau zwei Angebote, nichts erfinden).
+export const FINDING_INTRO_SINGLE = "bei einer kurzen Prüfung Ihrer Website ist mir ein konkreter, für Besucher sichtbarer Punkt aufgefallen:";
+export const FINDINGS_INTRO = "bei einer kurzen Prüfung Ihrer Website sind mir diese konkreten, für Besucher sichtbaren Punkte aufgefallen:";
+export const FULL_CHECK_TEXT = "Wenn Sie möchten, prüfe ich Ihre Website vollständig und fasse die gefundenen Punkte verständlich zusammen.";
 // Als Funktionen (nicht als Modul-Konstanten): sales.js und swiss-repair.js importieren sich gegenseitig – OFFERS ist beim Laden
 // über server.js/sales.js noch nicht initialisiert. Beim Aufruf (Entwurf bauen) ist es das immer.
-export const offer150Text = () => `«Check & Anleitung» kostet CHF ${OFFERS.REPAIR_CHECK_150.price}: vollständiger Webseiten-Check plus verständliche Schritt-für-Schritt-Anleitung.`;
-export const offer480Text = () => `«Check & Reparatur» kostet CHF ${OFFERS.REPAIR_FIX_500.price}: vollständiger Webseiten-Check, Reparatur der im Rahmen des Angebots behebbaren gefundenen Fehler und anschliessender Test auf Smartphone und Desktop.`;
+export const offer150Text = () => `Check & Anleitung – CHF ${OFFERS.REPAIR_CHECK_150.price}:\nvollständiger Webseiten-Check plus verständliche Schritt-für-Schritt-Anleitung.`;
+export const offer480Text = () => `Check & Reparatur – CHF ${OFFERS.REPAIR_FIX_500.price}:\nvollständiger Webseiten-Check, Behebung der im Rahmen des Angebots behebbaren Fehler und anschliessender Test auf Smartphone und Desktop.`;
+export const coldSubject = (site, n) => n > 1 ? `${n} konkrete Hinweise zu Ihrer Website – ${site}` : `Kurzer Hinweis zu Ihrer Website – ${site}`;
 
 export function buildColdDraft(lead = {}, q = qualifyRepairLead(lead), sender = {}) {
-  const findings = q.customer_findings || customerFindings(lead.websiteIssues);
+  const findings = (q.customer_findings || customerFindings(lead.websiteIssues)).slice(0, MAX_COLD_FINDINGS_IN_EMAIL);
   if (!findings.length || q.offer.offer_class === NONE) throw new Error("Kein belegter Reparaturbefund – kein Entwurf.");
-  // Mindestens zwei unterschiedliche belegte Punkte – ein fehlender zweiter Punkt wird nie ergänzt.
   if (findings.length < MIN_COLD_FINDINGS) throw new Error(`Weniger als ${MIN_COLD_FINDINGS} belegte sichtbare Probleme – kein Entwurf.`);
   // Letzte Sicherung: Fachbegriffe/Druck in einer Aussage → kein Entwurf (fail closed).
   if (findings.some((f) => unsafe(`${f.text} ${f.impact}`))) throw new Error("Kundentext enthält Fachbegriffe oder Drucksprache – kein Entwurf.");
@@ -373,31 +377,29 @@ export function buildColdDraft(lead = {}, q = qualifyRepairLead(lead), sender = 
   // Anrede nur mit sicher bekanntem Namen – ohne Annahmen über Geschlecht; sonst die Firma.
   const who = q.contact_name || lead.company || "";
   const signature = sender.signature?.trim() || [sender.name, sender.company, sender.email].filter(Boolean).join("\n");
-  const me = sender.name ? `mein Name ist ${sender.name}${sender.company ? ` von ${sender.company}` : ""}. Ich unterstütze` : "ich unterstütze";
   const body = [
-    who ? `Hallo ${who},` : "Guten Tag,",
+    who ? `Guten Tag ${who},` : "Guten Tag,",
     "",
-    `${me} Firmen dabei, sichtbare Fehler auf ihrer Website zu finden und zu beheben.`,
+    findings.length === 1 ? FINDING_INTRO_SINGLE : FINDINGS_INTRO,
     "",
-    FINDINGS_INTRO,
+    ...findings.map((f) => `• ${f.text}.`),
     "",
-    ...findings.slice(0, MAX_CUSTOMER_FINDINGS).map((f) => `• ${f.text}. ${f.impact}`),
-    "",
-    // Erster Blick ≠ vollständige Prüfung: die gefundenen Punkte sind nur der Einstieg, das Angebot ist der vollständige Webseiten-Check.
     FULL_CHECK_TEXT,
     "",
     offer150Text(),
     "",
     offer480Text(),
     "",
-    `Wenn das für Sie interessant ist, genügt eine kurze Antwort. Details: ${LANDING_PAGE_URL}`,
+    "Wenn das für Sie interessant ist, genügt eine kurze Antwort.",
+    "Details:",
+    LANDING_PAGE_URL,
     "",
     "Freundliche Grüsse",
     signature,
     "",
     COLD_FOOTER,
   ].join("\n");
-  return { subject: `Kurzer Hinweis zu Ihrer Website ${site}`, body };
+  return { subject: coldSubject(site, findings.length), body };
 }
 // TF-022-Name bleibt als Alias erhalten.
 export const buildIndividualDraft = buildColdDraft;

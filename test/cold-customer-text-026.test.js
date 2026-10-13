@@ -53,17 +53,17 @@ test("Cloud-Werkzeug: fehlendes delivery → nur Entwurf (nie stillschweigend Ve
 
 test("offensichtlicher kaputter Link → einfache, prüfbare Aussage", () => {
   const { body } = draft([BROKEN_LINK, OVERLAP]);
-  assert.match(body, /\n• Auf Ihrer Startseite führt der Link «Unser Angebot» auf eine Fehlerseite\. Besucher landen dadurch auf einer Fehlerseite statt beim gewünschten Inhalt\./);
+  assert.match(body, /\n• Auf Ihrer Startseite führt der Link «Unser Angebot» auf eine Fehlerseite\.\n/);
 });
 
 test("mobiles Text-Overlap → einfache Aussage mit Bereich", () => {
   const { body } = draft([OVERLAP, BROKEN_LINK]);
-  assert.match(body, /\n• Auf dem Handy liegt im Bereich «Über uns» Text teilweise übereinander\. Der Text ist dadurch schwer lesbar\./);
+  assert.match(body, /\n• Auf dem Handy liegt im Bereich «Über uns» Text teilweise übereinander\.\n/);
 });
 
 test("kaputtes Bild → einfache Aussage mit Seite", () => {
   const { body } = draft([BROKEN_IMG(1), BROKEN_LINK]);
-  assert.match(body, /\n• Auf der Seite «Ueber uns» wird ein Bild nicht angezeigt\. An dieser Stelle sehen Besucher nur eine leere Fläche\./);
+  assert.match(body, /\n• Auf der Seite «Ueber uns» wird ein Bild nicht angezeigt\.\n/);
 });
 
 test("kein technischer Jargon, kein Statuscode, keine Messwerte im Kundentext", () => {
@@ -114,8 +114,8 @@ test("mehrere technische Befunde derselben sichtbaren Ursache → eine einfache 
   const f = customerFindings(imgs);
   assert.equal(f.length, 1);
   assert.equal(f[0].internal_refs.length, 3, "intern bleiben alle drei Befunde referenziert");
-  // Drei Meldungen desselben Fehlers zählen als EIN Befund → allein kein Cold-Entwurf.
-  assert.throws(() => draft(imgs), /Nur für COLD_LEAD_DRAFT_ONLY/);
+  // Drei Meldungen desselben Fehlers zählen als EIN Befund → Einzahl-Entwurf mit genau einem Punkt (TF-050).
+  assert.equal((draft(imgs).body.match(/^• /gm) || []).length, 1);
   const { body } = draft([...imgs, BROKEN_LINK]);
   assert.equal((body.match(/Bild nicht angezeigt/g) || []).length, 1);
   // Kontaktseite kaputt + Kontaktformular kaputt = dieselbe sichtbare Folge (Kontakt nicht möglich) → eine Aussage.
@@ -145,15 +145,15 @@ test("keine Angst-/Druck-Verkaufssprache, kein Preisverkauf, Struktur wie vorgeg
   const { subject, body } = draft([BROKEN_LINK, OVERLAP], { contact_name: "Anna Muster" });
   assert.doesNotMatch(customerPart(subject + body), CUSTOMER_PRESSURE_RE);
   assert.doesNotMatch(body, /kaputt|verlieren|Umsatz|veraltet|unsicher|schlecht|dringend|Redesign|neue Website/i);
-  assert.match(body, /^Hallo Anna Muster,\n\nmein Name ist Chris Kälin von Helvetic Webdesign\. [^\n]+\n\nBei einem kurzen Blick auf Ihre Website sind mir mehrere konkrete Punkte aufgefallen:\n\n• /);
-  // Standardvorlage: erster Blick → vollständiger Webseiten-Check → genau zwei Angebote (Preise nur aus OFFERS) → kurze Antwort genügt.
-  assert.match(body, /\n\nDas sind nur die Punkte, die mir beim ersten Blick direkt aufgefallen sind\. Mein Angebot umfasst einen vollständigen Webseiten-Check: /);
-  assert.match(body, /\n\n«Check & Anleitung» kostet CHF 150: [^\n]*\n\n«Check & Reparatur» kostet CHF 480: /);
+  assert.match(body, /^Guten Tag Anna Muster,\n\nbei einer kurzen Prüfung Ihrer Website sind mir diese konkreten, für Besucher sichtbaren Punkte aufgefallen:\n\n• /);
+  // Standardvorlage (TF-050): Punkte → Angebot vollständiger Check → genau zwei Angebote (Preise nur aus OFFERS) → kurze Antwort genügt.
+  assert.match(body, /\n\nWenn Sie möchten, prüfe ich Ihre Website vollständig und fasse die gefundenen Punkte verständlich zusammen\.\n\n/);
+  assert.match(body, /\n\nCheck & Anleitung – CHF 150:\n[^\n]*\n\nCheck & Reparatur – CHF 480:\n/);
   assert.doesNotMatch(body, /CHF (?!(?:150|480)\b)\d/, "keine anderen Preise");
   assert.match(body, /Freundliche Grüsse\nChris Kälin/);
   assert.ok(body.includes(COLD_FOOTER), "Abmeldemöglichkeit bleibt");
   assert.ok(body.split(/\s+/).length < 240, "kurz");
-  assert.equal(subject, "Kurzer Hinweis zu Ihrer Website muster.ch");
+  assert.equal(subject, "2 konkrete Hinweise zu Ihrer Website – muster.ch");
 });
 
 test("technische Evidence bleibt intern vollständig erhalten; Angebot unverändert", () => {

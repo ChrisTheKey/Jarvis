@@ -1,5 +1,5 @@
-// COLD OUTREACH — 2–3 VERIFIED WEBSITE FINDINGS (034): Jede neue Cold-Mail nennt 2–3 unterschiedliche, belegte, für Besucher sichtbare
-// Probleme der jeweiligen Website (Severity zuerst, dann Besucherwirkung). 0–1 Befund → kein Entwurf. Nichts wird erfunden.
+// COLD OUTREACH — VERIFIED WEBSITE FINDINGS (034, Regel seit TF-050): Jede neue Cold-Mail nennt 1–3 unterschiedliche, belegte, für
+// Besucher sichtbare Probleme der jeweiligen Website (Severity zuerst, dann Besucherwirkung). 0 Befunde → kein Entwurf. Nichts wird erfunden.
 // Draft-only unverändert. Keine Mail, kein Netzwerk.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { qualifyRepairLead, createColdDraft, ensureColdDraft, selectCustomerVisibleFindings, customerFindings, FULL_CHECK_TEXT, FINDINGS_INTRO,
-  MIN_COLD_FINDINGS, MAX_CUSTOMER_FINDINGS, COLD_MODE, COLD_DRAFTS_FILE, CUSTOMER_JARGON_RE } from "../swiss-repair.js";
+  MIN_COLD_FINDINGS, MAX_CUSTOMER_FINDINGS, MAX_COLD_FINDINGS_IN_EMAIL, FINDING_INTRO_SINGLE, COLD_MODE, COLD_DRAFTS_FILE, CUSTOMER_JARGON_RE } from "../swiss-repair.js";
 import { LANDING_PAGE_URL } from "../sales.js";
 import { createStore, createWorker } from "../mail-worker.js";
 
@@ -30,8 +30,8 @@ const q = (issues) => qualifyRepairLead(lead(issues), { now: T0 });
 const draft = (issues) => createColdDraft(lead(issues), { sender: SENDER, now: T0 });
 const bullets = (body) => body.split("\n").filter((l) => l.startsWith("• "));
 
-test("Regel: mindestens 2, höchstens 3 Findings", () => {
-  assert.deepEqual([MIN_COLD_FINDINGS, MAX_CUSTOMER_FINDINGS], [2, 3]);
+test("Regel: mindestens 1, höchstens 3 Findings", () => {
+  assert.deepEqual([MIN_COLD_FINDINGS, MAX_CUSTOMER_FINDINGS, MAX_COLD_FINDINGS_IN_EMAIL], [1, 3, 3]);
 });
 
 test("0 Probleme → kein Draft", () => {
@@ -40,14 +40,18 @@ test("0 Probleme → kein Draft", () => {
   assert.throws(() => draft([]), /Nur für COLD_LEAD_DRAFT_ONLY/);
 });
 
-test("1 Problem → kein Draft (kein zweiter Punkt wird erfunden)", () => {
+test("1 Problem → Draft erlaubt: genau 1 Punkt, Einzahl-Vorlage, Betreff „Kurzer Hinweis …“ (kein zweiter Punkt wird erfunden)", () => {
   const r = q([LINK()]);
   assert.equal(r.customer_findings.length, 1);
-  assert.deepEqual([r.draft_creation_eligible, r.contact_basis, r.cold_block_reason, r.stage], [false, "NONE", "TOO_FEW_VISIBLE_ISSUES", "no_visible_issue"]);
-  assert.throws(() => draft([LINK()]), /Nur für COLD_LEAD_DRAFT_ONLY/);
+  assert.deepEqual([r.draft_creation_eligible, r.contact_basis, r.cold_block_reason, r.stage], [true, COLD_MODE, undefined, "cold_lead_draft_only"]);
+  const d = draft([LINK()]);
+  assert.equal(bullets(d.body).length, 1);
+  assert.ok(d.body.includes(`\n\n${FINDING_INTRO_SINGLE}\n\n• `));
+  assert.ok(!d.body.includes(FINDINGS_INTRO));
+  assert.equal(d.subject, "Kurzer Hinweis zu Ihrer Website – muster.ch");
   // Ein sichtbarer Befund + nur interne Befunde (Ladezeit, Titel) bleibt EIN Befund.
-  const r2 = q([LINK(), issue("slow_response", "high", HOME, { evidence: "LCP 7 s" }), issue("missing_title", "medium", HOME, { evidence: "kein <title>" })]);
-  assert.equal(r2.draft_creation_eligible, false);
+  const d2 = draft([LINK(), issue("slow_response", "high", HOME, { evidence: "LCP 7 s" }), issue("missing_title", "medium", HOME, { evidence: "kein <title>" })]);
+  assert.equal(bullets(d2.body).length, 1);
 });
 
 test("2 valide unterschiedliche Probleme → Draft mit exakt 2 Findings", () => {
@@ -55,12 +59,14 @@ test("2 valide unterschiedliche Probleme → Draft mit exakt 2 Findings", () => 
   assert.equal(r.customer_findings.length, 2);
   assert.equal(bullets(r.body).length, 2);
   assert.ok(r.body.includes(`\n\n${FINDINGS_INTRO}\n\n• `));
+  assert.equal(r.subject, "2 konkrete Hinweise zu Ihrer Website – muster.ch");
 });
 
 test("3 valide unterschiedliche Probleme → Draft mit exakt 3 Findings", () => {
   const r = draft([LINK(), IMAGE, BUTTON]);
   assert.equal(r.customer_findings.length, 3);
   assert.equal(bullets(r.body).length, 3);
+  assert.equal(r.subject, "3 konkrete Hinweise zu Ihrer Website – muster.ch");
 });
 
 test("4 valide Probleme → die 3 wichtigsten", () => {
@@ -94,19 +100,19 @@ test("3 MEDIUM → alle drei nach Besucherwirkung (Button > Link > Bild)", () =>
   assert.match(f[2].text, /Bild/);
 });
 
-test("Duplicate Findings → nur einmal gezählt (kein Draft aus zwei Kopien desselben Fehlers)", () => {
+test("Duplicate Findings → nur einmal gezählt (Kopien desselben Fehlers ergeben genau einen Punkt)", () => {
   const dup = [LINK(), { ...LINK(), page: "https://muster.ch/ueber-uns" }, { ...LINK(), url: "https://muster.ch/team-alt/#x" }];
   const f = selectCustomerVisibleFindings(dup);
   assert.equal(f.length, 1);
   assert.equal(f[0].internal_refs.length, 3);
-  assert.equal(q(dup).draft_creation_eligible, false);
+  assert.equal(bullets(draft(dup).body).length, 1);
 });
 
 test("2 technische Meldungen desselben sichtbaren Fehlers → ein Customer-Finding", () => {
   // „Navigation überlappt“ + „Menü abgeschnitten“ = derselbe sichtbare Defekt.
   const nav = [visual("mobile_text_overlap", "medium", "Navigation"), visual("mobile_content_cut_off", "medium", "Menü")];
   assert.equal(selectCustomerVisibleFindings(nav).length, 1);
-  assert.equal(q(nav).draft_creation_eligible, false);
+  assert.equal(bullets(draft(nav).body).length, 1);
   // Kaputte Kontaktseite + defekter Link auf genau diese Seite = ein Fehler.
   const contact = [issue("contact_page_broken", "high", "https://muster.ch/kontakt"), issue("broken_link", "medium", "https://muster.ch/kontakt", { label: "Kontakt" })];
   const f = selectCustomerVisibleFindings(contact);
@@ -160,7 +166,7 @@ test("Cold-Draft niemals automatisch sendbar; Lead-Datenbank erhält genau die g
   assert.equal(customerFindings, selectCustomerVisibleFindings, "bisheriger Name zeigt auf dieselbe Auswahl");
 });
 
-test("Auto-Send-Events = 0: Worker legt Gmail-Entwurf an, sendet nie; Lead mit 1 Befund bekommt gar keinen Entwurf", async () => {
+test("Auto-Send-Events = 0: Worker legt Gmail-Entwürfe an (auch mit 1 Befund), sendet nie; Lead ohne Befund bekommt keinen Entwurf", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-034-"));
   const store = createStore(dir);
   fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ dryRun: false, sendMode: "compliant_auto", offer: "Website-Reparatur", sender: SENDER }));
@@ -172,12 +178,14 @@ test("Auto-Send-Events = 0: Worker legt Gmail-Entwurf an, sendet nie; Lead mit 1
     async sendDraft(id) { g.calls.push("SEND " + id); throw new Error("nie senden"); },
     async readThread() { return { messages: [] }; }, async markDraftForReview() {}, async syncColdDrafts() { return []; },
   });
-  assert.throws(() => ensureColdDraft(store, lead([LINK()], { domain: "single.ch", email: "info@single.ch", website: "https://single.ch/" }), { sender: SENDER, now: T0 }));
+  assert.throws(() => ensureColdDraft(store, lead([], { domain: "leer.ch", email: "info@leer.ch", website: "https://leer.ch/" }), { sender: SENDER, now: T0 }));
+  assert.equal(ensureColdDraft(store, lead([LINK()], { domain: "single.ch", email: "info@single.ch", website: "https://single.ch/", company: "Single GmbH" }), { sender: SENDER, now: T0 }).status, "queued");
   assert.equal(ensureColdDraft(store, lead([LINK(), IMAGE, BUTTON]), { sender: SENDER, now: T0 }).status, "queued");
   const r = await createWorker({ dir, gmail: g, now: () => T0, log: () => {}, compose: async () => ({ decision: "draft", body: "x" }) }).tick();
-  assert.deepEqual(g.calls, ["create info@muster.ch"]);
+  assert.deepEqual(g.calls.sort(), ["create info@muster.ch", "create info@single.ch"]);
   assert.deepEqual(r.sends, []);
   const saved = JSON.parse(fs.readFileSync(path.join(dir, COLD_DRAFTS_FILE), "utf8")).reviews;
-  assert.deepEqual(Object.keys(saved), ["muster.ch"]);
+  assert.deepEqual(Object.keys(saved).sort(), ["muster.ch", "single.ch"]);
   assert.equal(bullets(saved["muster.ch"].body).length, 3);
+  assert.equal(bullets(saved["single.ch"].body).length, 1);
 });

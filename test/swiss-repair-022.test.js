@@ -165,7 +165,7 @@ test("no invented issue: Entwurf nennt nur beobachtete Befunde, keine Abwertung,
   // Nur die Landingpage von Chris – keine technischen URLs im Kundentext.
   assert.deepEqual([...new Set(urls)], [LANDING_PAGE_URL]);
   assert.doesNotMatch(subject + body, /veraltet|neue website|neubau anbieten|redesign|jahre alt|outdated/i);
-  assert.match(body, /vollständigen Webseiten-Check/, "Angebot = vollständiger Webseiten-Check");
+  assert.match(body, /prüfe ich Ihre Website vollständig/, "Angebot = vollständiger Webseiten-Check");
   assert.doesNotMatch(body, /CHF (?!(?:150|480)\b)\d/, "nur die zwei Angebotspreise, nichts erfunden");
   assert.ok(body.includes(LANDING_PAGE_URL), "Landingpage verlinkt");
   assert.match(body, /Chris Kälin/, "klare Absenderidentität");
