@@ -29,6 +29,11 @@ Letzte Aktualisierung: 2026-10-13
 - **Keine Testmail, kein Draft, keine Label-Änderung, keine Zahlung, keine Kundenverbindung, keine Production-Testorder.**
 - **Offen**: Google-OAuth-App Publishing-Status (Testing vs. Production) nicht technisch bestimmbar – Chris prüfen (im Testing-Modus
   laufen Refresh-Tokens nach 7 Tagen ab).
+- **Nachverifikation 20:25 UTC** (read-only, kein zweiter Cutover): Mail-Worker 4db200caf679 / Repair-Worker acc10380926b beide
+  f868b5a, healthy, restarts 0; VPS `gmail.js check` → MAIL AUTH READY; Outbox-Consumer-Herzschlag gmail_auth ok; Authority vps/self;
+  Ticks seit Cutover erfolgreich (sentToday 0, failures 0). Der Worker hat nach der Auth-Wiederherstellung seinen regulären
+  Cold-Draft-Betrieb wieder aufgenommen (Drafts zur manuellen Freigabe, kein Versand) – nicht manuell ausgelöst. Einmaliger
+  Overpass-HTTP-504 (externe Discovery-API, transient). Keine Token-Temp-/Rollback-Kopien auf dem VPS, keine Testcontainer.
 
 ## JARVIS SEPARATE REPAIR SERVICE / ZERO-MAILING-DOWNTIME DEPLOY — TF-047 (2026-10-13, Feature 9df3ee7, Release-Gate 047 lokal grün, Repair-Service LIVE efce58b, Mail-Worker unangetastet)
 - **Architektur-Befund**: CHF-480/150 liefen bisher im Mail-Worker-Prozess (runRepairOrders/runCheck150Orders) auf demselben
