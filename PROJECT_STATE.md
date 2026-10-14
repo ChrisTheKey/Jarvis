@@ -2,9 +2,28 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-13
+Letzte Aktualisierung: 2026-10-14
 
-## TF-050 – COLD DRAFT QUALITY UPDATE / EXISTING DRAFT REWRITE (2026-10-13, Code d4ea612 + Runner-Fix, NICHT auf dem Mail-Worker deployt)
+## TF-050 – COLD DRAFT QUALITY UPDATE DEPLOYED (2026-10-14, Mail-Worker LIVE 3216638)
+- **Mail-Cutover** (`deploy.sh fiverr`, ohne Secrets, Freigabe Chris, docker events): alter Worker 4db200caf679 (f868b5a) kill
+  06:06:58.387 UTC / gestoppt 06:06:58.584, neuer 5510ab63fef9 gestartet 06:06:58.969, healthy 06:07:04.184 → **Unterbrechung ≈ 5.8 s**.
+  Quiet Point vorher geprüft (nur Discovery, kein Draft/Send in Arbeit). Danach: Commit 3216638, healthy, restarts 0, Authority vps/self,
+  Scheduler-Herzschlag/Ticks aktiv, Queue 0/0 lesbar, State 16/16 lesbar, `gmail.js check` → **MAIL AUTH READY**, Outbox-Consumer aktiv
+  (gmail_auth ok), Backup OK, Disk 26 GB. Readiness wie seit TF-049 nur «Chromium nicht installiert» (erwartet im Mail-Image).
+- **Repair-Worker unberührt**: acc10380926b, StartedAt 2026-10-13T20:06:34Z, RestartCount-Delta 0, healthy, f868b5a.
+- **Regel im Container verifiziert** (`/app/swiss-repair.js`): `MIN_COLD_FINDINGS` 1, `MAX_COLD_FINDINGS_IN_EMAIL` 3; synthetisch
+  0 → kein Entwurf, 1/2/3 → 1/2/3 Punkte, 5 → 3 (Kontaktseite zuerst); COLD_LEAD_DRAFT_ONLY, automatic_send_allowed false.
+- **Catch-up-Rewrite** (Runner aus /tmp/tf050, da `cold-draft-rewrite.js` nicht im Mail-Image ist; Plan zuerst, Digest eada2388539c):
+  362 Jarvis-Cold-Entwürfe gescannt → 302 bereits korrekt (UNCHANGED), **19 aktualisiert** (16 seit dem Rewrite neu entstanden, 2 ältere
+  mit jetzt bestätigten Befunden, 1 bereits umgeschriebener 3 → 2 weil ein Befund behoben), 22 SKIPPED_NO_VERIFIED_FINDING (unverändert,
+  nicht gelöscht/gesendet; davon 4 früher umgeschriebene, deren Befund inzwischen behoben/nicht mehr verlinkt ist → bei der manuellen
+  Durchsicht prüfen), 19 nicht mehr Jarvis-Entwurf in Gmail, 0 mehrdeutig, 0 Anhang, 0 manuell gesendet. Verteilung der 19: 1/2/3 Befunde
+  = 1/7/11. Canary (1) zuerst, dann 18. Gmail-Nachkontrolle 19/19: DRAFT, Label JARVIS, gleicher Empfänger, gleicher Thread, kein CC,
+  0 Anhänge, neuer Text. Sent-Register vorher = nachher (9), Worker-Log ohne Send-/Draft-/Fehler-Ereignisse. Temp-Plan im Container gelöscht.
+- Hinweis: Runner meldet `signature_matches_spec: false`, weil `config.sender.signature` leer ist; die Vorlage baut die Signatur aus
+  Name/Firma/E-Mail und entspricht der Vorgabe (kosmetischer Check, kein Fehler).
+
+## TF-050 – COLD DRAFT QUALITY UPDATE / EXISTING DRAFT REWRITE (2026-10-13, Code d4ea612 + Runner-Fix; seit 2026-10-14 deployt, siehe oben)
 - **Regel (`swiss-repair.js`)**: `MIN_COLD_FINDINGS` = 1, `MAX_COLD_FINDINGS_IN_EMAIL` = 3. 0 belegte Befunde → kein Entwurf; 1 → Einzahl-
   Vorlage („Kurzer Hinweis zu Ihrer Website – <domain>“); 2–3 → Mehrzahl („<n> konkrete Hinweise zu Ihrer Website – <domain>“); 4+ → die 3
   wichtigsten (Severity, dann Besucherwirkung). Nie aufgefüllt. Je Punkt genau ein kurzer Satz, keine behauptete Folge. Danach Angebot
@@ -21,7 +40,7 @@ Letzte Aktualisierung: 2026-10-13
   neuer Text, weiterhin DRAFT, Label JARVIS, gleicher Empfänger, gleicher Thread, 0 Anhänge. Sent-Register vorher = nachher (9),
   Worker-Log ohne Send-/Fehler-Events. Gmail drafts.get format=full lief anfangs in rateLimitExceeded → Runner gedrosselt (600 ms, Backoff).
 - Tests: Unit 621/621 (632 inkl. 11 übersprungene Lab-Tests), neu `test/cold-rewrite-050.test.js` (A–L), Secret-Scan 0.
-- **OFFEN – MAIL WORKER DEPLOY REQUIRED**: Der Produktiv-Mail-Worker läuft weiter mit f868b5a (alte Regel MIN=2, alte Vorlage). Neue
+- **ERLEDIGT 2026-10-14 (siehe oben)** – damals offen: Der Produktiv-Mail-Worker lief weiter mit f868b5a (alte Regel MIN=2, alte Vorlage). Neue
   Cold-Entwürfe aus der Discovery entstehen bis zum Deploy noch im alten Stil. Deploy (`deploy.sh fiverr`, ≈ 6 s Unterbrechung) nur mit
   ausdrücklicher Freigabe von Chris. Danach kann der Runner erneut laufen (idempotent: bereits neue Entwürfe → UNCHANGED).
 - Unverändert: COLD_LEAD_DRAFT_ONLY, legal_basis NONE, automatic_send_allowed false, `gmail.sendDraft` verweigert Cold-Entwürfe, kein Auto-Send.
