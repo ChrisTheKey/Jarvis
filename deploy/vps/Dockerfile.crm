@@ -6,9 +6,10 @@ FROM node:22-alpine
 RUN apk add --no-cache tzdata
 ENV NODE_ENV=production TZ=Europe/Zurich JARVIS_CRM_DIR=/data/crm JARVIS_MAIL_SECRETS=/data/mail
 WORKDIR /app
+# TF-058: discovery-history.js (historische Website-Fehler-Leads, passiver Recheck der Index-Domains – nur GET)
 # TF-057: lead-db.js (Dedupe Domain/E-Mail/Firma wie die Lead-Datenbank, ohne Abhängigkeiten)
 # TF-055: site-findings.js (Fehlerinventar) + site-auditor.js/site-backfill.js (passiver Hintergrund-Audit, nur GET, robots.txt)
-COPY package.json crm-service.js crm-api.js lead-crm.js shared-state.js backup.js site-findings.js site-auditor.js site-backfill.js lead-db.js ./
+COPY package.json crm-service.js crm-api.js lead-crm.js shared-state.js backup.js site-findings.js site-auditor.js site-backfill.js lead-db.js discovery-history.js ./
 COPY public/crm-model.js ./public/
 COPY deploy/vps/backup-public.pem ./
 COPY deploy/vps/crm-derive-token.mjs ./deploy/vps/

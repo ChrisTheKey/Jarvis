@@ -3,7 +3,7 @@
 // kein Senden, kein Anruf, keine SMS/WhatsApp. Alle Inhalte per textContent (nie innerHTML mit Daten).
 import { SALES_STAGES, STAGE_LABEL, CALL_STATUSES, CALL_LABEL, CONTACT_STATUSES, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, CARDS,
   SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
-  ERROR_CARDS, PIPELINE_CARDS, AUDIT_LABEL, ISSUE_CATEGORIES, ISSUE_LABEL, SEVERITY_LABEL, errorCount, errorShort, errorLong, topIssues, repairLine } from "./crm-model.js";
+  ERROR_CARDS, PIPELINE_CARDS, AUDIT_LABEL, ISSUE_CATEGORIES, ISSUE_LABEL, SEVERITY_LABEL, errorCount, errorShort, errorLong, topIssues, repairLine, HISTORY_LABEL } from "./crm-model.js";
 
 const $ = (id) => document.getElementById(id);
 const MOBILE = matchMedia("(max-width: 860px)");
@@ -37,6 +37,8 @@ const errNum = (l) => el("span", { class: `crm-err${errorCount(l) ? "" : " zero"
 const noTop = (l) => (auditOf(l) === "NONE" ? "Noch nicht geprüft" : "Keine aktuell verifizierten Fehler");
 const top2 = (l) => { const t = topIssues(l); return t.length ? el("ol", { class: "crm-top2" }, t.map((f) => el("li", {}, f.text))) : el("small", {}, noTop(l)); };
 const pageText = (f) => (f.page ? f.page.replace(/^https?:\/\//, "") : "–");
+// TF-058: historischer Discovery-Fund (nur Anzeige – daraus entsteht nie ein Entwurf).
+const histBadge = (l) => (HISTORY_LABEL[l.history_badge] ? badge(`hist-${l.history_badge}`, HISTORY_LABEL[l.history_badge]) : "");
 const stageBadge = (l) => l.do_not_contact ? badge("dnc", "DO NOT CONTACT") : badge(`st-${l.sales_stage}`, STAGE_LABEL[l.sales_stage] || l.sales_stage);
 
 // ---------- Laden ----------
@@ -119,7 +121,7 @@ function tableView(list) {
   const head = ["Firma", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"];
   const rows = list.map((l) => el("tr", { class: `${l.do_not_contact ? "dnc" : ""}${S.sel === l.lead_id ? " sel" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
-    el("td", { class: "co" }, el("b", {}, l.company || l.domain || l.lead_id), el("small", {}, [l.municipality, l.canton].filter(Boolean).join(" · ") || ""), badge(l.priority?.level || "LOW", `${l.priority?.level || "LOW"} ${l.priority?.score ?? 0}`)),
+    el("td", { class: "co" }, el("b", {}, l.company || l.domain || l.lead_id), el("small", {}, [l.municipality, l.canton].filter(Boolean).join(" · ") || ""), badge(l.priority?.level || "LOW", `${l.priority?.level || "LOW"} ${l.priority?.score ?? 0}`), histBadge(l)),
     el("td", {}, link(l.website, l.domain || "Website")),
     el("td", { class: "err" }, errorsCell(l)),
     el("td", { class: "top" }, top2(l)),
@@ -136,7 +138,7 @@ function cardsView(list) {
   return el("ul", { class: "crm-list" }, list.map((l) => el("li", { class: `crm-lcard${l.do_not_contact ? " dnc" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
     el("div", { class: "row" }, el("h3", {}, l.company || l.domain || l.lead_id), stageBadge(l)),
-    l.domain ? el("small", { class: "dom" }, l.domain) : "",
+    l.domain ? el("small", { class: "dom" }, l.domain) : "", histBadge(l),
     el("div", { class: "crm-errline" }, el("span", { class: "lbl" }, "Fehler:"), errNum(l), auditBadge(l)),
     el("div", { class: "crm-top2wrap" }, el("span", { class: "lbl" }, "Wichtigste 2:"), top2(l)),
     el("div", {}, "Ansprechpartner: ", person(l) ? `${person(l)}${l.role ? ` · ${l.role}` : ""}` : "–"),
@@ -175,7 +177,8 @@ function renderDrawer() {
     el("small", {}, `Seite: ${pageText(f)} · ${ISSUE_LABEL[f.category] || "Andere"} · Schweregrad ${sev(f)}${f.manual ? " · manueller Punkt" : ""} · verifiziert ${fmt(f.verified_at)}`));
   const findings = [
     kv([["Verifizierte Fehler", errorLong(l)], ["Audit", `${AUDIT_LABEL[e.audit]}${e.scope ? ` – ${e.scope}` : ""}`], ["Zuletzt geprüft", fmt(e.checked_at)],
-      ...(e.audit === "STALE" ? [["Hinweis", "Letzte vollständige Prüfung veraltet – Zahl nicht mehr garantiert aktuell, Neuprüfung ist eingeplant."]] : []),
+      ...(e.audit === "STALE" ? [["Hinweis", e.full_checked_at ? "Letzte vollständige Prüfung veraltet – Zahl nicht mehr garantiert aktuell, Neuprüfung ist eingeplant."
+        : "Veraltet – historische Befunde, nicht als aktuelle Fehlerzahl zu verstehen. Neuprüfung ist eingeplant."]] : []),
       ...(e.audit === "PARTIAL" ? [["Hinweis", "Nur Teilprüfung – es können weitere Fehler vorhanden sein."]] : []),
       ...(repairLine(l) ? [["Reparatur", repairLine(l)]] : [])]),
     el("h5", {}, "Wichtigste Fehler"),
@@ -190,7 +193,8 @@ function renderDrawer() {
   const save = (label, fn) => el("button", { type: "button", class: "crm-btn", disabled: dis || blocked, onclick: fn }, label);
   d.replaceChildren(
     el("div", { class: "crm-top" }, el("h3", {}, l.company || l.domain || l.lead_id), el("button", { type: "button", class: "crm-btn", onclick: closeDrawer, "aria-label": "Details schliessen" }, "SCHLIESSEN")),
-    el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", `Priorität ${l.priority?.level || "LOW"} · ${l.priority?.score ?? 0}`)),
+    el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", `Priorität ${l.priority?.level || "LOW"} · ${l.priority?.score ?? 0}`), " ", histBadge(l)),
+    l.history_badge ? el("p", { class: "crm-note" }, "Historischer Discovery-Fund: im CRM sichtbar, aber keine Outreach-Quelle – ein Entwurf entsteht nur über die reguläre Qualifikation.") : "",
     blocked ? el("div", { class: "crm-dnc-banner" }, `DO NOT CONTACT – keine Anrufe, kein Follow-up, keine neuen Cold-Entwürfe${l.dnc_source && l.dnc_source !== "crm" ? ` (Quelle: ${l.dnc_source === "opt_out" ? "Opt-out" : l.dnc_source === "suppression" ? "Suppression" : "Lead-Datenbank"})` : ""}`) : "",
     el("small", {}, (l.priority?.reasons || []).join(" · ") || "keine Priorisierungspunkte"),
     qa, status,

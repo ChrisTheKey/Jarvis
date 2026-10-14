@@ -12,8 +12,11 @@
 // - TF-055: passiver Hintergrund-Audit (site-backfill.js, eine Website gleichzeitig, nur GET) schreibt site_findings.json; der
 //   Repair-Service liefert repair_findings.json (read-only Mount). Beides fliesst nur in die Fehlerzahl der CRM-Sicht.
 //   Abschalten: JARVIS_CRM_BACKFILL=off.
+// - TF-058: discovery_issue_history.json (discovery-history.js) – historische Website-Fehler-Leads als zusätzliche CRM-Lesequelle (nie
+//   Outreach). Beobachtet discovered.json read-only und prüft Domains, die nur noch im audited_index.json stehen, passiv neu (Checkpoint
+//   discovery_recheck.json). Teilt sich mit dem Backfill genau EINEN Website-Slot. Abschalten: JARVIS_CRM_HISTORY=off.
 //
-//   node crm-service.js --service | --healthcheck | --report | --backup-now
+//   node crm-service.js --service | --healthcheck | --report | --backup-now | --history-migrate [--dry-run] [--import datei]
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -22,6 +25,8 @@ import { CRM_FILE, CRM_AUDIT_FILE, normalizeCrmState, emptyCrmState, buildCrmVie
 import { crmStats } from "./public/crm-model.js";
 import { crmAgentToken } from "./crm-api.js";
 import { SITE_FINDINGS_FILE, REPAIR_FINDINGS_FILE } from "./site-findings.js";
+
+const HISTORY_FILE = "discovery_issue_history.json"; // = discovery-history.js HISTORY_FILE (dort importiert dieses Modul den Lock)
 
 export const LOCK_FILE = "crm.lock";
 export const HEALTH_FILE = "crm_health.json";
@@ -33,9 +38,10 @@ export const STALE_REQUEST_MS = 5 * 60_000;
 
 // ---------- Lock: genau ein Schreiber für lead_crm.json (Dienst, CLI, Tests – auch über Prozess-/Containergrenzen) ----------
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-export function withCrmLock(dir, fn, { timeoutMs = 15_000, staleMs = 30_000 } = {}) {
+// name: eigener Lock je Datei (TF-058: history.lock für discovery_issue_history.json / discovery_recheck.json).
+export function withCrmLock(dir, fn, { timeoutMs = 15_000, staleMs = 30_000, name = LOCK_FILE } = {}) {
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, LOCK_FILE), token = `${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
+  const file = path.join(dir, name), token = `${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try { fs.writeFileSync(file, JSON.stringify({ token, at: Date.now() }), { flag: "wx", mode: 0o600 }); break; }
@@ -100,6 +106,7 @@ export function createSourceReader({ dataDir, mailDir, repairDir = null }) {
     directory: read(path.join(dataDir, "lead_contact_directory.json"), { leads: {} }),
     siteFindings: read(path.join(dataDir, SITE_FINDINGS_FILE), { domains: {} }),
     repairFindings: repairDir ? read(path.join(repairDir, REPAIR_FINDINGS_FILE), { orders: {} }) : { orders: {} },
+    history: read(path.join(dataDir, HISTORY_FILE), { leads: {} }), // TF-058: historische Funde (CRM-eigen, niedrigste Priorität)
   });
 }
 
@@ -218,7 +225,23 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const audits = {}; for (const l of v.leads) audits[l.errors.audit] = (audits[l.errors.audit] || 0) + 1;
       const doms = v.leads.map((l) => l.domain).filter(Boolean);
       log({ event: "report", leads: v.total, duplicates: ids.length - new Set(ids).size, domain_duplicates: doms.length - new Set(doms).size, crm_entries: crmEntries, ...st,
-        with_findings_total: v.leads.filter((l) => l.findings_total > 0).length, audits, backup: backupSummary(DATA) });
+        with_findings_total: v.leads.filter((l) => l.findings_total > 0).length, audits, backup: backupSummary(DATA),
+        history: { badges: v.leads.reduce((a, l) => (l.history_badge ? ((a[l.history_badge] = (a[l.history_badge] || 0) + 1), a) : a), {}),
+          stale: v.leads.filter((l) => l.history_badge && l.errors.audit === "STALE").length, no_email: v.leads.filter((l) => l.history_badge && !l.email).length,
+          ...(await import("./discovery-history.js").then((h) => { const s = h.readHistory(DATA), q = h.readRecheck(DATA); const out = {}; for (const d of Object.values(q.done)) out[d.outcome] = (out[d.outcome] || 0) + 1;
+            return { entries: Object.keys(s.leads).length, recheck_pending: q.pending.length, recheck_done: out }; })) } });
+      return 0;
+    }
+    if (args.includes("--history-migrate")) {
+      // TF-058: idempotent. --dry-run schreibt nichts. --import: lokal aus den verschlüsselten Backups extrahierte Minimaldaten (danach gelöscht).
+      const { migrateHistory } = await import("./discovery-history.js");
+      const i = args.indexOf("--import"), file = i >= 0 ? args[i + 1] : null;
+      let importData = null;
+      if (file) { if (!path.resolve(file).startsWith(path.resolve(DATA) + path.sep)) throw new Error("--import nur aus dem CRM-Datenverzeichnis."); importData = JSON.parse(fs.readFileSync(file, "utf8")); }
+      const dry = args.includes("--dry-run");
+      const r = await migrateHistory({ dataDir: DATA, mailDir: MAIL, sources, importData, dryRun: dry });
+      if (file && !dry) fs.rmSync(file, { force: true });
+      log({ event: "history_migrate", ...r });
       return 0;
     }
     const token = process.env.JARVIS_CRM_AGENT_TOKEN || "";
@@ -232,12 +255,22 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (!agent) { log({ event: "not_configured", note: "JARVIS_CRM_AGENT_TOKEN fehlt – Dienst wartet." }); }
       let stop = false;
       for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { stop = true; });
-      log({ event: "service_start", configured: !!agent, backfill: process.env.JARVIS_CRM_BACKFILL !== "off" });
+      log({ event: "service_start", configured: !!agent, backfill: process.env.JARVIS_CRM_BACKFILL !== "off", history: process.env.JARVIS_CRM_HISTORY !== "off" });
+      // Genau EINE Website gleichzeitig über Backfill (TF-055) und Recheck (TF-058) hinweg.
+      let tail = Promise.resolve();
+      const slot = (fn) => { const p = tail.then(fn); tail = p.catch(() => {}); return p; };
       // TF-055: passiver Hintergrund-Audit – eigene Schleife, blockiert Abholen/Backup/Herzschlag nie.
       if (process.env.JARVIS_CRM_BACKFILL !== "off") {
         const { createBackfill } = await import("./site-backfill.js");
-        const bf = createBackfill({ dataDir: DATA, sources: () => ({ ...sources(), crm: loadCrm(DATA) }), universe: crmUniverse, log });
+        const bf = createBackfill({ dataDir: DATA, sources: () => ({ ...sources(), crm: loadCrm(DATA) }), universe: (s) => crmUniverse(s, new Date()), slot, log });
         bf.run(() => stop).catch((e) => log({ event: "backfill_stopped", error: String(e?.message || e).slice(0, 120) }));
+      }
+      // TF-058: historische Website-Fehler-Leads (discovered.json beobachten + passiver Recheck der Index-Domains) – eigener Takt, gleicher Slot.
+      if (process.env.JARVIS_CRM_HISTORY !== "off") {
+        const { createHistoryWorker, RECHECK_AUDIT_OPTIONS } = await import("./discovery-history.js");
+        const { createAuditor } = await import("./site-auditor.js");
+        const hw = createHistoryWorker({ dataDir: DATA, mailDir: MAIL, sources, auditor: createAuditor(RECHECK_AUDIT_OPTIONS), slot, log });
+        hw.run(() => stop).catch((e) => log({ event: "history_stopped", error: String(e?.message || e).slice(0, 120) }));
       }
       while (!stop) {
         let r = { hot: false, status: 0 };

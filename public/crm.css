@@ -56,6 +56,7 @@
 .crm-err { font: 700 18px var(--ui); color: var(--amber); white-space: nowrap; } .crm-err.approx { font-style: italic; color: #ffd08a; } .crm-err.zero { color: var(--muted); font-weight: 400; }
 .crm-badge.au-FULL { color: var(--green); border-color: rgba(92,255,176,.4); } .crm-badge.au-PARTIAL { color: var(--amber); border-color: rgba(255,181,71,.35); }
 .crm-badge.au-STALE { color: var(--red); border-color: rgba(255,93,108,.45); } .crm-badge.au-NONE { color: var(--muted); }
+.crm-badge.hist-HISTORICAL { color: var(--amber); border-style: dashed; border-color: rgba(255,181,71,.45); } .crm-badge.hist-REVERIFIED { color: var(--cyan-2); border-color: rgba(0,229,255,.4); }
 .crm-top2 { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
 .crm-table td.err { white-space: nowrap; } .crm-table td.top { min-width: 200px; max-width: 320px; }
 .crm-errline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

@@ -41,7 +41,7 @@ export function backfillCandidates(src = {}, universe = []) {
   for (const id of universe) {
     const reg = src.registry?.leads?.[id], dir = src.directory?.leads?.[id], rv = src.reviews?.[id], crm = src.crm?.leads?.[id];
     if (reg?.do_not_contact || reg?.opt_out || reg?.suppressed || crm?.do_not_contact || crm?.archived) continue;
-    const site = dir?.website_url || reg?.website || null;
+    const site = dir?.website_url || reg?.website || src.history?.leads?.[id]?.website || null; // TF-058: historischer Fund
     const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || site || (id.includes("@") ? "" : id));
     if (!domain || !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) continue;
     let host = domain; try { if (site) host = new URL(site).hostname.toLowerCase(); } catch {}
@@ -93,13 +93,14 @@ export async function auditOne({ dataDir, candidate, auditor, now = () => new Da
 }
 
 // Hintergrund-Schleife. sources() → Quellen inkl. crm; universe(src) → Lead-IDs. stop() → true beendet. Nie ein Absturz des Dienstes.
-export function createBackfill({ dataDir, sources, universe, auditor = createAuditor(FULL_AUDIT_OPTIONS), now = () => new Date(), log = () => {},
+// slot(fn) (TF-058): gemeinsamer Website-Slot mit dem Historien-Recheck – nie zwei Websites gleichzeitig.
+export function createBackfill({ dataDir, sources, universe, auditor = createAuditor(FULL_AUDIT_OPTIONS), now = () => new Date(), log = () => {}, slot = (fn) => fn(),
   pauseMs = PAUSE_MS, idleMs = IDLE_MS, sleep = (ms, stop) => new Promise((r) => { const t0 = Date.now(); const i = setInterval(() => { if (stop() || Date.now() - t0 >= ms) { clearInterval(i); r(); } }, 500); }) }) {
   async function step() {
     const src = sources();
     const c = nextDue(readSiteFindings(dataDir), backfillCandidates(src, universe(src)), now());
     if (!c) return null;
-    return auditOne({ dataDir, candidate: c, auditor, now });
+    return slot(() => auditOne({ dataDir, candidate: c, auditor, now }));
   }
   async function run(stop = () => false, { startDelayMs = START_DELAY_MS } = {}) {
     await sleep(startDelayMs, stop);

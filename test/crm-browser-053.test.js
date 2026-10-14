@@ -17,7 +17,7 @@ test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links,
   try {
     const { page, errors, external, posts } = await openCrm(browser, srv, { viewport: { width: 1440, height: 900 } });
     await page.waitForFunction(() => document.querySelectorAll("#crmMain tbody tr").length === 387, null, { timeout: 90_000 });
-    assert.equal(await page.locator("#crmCards .crm-card").count(), 12);
+    assert.equal(await page.locator("#crmCards .crm-card").count(), 13); // TF-058: + „Historische Funde“
     assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 1440 });
     const heads = await page.locator(".crm-table th").allTextContents();
     for (const h of ["Firma", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"]) assert.ok(heads.includes(h), h);

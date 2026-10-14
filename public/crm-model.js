@@ -59,7 +59,7 @@ export function errorShort(l) {
   const e = errs(l), n = errorCount(l);
   if (n == null) return "–";
   if (e.audit === "FULL") return String(n);
-  if (e.audit === "STALE") return `${n} (veraltet)`;
+  if (e.audit === "STALE") return e.full_checked_at ? `${n} (veraltet)` : `≥${n} · veraltet`; // TF-058: alte Teilprüfung bleibt „mindestens“
   return n ? `≥${n}` : "0 (Teilprüfung)";
 }
 // Lang (Detail): „7 Fehler“, „Mindestens 3 Fehler“, „Keine aktuell verifizierten Fehler“, „Letzte vollständige Prüfung veraltet …“.
@@ -67,7 +67,7 @@ export function errorLong(l) {
   const e = errs(l), n = errorCount(l);
   if (n == null) return "Nicht geprüft";
   if (e.audit === "FULL") return n ? `${n} Fehler (verifiziert)` : "Keine aktuell verifizierten Fehler";
-  if (e.audit === "STALE") return `Letzte vollständige Prüfung veraltet – damals ${n} Fehler`;
+  if (e.audit === "STALE") return e.full_checked_at ? `Letzte vollständige Prüfung veraltet – damals ${n} Fehler` : `Letzte Teilprüfung veraltet – damals mindestens ${n} Fehler`;
   return n ? `Mindestens ${n} verifizierte Fehler` : "Keine aktuell verifizierten Fehler (nur Teilprüfung)";
 }
 export const errorBucket = (l) => { const n = errorCount(l); return n == null ? null : n === 0 ? "0" : n <= 2 ? "1-2" : n <= 5 ? "3-5" : "6+"; };
@@ -157,7 +157,10 @@ export const CARDS = Object.freeze({
   with_person: { label: "Mit Ansprechpartner", test: (l) => !!(l.first_name && l.last_name) },
   with_draft: { label: "Mit Draft", test: (l) => l.draft_status === "DRAFT" },
   with_findings: { label: "Mit 1+ Website-Fehler", test: (l) => (l.findings_confirmed || 0) >= 1 },
+  history: { label: "Historische Funde", test: (l) => !!l.history_badge }, // TF-058: nur Anzeige – nie eine Outreach-Quelle
 });
+// TF-058 Abzeichen historischer Discovery-Funde (low_score/no_contact/Backup/Recheck).
+export const HISTORY_LABEL = Object.freeze({ HISTORICAL: "HISTORISCHER FUND", REVERIFIED: "ERNEUT VERIFIZIERT" });
 const yes = (v) => v === "1" || v === "yes" || v === true;
 const no = (v) => v === "0" || v === "no" || v === false;
 export function filterLeads(list = [], f = {}, now = new Date()) {

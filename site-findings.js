@@ -177,7 +177,10 @@ export function siteHealth({ full = null, incomplete = null, repair = null, part
     ...cold.filter((f) => f.type && !AUDITABLE_TYPES.includes(f.type))])) : cold;
   const checked = inc ? inc.audited_at : coldAt;
   if (items.length || checked) {
-    return { audit: "PARTIAL", count: items.length, exact: false, checked_at: checked, full_checked_at: null, scope: inc ? "Prüfung unvollständig (Teilprüfung)" : "Erstprüfung (Teilprüfung)",
+    // TF-058: Teilprüfung älter als 7 Tage (z. B. historischer Discovery-Fund) → STALE: „≥2 · veraltet“, nie als aktuelle Zahl.
+    const old = !inc && !!checked && +now - Date.parse(checked) > FULL_AUDIT_MAX_AGE_MS;
+    return { audit: old ? "STALE" : "PARTIAL", count: items.length, exact: false, checked_at: checked, full_checked_at: null,
+      scope: inc ? "Prüfung unvollständig (Teilprüfung)" : old ? "Teilprüfung veraltet" : "Erstprüfung (Teilprüfung)",
       top: items.slice(0, 2), items, resolved: 0, manual_open: 0, repair: repairInfo };
   }
   return { audit: "NONE", count: null, exact: false, checked_at: null, full_checked_at: null, scope: null, top: [], items: [], resolved: 0, manual_open: 0, repair: repairInfo };

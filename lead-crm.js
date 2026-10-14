@@ -7,6 +7,8 @@
 //   gmail_jarvis.json (Gmail-Register)        ob der Entwurf noch existiert (Link nur dann), manueller Versand
 //   site_findings.json (CRM-Dienst, TF-055)    vollständige passive Audits je Domain (site-backfill.js) → genaue Fehlerzahl
 //   repair_findings.json (Repair, TF-055)      Stand nach einer CHF-480-Reparatur (RESOLVED fällt aus der Zahl, manuelle Punkte bleiben)
+//   discovery_issue_history.json (CRM, TF-058) historische Discovery-Funde mit belegtem Fehler (low_score/no_contact/Backup/Recheck) –
+//                                              niedrigste Priorität, nie eine Outreach-Quelle (discovery-history.js)
 // lead_crm.json hält NUR CRM-Eigenes (Stufe, Kontakt-/Telefonstatus, Anrufe, Notizen, Follow-up, Do Not Contact, Archiv).
 // Die CRM-Sicht entsteht zur Laufzeit – neue Leads, neue Telefonnummern/Personen und neue Befunde erscheinen ohne Migration.
 //
@@ -14,7 +16,7 @@
 // keine Outreach-Queue) und – über lead-registry.js registryBlock – auf neue Cold-Entwürfe des Mail-Workers.
 import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended } from "./public/crm-model.js";
 import { siteHealth, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES } from "./site-findings.js";
-import { buildIndex, findId } from "./lead-db.js";
+import { buildIndex, findId, normCompany } from "./lead-db.js";
 
 export const CRM_FILE = "lead_crm.json";
 export const CRM_AUDIT_FILE = "crm_audit.jsonl";
@@ -108,7 +110,17 @@ const PRE_DRAFT_STATUSES = new Set(["QUALIFIED", "WAITING_FOR_DRAFT"]);
 // Qualifiziert und vertriebsrelevant, aber noch ohne Entwurf: Firma + Domain + ≥ 1 kundensichtbarer Befund (gleiche Auswahl wie im Cold-Entwurf).
 export const qualifiedPreDraft = (l) => !!l && PRE_DRAFT_STATUSES.has(l.status) && l.qualified === true && !!str(l.company, 120) && !!normDomain(l.domain || "")
   && (Array.isArray(l.customer_visible_findings) ? l.customer_visible_findings : []).some((f) => str(typeof f === "string" ? f : f?.text, 240));
-export function crmUniverse(src = {}) {
+// TF-058: historischer Discovery-Fund – Firma, Domain, Audit-Zeitpunkt und ≥ 1 belegter, für Besucher sichtbarer Befund.
+export const HISTORY_BADGES = Object.freeze(["HISTORICAL", "REVERIFIED"]);
+const histValid = (h) => !!h && typeof h === "object" && LEAD_ID_RE.test(String(h.domain || "")) && !!str(h.company, 120) && !!iso(h.last_verified_at)
+  && Array.isArray(h.verified_findings) && h.verified_findings.some((f) => str(f?.text, 240));
+export const historyOf = (src, domain) => { const h = domain ? src.history?.leads?.[domain] : null; return histValid(h) ? h : null; };
+// Ein aktueller vollständiger Audit (TF-055-Backfill) ohne offenen Befund → der historische Fund ist behoben, kein CRM-Lead mehr.
+const resolvedNow = (src, domain, now) => {
+  const f = src.siteFindings?.domains?.[domain]?.full;
+  return !!f && f.complete === true && !!iso(f.audited_at) && +now - Date.parse(f.audited_at) <= 7 * 86_400_000 && !(f.findings || []).some((x) => x?.status !== "RESOLVED");
+};
+export function crmUniverse(src = {}, now = new Date()) {
   const leads = src.registry?.leads || {};
   const ids = new Set(Object.keys(src.directory?.leads || {}));
   for (const [id, l] of Object.entries(leads)) if (CRM_REGISTRY_STATUSES.has(l?.status) || l?.customer_status === "customer" || qualifiedPreDraft(l)) ids.add(id);
@@ -117,11 +129,29 @@ export function crmUniverse(src = {}) {
   // Dedupe wie die Lead-Datenbank (Domain / geschäftliche Adresse / Firma): ein Eintrag ausserhalb der Datenbank, der dort schon als
   // anderer CRM-Lead geführt wird, ist kein zweiter Datensatz. Mit eigenen CRM-Daten (Notizen, Anrufe) bleibt er sichtbar – nie Datenverlust.
   const idx = { ...buildIndex(leads), ids: new Set(Object.keys(leads)) };
+  // TF-058: historische Funde (niedrigste Priorität). Kennt die Lead-Datenbank die Firma schon → deren Datensatz (Registry gewinnt);
+  // sonst genau ein CRM-Lead je Domain/Adresse/Firma. Behoben (aktueller vollständiger Audit ohne offenen Befund) → nicht mehr im CRM.
+  const seen = { email: new Set(), company: new Set() };
+  const known = new Set([...Object.values(src.directory?.leads || {}), ...Object.values(src.reviews || {})].map((x) => normDomain(x?.domain || "")).filter(Boolean));
+  for (const h of Object.values(src.history?.leads || {}).sort((a, b) => String(a?.domain).localeCompare(String(b?.domain)))) {
+    if (!histValid(h)) continue;
+    const own = !!src.crm?.leads?.[h.domain];
+    const hit = findId(idx, { domain: h.domain, email: h.business_email, company: h.company });
+    if (hit) { ids.add(hit); continue; }
+    if (ids.has(h.domain) || (known.has(h.domain) && !own)) continue;
+    if (!own && resolvedNow(src, h.domain, now)) continue;
+    const c = normCompany(h.company), e = h.business_email || "";
+    if (!own && ((e && seen.email.has(e)) || (c.length >= 4 && seen.company.has(c)))) continue;
+    if (e) seen.email.add(e);
+    if (c.length >= 4) seen.company.add(c);
+    ids.add(h.domain);
+  }
   return new Set([...ids].filter((id) => {
     if (!LEAD_ID_RE.test(id)) return false;
     if (leads[id] || src.crm?.leads?.[id]) return true;
-    const dir = src.directory?.leads?.[id], rv = src.reviews?.[id];
-    const hit = findId(idx, { domain: dir?.domain || rv?.domain || (id.includes("@") ? "" : id), email: dir?.email || rv?.recipient || (id.includes("@") ? id : ""), company: dir?.company_name || rv?.company });
+    const dir = src.directory?.leads?.[id], rv = src.reviews?.[id], h = dir || rv ? null : historyOf(src, id);
+    const hit = findId(idx, { domain: dir?.domain || rv?.domain || h?.domain || (id.includes("@") ? "" : id), email: dir?.email || rv?.recipient || h?.business_email || (id.includes("@") ? id : ""),
+      company: dir?.company_name || rv?.company || h?.company });
     return !(hit && hit !== id && ids.has(hit));
   }));
 }
@@ -160,12 +190,17 @@ export function effectiveStage(entry, f) {
 export function buildCrmLead(id, src = {}, now = new Date()) {
   const reg = src.registry?.leads?.[id] || null, dir = src.directory?.leads?.[id] || null, rv = src.reviews?.[id] || null, crm = src.crm?.leads?.[id] || null;
   const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || (id.includes("@") ? "" : id)) || null;
+  const hist = historyOf(src, domain); // TF-058: niedrigste Priorität – füllt nur, was Registry/Review/Verzeichnis nicht kennen
+  const histOnly = !!hist && !reg && !dir && !rv;
   const d = draftInfo(dir, rv, src.gmail, reg);
-  const findings = findingsOf(rv, reg);
+  let findings = findingsOf(rv, reg);
+  // Ohne Cold-/Registry-Befund: die belegten historischen Befunde (Status AUDIT, nicht „bestätigt“ – nie Grundlage für einen Entwurf).
+  if (!findings.length && hist) findings = hist.verified_findings.filter((f) => str(f?.text, 240)).map((f) => ({ key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
+    status: "AUDIT", confirmed: false, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) || iso(hist.last_verified_at), type: str(f.type, 40), target: httpUrl(f.target) }));
   // TF-055: Website-Zustand – vollständiger Audit (passiv bzw. nach Reparatur) oder nur Teilprüfung („mindestens“). Je Domain.
   const sf = domain ? src.siteFindings?.domains?.[domain] : null;
   const errors = siteHealth({ full: sf?.full || null, incomplete: sf?.partial || null, repair: domain ? src.repairFindings?.orders?.[domain] || null : null,
-    partial: findings, partialCheckedAt: rv || reg?.last_audited_at ? maxIso(iso(reg?.last_audited_at), iso(rv?.updated_at)) : null, now });
+    partial: findings, partialCheckedAt: rv || reg?.last_audited_at ? maxIso(iso(reg?.last_audited_at), iso(rv?.updated_at)) : hist ? iso(hist.last_verified_at) : null, now });
   const regDnc = !!(reg?.do_not_contact || reg?.opt_out || reg?.suppressed);
   const flags = { do_not_contact: !!crm?.do_not_contact || regDnc, customer: reg?.customer_status === "customer", not_interested: reg?.customer_status === "not_interested",
     manual_sent: d.status === "MANUALLY_SENT" || !!reg?.manual_send_detected, replied: reg?.reply_status === "replied", draft_status: d.status };
@@ -174,16 +209,18 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   const contactAuto = flags.replied ? "REPLIED" : calls.some((c) => REACHED.has(c.result)) ? "REACHED" : calls.length ? "CALLED" : flags.manual_sent ? "EMAIL_SENT" : "NOT_CONTACTED";
   const lead = {
     lead_id: id,
-    company: str(dir?.company_name || reg?.company || rv?.company, 120),
+    company: str(dir?.company_name || reg?.company || rv?.company || hist?.company, 120),
     domain,
-    website: httpUrl(dir?.website_url) || httpUrl(reg?.website) || (domain ? `https://${domain}/` : null),
-    email: [dir?.email, reg?.business_email, rv?.recipient].map((e) => String(e || "").trim().toLowerCase()).find((e) => EMAIL_RE.test(e)) || null,
+    website: httpUrl(dir?.website_url) || httpUrl(reg?.website) || httpUrl(hist?.website) || (domain ? `https://${domain}/` : null),
+    email: [dir?.email, reg?.business_email, rv?.recipient, hist?.business_email].map((e) => String(e || "").trim().toLowerCase()).find((e) => EMAIL_RE.test(e)) || null,
     phone: str(dir?.phone, 30), phone_tel: telHref(dir?.phone_normalized), phone_confidence: oneOf(dir?.phone_confidence, ["high", "medium"]),
     first_name: str(dir?.first_name, 60), last_name: str(dir?.last_name, 60), role: str(dir?.role, 60),
-    canton: str(reg?.canton, 2), municipality: str(reg?.municipality, 60), category: str(reg?.category_label || reg?.category, 40), language: str(reg?.language, 2),
+    canton: str(reg?.canton || hist?.canton, 2), municipality: str(reg?.municipality || hist?.municipality, 60), category: str(reg?.category_label || reg?.category || hist?.category, 40), language: str(reg?.language, 2),
     website_reachable: dir?.enrichment?.status === "done" ? true : dir?.enrichment?.status === "failed" ? false : null,
-    website_checked_at: maxIso(iso(reg?.last_audited_at), iso(dir?.enrichment?.last_attempt_at)),
+    website_checked_at: maxIso(iso(reg?.last_audited_at), iso(dir?.enrichment?.last_attempt_at), iso(hist?.last_verified_at)),
     findings, findings_total: findings.length, findings_confirmed: findings.filter((f) => f.confirmed).length, errors,
+    // TF-058: nur reine Historien-Leads tragen ein Abzeichen. ERNEUT VERIFIZIERT = aktueller Audit bestätigt ≥ 1 Fehler, sonst HISTORISCHER FUND.
+    history_badge: histOnly ? ((errors.count || 0) >= 1 && (errors.audit === "FULL" || (hist.reverified === true && errors.audit === "PARTIAL")) ? "REVERIFIED" : "HISTORICAL") : null,
     draft_status: d.status, draft_url: d.url, draft_created_at: d.created_at, manual_sent: flags.manual_sent, manual_sent_at: d.manual_sent_at || iso(reg?.first_contacted_at),
     replied: flags.replied, customer: flags.customer,
     sales_stage: effectiveStage(crm, flags), stage_auto: !oneOf(crm?.sales_stage, SALES_STAGES),
@@ -197,7 +234,7 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     do_not_contact: flags.do_not_contact, dnc_source: crm?.do_not_contact ? "crm" : reg?.do_not_contact ? "registry" : reg?.opt_out ? "opt_out" : reg?.suppressed ? "suppression" : null,
     do_not_contact_at: iso(crm?.do_not_contact_at), archived: !!crm?.archived,
     crm_created_at: iso(crm?.created_at),
-    updated_at: maxIso(iso(crm?.updated_at), iso(dir?.contact_enriched_at), iso(reg?.last_updated_at), iso(rv?.updated_at), iso(dir?.first_seen_at)),
+    updated_at: maxIso(iso(crm?.updated_at), iso(dir?.contact_enriched_at), iso(reg?.last_updated_at), iso(rv?.updated_at), iso(dir?.first_seen_at), iso(hist?.updated_at)),
   };
   lead.priority = priorityOf(lead);
   lead.follow_up = followUpBucket(lead, now);
@@ -206,7 +243,7 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
 }
 const REACHED = new Set(["CALLBACK_REQUESTED", "SPOKE_TO_EMPLOYEE", "SPOKE_TO_DECISION_MAKER", "INTERESTED", "NOT_INTERESTED", "DO_NOT_CALL"]);
 export function buildCrmView(src = {}, now = new Date()) {
-  const ids = crmUniverse(src);
+  const ids = crmUniverse(src, now);
   const leads = [...ids].map((id) => buildCrmLead(id, src, now));
   return { generated_at: now.toISOString(), total: leads.length, leads };
 }
@@ -374,7 +411,7 @@ export function cleanCrmLead(l) {
     website_reachable: typeof l.website_reachable === "boolean" ? l.website_reachable : null, website_checked_at: iso(l.website_checked_at),
     findings: (Array.isArray(l.findings) ? l.findings : []).slice(0, 30).map((f) => (f && typeof f === "object" ? { key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
       status: oneOf(f.status, ["BESTÄTIGT", "AUDIT"]), confirmed: f.confirmed === true, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) } : null)).filter((f) => f?.text),
-    findings_total: n(l.findings_total, 0, 1000), findings_confirmed: n(l.findings_confirmed, 0, 1000), errors: cleanErrors(l.errors),
+    findings_total: n(l.findings_total, 0, 1000), findings_confirmed: n(l.findings_confirmed, 0, 1000), errors: cleanErrors(l.errors), history_badge: oneOf(l.history_badge, HISTORY_BADGES),
     draft_status: oneOf(l.draft_status, DRAFT_STATUSES),
     draft_url: typeof l.draft_url === "string" && /^https:\/\/mail\.google\.com\/mail\/u\/0\/#drafts\?compose=[0-9a-f]{10,24}$/.test(l.draft_url) ? l.draft_url : null,
     draft_created_at: iso(l.draft_created_at), manual_sent: l.manual_sent === true, manual_sent_at: iso(l.manual_sent_at), replied: l.replied === true, customer: l.customer === true,
