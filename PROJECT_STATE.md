@@ -4,6 +4,15 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-14
 
+## TF-052 – FIRMA + WEBSITE IN KONTAKT-PDF/CSV (2026-10-14, Code d931f9a, nur jarvis-contacts neu, Mail-Worker unberührt)
+- PDF-Spalten Firma · Website · E-Mail · Telefon · Ansprechpartner · Rolle; Website als anklickbarer Link (sichtbar nur die Domain),
+  Header zusätzlich „Mit verifizierter Website“. CSV: Spalte „Domain“ → „Website“ (vollständige URL). Fehlend → „Nicht verifiziert“
+  (CSV leer). Website = nur Register-Domain (`websiteOf`): verifizierte Startseite https://[www.]domain bevorzugt, sonst
+  https://domain/, nie fremde Domain/Subdomain. Verzeichnis führt `website_url` (Abgleich + Anreicherung), Tests `test/lead-contacts-052.test.js`.
+- Deploy `deploy-contacts.sh fiverr build|start` 12:17 UTC (MAIL_WORKER_UNTOUCHED=YES, Mail-Worker 5510ab63fef9 StartedAt 06:06:58, restarts 0).
+  Erster Durchgang exportierte sofort: 387 Leads → CSV 387 Zeilen, PDF 387 Zeilen / 15 Seiten, 387 Links (eindeutig), Website 387,
+  Firma 387, Duplikate 0. Windows-Kopie per `fetch` aktualisiert.
+
 ## TF-051 – LEAD-KONTAKTVERZEICHNIS (2026-10-14, Code e0856d5/ce29380/a053ea8, Dienst jarvis-contacts LIVE, Mail-Worker unberührt)
 - **Was**: dauerhaft wachsende Liste aller Jarvis-eigenen Cold Leads (Cold-Register `individual_reviews.json` + Gmail-Mapping
   `gmail_jarvis.json`, nie Betreff/Text) mit öffentlich publizierter Geschäftsnummer und Inhaber/Geschäftsführung. Code `lead-contacts.js`,
