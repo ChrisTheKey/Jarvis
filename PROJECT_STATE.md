@@ -1,8 +1,34 @@
-# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025 + COLD-DRAFT-QUALITY-050 + LEAD-CONTACT-DIRECTORY-051
+# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025 + COLD-DRAFT-QUALITY-050 + LEAD-CONTACT-DIRECTORY-051 + LEAD-CRM-053
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
 Letzte Aktualisierung: 2026-10-14
+
+## TF-053 – JARVIS LEAD CRM (2026-10-14, Code 8a560fe, Dienst jarvis-crm LIVE, Netlify /api/crm LIVE, Mail-Worker unberührt)
+- **Was**: Dashboard-Hauptnavigation **CRM** (https://chrisjarvis.netlify.app/#crm): Übersichtskarten, Suche, Filter, Sortierung,
+  Priorität (transparente Punkte HIGH/MEDIUM/LOW), Desktop-Tabelle, Mobile-Karten (ANRUFEN/WEBSITE/ENTWURF ÖFFNEN), Detail-Drawer A–F
+  (Kontakt, Website, Probleme Top 3 + „Weitere“, Outreach, Telefon/Anruf dokumentieren, Notizen), Follow-up heute/überfällig/später,
+  Do Not Contact, Archiv, CSV-Export (ohne interne IDs). Code `lead-crm.js`, `crm-service.js`, `crm-api.js`, `public/crm{,-model}.js`, `public/crm.css`.
+- **Daten**: CRM-Sicht entsteht zur Laufzeit aus lead_registry.json + lead_contact_directory.json + individual_reviews.json (bestätigte
+  Befunde) + gmail_jarvis.json (nur gelesen) + `/opt/jarvis-mail/data/lead_crm.json` (nur CRM-Eigenes, 600; einziger Schreiber: jarvis-crm,
+  Datei-Lock + atomar + Audit `crm_audit.jsonl` ohne Notiz-Inhalte). Keine Migration: Default-Stufen aus den Quellen (Entwurf → DRAFT_READY,
+  manuell gesendet → CONTACTED, Kunde → CUSTOMER, bestehende Sperren → DO_NOT_CONTACT). Neue Leads/Telefon/Person/Befunde erscheinen automatisch.
+- **Architektur**: Browser → `/api/crm` (nur crm.*-Allowlist, genau ein bekannter Lead, Rate Limit, Audit) → Warteschlange (Blob jarvis-crm)
+  ← Dienst `jarvis-crm-worker` (Projekt jarvis-crm, /opt/jarvis-crm, nur ausgehend, kein gmail.js, kein exec, Mail-Secrets :ro).
+  Agent-Schlüssel = HMAC(JARVIS_SERVER_CONTROL_TOKEN, "jarvis-crm-agent-v1") – keine neue Netlify-Variable, gilt nur für /api/crm.
+- **Deploy 2026-10-14 16:00 UTC**: `deploy-crm.sh fiverr build|start` → healthy, restarts 0, Agent HTTP 200; MAIL_WORKER_UNTOUCHED=YES
+  (5510ab63fef9, StartedAt 06:06:58, restarts 0), CONTACTS_WORKER_UNTOUCHED=YES. Report: 391 Leads (wachsend), Duplikate 0, mit Telefon 339,
+  mit Ansprechpartner 71, mit Entwurf 384, mit ≥1 bestätigtem Befund 388, CRM-Einträge 0 (entstehen erst bei der ersten Aktion).
+  Sent-Register vorher = nachher (9), 0 Sends.
+- **Backup**: täglich ab 03:00 verschlüsselt (backup.js, Public Key) lead_crm.json + crm_audit.jsonl + Kontaktverzeichnis → lokal
+  `data/crm_backups` (14) + offsite `jarvis-backups` crm/<Tag> (30). Erstes Backup 16:00 offsite OK. Restore: `node scripts/restore-state.mjs --crm …`;
+  Restore-Test mit Testdaten/Testschlüssel im Unit-Test.
+- Tests: `test/lead-crm-053.test.js` (A–L, O, P, Cloud, Backup; 22) + `test/crm-browser-053.test.js` (M Mobile 390×844, N Desktop 1440×900,
+  Chrome lokal); Unit gesamt 684 / 673 pass / 0 fail / 11 skip (Labs). Secret-Scan 0.
+- **OFFEN – MAIL WORKER DEPLOY REQUIRED (Freigabe Chris)**: „Do Not Contact“ aus dem CRM sperrt neue Cold-Entwürfe im Mail-Worker erst nach
+  dem nächsten Mail-Deploy (`registryBlock` liest lead_crm.json; Mount `/opt/jarvis-mail/data:/data/crm:ro` + JARVIS_CRM_DIR in
+  deploy/vps/docker-compose.yml). Bis dahin praktisch ohne Lücke: bestehende Leads bekommen ohnehin keinen zweiten Entwurf (Duplikatsperre,
+  nach Verwerfen 180 Tage). Erster echter CRM-Schreibvorgang live durch Chris (Cloud-Passwort); der Ablauf ist lokal Ende-zu-Ende getestet.
 
 ## TF-052 – FIRMA + WEBSITE IN KONTAKT-PDF/CSV (2026-10-14, Code d931f9a, nur jarvis-contacts neu, Mail-Worker unberührt)
 - PDF-Spalten Firma · Website · E-Mail · Telefon · Ansprechpartner · Rolle; Website als anklickbarer Link (sichtbar nur die Domain),
