@@ -15,7 +15,7 @@ import { createAuditor } from "./site-auditor.js";
 import { swissSignals, qualifyRepairLead, ensureColdDraft, discoverBusinessContact, PLACEHOLDER_RE, REVIEWS_FILE } from "./swiss-repair.js";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock, heartbeat, legalBasis, normEmail, zurichDay } from "./mail-worker.js";
 import { loadGeo, saveGeo, nextJob, advance, enqueue, coverage, categoryKey, categoryLabel, matchCategory, findMunicipality, GEO_FILE } from "./swiss-areas.js";
-import { knownKeys, recordLead, registryBlock, fromDiscovered, TRACKED_DISCOVERY } from "./lead-registry.js";
+import { knownKeys, recordLead, registryBlock, fromDiscovered, TRACKED_DISCOVERY, crmDoNotContact } from "./lead-registry.js";
 
 export const DISCOVERY_LOCK = "discovery.lock";
 // Overpass verlangt eine erkennbare Anwendung als User-Agent (generische Browser-Kennungen werden mit 406 abgelehnt).
@@ -269,6 +269,8 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
   const ctr = readCounter(store, day, hk);
   stats.audited = Math.max(stats.audited, ctr.day); hour.audited = Math.max(hour.audited, ctr.hour);
   if (!force && hour.audited >= cfg.maxSitesPerHour) return { skipped: "hour_limit" };
+  // TF-053 fail-safe: Lead-CRM (Do Not Contact) eingebunden, aber nicht lesbar → kein Discovery-Lauf (sonst würden Leads ohne DNC-Prüfung bekannt).
+  if (!crmDoNotContact()) { log("warn", "discovery_held_crm_unavailable", {}); return { skipped: "crm_unavailable" }; }
   if (!acquireLock(dir, { pid, name: DISCOVERY_LOCK })) return { busy: true };
   let lastSave = 0;
   const writeAll = () => {

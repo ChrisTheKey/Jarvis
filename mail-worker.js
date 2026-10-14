@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { detectHumanContact } from "./human-contact.js";
 import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend, ensureColdDraft, coldDraftAction } from "./swiss-repair.js";
 import { publicLeads } from "./cloud-leads.js";
-import { loadRegistry, registryBlock, reconcileRegistry, publicRegistry, registryStatus } from "./lead-registry.js";
+import { loadRegistry, registryBlock, reconcileRegistry, publicRegistry, registryStatus, CRM_UNAVAILABLE } from "./lead-registry.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -680,7 +680,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     // Lead-Datenbank (frisch gelesen): bereits angeschrieben / Antwort / Kunde / kein Interesse / Suppression / Opt-out / Do-not-contact → nie ein Cold-Entwurf.
     let leadDb = null;
     try { leadDb = loadRegistry(store); } catch (e) { log("error", "lead_registry_read_failed", { error: e.message }); }
-    let createdThisPass = 0, dwChanged = false;
+    let createdThisPass = 0, dwChanged = false, crmHeld = 0;
     const queuedInOrder = Object.entries(coldData.reviews || {}).sort(([, a], [, b]) => String(a?.created_at || "").localeCompare(String(b?.created_at || "")));
     for (const [id, rv] of queuedInOrder) {
       if (!rv || rv.draft_mode !== COLD_MODE && rv.status !== "queued") continue;
@@ -695,6 +695,8 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           if (isCustomer(rv.domain)) { coldPatch[id] = { status: "blocked", blocked_reason: "bestehender Kunde" }; continue; }
           if (!leadDb) continue; // Lead-Datenbank nicht lesbar → fail closed: Eintrag bleibt queued, kein Entwurf ohne Dedupe
           const dbWhy = registryBlock(store, { lead_id: id, domain: rv.domain, email: to, company: rv.company }, leadDb);
+          // TF-053 fail-safe: CRM (Do Not Contact) nicht lesbar → Eintrag bleibt queued, kein Entwurf, nichts dauerhaft blockiert
+          if (dbWhy === CRM_UNAVAILABLE) { if (!crmHeld++) log("warn", "cold_draft_held_crm_unavailable", {}); continue; }
           if (dbWhy) { coldPatch[id] = { status: "blocked", blocked_reason: "Lead-Datenbank: " + dbWhy }; continue; }
           if (dwBackoff) continue; // Gmail-API im Backoff: Eintrag bleibt queued, nächster Durchlauf
           if (createdThisPass >= dl.draftsPerPass) continue; // technisches Pacing je Durchlauf – Rest bleibt in der Queue

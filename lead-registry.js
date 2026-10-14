@@ -78,20 +78,27 @@ export function registryBlock(store, q = {}, reg = loadRegistry(store)) {
   for (const l of hits) { const why = contactBlockReason(l); if (why) return why; }
   // TF-053: „Do Not Contact“ aus dem Lead-CRM (lead_crm.json, nur lesend; Verzeichnis per JARVIS_CRM_DIR eingebunden).
   const dnc = crmDoNotContact();
+  if (!dnc) return CRM_UNAVAILABLE;
   if (dnc.size && [q.lead_id, normDomain(q.domain || ""), ...hits.map((l) => l.lead_id), ...hits.map((l) => l.domain)].some((k) => k && dnc.has(String(k).toLowerCase()))) return "do-not-contact (CRM)";
   return null;
 }
-// lead_crm.json gehört dem CRM-Dienst (einziger Schreiber); hier nur gelesen, nach Grösse+Änderungszeit gecacht. Nicht lesbar → letzter Stand.
+// lead_crm.json gehört dem CRM-Dienst (einziger Schreiber); hier nur gelesen, nach Grösse+Änderungszeit gecacht.
+// Fail-safe: CRM eingebunden (JARVIS_CRM_DIR), Datei aber fehlend / unlesbar / kein gültiger CRM-Zustand → null = Cold Outreach angehalten
+// (Queue bleibt queued, nichts wird dauerhaft blockiert). Transaktionale Kunden-Mails lesen das CRM nie.
+export const CRM_UNAVAILABLE = "CRM nicht lesbar (fail-safe)";
+const CRM_SCHEMA = 1; // = lead-crm.js CRM_SCHEMA (lead-crm.js ist nicht im Mail-Worker-Image; Gleichheit prüft test/dnc-mail-053.test.js)
 let crmCache = { key: null, set: new Set() };
 export function crmDoNotContact(dir = process.env.JARVIS_CRM_DIR) {
   if (!dir) return new Set();
   const file = path.join(dir, "lead_crm.json");
-  let key; try { const s = fs.statSync(file); key = `${s.size}|${s.mtimeMs}`; } catch { return crmCache.set; }
+  let key; try { const s = fs.statSync(file); key = `${file}|${s.size}|${s.mtimeMs}`; } catch { return null; }
   if (key === crmCache.key) return crmCache.set;
   try {
-    const leads = JSON.parse(fs.readFileSync(file, "utf8")).leads || {};
+    const st = JSON.parse(fs.readFileSync(file, "utf8"));
+    const leads = st?.leads;
+    if (!Number.isInteger(st?.schema) || st.schema > CRM_SCHEMA || !leads || typeof leads !== "object" || Array.isArray(leads)) return null;
     crmCache = { key, set: new Set(Object.entries(leads).filter(([, e]) => e?.do_not_contact === true).map(([id]) => id.toLowerCase())) };
-  } catch {}
+  } catch { return null; }
   return crmCache.set;
 }
 
