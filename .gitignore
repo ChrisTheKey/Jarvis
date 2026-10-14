@@ -9,3 +9,7 @@ token.json
 *_token.json
 .playwright-mcp/
 deploy/vps/.env
+
+# TF-051 Lead-Kontaktverzeichnis: personenbezogene Daten + Exporte nie committen
+data/lead_contact_directory.json
+exports/

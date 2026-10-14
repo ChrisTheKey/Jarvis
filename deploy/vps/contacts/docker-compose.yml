@@ -1,0 +1,40 @@
+# Jarvis Lead-Kontaktverzeichnis (TF-051) – EIGENES Compose-Projekt «jarvis-contacts» unter /opt/jarvis-contacts, getrennt vom
+# Projekt «jarvis-mail». Ein Build/Start hier kann den Mail-Worker (jarvis-mail-mail-worker-1) nicht erfassen: anderes Projekt,
+# genau ein Service, keine depends_on, eigenes Image, kein Docker-Socket.
+#   Deploy nur über deploy/vps/deploy-contacts.sh (prüft den Mail-Worker vorher/nachher).
+# Daten: /opt/jarvis-mail/data/lead_contact_directory.json (authoritative) und /opt/jarvis-mail/exports (CSV/PDF), beide 700/600.
+name: jarvis-contacts
+services:
+  contacts-worker:
+    container_name: jarvis-contacts-worker
+    build:
+      context: ./app
+      dockerfile: deploy/vps/Dockerfile.contacts
+      args:
+        JARVIS_COMMIT: ${JARVIS_COMMIT:-unknown}
+    image: jarvis-contacts-worker:latest
+    restart: unless-stopped
+    volumes:
+      - /opt/jarvis-mail/data:/data/contacts
+      - /opt/jarvis-mail/exports:/data/exports
+      # NUR LESEND: Cold-Register (mail_worker/individual_reviews.json) + Gmail-Register (gmail_jarvis.json). Der Code öffnet
+      # ausschliesslich diese zwei Dateien; Register/Entwürfe werden nie geschrieben.
+      - /opt/jarvis-mail/secrets:/data/mail:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "node", "lead-contacts.js", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
