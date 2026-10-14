@@ -4,6 +4,36 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-14
 
+## TF-056 – CRM LIVE CHECK + TOKEN ROTATION PRECHECK + MAIL IMAGE (2026-10-14, Mail-Worker LIVE d4b1f65, Rotation GESTOPPT)
+- **Mail-Image**: `site-findings.js` im Dockerfile-COPY (keine eigenen Imports). Lokaler isolierter Build (`--network none`, read-only,
+  ohne Secrets): alle 31 App-Module importierbar, `mail-worker.js --healthcheck` ohne Modulfehler; Testimage danach gelöscht.
+- **Mail-Cutover** (`deploy.sh fiverr`, ohne Secrets, Freigabe Chris; Quiet Point: letzter Draft 19:16, danach nur Ticks, Outbox 0):
+  876020c249e3 (62bd95c) kill 19:28:32.306 → neuer **28fdac842b64 (d4b1f65)** start 19:28:32.927 → healthy 19:28:38.155 UTC
+  (**≈ 5.8 s**). Danach: restarts 0, `/app/site-findings.js` vorhanden (21 Exporte), **MAIL AUTH READY**, Authority vps/self, Windows
+  standby (self=false), pending 0, Ticks 19:28:45 / 19:30:57, Outbox-Consumer-Herzschlag aktiv (gmail_auth ok), MIN/MAX Cold 1/3,
+  `registryBlock` aktiv, CRM-Mount lesbar + read-only. Repair (6d7fac8e2a83), CRM (d31d00f5f17d), Contacts (338a201c89c9) unberührt,
+  healthy, restarts 0.
+- **Token-Verbraucher JARVIS_MAIL_WORKER_TOKEN** (nur Fingerprints verglichen, alle gleich `11ea911ab60c`/106): Netlify (Functions
+  mail-requests, state, backup, access-intake; Edge cloud.js nur Name → dedicated), `/opt/jarvis-mail/.env` (Mail-Worker),
+  `/opt/jarvis-repair/.env` (Repair-Worker, Intake register/pull/ack), Windows `.secrets/vps_worker.env` (check-mail-auth, dr-probe,
+  restore-state, secret-scan). Nicht betroffen: CRM (eigener Agent-Token, HMAC aus Server-Control-Token), Contacts (keine .env).
+  Zusätzlich: Alt-Kopie `/opt/jarvis-mail/.env.bak-before-server-control` (2026-10-07, enthält denselben Token) → nach Rotation `shred -u`.
+- **ROTATION GESTOPPT (vor jeder Änderung)**: Netlify-CLI auf diesem Rechner nicht installiert/angemeldet (kein Auth-Token) →
+  Netlify-Secret nicht sicher automatisiert änderbar. Keine Rotation, kein Token verändert, keine gemischten Tokens.
+  **Rotationsplan** (sobald Netlify-Zugang per CLI/API-Token vorhanden): (1) Precheck alle 4 Worker healthy, Gmail READY, Outbox 0,
+  Quiet Point, Backup/Disk; (2) neuen Token lokal erzeugen (`crypto.randomBytes(48)` base64url) → nur Datei `.secrets/vps_worker.env.new`
+  (600); (3) Rollback-Kopien 600: lokal + VPS Mail-/Repair-.env; (4) Netlify Env setzen (Wert per Datei/stdin) + Production-Deploy,
+  sofort danach VPS Mail-.env + Repair-.env atomar ersetzen, `docker compose up -d --no-build --force-recreate mail-worker` und Repair
+  `up -d --no-deps --no-build --force-recreate repair-worker` (Fenster: VPS 401 → Standby, kein Doppel-Sender); (5) `check-mail-auth`
+  → VPS 200 self=true, alter Fingerprint → 401; (6) Rollback: alte Werte zurück + Netlify zurück + Recreate; (7) Rollback-Kopien und
+  `.env.bak-before-server-control` mit `shred -u`.
+- **CRM LIVE AUTH CHECK = USER ACTION REQUIRED**: https://chrisjarvis.netlify.app/#crm → `/api/crm` 401 «Cloud-Passwort fehlt» im
+  automatisierten Browser; echte Daten nicht im Browser geprüft, keine CRM-Schreibaktion.
+- **Tests** (sequenziell): Unit-Lauf mit 1 Fehlschlag = Timeout `crm-browser-053` M (300 s, Last durch parallele Browser-Tests);
+  isolierte Wiederholung `crm-browser-053` 4/4 (K, L, M, N) grün. Separation-Lab 0 fail, Secret-Scan 0 Treffer (8 bekannte Werte),
+  Lab-Cleanup 0 Reste.
+- Keine Mail gesendet, keine Entwürfe verändert, keine Kundenwebsite verändert, keine Secrets ausgegeben.
+
 ## TF-055 – REPAIR FINAL HARDENING + CRM VERIFIZIERTE FEHLERZAHL (2026-10-14, Code f9223cf, Repair + CRM + Netlify LIVE, Mail-Worker unberührt)
 - **TF-054 Gate-Fix deployed**: Repair-Worker acc10380926b (f868b5a) → **6d7fac8e2a83 (f9223cf)**, `deploy-repair.sh fiverr`; docker events:
   kill 18:57:41.63 → neuer Start 18:57:42.26 → healthy 18:57:47.48 UTC (**≈ 5.9 s**), restarts 0, 0 offene Aufträge beim Deploy,
