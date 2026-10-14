@@ -4,6 +4,29 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-14
 
+## TF-058 – HISTORISCHE WEBSITE-FEHLER-LEADS + REQUALIFIKATION ALTER QUALIFIED-LEADS (2026-10-14, Code c6fa079, CRM + Netlify LIVE, Mail-Worker NICHT neu gestartet)
+- **Vorher**: CRM 759 (Report 756 kurz davor), Registry 1113 (699 QUALIFIED ohne Entwurf, davon 342 mit Kundentext-Befund), discovered.json
+  1099 mit sichtbarem Fehler / 344 davon nicht im CRM, 9 lokale Backup-Generationen (offsite 8 Tage, gleiche Tage), audited_index 9573 Domains.
+- **Ziel 1** (`scripts/tf058-requeue-qualified.mjs`, per stdin im Mail-Container, Image unverändert): 700 QUALIFIED geprüft (697 Audit < 7 Tage
+  mit vollständiger Evidence, 3 passiv neu geprüft → kein Befund) → **248 queued** (COLD_LEAD_DRAFT_ONLY, 247×1 / 1×2 Befunde), 358 ohne
+  aktuellen Befund, 94 Schweiz-/Repair-Regeln nicht erfüllt, 0 ohne Kontakt, 0 DNC, 0 Duplikat. Sicherung `individual_reviews.json.bak-tf058-*`,
+  Compare-and-retry (1 Versuch). Gmail-Entwürfe legt der laufende Mail-Worker mit bestehendem Pacing an (25/Durchlauf). Nie Senden.
+  Mail-Worker 28fdac842b64 vorher = nachher (StartedAt 19:28:32, restarts 0) → **kein MAIL WORKER DEPLOY nötig**.
+- **Ziel 2** (`discovery-history.js`): CRM-eigene Lesequelle `/opt/jarvis-mail/data/discovery_issue_history.json` (600) – nie Outreach, nie in
+  lead_registry.json (knownKeys unverändert). Quellen: discovered.json (laufend read-only alle 10 min, vor der Auslagerung), Backups (lokal im
+  Speicher entschlüsselt, `scripts/tf058-history-from-backups.mjs`, nur Minimaldaten importiert, Import-Datei + lokale Kopien danach gelöscht),
+  Recheck der Index-Domains (`discovery_recheck.json`, Checkpoint je Website, 1 Website gleichzeitig über Backfill+Recheck, nur GET, robots.txt,
+  ≥ 2 s zwischen Anfragen, 20 s Pause, Fehler → 1 Retry, nie behauptet). Abschalten: `JARVIS_CRM_HISTORY=off`.
+- **Migration** (Dry-Run = Lauf): 1907 Vorkommen → 1133 eindeutige Fehler-Leads (774 Mehrfach-Vorkommen zusammengeführt); CRM 759 → **1134**
+  (+375: 244 HISTORISCHER FUND + 131 bisher verborgene Registry-Leads mit belegtem Fehler), 758 auf bestehende CRM-Leads gemergt, Duplikate 0,
+  ohne E-Mail 236, STALE 6–7. Übersprungen: no_visible_finding/no_issues/excluded (aktuell 278/25, Backups 2053/1046/2).
+  Recheck-Warteschlange 11344 Domains (läuft im Hintergrund, ~1/min, mehrere Tage). Hinweis: die Mitternachts-Auslagerung (00:00 Zürich) lief
+  kurz vor der Migration – die Low-Score/No-Contact-Funde des 14.10. sind nur noch als Index-Domain vorhanden und kommen über den Recheck.
+- **CRM**: Badge HISTORISCHER FUND / ERNEUT VERIFIZIERT, Karte „Historische Funde“, Teilprüfung > 7 Tage = STALE („≥2 · veraltet“),
+  aktueller Voll-Audit ohne offenen Fehler → historischer Fund fällt raus (ausser mit CRM-Notizen). Priorität Registry > Review > Verzeichnis >
+  Historie. CRM-Worker per `deploy-crm.sh build|start` (healthy), Netlify live. Repair/Contacts unberührt.
+- Tests `test/history-058.test.js` (A–P, 15), Unit 752 (0 fail nach Anpassung Kartenzahl crm-browser-053), Secret-Scan 0.
+
 ## TF-056 – CRM LIVE CHECK + TOKEN ROTATION PRECHECK + MAIL IMAGE (2026-10-14, Mail-Worker LIVE d4b1f65, Rotation GESTOPPT)
 - **Mail-Image**: `site-findings.js` im Dockerfile-COPY (keine eigenen Imports). Lokaler isolierter Build (`--network none`, read-only,
   ohne Secrets): alle 31 App-Module importierbar, `mail-worker.js --healthcheck` ohne Modulfehler; Testimage danach gelöscht.
