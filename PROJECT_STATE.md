@@ -1,8 +1,29 @@
-# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025 + COLD-DRAFT-QUALITY-050
+# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025 + COLD-DRAFT-QUALITY-050 + LEAD-CONTACT-DIRECTORY-051
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
 Letzte Aktualisierung: 2026-10-14
+
+## TF-051 – LEAD-KONTAKTVERZEICHNIS (2026-10-14, Code e0856d5/ce29380/a053ea8, Dienst jarvis-contacts LIVE, Mail-Worker unberührt)
+- **Was**: dauerhaft wachsende Liste aller Jarvis-eigenen Cold Leads (Cold-Register `individual_reviews.json` + Gmail-Mapping
+  `gmail_jarvis.json`, nie Betreff/Text) mit öffentlich publizierter Geschäftsnummer und Inhaber/Geschäftsführung. Code `lead-contacts.js`,
+  Tests `test/lead-contacts-051.test.js` (A–L + Integration). Telefon/Namen werden NICHT in Cold-Mails verwendet, keine Kontaktaktion.
+- **Daten (VPS, nie in Git)**: `/opt/jarvis-mail/data/lead_contact_directory.json` (authoritative, 700/600), Exporte atomar nach
+  `/opt/jarvis-mail/exports/Jarvis_Lead_Kontaktliste.{csv,pdf}`; Windows-Kopie in `exports/` (gitignored). Upsert per Lead-ID
+  (Fallback Domain+Adresse), nie löschen; Status DRAFT/MANUALLY_SENT/NO_LONGER_DRAFT/SKIPPED.
+- **Dienst**: eigenes Compose-Projekt `jarvis-contacts` (/opt/jarvis-contacts, Container `jarvis-contacts-worker`, Image ohne gmail.js,
+  Mail-Secrets nur read-only, kein Env/Secrets). Alle 2 min: Register-Abgleich → max. 15 neue/fällige Leads anreichern (2 parallel,
+  1.5 s/Domain, robots.txt, Retry/Backoff, Fehler → Retry 1 h/6 h/24 h/72 h, max. 5) → CSV bei Änderung, PDF höchstens alle 5 min.
+  Re-Verifikation nach 90 Tagen. Die Entwurfserstellung hängt nie daran (Mail-Worker importiert das Modul nicht) → **kein Mail-Deploy nötig**.
+- **Deploy/Betrieb**: `bash deploy/vps/deploy-contacts.sh fiverr build|backfill|start|status|fetch` (prüft Mail-Worker ID/StartedAt/Restarts
+  vorher/nachher). Backfill nur bei gestopptem Dienst (Lock `contacts.lock`, ein Schreiber).
+- **Backfill 2026-10-14 11:38–11:55 UTC**: 387/387 (380 Entwurf, 7 manuell gesendet), 1911 Requests, Telefon 335 (high 289/medium 46,
+  davon 29 Mobile als zentrale Nummer ohne Festnetz), Person 72 → nach Offsite-Fix 71 (high 60/medium 12), beide 67, 7 Fehler
+  (6 Domain leitet auf andere Website um, 1 TLS-Kette) → automatische Retries. Duplikate 0, Quellen alle auf der Lead-Domain.
+  Sent-Register vorher = nachher (9), 0 Sends, 0 Draft-Änderungen.
+- Offen: Personenquote (~18 %) bewusst konservativ (keine „Vertretungsberechtigte Person“ ohne Rolle, keine Vornamen-only, keine
+  Handelsregister-Abfrage); Verzeichnis ist noch nicht im verschlüsselten Backup; Dienst sieht das secrets-Verzeichnis read-only
+  (wegen gmail_jarvis.json) – Härtung: Mail-Worker exportiert beim nächsten geplanten Mail-Deploy einen Ownership-Snapshot.
 
 ## TF-050 – COLD DRAFT QUALITY UPDATE DEPLOYED (2026-10-14, Mail-Worker LIVE 3216638)
 - **Mail-Cutover** (`deploy.sh fiverr`, ohne Secrets, Freigabe Chris, docker events): alter Worker 4db200caf679 (f868b5a) kill
