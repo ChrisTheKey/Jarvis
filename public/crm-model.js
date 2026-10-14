@@ -42,6 +42,52 @@ export function splitFindings(findings = []) {
 const CONTACT_PATH_RE = /kontakt|contact|reserv|bestell|order|booking|buchen|buchung|termin|anfrage|formular|warenkorb|checkout|shop|e-mail-link/i;
 export const isContactPathFinding = (f) => !!f && (f.key === "contact" || String(f.key || "").startsWith("mailto:") || CONTACT_PATH_RE.test(`${f.text || ""} ${f.page || ""}`));
 
+// ---------- Website-Fehler (TF-055): genaue Zahl nur aus vollständigem, aktuellem Audit – sonst „mindestens“ ----------
+// lead.errors kommt aus site-findings.js siteHealth (Audit FULL | STALE | PARTIAL | NONE). Reine Anzeige – keine Outreach-Logik.
+export const AUDIT_LABEL = Object.freeze({ FULL: "Vollständig", STALE: "Veraltet", PARTIAL: "Teilprüfung", NONE: "Nicht geprüft" });
+// Gleiche Reihenfolge/Schlüssel wie site-findings.js ISSUE_CATEGORIES (Test prüft die Übereinstimmung).
+export const ISSUE_CATEGORIES = Object.freeze(["contact", "navigation", "http", "images", "mobile", "other"]);
+export const ISSUE_LABEL = Object.freeze({ contact: "Kontakt", navigation: "Navigation", http: "404/5xx", images: "Bilder", mobile: "Mobile", other: "Andere" });
+export const SEVERITY_LABEL = Object.freeze({ critical: "kritisch", high: "hoch", medium: "mittel", low: "niedrig" });
+const errs = (l) => (l?.errors && typeof l.errors === "object" ? l.errors : { audit: "NONE", count: null, top: [], items: [] });
+// Zahl für Zähler/Filter: nur geprüfte Leads (FULL/STALE: Zahl, PARTIAL: Mindestzahl), sonst null.
+export const errorCount = (l) => { const e = errs(l); return e.audit === "NONE" || !Number.isInteger(e.count) ? null : e.count; };
+// Kurz (Tabelle/Karte): „7“, „≥3“, „7 (veraltet)“, „–“. Nie eine Teilmenge als genaue Zahl.
+export function errorShort(l) {
+  const e = errs(l), n = errorCount(l);
+  if (n == null) return "–";
+  if (e.audit === "FULL") return String(n);
+  if (e.audit === "STALE") return `${n} (veraltet)`;
+  return n ? `≥${n}` : "0 (Teilprüfung)";
+}
+// Lang (Detail): „7 Fehler“, „Mindestens 3 Fehler“, „Keine aktuell verifizierten Fehler“, „Letzte vollständige Prüfung veraltet …“.
+export function errorLong(l) {
+  const e = errs(l), n = errorCount(l);
+  if (n == null) return "Nicht geprüft";
+  if (e.audit === "FULL") return n ? `${n} Fehler (verifiziert)` : "Keine aktuell verifizierten Fehler";
+  if (e.audit === "STALE") return `Letzte vollständige Prüfung veraltet – damals ${n} Fehler`;
+  return n ? `Mindestens ${n} verifizierte Fehler` : "Keine aktuell verifizierten Fehler (nur Teilprüfung)";
+}
+export const errorBucket = (l) => { const n = errorCount(l); return n == null ? null : n === 0 ? "0" : n <= 2 ? "1-2" : n <= 5 ? "3-5" : "6+"; };
+export const ERROR_BUCKETS = Object.freeze(["0", "1-2", "3-5", "6+"]);
+export const topIssues = (l) => (Array.isArray(errs(l).top) ? errs(l).top : []).slice(0, 2);
+// Reparatur-Stand (nach CHF-480): „Automatisch repariert + 2 manuelle Punkte offen“.
+export function repairLine(l) {
+  const r = errs(l).repair;
+  if (!r) return null;
+  if (r.state === "COMPLETED_WITH_MANUAL_ITEMS" || r.manual_open) return `Automatisch repariert (${r.repaired}) + ${r.manual_open} manuelle${r.manual_open === 1 ? "r Punkt" : " Punkte"} offen`;
+  return `Automatisch repariert (${r.repaired}) – keine geplanten reparierbaren Punkte offen`;
+}
+// Übersicht Website-Fehler (nur Anzeige/Schnellfilter – nie eine Outreach-Automatik).
+export const ERROR_CARDS = Object.freeze({
+  err_0: { label: "0 verifizierte Fehler", test: (l) => errorBucket(l) === "0" },
+  err_1_2: { label: "1–2 Fehler", test: (l) => errorBucket(l) === "1-2" },
+  err_3_5: { label: "3–5 Fehler", test: (l) => errorBucket(l) === "3-5" },
+  err_6: { label: "6+ Fehler", test: (l) => errorBucket(l) === "6+" },
+  audit_full: { label: "Vollständig geprüft", test: (l) => errs(l).audit === "FULL" },
+  audit_partial: { label: "Nur teilgeprüft", test: (l) => errs(l).audit === "PARTIAL" },
+});
+
 // ---------- Priorität: einfache, transparente Punkte (kein „Kaufwahrscheinlichkeits-Score“) ----------
 export function priorityOf(lead) {
   const reasons = [];
@@ -65,7 +111,7 @@ export const callRecommended = (l) => !!l?.phone && !l.do_not_contact && !l.arch
 export const inOutreachQueue = (l) => !!l && !l.do_not_contact && !l.archived && ["NEW", "DRAFT_READY", "TO_CONTACT", "FOLLOW_UP"].includes(l.sales_stage);
 
 // ---------- Suche, Filter, Sortierung ----------
-export const FILTER_KEYS = Object.freeze(["q", "stage", "canton", "category", "phone", "person", "draft", "problems", "contact", "call", "followup", "dnc", "archived", "card"]);
+export const FILTER_KEYS = Object.freeze(["q", "stage", "canton", "category", "phone", "person", "draft", "problems", "errors", "audit", "issue", "contact", "call", "followup", "dnc", "archived", "card"]);
 const has = (hay, needle) => String(hay || "").toLowerCase().includes(String(needle).toLowerCase());
 const digits = (s) => String(s || "").replace(/\D+/g, "");
 export function searchMatch(l, q) {
@@ -96,7 +142,8 @@ const no = (v) => v === "0" || v === "no" || v === false;
 export function filterLeads(list = [], f = {}, now = new Date()) {
   return list.filter((l) => {
     if (!(f.archived === "only" ? l.archived : f.archived === "all" ? true : !l.archived)) return false;
-    if (f.card && CARDS[f.card] && !CARDS[f.card].test(l, now)) return false;
+    const card = CARDS[f.card] || ERROR_CARDS[f.card];
+    if (f.card && card && !card.test(l, now)) return false;
     if (!searchMatch(l, f.q)) return false;
     if (f.stage && l.sales_stage !== f.stage) return false;
     if (f.canton && l.canton !== f.canton) return false;
@@ -111,6 +158,10 @@ export function filterLeads(list = [], f = {}, now = new Date()) {
     if (f.problems === "1+" && n < 1) return false;
     if (["1", "2", "3"].includes(f.problems) && n !== Number(f.problems)) return false;
     if (f.problems === "4+" && (l.findings_total || 0) < 4) return false;
+    // TF-055: Fehlerzahl, Audit-Art, wichtigstes Problem (Kategorie eines der zwei wichtigsten Fehler).
+    if (ERROR_BUCKETS.includes(f.errors) && errorBucket(l) !== f.errors) return false;
+    if (f.audit && AUDIT_LABEL[f.audit] && errs(l).audit !== f.audit) return false;
+    if (f.issue && ISSUE_LABEL[f.issue] && !topIssues(l).some((x) => x.category === f.issue)) return false;
     if (f.contact && l.contact_status !== f.contact) return false;
     if (f.call && l.call_status !== f.call) return false;
     const fu = followUpBucket(l, now);
@@ -124,7 +175,7 @@ export function filterLeads(list = [], f = {}, now = new Date()) {
 export const SORTS = Object.freeze({
   priority: { label: "Priorität", cmp: (a, b) => (b.priority?.score ?? 0) - (a.priority?.score ?? 0) },
   company: { label: "Firma", cmp: (a, b) => String(a.company || a.domain || "").localeCompare(String(b.company || b.domain || ""), "de", { sensitivity: "base", numeric: true }) },
-  problems: { label: "Anzahl Probleme", cmp: (a, b) => (b.findings_total || 0) - (a.findings_total || 0) },
+  problems: { label: "Anzahl Fehler", cmp: (a, b) => (errorCount(b) ?? -1) - (errorCount(a) ?? -1) || (b.errors?.audit === "FULL") - (a.errors?.audit === "FULL") },
   stage: { label: "Status", cmp: (a, b) => SALES_STAGES.indexOf(a.sales_stage) - SALES_STAGES.indexOf(b.sales_stage) },
   last_contact: { label: "Letzter Kontakt", cmp: (a, b) => String(b.last_contact_at || "").localeCompare(String(a.last_contact_at || "")) },
   follow_up: { label: "Nächster Follow-up", cmp: (a, b) => (a.next_action_at ? 0 : 1) - (b.next_action_at ? 0 : 1) || String(a.next_action_at || "").localeCompare(String(b.next_action_at || "")) },
@@ -140,7 +191,7 @@ export function nextBestLead(list = []) {
 }
 export function crmStats(list = [], now = new Date()) {
   const out = {};
-  for (const [k, c] of Object.entries(CARDS)) out[k] = list.filter((l) => !l.archived || k === "all").filter((l) => c.test(l, now)).length;
+  for (const [k, c] of Object.entries({ ...CARDS, ...ERROR_CARDS })) out[k] = list.filter((l) => !l.archived || k === "all").filter((l) => c.test(l, now)).length;
   out.archived = list.filter((l) => l.archived).length;
   out.all = list.filter((l) => !l.archived).length;
   out.follow_ups_overdue = list.filter((l) => followUpBucket(l, now) === "OVERDUE").length;

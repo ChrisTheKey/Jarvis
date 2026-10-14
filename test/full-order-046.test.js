@@ -172,9 +172,10 @@ test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240
   assert.deepEqual(r.access_intake, { accepted: 1, rejected: 0 });
   assert.equal(c.blobs.dump(), "[]", "Einreichung quittiert – Cloud leer");
   const o = readOrder(store, id);
-  assert.equal(o.state, "COMPLETED", `${o.blocked_reason} ${JSON.stringify(o.delivery)}`);
+  // TF-055: der geschützte AGB-Link (Impressum) bleibt offen → nie «COMPLETED», sondern abgeschlossen MIT manuellem Punkt.
+  assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS", `${o.blocked_reason} ${JSON.stringify(o.delivery)}`);
   const pathOf = o.state_history.map((h) => h.to);
-  for (const s of ["ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]) assert.ok(pathOf.includes(s), s);
+  for (const s of ["ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED_WITH_MANUAL_ITEMS"]) assert.ok(pathOf.includes(s), s);
   assert.deepEqual([o.authorization.source, o.authorization.authorized_domain, o.customer_authorized_repair], ["secure_order_access_form", DOMAIN, true]);
   assert.equal(o.access_profile?.profile_status, "PROFILE_READY", `Profil: ${JSON.stringify(o.access_profile)}`);
   assert.ok(pathOf.indexOf("ACCESS_PROFILE_PREFLIGHT") < pathOf.indexOf("BACKUP"), "Profil vor Backup");
@@ -210,8 +211,8 @@ test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240
   // Dashboard: alle Phasen in fester Wortform, keine Secrets.
   p = snap(id);
   assert.deepEqual([p.phase, p.payment_ok, p.access_received, p.authorized, p.backup_ok, p.repaired, p.browser_desktop, p.browser_mobile, p.browser_regression, p.delivery_status],
-    ["COMPLETED", true, true, true, true, 1, "JA", "JA", "KEINE", "sent"]);
-  assert.ok(["WAITING_FOR_DEPOSIT", "ACCESS_REQUEST_SENT", "COMPLETED"].every((x) => phases.includes(x)), phases.join());
+    ["COMPLETED_WITH_MANUAL_ITEMS", true, true, true, true, 1, "JA", "JA", "KEINE", "sent"]);
+  assert.ok(["WAITING_FOR_DEPOSIT", "ACCESS_REQUEST_SENT", "COMPLETED_WITH_MANUAL_ITEMS"].every((x) => phases.includes(x)), phases.join());
   assert.deepEqual(Object.keys(p).sort(), [...PUBLIC_REPAIR_FIELDS].sort());
   const cl = cleanRepair(publicRepairOrders(dir)).orders[0];
   assert.deepEqual([cl.authorized, cl.delivery_status], [true, "sent"]);
@@ -251,7 +252,7 @@ test("LIEFERUNG vor Delivery unterbrochen (Gmail 503) → kein Versand, Neustart
   await run(x.dir, x.w, gmail, x.c.client);
   await run(x.dir, x.w, gmail, x.c.client);
   o = readOrder(x.store, x.id);
-  assert.equal(o.state, "COMPLETED");
+  assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS"); // TF-055: geschützter AGB-Link bleibt manuell
   assert.equal(gmail.calls.filter((c) => c.op === "create" && c.messageClass === FULFILLMENT_CLASS).length, 1, "ein Entwurf (Draft-ID persistiert)");
   assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 2, "1 Access-Mail + 1 Lieferung");
 
@@ -270,7 +271,7 @@ test("LIEFERUNG vor Delivery unterbrochen (Gmail 503) → kein Versand, Neustart
   assert.ok(alerts.includes("delivery_unclear"));
   assert.equal(phaseOf(y.dir, y.id).delivery_status, "unclear");
   completeOrder(y.store, y.id); // Chris hat im Gesendet-Ordner geprüft und schliesst ab
-  assert.deepEqual([readOrder(y.store, y.id).state, fs.existsSync(path.join(y.dir, ACCESS_VAULT_DIR, `${y.id}.json`))], ["COMPLETED", false]);
+  assert.deepEqual([readOrder(y.store, y.id).state, fs.existsSync(path.join(y.dir, ACCESS_VAULT_DIR, `${y.id}.json`))], ["COMPLETED_WITH_MANUAL_ITEMS", false]);
 });
 
 test("LIEFERUNG fail safe: zu langer Bericht → ATTACHMENT_REQUIRED (kein Versand); Bericht mit Interna → BERICHT PRÜFEN (kein Versand); ohne Gmail → wartet auf Chris", async () => {

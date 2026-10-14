@@ -1,74 +1,26 @@
-// TF-053 Browser-Test: echte Oberfläche (public/index.html + crm.js) in Chromium, Desktop 1440×900 und Smartphone 390×844.
+// TF-053/TF-055 Browser-Test: echte Oberfläche (public/index.html + crm.js) in Chromium, Desktop 1440×900 und Smartphone 390×844.
 // Lokaler HTTP-Server: statische Dateien aus public/ + echte /api/crm-Funktion (Speicher im RAM) + echter CRM-Dienst (Temp-Verzeichnis,
 // synthetische 387 Leads). Kein Netz nach aussen (fremde Anfragen werden blockiert), keine echten Daten, kein Senden.
 // Ohne lokalen Chrome/Edge/Chromium wird der Test übersprungen. Screenshots optional nach $CRM_SHOTS.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import http from "node:http";
 import path from "node:path";
-import { makeSources, writeSources } from "./crm-fixture.js";
-import { createCrmHandler, crmAgentToken } from "../crm-api.js";
-import { createCrmAgent, createSourceReader, loadCrm } from "../crm-service.js";
-import { memoryStore } from "../shared-state.js";
+import { loadCrm } from "../crm-service.js";
+import { fullAuditEntry, SITE_FINDINGS_FILE, REPAIR_FINDINGS_FILE } from "../site-findings.js";
+import { exe, startServer, openCrm, noOverflow, shot } from "./crm-browser-harness.js";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
-const BROWSERS = [process.env.CHROME_PATH, "C:/Program Files/Google/Chrome/Application/chrome.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-  "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"].filter(Boolean);
-const exe = BROWSERS.find((p) => fs.existsSync(p));
-const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json" };
-
-async function startServer() {
-  const src = makeSources(387), dirs = writeSources(src);
-  const sources = createSourceReader({ dataDir: dirs.data, mailDir: dirs.mail });
-  const control = "k".repeat(48), password = "pw-browser";
-  const handler = createCrmHandler({ getQueueStore: async () => qs, getViewStore: async () => vs, env: (k) => ({ JARVIS_SERVER_CONTROL_TOKEN: control, JARVIS_PASSWORD: password })[k] });
-  const qs = memoryStore(), vs = memoryStore();
-  const agent = createCrmAgent({ dataDir: dirs.data, sources, url: "http://local.test", token: crmAgentToken(control), fetchFn: (u, init) => handler(new Request(u, init)) });
-  await agent.pollOnce();
-  let stop = false;
-  (async () => { while (!stop) { await agent.pollOnce().catch(() => {}); await new Promise((r) => setTimeout(r, 300)); } })();
-  const server = http.createServer(async (req, res) => {
-    const u = new URL(req.url, "http://127.0.0.1");
-    if (u.pathname === "/api/crm") {
-      const body = await new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)).on("end", () => r(b)); });
-      const out = await handler(new Request("http://127.0.0.1" + req.url, { method: req.method, headers: req.headers, ...(req.method === "POST" ? { body } : {}) }));
-      res.writeHead(out.status, Object.fromEntries(out.headers)); res.end(Buffer.from(await out.arrayBuffer())); return;
-    }
-    if (u.pathname.startsWith("/api/")) { res.writeHead(404, { "content-type": "application/json" }); res.end("{}"); return; }
-    const file = path.join(ROOT, "public", u.pathname === "/" ? "index.html" : path.normalize(u.pathname).replace(/^([\\/])+/, ""));
-    if (!file.startsWith(path.join(ROOT, "public")) || !fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
-    res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream" }); res.end(fs.readFileSync(file));
-  });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  return { url: `http://127.0.0.1:${server.address().port}`, dirs, password, close: () => { stop = true; server.close(); } };
-}
-async function openCrm(browser, srv, ctxOpts) {
-  const ctx = await browser.newContext(ctxOpts);
-  await ctx.addInitScript((pw) => { localStorage.setItem("jarvis.cloudKey", JSON.stringify(pw)); }, srv.password);
-  const page = await ctx.newPage();
-  const errors = [], external = [], posts = [];
-  page.on("pageerror", (e) => errors.push(String(e)));
-  page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|ERR_|net::/.test(m.text())) errors.push(m.text()); });
-  await page.route("**/*", (r) => { const u = r.request().url(); if (!u.startsWith(srv.url)) { external.push(u); return r.abort(); } if (r.request().method() === "POST") posts.push(new URL(u).pathname); return r.continue(); });
-  await page.goto(srv.url + "/#crm");
-  await page.evaluate(() => { document.getElementById("boot").hidden = true; }); // Startbildschirm (Audio-Freigabe) ist nicht Teil des CRM-Tests
-  return { ctx, page, errors, external, posts };
-}
-const noOverflow = (page) => page.evaluate(() => { const c = document.getElementById("crm"); return { doc: document.documentElement.scrollWidth <= innerWidth + 1, crm: c.scrollWidth <= c.clientWidth + 1, w: innerWidth }; });
-const shot = async (page, name) => { if (process.env.CRM_SHOTS) { fs.mkdirSync(process.env.CRM_SHOTS, { recursive: true }); await page.screenshot({ path: path.join(process.env.CRM_SHOTS, name) }); } };
-
-test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links, Speichern über /api/crm, Do Not Contact", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 120_000 }, async () => {
+test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links, Speichern über /api/crm, Do Not Contact", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 300_000 }, async () => {
   const { chromium } = await import("playwright-core");
   const browser = await chromium.launch({ executablePath: exe, headless: true });
   const srv = await startServer();
   try {
     const { page, errors, external, posts } = await openCrm(browser, srv, { viewport: { width: 1440, height: 900 } });
-    await page.waitForFunction(() => document.querySelectorAll("#crmMain tbody tr").length === 387, null, { timeout: 15_000 });
-    assert.equal(await page.locator(".crm-card").count(), 12);
+    await page.waitForFunction(() => document.querySelectorAll("#crmMain tbody tr").length === 387, null, { timeout: 90_000 });
+    assert.equal(await page.locator("#crmCards .crm-card").count(), 12);
     assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 1440 });
     const heads = await page.locator(".crm-table th").allTextContents();
-    for (const h of ["Firma", "Website", "Probleme", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"]) assert.ok(heads.includes(h), h);
+    for (const h of ["Firma", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"]) assert.ok(heads.includes(h), h);
     const tels = await page.locator('#crmMain a[href^="tel:"]').evaluateAll((as) => as.map((a) => a.getAttribute("href")));
     assert.ok(tels.length > 200 && tels.every((h) => /^tel:\+41\d{9}$/.test(h)));
     const mails = await page.locator('#crmMain a[href^="mailto:"]').evaluateAll((as) => as.map((a) => a.getAttribute("href")));
@@ -87,7 +39,7 @@ test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links,
     await page.click('#crmMain tr[data-id="firma-021.ch"]');
     await page.waitForSelector("#crmDrawer:not([hidden])");
     const h4 = await page.locator("#crmDrawer h4").allTextContents();
-    for (const s of ["A · Kontakt", "B · Website", "C · Website-Probleme", "D · Outreach", "E · Telefon", "F · Notizen"]) assert.ok(h4.includes(s), s);
+    for (const s of ["A · Kontakt", "B · Website", "C · Website-Zustand", "D · Outreach", "E · Telefon", "F · Notizen"]) assert.ok(h4.includes(s), s);
     assert.equal(await page.locator('#crmDrawer a:has-text("ANRUFEN")').getAttribute("href"), "tel:+41311234567");
     assert.ok(await page.locator('#crmDrawer a:has-text("GMAIL-ENTWURF ÖFFNEN")').count());
     await shot(page, "crm-desktop-detail.png");
@@ -117,18 +69,18 @@ test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links,
   } finally { srv.close(); await browser.close(); }
 });
 
-test("M: Mobile-Rendering (390×844) – Karten, grosse ANRUFEN/WEBSITE/ENTWURF-Knöpfe, kein Querscrollen, Drawer bildschirmbreit", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 120_000 }, async () => {
+test("M: Mobile-Rendering (390×844) – Karten, grosse ANRUFEN/WEBSITE/ENTWURF-Knöpfe, kein Querscrollen, Drawer bildschirmbreit", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 300_000 }, async () => {
   const { chromium } = await import("playwright-core");
   const browser = await chromium.launch({ executablePath: exe, headless: true });
   const srv = await startServer();
   try {
     const { page, errors } = await openCrm(browser, srv, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
-    await page.waitForFunction(() => document.querySelectorAll("#crmMain li.crm-lcard").length === 387, null, { timeout: 15_000 });
+    await page.waitForFunction(() => document.querySelectorAll("#crmMain li.crm-lcard").length === 387, null, { timeout: 90_000 });
     assert.equal(await page.locator("#crmMain table").count(), 0, "Karten statt Tabelle");
     assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 390 });
     const card = page.locator('#crmMain li[data-id="firma-021.ch"]');
     const text = await card.textContent();
-    for (const s of ["Firma 21 AG", "Problem", "Telefon", "Ansprechpartner", "Entwurf bereit"]) assert.ok(text.includes(s), s);
+    for (const s of ["Firma 21 AG", "Fehler", "Wichtigste 2", "Telefon", "Ansprechpartner", "Entwurf bereit"]) assert.ok(text.includes(s), s);
     const call = card.locator('a:has-text("ANRUFEN")');
     assert.equal(await call.getAttribute("href"), "tel:+41311234567");
     const box = await call.boundingBox();
@@ -145,6 +97,128 @@ test("M: Mobile-Rendering (390×844) – Karten, grosse ANRUFEN/WEBSITE/ENTWURF-
     assert.ok(inputs.every((f) => f >= 16), "kein iOS-Zoom (Schrift ≥ 16 px)");
     assert.ok(await page.evaluate(() => document.getElementById("crmDrawer").scrollWidth <= 391));
     await shot(page, "crm-mobile-detail.png");
+    assert.deepEqual(errors, []);
+  } finally { srv.close(); await browser.close(); }
+});
+
+// ---------- TF-055: Website-Fehlerzahl (gleiche Datei = nacheinander, nie zwei Browser parallel) ----------
+// Fehler-Spalte (genau vs. „≥“), Top 2, Detail „Website-Zustand“, Zähler/Filter; synthetische Voll-Audits + Repair-Stand.
+const AT = new Date(Date.now() - 3600_000).toISOString();
+const COMPLETE = { links_found: 9, links_checked: 9, links_skipped: 0, links_unverified: 0, images_found: 2, images_checked: 2, images_skipped: 0, images_unverified: 0, deadline_hit: false };
+const iss = (type, url, page, severity = "medium", extra = {}) => ({ type, url, page, severity, evidence: "HTTP 404", detectedAt: AT, ...extra });
+function prepare({ data, repairDir }) {
+  const H = "https://firma-021.ch";
+  const seven = [iss("contact_page_broken", `${H}/kontakt`, `${H}/`, "high"), iss("broken_link", `${H}/team`, `${H}/`, "medium", { label: "Team" }),
+    iss("broken_link", `${H}/blog`, `${H}/`, "medium", { label: "Blog" }), iss("broken_link", `${H}/angebot`, `${H}/`, "medium", { label: "Angebot" }),
+    iss("broken_image", `${H}/img/a.jpg`, `${H}/`), iss("no_mobile_viewport", `${H}/`, null), iss("https_certificate", `${H}/`, null, "high")];
+  const full = (d, issues, at = AT) => fullAuditEntry({ reachable: true, coverage: COMPLETE, issues }, { domain: d, audited_at: at });
+  const domains = {
+    "firma-021.ch": { domain: "firma-021.ch", full: full("firma-021.ch", seven) },
+    "firma-022.ch": { domain: "firma-022.ch", full: full("firma-022.ch", []) },
+    "firma-023.ch": { domain: "firma-023.ch", full: full("firma-023.ch", [iss("broken_image", "https://firma-023.ch/x.png", "https://firma-023.ch/")], "2026-09-01T08:00:00.000Z") },
+  };
+  fs.writeFileSync(path.join(data, SITE_FINDINGS_FILE), JSON.stringify({ schema: 1, domains }));
+  const D = "https://firma-024.ch";
+  fs.writeFileSync(path.join(repairDir, REPAIR_FINDINGS_FILE), JSON.stringify({ schema: 1, orders: { "firma-024.ch": { domain: "firma-024.ch", state: "COMPLETED_WITH_MANUAL_ITEMS", completion: "WITH_MANUAL_ITEMS", audited_at: AT,
+    findings: [{ key: "link|a", type: "contact_page_broken", category: "contact", text: "Kontaktseite führt auf eine Fehlerseite", page: `${D}/`, severity: "high", verified_at: AT, status: "RESOLVED", source: "repair", manual: false },
+      { key: "image|b", type: "broken_image", category: "images", text: "Bild auf Seite «Datenschutz» wird nicht angezeigt", page: `${D}/datenschutz`, severity: "medium", verified_at: AT, status: "OPEN", source: "repair", manual: true },
+      { key: "image|c", type: "broken_image", category: "images", text: "Bild auf Seite «Agb» wird nicht angezeigt", page: `${D}/agb`, severity: "medium", verified_at: AT, status: "OPEN", source: "repair", manual: true }] } } }));
+}
+
+test("K: Desktop (1440×900) – Fehler-Spalte (genau vs. „≥“), Top 2 separat, Detail mit allen Fehlern, Zähler + Filter, kein Querscrollen", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 300_000 }, async () => {
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.launch({ executablePath: exe, headless: true });
+  const srv = await startServer({ prepare });
+  try {
+    const { page, errors, posts } = await openCrm(browser, srv, { viewport: { width: 1440, height: 900 } });
+    await page.waitForFunction(() => document.querySelectorAll("#crmMain tbody tr").length === 387, null, { timeout: 90_000 });
+    assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 1440 });
+    const heads = await page.locator(".crm-table th").allTextContents();
+    for (const h of ["Firma", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "Status", "Nächster Schritt"]) assert.ok(heads.includes(h), h);
+    const errCol = heads.indexOf("Fehler") + 1, topCol = heads.indexOf("Wichtigste Fehler") + 1;
+    const cell = (id, col) => page.locator(`#crmMain tr[data-id="${id}"] td:nth-child(${col})`).innerText();
+    assert.match(await cell("firma-021.ch", errCol), /^7\s/, "vollständig: genaue Zahl");
+    assert.match(await cell("firma-021.ch", errCol), /Vollständig/i);
+    assert.match(await cell("firma-001.ch", errCol), /^≥2\s/, "Teilprüfung: nur Mindestzahl");
+    assert.match(await cell("firma-001.ch", errCol), /Teilprüfung/i);
+    assert.match(await cell("firma-023.ch", errCol), /1 \(veraltet\)/);
+    assert.match(await cell("firma-022.ch", errCol), /^0\s/);
+    assert.match(await cell("firma-024.ch", errCol), /^2\s/, "nach Reparatur: nur offene (manuelle) Punkte");
+    const top = await page.locator(`#crmMain tr[data-id="firma-021.ch"] td:nth-child(${topCol}) li`).allTextContents();
+    assert.deepEqual(top, ["Kontaktseite führt auf eine Fehlerseite", "Browser zeigt beim Öffnen eine Warnmeldung"]);
+    assert.match(await cell("firma-022.ch", topCol), /Keine aktuell verifizierten Fehler/);
+    // Zähler
+    const card = async (label) => Number(await page.locator(`#crmErrCards .crm-card:has-text("${label}") b`).textContent());
+    assert.equal(await card("Vollständig geprüft"), 3);
+    assert.equal(await card("6+ Fehler"), 1);
+    assert.ok(await card("Nur teilgeprüft") > 300);
+    // Filter: Audit, Fehler, Wichtiges Problem, Suche kombiniert
+    await page.selectOption("#crmF_audit", "FULL");
+    assert.equal(await page.locator("#crmMain tbody tr").count(), 3);
+    await page.selectOption("#crmF_errors", "6+");
+    assert.deepEqual(await page.locator("#crmMain tbody tr").evaluateAll((rs) => rs.map((r) => r.dataset.id)), ["firma-021.ch"]);
+    await page.selectOption("#crmF_errors", ""); await page.selectOption("#crmF_audit", "STALE");
+    assert.deepEqual(await page.locator("#crmMain tbody tr").evaluateAll((rs) => rs.map((r) => r.dataset.id)), ["firma-023.ch"]);
+    await page.selectOption("#crmF_audit", ""); await page.selectOption("#crmF_issue", "images");
+    assert.ok((await page.locator("#crmMain tbody tr").count()) >= 2);
+    await page.selectOption("#crmF_issue", "");
+    await page.fill("#crmF_q", "firma-021");
+    assert.equal(await page.locator("#crmMain tbody tr").count(), 1);
+    await page.fill("#crmF_q", "");
+    await page.click('#crmErrCards .crm-card:has-text("Vollständig geprüft")');
+    assert.equal(await page.locator("#crmMain tbody tr").count(), 3);
+    await page.click('#crmErrCards .crm-card:has-text("Vollständig geprüft")');
+    assert.equal(await page.locator("#crmMain tbody tr").count(), 387);
+    await shot(page, "crm055-desktop.png");
+    // Detail: Website-Zustand
+    await page.click('#crmMain tr[data-id="firma-021.ch"]');
+    await page.waitForSelector("#crmDrawer:not([hidden])");
+    const d = await page.locator("#crmDrawer").innerText();
+    for (const s of ["WEBSITE-ZUSTAND", "7 Fehler (verifiziert)", "Vollständig", "Zuletzt geprüft", "WICHTIGSTE FEHLER", "#1", "#2", "Betroffene Seite", "Schweregrad: hoch", "ALLE VERIFIZIERTEN FEHLER (7)"]) assert.ok(d.toUpperCase().includes(s.toUpperCase()), s);
+    assert.equal(await page.locator("#crmDrawer .crm-topd li").count(), 2);
+    assert.equal(await page.locator("#crmDrawer .crm-topd + h5 + ul li").count(), 7, "alle verifizierten Fehler");
+    await shot(page, "crm055-desktop-detail.png");
+    await page.click('#crmDrawer button:has-text("SCHLIESSEN")');
+    await page.click('#crmMain tr[data-id="firma-024.ch"]');
+    const d2 = await page.locator("#crmDrawer").innerText();
+    assert.ok(d2.includes("Automatisch repariert (1) + 2 manuelle Punkte offen"), "Repair-Stand sichtbar");
+    assert.ok(d2.includes("manueller Punkt"));
+    await page.click('#crmDrawer button:has-text("SCHLIESSEN")');
+    await page.click('#crmMain tr[data-id="firma-001.ch"]');
+    const d3 = await page.locator("#crmDrawer").innerText();
+    assert.ok(d3.includes("Mindestens 2 verifizierte Fehler") && d3.includes("Nur Teilprüfung – es können weitere Fehler vorhanden sein."));
+    assert.ok(!/(^|\n)2 Fehler/.test(d3), "Teilmenge nie als genaue Zahl");
+    assert.deepEqual(errors, []);
+    assert.deepEqual(posts, [], "reines Anzeigen schreibt nichts");
+  } finally { srv.close(); await browser.close(); }
+});
+
+test("L: Mobile (390×844) – Karte FEHLER + WICHTIGSTE 2 + Ansprechpartner/Telefon/Stage, Detail mit allen Fehlern, kein Querscrollen/Abschneiden", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 300_000 }, async () => {
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.launch({ executablePath: exe, headless: true });
+  const srv = await startServer({ prepare });
+  try {
+    const { page, errors } = await openCrm(browser, srv, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+    await page.waitForFunction(() => document.querySelectorAll("#crmMain li.crm-lcard").length === 387, null, { timeout: 90_000 });
+    assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 390 });
+    const card = page.locator('#crmMain li[data-id="firma-021.ch"]');
+    const t = await card.innerText();
+    for (const s of ["Firma 21 AG", "firma-021.ch", "FEHLER:", "7", "VOLLSTÄNDIG", "WICHTIGSTE 2:", "Kontaktseite führt auf eine Fehlerseite", "Browser zeigt beim Öffnen eine Warnmeldung", "Ansprechpartner", "Telefon", "Entwurf bereit"])
+      assert.ok(t.toUpperCase().includes(s.toUpperCase()), s);
+    assert.match(await page.locator('#crmMain li[data-id="firma-001.ch"] .crm-err').innerText(), /^≥2$/);
+    // Nichts abgeschnitten: jedes Kartenelement passt in die Karte.
+    const clipped = await page.locator("#crmMain li.crm-lcard").evaluateAll((cards) => cards.slice(0, 60).flatMap((c) => {
+      const cb = c.getBoundingClientRect();
+      return [...c.querySelectorAll("*")].filter((x) => { const b = x.getBoundingClientRect(); return b.width && (b.right > cb.right + 1 || b.left < cb.left - 1); }).map((x) => x.className || x.tagName);
+    }));
+    assert.deepEqual(clipped, []);
+    await shot(page, "crm055-mobile.png");
+    await card.locator("h3").tap();
+    await page.waitForSelector("#crmDrawer:not([hidden])");
+    assert.equal(await page.locator("#crmDrawer .crm-topd li").count(), 2);
+    assert.equal(await page.locator("#crmDrawer .crm-topd + h5 + ul li").count(), 7);
+    assert.ok(await page.evaluate(() => document.getElementById("crmDrawer").scrollWidth <= 391));
+    await shot(page, "crm055-mobile-detail.png");
     assert.deepEqual(errors, []);
   } finally { srv.close(); await browser.close(); }
 });

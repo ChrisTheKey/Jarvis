@@ -31,6 +31,8 @@ echo "Mail-Worker vorher: id=$(echo "$MAIL_BEFORE" | cut -c1-12) restarts=$(echo
 case "$STEP" in
   build)
     sudo -n mkdir -p "$R" "$MAIL_ROOT/data"
+    # TF-055: Export-Verzeichnis des Repair-Service (dort Schreiber); fehlt es, legt Docker es sonst als root an.
+    [ -d /opt/jarvis-repair/crm-export ] || { sudo -n mkdir -p /opt/jarvis-repair/crm-export && sudo -n chown 1000:1000 /opt/jarvis-repair/crm-export && sudo -n chmod 700 /opt/jarvis-repair/crm-export; }
     sudo -n chown 1000:1000 "$MAIL_ROOT/data" && sudo -n chmod 700 "$MAIL_ROOT/data"
     sudo -n rm -rf "$R/app.new" && sudo -n mkdir -p "$R/app.new" && sudo -n tar -xzf "$APP_TGZ" -C "$R/app.new"
     NEW="$R/docker-compose.yml.new"; sudo -n cp "$R/app.new/deploy/vps/crm/docker-compose.yml" "$NEW"
@@ -41,9 +43,9 @@ case "$STEP" in
     printf '%s' "$CFG" | grep -q docker.sock && blocked "Compose mountet den Docker-Socket."
     printf '%s' "$CFG" | grep -qE '"image": *"jarvis-(mail|contacts)' && blocked "Compose nutzt ein fremdes Image."
     # Mail-Secrets nur lesend; schreibend unter /opt/jarvis-mail ausschliesslich data/
-    printf '%s' "$CFG" | D run --rm -i --network none node:22-alpine node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).services["crm-worker"].volumes;const m=v.find(x=>x.source==="/opt/jarvis-mail/secrets");process.exit(m&&m.read_only===true&&v.filter(x=>x.source.startsWith("/opt/jarvis-mail")&&!x.read_only).every(x=>x.source==="/opt/jarvis-mail/data")?0:1)})' \
-      || blocked "Mail-Secrets nicht read-only oder unerwarteter schreibender Mount unter $MAIL_ROOT."
-    echo "TARGET OK: Projekt $PROJECT · Service $SERVICE · Mail-Secrets read-only · kein Docker-Socket"
+    printf '%s' "$CFG" | D run --rm -i --network none node:22-alpine node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).services["crm-worker"].volumes;const m=v.find(x=>x.source==="/opt/jarvis-mail/secrets");process.exit(m&&m.read_only===true&&v.filter(x=>x.source.startsWith("/opt/jarvis-mail")&&!x.read_only).every(x=>x.source==="/opt/jarvis-mail/data")&&v.filter(x=>x.source.startsWith("/opt/jarvis-repair")).every(x=>x.read_only===true&&x.source==="/opt/jarvis-repair/crm-export")?0:1)})' \
+      || blocked "Mail-Secrets/Repair-Export nicht read-only oder unerwarteter schreibender Mount unter $MAIL_ROOT."
+    echo "TARGET OK: Projekt $PROJECT · Service $SERVICE · Mail-Secrets read-only · Repair-Export read-only · kein Docker-Socket"
     if [ -d "$R/app" ]; then sudo -n rm -rf "$R/app.old" && sudo -n mv "$R/app" "$R/app.old"; fi
     sudo -n mv "$R/app.new" "$R/app" && sudo -n mv "$NEW" "$R/docker-compose.yml"
     echo "$COMMIT" | sudo -n tee "$R/DEPLOYED_COMMIT" >/dev/null

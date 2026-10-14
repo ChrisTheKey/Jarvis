@@ -22,6 +22,9 @@ services:
       - ./state:/data/repair
       # Repair-Outbox: einziger Versandweg (Mail-Worker liest und sendet genau einmal).
       - ./outbox:/data/outbox
+      # CRM-Export (TF-055): repair_findings.json – nur normalisierte Befunde (Typ/Seite/Status), keine Kundendaten/Secrets.
+      # Der CRM-Dienst mountet dieses Verzeichnis read-only.
+      - ./crm-export:/data/crm-export
     read_only: true
     tmpfs:
       - /tmp

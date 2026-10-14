@@ -23,6 +23,8 @@ const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
 export const SERVICE_LOCK = "repair-service.lock";
 export const OUTBOX_DIR = process.env.JARVIS_REPAIR_OUTBOX || path.join(SECRETS, "repair_outbox");
 export const SERVICE_ROLE = "repair";
+// TF-055: Export-Verzeichnis für repair_findings.json (CRM mountet es read-only). Ohne Variable kein Export.
+export const CRM_EXPORT_DIR = process.env.JARVIS_REPAIR_CRM_EXPORT || null;
 // Was in diesem Container nie liegen darf – sonst könnte er zur zweiten Sender Authority werden.
 export const FORBIDDEN_FILES = Object.freeze(["gmail_token.json", "gmail_credentials.json", "gmail_jarvis.json"]);
 export const FORBIDDEN_ENV = Object.freeze(["ANTHROPIC_API_KEY", "JARVIS_SERVER_CONTROL_TOKEN"]);
@@ -42,7 +44,7 @@ export function serviceHealthy(dir = WORKER_DIR, now = Date.now(), maxAgeMs = 5 
 }
 
 // Ein Durchlauf: CHF-480 und CHF-150 mit der Outbox als einzigem Versandweg. Fehler eines Workflows stoppen den anderen nie.
-export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR, intake = null, log = () => {}, runRepair = null, runCheck150 = null } = {}) {
+export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR, crmExportDir = CRM_EXPORT_DIR, intake = null, log = () => {}, runRepair = null, runCheck150 = null } = {}) {
   const mailer = createOutboxMailer({ dir: outboxDir });
   runRepair ||= (await import("./repair-workflow.js")).runRepairOrders;
   runCheck150 ||= (await import("./check-150-workflow.js")).runCheck150Orders;
@@ -51,6 +53,11 @@ export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUT
   catch (e) { out.repair = { error: true }; log("error", "repair_orders_failed", { error: e.message }); }
   try { out.check150 = await runCheck150({ dir, gmail: mailer, log }); if (out.check150?.advanced) log("info", "check150_orders_processed", out.check150); }
   catch (e) { out.check150 = { error: true }; log("error", "check150_orders_failed", { error: e.message }); }
+  // TF-055: Stand nach Reparaturen fürs CRM (behoben = RESOLVED, manuelle Punkte bleiben). Fehler stoppen den Service nie.
+  if (crmExportDir) {
+    try { out.crm_export = (await import("./repair-workflow.js")).writeRepairFindingsExport({ dir, exportDir: crmExportDir }); if (out.crm_export.written) log("info", "repair_crm_export", out.crm_export); }
+    catch (e) { out.crm_export = { error: true }; log("error", "repair_crm_export_failed", { error: e.message }); }
+  }
   out.outbox = outboxStatus(outboxDir);
   return out;
 }

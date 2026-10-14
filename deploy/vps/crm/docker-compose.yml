@@ -21,6 +21,8 @@ services:
       - /opt/jarvis-mail/data:/data/crm
       # NUR LESEND: Lead-Datenbank, Cold-Register, Gmail-Register. Der Code öffnet ausschliesslich diese drei Dateien.
       - /opt/jarvis-mail/secrets:/data/mail:ro
+      # NUR LESEND (TF-055): repair_findings.json – Stand nach CHF-480-Reparaturen (Repair-Service schreibt, ohne Kundendaten/Secrets).
+      - /opt/jarvis-repair/crm-export:/data/repair-export:ro
     read_only: true
     tmpfs:
       - /tmp

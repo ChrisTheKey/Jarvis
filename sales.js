@@ -170,7 +170,7 @@ export function voidSale(records, domain, { reason, relatedOrders = [], now = ne
   if (isVoidedSale(rec.sale)) throw new Error(`Verkauf für "${key}" ist bereits storniert (voided am ${rec.sale.voided_at || "unbekannt"}).`);
   for (const o of relatedOrders) {
     if (!o || safeDomain(String(o.domain || "")) !== key) continue;
-    if (o.state === "COMPLETED") throw new Error(`Abgeschlossener Auftrag ${o.order_id} (COMPLETED) vorhanden – kein automatisches Void, manuelle Prüfung nötig.`);
+    if (o.state === "COMPLETED" || o.state === "COMPLETED_WITH_MANUAL_ITEMS") throw new Error(`Abgeschlossener Auftrag ${o.order_id} (${o.state}) vorhanden – kein automatisches Void, manuelle Prüfung nötig.`);
     if (!VOID_SAFE_ORDER_STATES.has(o.state)) throw new Error(`Offener Auftrag ${o.order_id} (${o.state}) vorhanden – zuerst Auftrag stornieren.`);
   }
   const sale = { ...rec.sale, sale_status: "voided", voided: true, voided_at: now.toISOString(), void_reason: r.slice(0, 300) };

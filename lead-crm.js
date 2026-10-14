@@ -5,12 +5,15 @@
 //   lead_contact_directory.json (Kontakte)    Website, E-Mail, Geschäftstelefon, Inhaber/GF + Rolle, Website-Prüfung, Draft-Status
 //   individual_reviews.json (Cold-Register)   bestätigte Befunde (Kundentext), Audit-Evidence, Entwurf erstellt/manuell gesendet
 //   gmail_jarvis.json (Gmail-Register)        ob der Entwurf noch existiert (Link nur dann), manueller Versand
+//   site_findings.json (CRM-Dienst, TF-055)    vollständige passive Audits je Domain (site-backfill.js) → genaue Fehlerzahl
+//   repair_findings.json (Repair, TF-055)      Stand nach einer CHF-480-Reparatur (RESOLVED fällt aus der Zahl, manuelle Punkte bleiben)
 // lead_crm.json hält NUR CRM-Eigenes (Stufe, Kontakt-/Telefonstatus, Anrufe, Notizen, Follow-up, Do Not Contact, Archiv).
 // Die CRM-Sicht entsteht zur Laufzeit – neue Leads, neue Telefonnummern/Personen und neue Befunde erscheinen ohne Migration.
 //
 // Nichts hier sendet, ruft an oder erstellt Entwürfe. Do Not Contact wirkt sofort im CRM (keine Anruf-Empfehlung, kein Follow-up,
 // keine Outreach-Queue) und – über lead-registry.js registryBlock – auf neue Cold-Entwürfe des Mail-Workers.
 import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, priorityOf, followUpBucket, callRecommended } from "./public/crm-model.js";
+import { siteHealth, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES } from "./site-findings.js";
 
 export const CRM_FILE = "lead_crm.json";
 export const CRM_AUDIT_FILE = "crm_audit.jsonl";
@@ -60,13 +63,14 @@ export function findingsOf(review, regLead) {
       const t = str(f?.text, 240);
       if (!t) continue;
       out.push({ key: str(f.key, 80), text: t, page: httpUrl(pageOfEvidence(e) || (["broken_link", "broken_image", "broken_mailto"].includes(refs[0]?.issue_type) ? null : refs[0]?.url) || null),
-        status: "BESTÄTIGT", confirmed: true, severity: oneOf(f.severity || e?.severity, SEVERITIES), verified_at: iso(review.updated_at) || iso(e?.observed_at) });
+        status: "BESTÄTIGT", confirmed: true, severity: oneOf(f.severity || e?.severity, SEVERITIES), verified_at: iso(review.updated_at) || iso(e?.observed_at),
+        type: str(refs[0]?.issue_type, 40), target: httpUrl(refs[0]?.url) }); // type/target nur intern (Fehlerzahl, TF-055) – nicht in der Cloud-Allowlist
     }
     for (const e of ev) {
       if (!e || !VISIBLE_EXTRA[e.issue_type] || covered.has(refKey(e.issue_type, e.url)) || e.reproducible === false || e.severity === "low") continue;
       covered.add(refKey(e.issue_type, e.url));
       out.push({ key: `${e.issue_type}`, text: VISIBLE_EXTRA[e.issue_type], page: httpUrl(pageOfEvidence(e) || (e.issue_type.startsWith("broken_") ? null : e.url)),
-        status: "AUDIT", confirmed: false, severity: oneOf(e.severity, SEVERITIES), verified_at: iso(e.observed_at) });
+        status: "AUDIT", confirmed: false, severity: oneOf(e.severity, SEVERITIES), verified_at: iso(e.observed_at), type: e.issue_type, target: httpUrl(e.url) });
     }
     return out;
   }
@@ -137,6 +141,10 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || (id.includes("@") ? "" : id)) || null;
   const d = draftInfo(dir, rv, src.gmail);
   const findings = findingsOf(rv, reg);
+  // TF-055: Website-Zustand – vollständiger Audit (passiv bzw. nach Reparatur) oder nur Teilprüfung („mindestens“). Je Domain.
+  const sf = domain ? src.siteFindings?.domains?.[domain] : null;
+  const errors = siteHealth({ full: sf?.full || null, incomplete: sf?.partial || null, repair: domain ? src.repairFindings?.orders?.[domain] || null : null,
+    partial: findings, partialCheckedAt: rv || reg?.last_audited_at ? maxIso(iso(reg?.last_audited_at), iso(rv?.updated_at)) : null, now });
   const regDnc = !!(reg?.do_not_contact || reg?.opt_out || reg?.suppressed);
   const flags = { do_not_contact: !!crm?.do_not_contact || regDnc, customer: reg?.customer_status === "customer", not_interested: reg?.customer_status === "not_interested",
     manual_sent: d.status === "MANUALLY_SENT" || !!reg?.manual_send_detected, replied: reg?.reply_status === "replied", draft_status: d.status };
@@ -154,7 +162,7 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     canton: str(reg?.canton, 2), municipality: str(reg?.municipality, 60), category: str(reg?.category_label || reg?.category, 40), language: str(reg?.language, 2),
     website_reachable: dir?.enrichment?.status === "done" ? true : dir?.enrichment?.status === "failed" ? false : null,
     website_checked_at: maxIso(iso(reg?.last_audited_at), iso(dir?.enrichment?.last_attempt_at)),
-    findings, findings_total: findings.length, findings_confirmed: findings.filter((f) => f.confirmed).length,
+    findings, findings_total: findings.length, findings_confirmed: findings.filter((f) => f.confirmed).length, errors,
     draft_status: d.status, draft_url: d.url, draft_created_at: d.created_at, manual_sent: flags.manual_sent, manual_sent_at: d.manual_sent_at || iso(reg?.first_contacted_at),
     replied: flags.replied, customer: flags.customer,
     sales_stage: effectiveStage(crm, flags), stage_auto: !oneOf(crm?.sales_stage, SALES_STAGES),
@@ -314,6 +322,23 @@ export function applyCrmAction(state, req, { now = new Date(), lookup } = {}) {
 }
 
 // ---------- Allowlist für die Cloud-Kopie (Netlify speichert nur das) ----------
+// TF-055 Website-Zustand: nur Zahl, Audit-Art, Zeitpunkte und je Befund Typ/Kategorie/Kurztext/Seite/Schweregrad – nie Evidence.
+export const MAX_ERROR_ITEMS = 40;
+const cleanErrorItem = (f) => (f && typeof f === "object" && str(f.text, 140) ? { key: str(f.key, 200), type: typeof f.type === "string" && /^[a-z_]{3,40}$/.test(f.type) ? f.type : null,
+  category: oneOf(f.category, ISSUE_CATEGORIES, "other"), text: str(f.text, 140), page: httpUrl(f.page), target: httpUrl(f.target), severity: oneOf(f.severity, SEVERITIES),
+  verified_at: iso(f.verified_at), source: oneOf(f.source, FINDING_SOURCES), manual: f.manual === true } : null);
+export function cleanErrors(e) {
+  const x = e && typeof e === "object" ? e : {};
+  const audit = oneOf(x.audit, AUDIT_STATES, "NONE");
+  const items = (Array.isArray(x.items) ? x.items : []).slice(0, MAX_ERROR_ITEMS).map(cleanErrorItem).filter(Boolean);
+  const cnt = (v) => (Number.isInteger(v) ? Math.max(0, Math.min(1000, v)) : 0);
+  const count = audit === "NONE" ? null : Math.max(cnt(x.count), items.length);
+  const r = x.repair && typeof x.repair === "object" ? x.repair : null;
+  return { audit, count, exact: audit === "FULL" && x.exact === true, checked_at: iso(x.checked_at), full_checked_at: iso(x.full_checked_at), scope: str(x.scope, 120),
+    top: (Array.isArray(x.top) ? x.top : []).slice(0, 2).map(cleanErrorItem).filter(Boolean), items, resolved: cnt(x.resolved), manual_open: cnt(x.manual_open),
+    repair: r ? { state: oneOf(r.state, ["READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"]), completion: oneOf(r.completion, ["FULL", "WITH_MANUAL_ITEMS"]),
+      at: iso(r.at), repaired: cnt(r.repaired), manual_open: cnt(r.manual_open) } : null };
+}
 export function cleanCrmLead(l) {
   if (!l || typeof l !== "object" || !LEAD_ID_RE.test(String(l.lead_id || ""))) return null;
   const n = (v, lo, hi) => (Number.isInteger(v) ? Math.max(lo, Math.min(hi, v)) : 0);
@@ -328,7 +353,7 @@ export function cleanCrmLead(l) {
     website_reachable: typeof l.website_reachable === "boolean" ? l.website_reachable : null, website_checked_at: iso(l.website_checked_at),
     findings: (Array.isArray(l.findings) ? l.findings : []).slice(0, 30).map((f) => (f && typeof f === "object" ? { key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
       status: oneOf(f.status, ["BESTÄTIGT", "AUDIT"]), confirmed: f.confirmed === true, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) } : null)).filter((f) => f?.text),
-    findings_total: n(l.findings_total, 0, 1000), findings_confirmed: n(l.findings_confirmed, 0, 1000),
+    findings_total: n(l.findings_total, 0, 1000), findings_confirmed: n(l.findings_confirmed, 0, 1000), errors: cleanErrors(l.errors),
     draft_status: oneOf(l.draft_status, ["DRAFT", "MANUALLY_SENT", "NO_LONGER_DRAFT", "SKIPPED"]),
     draft_url: typeof l.draft_url === "string" && /^https:\/\/mail\.google\.com\/mail\/u\/0\/#drafts\?compose=[0-9a-f]{10,24}$/.test(l.draft_url) ? l.draft_url : null,
     draft_created_at: iso(l.draft_created_at), manual_sent: l.manual_sent === true, manual_sent_at: iso(l.manual_sent_at), replied: l.replied === true, customer: l.customer === true,

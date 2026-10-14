@@ -188,13 +188,17 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     const impressumUrl = near(/impressum|imprint|mentions-l[ée]gales|colophon|note-legali/i);
     const teamUrl = near(/\bteam\b|ueber-uns|über-uns|uber-uns|about-us|qui-sommes|chi-siamo/i);
     const pages = { home: html };
-    const toCheck = [...new Set([contactUrl, impressumUrl, teamUrl, ...unique].filter(Boolean))].slice(0, maxLinks);
+    // TF-055: Abdeckung – nur damit ein Aufrufer ehrlich sagen kann, ob ALLE verlinkten Seiten/Bilder geprüft wurden (sonst nur „mindestens“).
+    const allLinks = [...new Set([contactUrl, impressumUrl, teamUrl, ...unique].filter(Boolean))];
+    const coverage = { links_found: allLinks.length, links_checked: 0, links_skipped: 0, links_unverified: 0, images_found: 0, images_checked: 0, images_skipped: 0, images_unverified: 0, deadline_hit: false };
+    const toCheck = allLinks.slice(0, maxLinks);
     for (const u of toCheck) {
-      if (Date.now() > deadline) break; // Zeitbudget aufgebraucht: restliche Zusatzprüfungen entfallen (nie ein Befund aus Zeitmangel)
+      if (Date.now() > deadline) { coverage.deadline_hit = true; break; } // Zeitbudget aufgebraucht: restliche Zusatzprüfungen entfallen (nie ein Befund aus Zeitmangel)
       const path = new URL(u).pathname;
-      if (!allowed(path)) continue;
+      if (!allowed(path)) { coverage.links_skipped++; continue; }
       const r = await get(u, { redirect: "follow" });
-      if (r.error) continue;
+      if (r.error) { coverage.links_unverified++; continue; }
+      coverage.links_checked++;
       if (BROKEN(r.status)) {
         const isContact = u === contactUrl;
         add(isContact ? "contact_page_broken" : "broken_link", u, `HTTP ${r.status} (verlinkt auf ${page.url})`, isContact ? "high" : "medium",
@@ -206,14 +210,17 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
       }
     }
     const imgUrls = [...new Set(imgs.map((t) => attr(t, "src")).filter((s) => s && !/^data:/i.test(s)).map((s) => { try { return new URL(s, page.url).href; } catch { return null; } }).filter(Boolean))];
+    coverage.images_found = imgUrls.length;
     for (const u of imgUrls.slice(0, maxImages)) {
-      if (Date.now() > deadline) break;
-      if (new URL(u).hostname === new URL(page.url).hostname && !allowed(new URL(u).pathname)) continue;
+      if (Date.now() > deadline) { coverage.deadline_hit = true; break; }
+      if (new URL(u).hostname === new URL(page.url).hostname && !allowed(new URL(u).pathname)) { coverage.images_skipped++; continue; }
       const r = await get(u, { redirect: "follow", body: false });
-      if (!r.error && BROKEN(r.status)) add("broken_image", u, `Bild liefert HTTP ${r.status} (eingebunden auf ${page.url})`, "medium", { page: page.url });
+      if (r.error) { coverage.images_unverified++; continue; }
+      coverage.images_checked++;
+      if (BROKEN(r.status)) add("broken_image", u, `Bild liefert HTTP ${r.status} (eingebunden auf ${page.url})`, "medium", { page: page.url });
     }
 
-    return result(true, { finalUrl: page.url, title, pages, contactUrl, impressumUrl, teamUrl });
+    return result(true, { finalUrl: page.url, title, pages, contactUrl, impressumUrl, teamUrl, coverage });
   }
 
   return { audit };

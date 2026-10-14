@@ -2,7 +2,8 @@
 // (Auftrag → VPS-Dienst prüft und speichert). Links (Website, tel:, mailto:, Gmail-Entwurf) öffnen nur – keine automatische Aktion,
 // kein Senden, kein Anruf, keine SMS/WhatsApp. Alle Inhalte per textContent (nie innerHTML mit Daten).
 import { SALES_STAGES, STAGE_LABEL, CALL_STATUSES, CALL_LABEL, CONTACT_STATUSES, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, CARDS,
-  SORTS, filterLeads, sortLeads, crmStats, splitFindings, nextBestLead, followUpBucket } from "./crm-model.js";
+  SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
+  ERROR_CARDS, AUDIT_LABEL, ISSUE_CATEGORIES, ISSUE_LABEL, SEVERITY_LABEL, errorCount, errorShort, errorLong, topIssues, repairLine } from "./crm-model.js";
 
 const $ = (id) => document.getElementById(id);
 const MOBILE = matchMedia("(max-width: 860px)");
@@ -28,6 +29,14 @@ const link = (href, text, cls = "", blank = true) => href ? el("a", { class: cls
 const telLink = (l, cls = "", label = null) => l.phone_tel && !l.do_not_contact ? link(l.phone_tel, label || l.phone, cls, false) : el("span", { class: cls }, l.phone || "–");
 const mailLink = (l, cls = "", label = null) => l.email && !l.do_not_contact ? link(`mailto:${l.email}`, label || l.email, cls, false) : el("span", { class: cls }, l.email || "–");
 const badge = (cls, text) => el("span", { class: `crm-badge ${cls}` }, text);
+const fmtDay = (v) => { const d = v ? new Date(v) : null; return d && !Number.isNaN(+d) ? d.toLocaleDateString("de-CH", { timeZone: "Europe/Zurich" }) : "–"; };
+// TF-055 Website-Fehler: genaue Zahl nur bei vollständigem, aktuellem Audit („7“), sonst „≥3“ bzw. „veraltet“ – nie eine Teilmenge als Gesamtzahl.
+const auditOf = (l) => l.errors?.audit || "NONE";
+const auditBadge = (l) => badge(`au-${auditOf(l)}`, AUDIT_LABEL[auditOf(l)]);
+const errNum = (l) => el("span", { class: `crm-err${errorCount(l) ? "" : " zero"}${auditOf(l) === "FULL" ? "" : " approx"}`, title: errorLong(l) }, errorShort(l));
+const noTop = (l) => (auditOf(l) === "NONE" ? "Noch nicht geprüft" : "Keine aktuell verifizierten Fehler");
+const top2 = (l) => { const t = topIssues(l); return t.length ? el("ol", { class: "crm-top2" }, t.map((f) => el("li", {}, f.text))) : el("small", {}, noTop(l)); };
+const pageText = (f) => (f.page ? f.page.replace(/^https?:\/\//, "") : "–");
 const stageBadge = (l) => l.do_not_contact ? badge("dnc", "DO NOT CONTACT") : badge(`st-${l.sales_stage}`, STAGE_LABEL[l.sales_stage] || l.sales_stage);
 
 // ---------- Laden ----------
@@ -52,7 +61,7 @@ function setMeta(text, bad = false) { const m = $("crmMeta"); m.textContent = te
 // ---------- Ansicht ----------
 function readFilters() {
   const f = {};
-  for (const k of ["q", "stage", "canton", "category", "phone", "person", "draft", "problems", "contact", "call", "followup", "dnc", "archived"]) {
+  for (const k of ["q", "stage", "canton", "category", "phone", "person", "draft", "errors", "audit", "issue", "contact", "call", "followup", "dnc", "archived"]) {
     const v = $("crmF_" + k)?.value; if (v) f[k] = v;
   }
   if (S.card) f.card = S.card;
@@ -66,6 +75,9 @@ function render() {
   cards.replaceChildren(...Object.entries(CARDS).map(([k, c]) => el("button", { type: "button", class: `crm-card${k === "dnc" ? " dnc" : k === "follow_ups" ? " fu" : k === "customers" ? " ok" : ""}`,
     "aria-pressed": String(S.card === k || (k === "all" && !S.card)), onclick: () => { S.card = k === "all" ? "" : S.card === k ? "" : k; renderList(); renderCardsPressed(); } },
     el("b", {}, String(k === "follow_ups" ? `${st.follow_ups}` : st[k] ?? 0)), el("span", {}, c.label + (k === "follow_ups" && st.follow_ups_overdue ? ` · ${st.follow_ups_overdue} überfällig` : "")))));
+  // TF-055: Website-Fehler-Übersicht (nur Anzeige/Schnellfilter, keine Outreach-Automatik).
+  $("crmErrCards").replaceChildren(el("span", { class: "crm-cards-h" }, "Website-Fehler"), ...Object.entries(ERROR_CARDS).map(([k, c]) => el("button", { type: "button", class: "crm-card err", "aria-pressed": String(S.card === k),
+    onclick: () => { S.card = S.card === k ? "" : k; renderList(); renderCardsPressed(); } }, el("b", {}, String(st[k] ?? 0)), el("span", {}, c.label))));
   facets();
   const nb = nextBestLead(S.leads);
   $("crmNext").replaceChildren(...(nb ? ["Nächster bester Lead:", el("button", { type: "button", class: "crm-btn", onclick: () => openLead(nb.lead_id) }, `${nb.company || nb.domain} · ${nb.priority.level} (${nb.priority.score})`),
@@ -73,7 +85,10 @@ function render() {
   renderList();
   if (S.sel) renderDrawer();
 }
-function renderCardsPressed() { [...$("crmCards").children].forEach((b, i) => { const k = Object.keys(CARDS)[i]; b.setAttribute("aria-pressed", String(S.card === k || (k === "all" && !S.card))); }); }
+function renderCardsPressed() {
+  [...$("crmCards").children].forEach((b, i) => { const k = Object.keys(CARDS)[i]; b.setAttribute("aria-pressed", String(S.card === k || (k === "all" && !S.card))); });
+  [...$("crmErrCards").querySelectorAll("button")].forEach((b, i) => b.setAttribute("aria-pressed", String(S.card === Object.keys(ERROR_CARDS)[i])));
+}
 function facets() {
   if (S.facets || !S.leads.length) return;
   const fill = (id, values) => { const s = $(id); for (const [v, label] of values) s.append(el("option", { value: v }, label)); };
@@ -88,40 +103,40 @@ function renderList() {
   if (!list.length) { main.replaceChildren(el("p", { class: "crm-empty" }, S.leads.length ? "Keine Leads für diese Filter." : "Noch keine CRM-Daten vom VPS.")); return; }
   main.replaceChildren(MOBILE.matches ? cardsView(list) : tableView(list));
 }
-function problemsCell(l) {
-  const n = l.findings_confirmed || 0, extra = (l.findings_total || 0) - n;
-  return el("div", {}, el("span", { class: `crm-prob${l.findings_total ? "" : " zero"}` }, l.findings_total ? `${n}${extra ? ` +${extra}` : ""}` : "0"),
-    el("small", {}, l.findings?.[0]?.text || "kein bestätigtes Problem"));
+function errorsCell(l) {
+  const at = l.errors?.checked_at;
+  return el("div", {}, errNum(l), el("small", {}, auditBadge(l)), at ? el("small", {}, fmtDay(at)) : "");
 }
 function nextCell(l) {
   const fu = followUpBucket(l);
   return el("div", {}, l.next_action || (l.next_action_at ? "" : "–"), l.next_action_at ? el("small", {}, fmt(l.next_action_at), " ", fu ? badge(`fu-${fu}`, FOLLOW_UP_LABEL[fu]) : "") : "");
 }
 function tableView(list) {
-  const head = ["Firma", "Website", "Probleme", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt", "Aktualisiert"];
+  const head = ["Firma", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"];
   const rows = list.map((l) => el("tr", { class: `${l.do_not_contact ? "dnc" : ""}${S.sel === l.lead_id ? " sel" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
     el("td", { class: "co" }, el("b", {}, l.company || l.domain || l.lead_id), el("small", {}, [l.municipality, l.canton].filter(Boolean).join(" · ") || ""), badge(l.priority?.level || "LOW", `${l.priority?.level || "LOW"} ${l.priority?.score ?? 0}`)),
     el("td", {}, link(l.website, l.domain || "Website")),
-    el("td", {}, problemsCell(l)),
+    el("td", { class: "err" }, errorsCell(l)),
+    el("td", { class: "top" }, top2(l)),
     el("td", {}, person(l) || "–", l.role ? el("small", {}, l.role) : ""),
     el("td", {}, telLink(l)),
     el("td", {}, mailLink(l)),
     el("td", {}, l.draft_status ? badge(`draft-${l.draft_status}`, DRAFT_LABEL[l.draft_status]) : "–", l.draft_url ? el("small", {}, link(l.draft_url, "öffnen")) : ""),
     el("td", {}, stageBadge(l)),
     el("td", {}, CALL_LABEL[l.call_status] || "–"),
-    el("td", {}, nextCell(l)),
-    el("td", {}, fmt(l.updated_at))));
+    el("td", {}, nextCell(l))));
   return el("table", { class: "crm-table" }, el("thead", {}, el("tr", {}, head.map((h) => el("th", { scope: "col" }, h)))), el("tbody", {}, rows));
 }
 function cardsView(list) {
   return el("ul", { class: "crm-list" }, list.map((l) => el("li", { class: `crm-lcard${l.do_not_contact ? " dnc" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
     el("div", { class: "row" }, el("h3", {}, l.company || l.domain || l.lead_id), stageBadge(l)),
-    el("div", {}, el("span", { class: `crm-prob${l.findings_total ? "" : " zero"}` }, `${l.findings_total || 0} ${l.findings_total === 1 ? "Problem" : "Probleme"}`),
-      el("small", {}, l.findings?.[0]?.text || "kein bestätigtes Problem")),
-    el("div", {}, "Telefon: ", l.phone || "–"),
+    l.domain ? el("small", { class: "dom" }, l.domain) : "",
+    el("div", { class: "crm-errline" }, el("span", { class: "lbl" }, "Fehler:"), errNum(l), auditBadge(l)),
+    el("div", { class: "crm-top2wrap" }, el("span", { class: "lbl" }, "Wichtigste 2:"), top2(l)),
     el("div", {}, "Ansprechpartner: ", person(l) ? `${person(l)}${l.role ? ` · ${l.role}` : ""}` : "–"),
+    el("div", {}, "Telefon: ", l.phone || "–"),
     el("div", { class: "acts" },
       l.phone_tel && !l.do_not_contact ? link(l.phone_tel, "ANRUFEN", "crm-btn big primary", false) : "",
       l.website ? link(l.website, "WEBSITE ÖFFNEN", "crm-btn big") : "",
@@ -149,13 +164,22 @@ function renderDrawer() {
     l.draft_url ? link(l.draft_url, "GMAIL-ENTWURF ÖFFNEN", "crm-btn") : "",
     !blocked && l.phone_tel ? link(l.phone_tel, "ANRUFEN", "crm-btn primary", false) : "",
     !blocked && l.email ? link(`mailto:${l.email}`, "E-MAIL ÖFFNEN", "crm-btn", false) : "");
-  const { top, more } = splitFindings(l.findings);
-  const findItem = (f) => el("li", { class: f.confirmed ? "" : "audit" }, f.text,
-    el("small", {}, `Seite: ${f.page ? f.page.replace(/^https?:\/\//, "") : "–"} · ${f.confirmed ? "bestätigt" : "beim Audit festgestellt"} · zuletzt verifiziert ${fmt(f.verified_at)}`));
-  const findings = l.findings_total ? [el("ul", { class: "crm-find" }, top.map(findItem)),
-    more.length ? (S.showAll[l.lead_id] ? [el("h4", {}, "Weitere Probleme"), el("ul", { class: "crm-find" }, more.map(findItem))]
-      : el("button", { type: "button", class: "crm-btn", onclick: () => { S.showAll[l.lead_id] = true; renderDrawer(); } }, `ALLE PROBLEME ANZEIGEN (${l.findings_total})`)) : ""]
-    : [el("p", {}, "Kein bestätigtes Problem.")];
+  // TF-055 Website-Zustand: Zahl + Audit-Art + Zeitpunkt, die zwei wichtigsten Fehler, danach ALLE aktuell verifizierten Fehler.
+  const e = l.errors || { audit: "NONE", top: [], items: [] };
+  const sev = (f) => SEVERITY_LABEL[f.severity] || "–";
+  const findItem = (f) => el("li", { class: f.manual ? "manual" : "" }, f.text,
+    el("small", {}, `Seite: ${pageText(f)} · ${ISSUE_LABEL[f.category] || "Andere"} · Schweregrad ${sev(f)}${f.manual ? " · manueller Punkt" : ""} · verifiziert ${fmt(f.verified_at)}`));
+  const findings = [
+    kv([["Verifizierte Fehler", errorLong(l)], ["Audit", `${AUDIT_LABEL[e.audit]}${e.scope ? ` – ${e.scope}` : ""}`], ["Zuletzt geprüft", fmt(e.checked_at)],
+      ...(e.audit === "STALE" ? [["Hinweis", "Letzte vollständige Prüfung veraltet – Zahl nicht mehr garantiert aktuell, Neuprüfung ist eingeplant."]] : []),
+      ...(e.audit === "PARTIAL" ? [["Hinweis", "Nur Teilprüfung – es können weitere Fehler vorhanden sein."]] : []),
+      ...(repairLine(l) ? [["Reparatur", repairLine(l)]] : [])]),
+    el("h5", {}, "Wichtigste Fehler"),
+    e.top?.length ? el("ol", { class: "crm-find crm-topd" }, e.top.map((f, i) => el("li", {}, el("b", {}, `#${i + 1} `), f.text,
+      el("small", {}, `Betroffene Seite: ${pageText(f)}`), el("small", {}, `Schweregrad: ${sev(f)} · ${ISSUE_LABEL[f.category] || "Andere"}`))))
+      : el("p", {}, noTop(l)),
+    ...(e.items?.length ? [el("h5", {}, `Alle verifizierten Fehler (${e.items.length}${e.audit === "FULL" ? "" : ", Mindestzahl"})`), el("ul", { class: "crm-find" }, e.items.map(findItem))] : []),
+  ];
   const stageSel = el("select", { class: "crm-sort", "aria-label": "Sales Stage", disabled: blocked }, options(SALES_STAGES.filter((s) => s !== "DO_NOT_CONTACT"), STAGE_LABEL, l.sales_stage));
   const contactSel = el("select", { class: "crm-sort", "aria-label": "Kontaktstatus", disabled: blocked }, options(CONTACT_STATUSES, CONTACT_LABEL, l.contact_status));
   const callSel = el("select", { class: "crm-sort", "aria-label": "Call Status", disabled: blocked }, options(CALL_STATUSES, CALL_LABEL, l.call_status));
@@ -171,8 +195,9 @@ function renderDrawer() {
       ["Ort", [l.municipality, l.canton].filter(Boolean).join(" · ") || "–"], ["Branche", l.category]]),
     el("h4", {}, "B · Website"),
     kv([["Website", link(l.website, l.website || "–")], ["Erreichbar", l.website_reachable === true ? "ja" : l.website_reachable === false ? "nein / umgeleitet" : "nicht geprüft"],
-      ["Letzte Prüfung", fmt(l.website_checked_at)], ["Findings", `${l.findings_confirmed || 0} bestätigt${(l.findings_total || 0) - (l.findings_confirmed || 0) ? ` · ${(l.findings_total || 0) - (l.findings_confirmed || 0)} weitere` : ""}`]]),
-    el("h4", {}, "C · Website-Probleme"), ...findings,
+      ["Letzte Prüfung", fmt(l.website_checked_at)], ["Erstprüfung (Cold)", `${l.findings_confirmed || 0} bestätigt${(l.findings_total || 0) - (l.findings_confirmed || 0) ? ` · ${(l.findings_total || 0) - (l.findings_confirmed || 0)} weitere` : ""}`],
+      ["Aktualisiert", fmt(l.updated_at)]]),
+    el("h4", {}, "C · Website-Zustand"), ...findings,
     el("h4", {}, "D · Outreach"),
     kv([["Draft-Status", l.draft_status ? DRAFT_LABEL[l.draft_status] : "–"], ["Draft erstellt", fmt(l.draft_created_at)], ["Manuell gesendet", l.manual_sent ? `ja · ${fmt(l.manual_sent_at)}` : "nein"],
       ["Letzter Kontakt", fmt(l.last_contact_at)], ["Kontaktstatus", CONTACT_LABEL[l.contact_status] || "–"]]),
@@ -281,6 +306,7 @@ function build() {
       el("button", { type: "button", class: "crm-btn", onclick: load }, "AKTUALISIEREN"), el("button", { type: "button", class: "crm-btn", onclick: exportCsv }, "EXPORT CSV"),
       el("button", { type: "button", class: "crm-btn", onclick: close }, "SCHLIESSEN")),
     el("div", { class: "crm-cards", id: "crmCards", role: "group", "aria-label": "Übersicht" }),
+    el("div", { class: "crm-cards errs", id: "crmErrCards", role: "group", "aria-label": "Website-Fehler" }),
     el("div", { class: "crm-next", id: "crmNext" }),
     el("div", { class: "crm-bar" }, el("input", { type: "search", class: "crm-search", id: "crmF_q", placeholder: "Suche: Firma, Domain, E-Mail, Telefon, Name, Ort …", "aria-label": "Suche", maxlength: "80", enterkeyhint: "search" }),
       el("select", { class: "crm-sort", id: "crmSort", "aria-label": "Sortierung" }, Object.entries(SORTS).map(([k, s]) => el("option", { value: k }, `Sortierung: ${s.label}`))),
@@ -290,7 +316,9 @@ function build() {
         sel("stage", "Sales Stage", SALES_STAGES.map((s) => [s, STAGE_LABEL[s]])), sel("canton", "Kanton", []), sel("category", "Branche", []),
         sel("phone", "Telefon", [["1", "mit Telefon"], ["0", "ohne Telefon"]]), sel("person", "Ansprechpartner", [["1", "mit Ansprechpartner"], ["0", "ohne"]]),
         sel("draft", "Draft", [["1", "Entwurf vorhanden"], ["0", "kein Entwurf"]]),
-        sel("problems", "Website-Probleme", [["0", "0"], ["1+", "1+"], ["1", "1"], ["2", "2"], ["3", "3"], ["4+", "4+"]]),
+        sel("errors", "Fehler", [["0", "0"], ["1-2", "1–2"], ["3-5", "3–5"], ["6+", "6+"]]),
+        sel("audit", "Audit", [["FULL", "Vollständig"], ["PARTIAL", "Teilprüfung"], ["STALE", "Veraltet"], ["NONE", "Nicht geprüft"]]),
+        sel("issue", "Wichtiges Problem", ISSUE_CATEGORIES.map((c) => [c, ISSUE_LABEL[c]])),
         sel("contact", "Kontaktstatus", CONTACT_STATUSES.map((s) => [s, CONTACT_LABEL[s]])), sel("call", "Call Status", CALL_STATUSES.map((s) => [s, CALL_LABEL[s]])),
         sel("followup", "Follow-up", [["due", "fällig (heute + überfällig)"], ["OVERDUE", "überfällig"], ["TODAY", "heute fällig"], ["LATER", "später"], ["none", "keins"]]),
         sel("dnc", "Do Not Contact", [["1", "nur Do Not Contact"], ["0", "ohne Do Not Contact"]]),

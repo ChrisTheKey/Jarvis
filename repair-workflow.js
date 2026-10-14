@@ -43,9 +43,16 @@
 //     Sendeversuch vor dem Versand persistiert – ein Neustart sendet nie doppelt, unklarer Ausgang wird nie wiederholt). Erst danach
 //     COMPLETED + Tresor zerstört. Bericht zu lang (Anhang nötig), Bericht mit unzulässigem Inhalt oder kein Versandweg → bleibt
 //     READY_FOR_DELIVERY für Chris (completeOrder). Nie eine Erfolgsmail nach REPAIR_FAILED/MANUAL_REVIEW/PAYMENT_REVIEW.
+//   - ABSCHLUSS MIT MANUELLEN PUNKTEN (TF-055): bleibt nach bestandenem Abschluss-Gate mindestens ein relevanter Befund offen
+//     (geschützter Inhalt wie AGB/Datenschutz/Preise/Zahlung/Impressum, bewusst nicht automatisch repariert, Ursache unklar, Schweregrad
+//     ≥ medium), endet der Auftrag in COMPLETED_WITH_MANUAL_ITEMS – nie in COMPLETED. Bericht/Liefermail sagen dann: «Die automatisch
+//     reparierbaren Probleme wurden behoben. Weitere Punkte erfordern eine manuelle Prüfung.» – nie «vollständig repariert».
+//   - CRM-SYNC (TF-055): nach bestandenem Retest schreibt writeRepairFindingsExport den Stand je Domain (behoben = RESOLVED, offen =
+//     manuell) als repair_findings.json für das CRM – nur normalisierte Befunde, keine Kundendaten, Referenzen oder Secrets.
 //   - BESTÄTIGTER AUFTRAG (TF-046): createConfirmedRepairOrder erfasst Direktverkauf (sales.json) + Auftrag in einem Schritt. Ein
 //     stornierter (voided) CHF-480-Verkauf stoppt den Auftrag sofort: keine Zugangs-Anfrage, keine Reparatur, keine Lieferung.
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -59,6 +66,7 @@ import { REPAIR_TYPES, selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { createAuditor } from "./site-auditor.js";
 import { MAX_AUTO_FIXES_PER_ORDER, hasCapabilities, onlyCapabilities } from "./repair-adapters/common.js";
 import { combineDecisions, rollbackMatchesBaseline, safeSnapshot, browserRuntimeStatus } from "./repair-browser-validator.js";
+import { REPAIR_FINDINGS_FILE, normalizeIssue, dedupeFindings, rankFindings } from "./site-findings.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 export const REPAIR_OFFER = "REPAIR_FIX_500"; // Kundenbezeichnung „Check & Reparatur“, Preis aus OFFERS (CHF 480). Keine dritte Preisstufe.
@@ -78,7 +86,7 @@ export const DELIVERY_STATUSES = Object.freeze(["none", "draft_ready", "sent", "
 // nicht eindeutig – wartet, bis Chris das Profil ergänzt). Alle drei warten, nichts wird verändert.
 export const ORDER_STATES = Object.freeze(["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK",
   "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
-  "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]);
+  "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"]);
 export const BLOCKED_STATES = Object.freeze(["BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK",
   "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS", "BLOCKED_HOST_KEY_CHANGED"]);
 // TF-042: BLOCKED_UNSAFE_ACCESS = Zugang technisch möglich, aber unsicher (root-Login, Systemverzeichnis als Webroot, Symlink-Root).
@@ -86,7 +94,10 @@ export const BLOCKED_STATES = Object.freeze(["BLOCKED_NO_ACCESS", "BLOCKED_NO_AU
 // keine Zugangsdaten gesendet, kein Write. Chris prüft (möglicher Angriff oder Server-Neuinstallation).
 // Von Chris storniert: terminal, Zugangsdaten werden zerstört, Datensatz bleibt (nie von Hand löschen).
 export const REPAIR_CANCELLED = "CANCELLED";
-const TERMINAL = new Set(["COMPLETED", REPAIR_CANCELLED, ...BLOCKED_STATES]);
+// TF-055: abgeschlossen, aber mindestens ein relevanter Befund bleibt offen (manuell) – terminal, NIE als «vollständig repariert» darstellen.
+export const COMPLETED_WITH_MANUAL_ITEMS = "COMPLETED_WITH_MANUAL_ITEMS";
+export const COMPLETED_STATES = Object.freeze(["COMPLETED", COMPLETED_WITH_MANUAL_ITEMS]);
+const TERMINAL = new Set([...COMPLETED_STATES, REPAIR_CANCELLED, ...BLOCKED_STATES]);
 // Ab diesen Zuständen wird mit dem Kundenzugang gearbeitet – fällt die Zahlung unter die Schwelle, stoppt der Auftrag.
 const WORK_STATES = new Set(["ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
   "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY"]);
@@ -265,6 +276,19 @@ export function completionGate(order = {}) {
   return { ok: !missing.length, missing };
 }
 
+// TF-055: offene, relevante Befunde NACH der Reparatur = manuelle Punkte. Relevant: geschützter Inhalt, bewusst nicht automatisch
+// repariert/Ursache unklar (needs_review), gescheitert/weiterhin vorhanden/zurückgerollt oder Schweregrad ≥ medium. Reine Hinweise
+// (low, z. B. fehlende Meta-Beschreibung) zählen nicht. Im Zweifel ist der Punkt manuell – nie fälschlich «alles behoben».
+const MANUAL_STATUSES = new Set(["needs_review", "repair_failed", "still_broken", "rolled_back"]);
+export function manualItems(order = {}) {
+  return Object.values(order.issues || {}).filter((i) => i && i.repair_status !== "repaired"
+    && (i.protected === true || MANUAL_STATUSES.has(i.repair_status) || RELEVANT.has(i.severity)));
+}
+// Terminaler Erfolgszustand: COMPLETED nur ohne offene manuelle Punkte, sonst COMPLETED_WITH_MANUAL_ITEMS (Abschluss-Gate gilt für beide).
+export const completionState = (order) => (manualItems(order).length ? COMPLETED_WITH_MANUAL_ITEMS : "COMPLETED");
+const completionReason = (order, base) => (completionState(order) === "COMPLETED" ? base
+  : `${base} – automatisch reparierbare Punkte behoben, ${manualItems(order).length} Punkt(e) erfordern eine manuelle Prüfung`);
+
 // Abnahme/Abschluss durch Chris: erst damit wird der Auftrag ERLEDIGT.
 export function completeOrder(store, orderId, { now = new Date() } = {}) {
   const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
@@ -274,7 +298,7 @@ export function completeOrder(store, orderId, { now = new Date() } = {}) {
   const gate = completionGate(order);
   if (!gate.ok) throw new Error(`Abschluss-Gate nicht erfüllt (${gate.missing.join(", ")}) – kein COMPLETED.`);
   if (!order.delivery?.sent_at) order.delivery = { ...(order.delivery || {}), status: "manual", completed_by: "chris", completed_at: now.toISOString() }; // Chris liefert selbst
-  transition(order, "COMPLETED", "Abschluss bestätigt", now);
+  transition(order, completionState(order), completionReason(order, "Abschluss bestätigt"), now);
   destroyOrderSecret(store, order, now); // Secret-Lebenszyklus (TF-041): nach COMPLETED kein Zugang mehr im Tresor
   return saveOrder(store, order);
 }
@@ -285,7 +309,7 @@ export function cancelRepairOrder(store, orderId, { reason = null, now = new Dat
   const order = data.orders?.[orderId];
   if (!order) throw new Error("Auftrag nicht gefunden.");
   if (!String(reason || "").trim()) throw new Error('Begründung ist Pflicht: --reason "<grund>".');
-  if (order.state === "COMPLETED" || order.state === REPAIR_CANCELLED) throw new Error(`Auftrag ist bereits ${order.state}.`);
+  if (COMPLETED_STATES.includes(order.state) || order.state === REPAIR_CANCELLED) throw new Error(`Auftrag ist bereits ${order.state}.`);
   transition(order, REPAIR_CANCELLED, `Von Chris storniert: ${String(reason).replace(/\s+/g, " ").trim().slice(0, 200)}`, now);
   destroyOrderSecret(store, order, now);
   return saveOrder(store, order);
@@ -478,7 +502,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     return false;
   };
   const finishDelivered = (order, t) => {
-    transition(order, "COMPLETED", "Abschlussbericht an den Kunden gesendet (CUSTOMER_ORDER_FULFILLMENT) – Auftrag abgeschlossen", t);
+    transition(order, completionState(order), completionReason(order, "Abschlussbericht an den Kunden gesendet (CUSTOMER_ORDER_FULFILLMENT) – Auftrag abgeschlossen"), t);
     destroyOrderSecret(store, order, t); // Credential Cleanup unmittelbar nach dem Abschluss
     saveOrder(store, order); log("info", "repair_delivery_completed", { order_id: order.order_id });
     return false;
@@ -827,7 +851,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         return failValidation(`${unresolved.length} reparierte(r) Befund(e) weiterhin vorhanden.`);
       }
       const reg = regression(order.audit_before, after);
-      order.validation = { build_ok: true, preview_url: v.preview_url || null, target, audited_at: after.audited_at, open_issues: Object.keys(after.issues).length };
+      order.validation = { build_ok: true, preview_url: v.preview_url || null, target, audited_at: after.audited_at, open_issues: Object.keys(after.issues).length,
+        open_keys: [...remaining].slice(0, 500) }; // TF-055: nur Typ|Pfad – für den CRM-Stand nach der Reparatur
       if (reg.length) { order.regression = { found: reg }; saveOrder(store, order); await rollbackThen(order, adapter, `Regression: ${reg.length} neue(r) relevante(r) Befund(e) nach der Reparatur`); return false; }
       order.regression = { found: [] };
       transition(order, "RETEST", "Validierung bestanden, keine Regression", t); saveOrder(store, order); return true;
@@ -904,6 +929,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       }
       const gate = completionGate(order);
       if (!gate.ok) { manual(order, `Abschluss-Gate nicht erfüllt (${gate.missing.join(", ")}) – kein Abschluss.`); return false; }
+      const open = manualItems(order).length;
+      order.completion = { kind: open ? "WITH_MANUAL_ITEMS" : "FULL", manual_items: open, repaired: Object.values(order.issues || {}).filter((i) => i.repair_status === "repaired").length, at: t.toISOString() };
       order.report = buildCustomerReport(order);
       transition(order, "READY_FOR_DELIVERY", "Retest bestanden, Bericht erstellt", t); saveOrder(store, order); return true;
     }
@@ -1016,6 +1043,7 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
   const fixed = issues.filter((i) => i.repair_status === "repaired");
   const openForReview = issues.filter((i) => ["needs_review", "repair_failed", "still_broken"].includes(i.repair_status) || (i.repair_status === "open" && !i.repairable));
   const relevant = issues.filter((i) => RELEVANT.has(i.severity) || i.customer_text);
+  const manualOpen = manualItems(order).length;
   const line = (i) => `• ${i.customer_text || "Ein technischer Punkt auf " + (i.page || "Ihrer Website")}`;
   const body = [
     `Webseiten-Check – Abschlussbericht «Check & Reparatur» (CHF ${OFFERS[REPAIR_OFFER].price})`,
@@ -1028,6 +1056,9 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
     "",
     `Gefundene relevante Punkte: ${relevant.length}`,
     "",
+    // TF-055: bleibt ein relevanter Punkt offen, steht das klar oben – nie «vollständig repariert».
+    ...(manualOpen ? [fixed.length ? "Die automatisch reparierbaren Probleme wurden behoben. Weitere Punkte erfordern eine manuelle Prüfung."
+      : "Es gab keine automatisch reparierbaren Probleme. Die gefundenen Punkte erfordern eine manuelle Prüfung.", ""] : []),
     fixed.length ? "Behoben wurden:" : "Behoben wurde nichts – es gab keine im Paket abgedeckten, automatisch behebbaren Fehler.",
     ...fixed.map((i) => `${line(i)} – behoben und erneut geprüft.`),
     "",
@@ -1056,7 +1087,9 @@ export function buildRepairDeliveryMail(order) {
   const body = [
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
     "",
-    `Ihr Auftrag «Check & Reparatur» für ${order.domain} ist abgeschlossen. Hier ist Ihr Abschlussbericht:`,
+    manualItems(order).length
+      ? `Ihr Auftrag «Check & Reparatur» für ${order.domain} ist abgeschlossen. Die automatisch reparierbaren Probleme wurden behoben. Weitere Punkte erfordern eine manuelle Prüfung – Details im Abschlussbericht:`
+      : `Ihr Auftrag «Check & Reparatur» für ${order.domain} ist abgeschlossen. Hier ist Ihr Abschlussbericht:`,
     "",
     report,
     "",
@@ -1090,7 +1123,7 @@ export function repairOrdersStatus(dir = WORKER_DIR) {
   return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state)).length, states,
     waiting_authorization: states.AUTHORIZATION_REQUIRED || 0, waiting_payment: states.PAYMENT_REQUIRED || 0,
     access_requested: states.ACCESS_REQUESTED || 0, payment_review: states.PAYMENT_REVIEW_REQUIRED || 0,
-    ready_for_delivery: states.READY_FOR_DELIVERY || 0, cancelled: states[REPAIR_CANCELLED] || 0,
+    ready_for_delivery: states.READY_FOR_DELIVERY || 0, cancelled: states[REPAIR_CANCELLED] || 0, completed_with_manual_items: states[COMPLETED_WITH_MANUAL_ITEMS] || 0,
     manual_review: states.MANUAL_REVIEW_REQUIRED || 0, unsafe_access: states.BLOCKED_UNSAFE_ACCESS || 0, host_key_changed: states.BLOCKED_HOST_KEY_CHANGED || 0,
     host_key_confirmation: states.HOST_KEY_CONFIRMATION_REQUIRED || 0, waiting_access_profile: states.WAITING_FOR_ACCESS_PROFILE || 0 };
 }
@@ -1098,9 +1131,10 @@ export function repairOrdersStatus(dir = WORKER_DIR) {
 // Kundenphase fürs Dashboard (TF-041) – feste Wörter, aus Zustand + Zahlung + Zugang abgeleitet.
 export const REPAIR_PHASES = Object.freeze(["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED",
   "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "BACKUP", "REPAIRING",
-  "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"]);
+  "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"]);
 export function repairPhase(o, pay) {
   if (o.state === "COMPLETED") return "COMPLETED";
+  if (o.state === COMPLETED_WITH_MANUAL_ITEMS) return COMPLETED_WITH_MANUAL_ITEMS;
   if (o.state === REPAIR_CANCELLED) return "CANCELLED";
   if (o.state === "PAYMENT_REVIEW_REQUIRED") return "PAYMENT_REVIEW_REQUIRED";
   if (o.state === "MANUAL_REVIEW_REQUIRED") return "MANUAL_REVIEW";
@@ -1126,7 +1160,7 @@ export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domai
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
   "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified",
-  "browser_desktop", "browser_mobile", "browser_regression", "authorized", "delivery_status", "created_at", "updated_at"]);
+  "browser_desktop", "browser_mobile", "browser_regression", "authorized", "delivery_status", "manual_items_open", "created_at", "updated_at"]);
 // TF-045: Browser-Gate fürs Dashboard – nur feste Wörter (nie URLs, Screenshots, Logs, Codes oder Requests).
 const gateWord = (v) => (v === "JA" || v === "NEIN" ? v : "WARTET");
 const regressionWord = (g) => (["KEINE", "GEFUNDEN", "ROLLBACK"].includes(g.regression) ? g.regression : null);
@@ -1169,6 +1203,8 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         browser_regression: o.browser_gate ? regressionWord(o.browser_gate) : null,
         // TF-046: Freigabe nur JA/NEIN; Lieferung nur als festes Wort – nie Draft-ID, Adresse oder Inhalt.
         authorized: authorizationOk(o), delivery_status: DELIVERY_STATUSES.includes(o.delivery?.status) ? o.delivery.status : "none",
+        // TF-055: offene manuelle Punkte (nur Zahl) – sobald der Auftrag den Retest bestanden hat.
+        manual_items_open: ["READY_FOR_DELIVERY", ...COMPLETED_STATES].includes(o.state) ? manualItems(o).length : null,
         created_at: o.created_at, updated_at: o.updated_at,
       };
     });
@@ -1234,6 +1270,42 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }
 
+// ---------- CRM-Export (TF-055): Stand nach der Reparatur je Domain ----------
+// Nur Aufträge nach bestandenem Retest (READY_FOR_DELIVERY/COMPLETED/COMPLETED_WITH_MANUAL_ITEMS). Behobene Befunde = RESOLVED, beim
+// Retest nicht mehr vorhandene ebenso; alles andere bleibt OPEN + manual (manuelle Punkte bleiben im CRM sichtbar). Allowlist:
+// Domain, Zustand, Zeitpunkt, normalisierte Befunde (Typ/Kategorie/Kurztext/Seite/Ziel/Schweregrad) – nie Kundenadresse, Evidence,
+// Branch/Backup/Deploy-Referenzen, Zugangsdaten oder Auftrags-IDs.
+export function repairFindingsExport(dir = WORKER_DIR, { now = new Date() } = {}) {
+  const data = createStore(dir).read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  const out = {};
+  for (const o of Object.values(data.orders || {})) {
+    if (!["READY_FOR_DELIVERY", ...COMPLETED_STATES].includes(o.state)) continue;
+    const at = o.validation?.audited_at || o.retest?.tested_at;
+    const d = normDomain(o.domain);
+    if (!d || !at) continue;
+    const remaining = Array.isArray(o.validation?.open_keys) ? new Set(o.validation.open_keys) : null;
+    const findings = rankFindings(dedupeFindings(Object.values(o.issues || {}).map((i) => {
+      const gone = i.repair_status === "repaired" || (!!remaining && !remaining.has(issueKey(i)));
+      return normalizeIssue(i, { verified_at: at, source: "repair", status: gone ? "RESOLVED" : "OPEN", manual: !gone });
+    }).filter(Boolean)));
+    const entry = { domain: d, state: o.state, completion: o.completion?.kind || (o.state === "COMPLETED" ? "FULL" : o.state === COMPLETED_WITH_MANUAL_ITEMS ? "WITH_MANUAL_ITEMS" : null), audited_at: at, findings };
+    if (!out[d] || out[d].audited_at < at) out[d] = entry;
+  }
+  return { schema: 1, generated_at: now.toISOString(), orders: out };
+}
+// Atomar schreiben, nur bei inhaltlicher Änderung (generated_at zählt nicht). Fehler hier stoppen nie den Repair-Lauf (Aufrufer fängt).
+export function writeRepairFindingsExport({ dir = WORKER_DIR, exportDir, now = new Date() } = {}) {
+  if (!exportDir) return { written: false, reason: "no_export_dir" };
+  const next = repairFindingsExport(dir, { now });
+  const file = path.join(exportDir, REPAIR_FINDINGS_FILE);
+  let prev = null; try { prev = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+  if (prev && JSON.stringify(prev.orders) === JSON.stringify(next.orders)) return { written: false, domains: Object.keys(next.orders).length };
+  fs.mkdirSync(exportDir, { recursive: true, mode: 0o700 });
+  const tmp = `${file}.tmp-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+  try { fs.writeFileSync(tmp, JSON.stringify(next), { mode: 0o600 }); fs.renameSync(tmp, file); } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch {} throw e; }
+  return { written: true, domains: Object.keys(next.orders).length };
+}
+
 // ---------- Kommandozeile ----------
 // Zahlung verbuchen (TF-041): node payments.js record <order_id> --amount 240 --reference "<ref>" – erst ab CHF 240 fragt
 // Jarvis (einmal, über den sicheren Link) nach Zugang. Zugangsdaten-Tresor: node access-intake.js status|destroy <order_id>.
@@ -1279,7 +1351,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const { syncConfig } = await import("./local-state.js");
       console.log(JSON.stringify(await runRepairOrders({ gmail, intake: intakeClient({ config: syncConfig() }) }), null, 2)); return 0;
     }
-    if (flag("complete")) { const o = completeOrder(store, flag("complete")); console.log(`Abgeschlossen: ${o.order_id} → ${o.state}${o.access_intake ? " – Zugangsdaten zerstört; Kunden bitten, den temporären Zugang zu entfernen." : ""}`); return 0; }
+    if (flag("complete")) { const o = completeOrder(store, flag("complete")); console.log(`Abgeschlossen: ${o.order_id} → ${o.state}${o.state === COMPLETED_WITH_MANUAL_ITEMS ? ` (${manualItems(o).length} Punkt(e) manuell offen)` : ""}${o.access_intake ? " – Zugangsdaten zerstört; Kunden bitten, den temporären Zugang zu entfernen." : ""}`); return 0; }
     if (flag("cancel")) { const o = cancelRepairOrder(store, flag("cancel"), { reason: flag("reason") }); console.log(`Storniert: ${o.order_id} → ${o.state}${o.access_intake ? " – Zugangsdaten zerstört." : ""}`); return 0; }
     if (flag("confirm-host-key")) {
       const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });

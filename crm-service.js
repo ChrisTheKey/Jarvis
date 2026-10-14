@@ -9,6 +9,9 @@
 // - Keine Shell, kein exec, kein Docker-Socket, keine Pfade aus Aufträgen: nur die festen crm.*-Aktionen aus lead-crm.js.
 // - Kein gmail.js im Image: der Dienst kann strukturell nicht senden, keine Entwürfe anlegen und nicht anrufen.
 // - Tägliches verschlüsseltes Backup (backup.js, Public Key) von lead_crm.json + crm_audit.jsonl + Kontaktverzeichnis, lokal + offsite.
+// - TF-055: passiver Hintergrund-Audit (site-backfill.js, eine Website gleichzeitig, nur GET) schreibt site_findings.json; der
+//   Repair-Service liefert repair_findings.json (read-only Mount). Beides fliesst nur in die Fehlerzahl der CRM-Sicht.
+//   Abschalten: JARVIS_CRM_BACKFILL=off.
 //
 //   node crm-service.js --service | --healthcheck | --report | --backup-now
 import crypto from "node:crypto";
@@ -18,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { CRM_FILE, CRM_AUDIT_FILE, normalizeCrmState, emptyCrmState, buildCrmView, buildCrmLead, crmUniverse, applyCrmAction, cleanCrmLead, CRM_ACTIONS } from "./lead-crm.js";
 import { crmStats } from "./public/crm-model.js";
 import { crmAgentToken } from "./crm-api.js";
+import { SITE_FINDINGS_FILE, REPAIR_FINDINGS_FILE } from "./site-findings.js";
 
 export const LOCK_FILE = "crm.lock";
 export const HEALTH_FILE = "crm_health.json";
@@ -80,7 +84,7 @@ export function audit(dir, entry) {
 }
 
 // ---------- Quellen (nur lesen; nach Grösse+Änderungszeit gecacht; kaputte/halb geschriebene Datei → letzter guter Stand) ----------
-export function createSourceReader({ dataDir, mailDir }) {
+export function createSourceReader({ dataDir, mailDir, repairDir = null }) {
   const cache = new Map();
   const read = (file, fallback) => {
     let st; try { st = fs.statSync(file); } catch { cache.delete(file); return fallback; }
@@ -94,6 +98,8 @@ export function createSourceReader({ dataDir, mailDir }) {
     reviews: read(path.join(mailDir, "mail_worker", "individual_reviews.json"), { reviews: {} }).reviews || {},
     gmail: read(path.join(mailDir, "gmail_jarvis.json"), null),
     directory: read(path.join(dataDir, "lead_contact_directory.json"), { leads: {} }),
+    siteFindings: read(path.join(dataDir, SITE_FINDINGS_FILE), { domains: {} }),
+    repairFindings: repairDir ? read(path.join(repairDir, REPAIR_FINDINGS_FILE), { orders: {} }) : { orders: {} },
   });
 }
 
@@ -199,7 +205,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const log = (o) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...o }));
   const zurichDay = (d) => new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Zurich", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
   const pem = () => { for (const p of ["backup-public.pem", "deploy/vps/backup-public.pem"]) { try { return fs.readFileSync(new URL(p, import.meta.url), "utf8"); } catch {} } return null; };
-  const sources = createSourceReader({ dataDir: DATA, mailDir: MAIL });
+  const REPAIR_EXPORT = process.env.JARVIS_REPAIR_EXPORT_DIR || "/data/repair-export";
+  const sources = createSourceReader({ dataDir: DATA, mailDir: MAIL, repairDir: REPAIR_EXPORT });
   const main = async () => {
     if (args.includes("--healthcheck")) {
       try { const h = JSON.parse(fs.readFileSync(path.join(DATA, HEALTH_FILE), "utf8")); return Date.now() - h.beat < 3 * 60_000 ? 0 : 1; } catch { return 1; }
@@ -208,8 +215,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       // Nur Kennzahlen – keine personenbezogenen Daten.
       const t = new Date(), v = buildCrmView({ ...sources(), crm: loadCrm(DATA, t) }, t), st = crmStats(v.leads, t);
       const ids = v.leads.map((l) => l.lead_id), crmEntries = Object.keys(loadCrm(DATA, t).leads).length;
+      const audits = {}; for (const l of v.leads) audits[l.errors.audit] = (audits[l.errors.audit] || 0) + 1;
       log({ event: "report", leads: v.total, duplicates: ids.length - new Set(ids).size, crm_entries: crmEntries, ...st,
-        with_findings_total: v.leads.filter((l) => l.findings_total > 0).length, backup: backupSummary(DATA) });
+        with_findings_total: v.leads.filter((l) => l.findings_total > 0).length, audits, backup: backupSummary(DATA) });
       return 0;
     }
     const token = process.env.JARVIS_CRM_AGENT_TOKEN || "";
@@ -223,7 +231,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (!agent) { log({ event: "not_configured", note: "JARVIS_CRM_AGENT_TOKEN fehlt – Dienst wartet." }); }
       let stop = false;
       for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { stop = true; });
-      log({ event: "service_start", configured: !!agent });
+      log({ event: "service_start", configured: !!agent, backfill: process.env.JARVIS_CRM_BACKFILL !== "off" });
+      // TF-055: passiver Hintergrund-Audit – eigene Schleife, blockiert Abholen/Backup/Herzschlag nie.
+      if (process.env.JARVIS_CRM_BACKFILL !== "off") {
+        const { createBackfill } = await import("./site-backfill.js");
+        const bf = createBackfill({ dataDir: DATA, sources: () => ({ ...sources(), crm: loadCrm(DATA) }), universe: crmUniverse, log });
+        bf.run(() => stop).catch((e) => log({ event: "backfill_stopped", error: String(e?.message || e).slice(0, 120) }));
+      }
       while (!stop) {
         let r = { hot: false, status: 0 };
         try { if (agent) r = await agent.pollOnce(); } catch (e) { log({ event: "iteration_failed", error: String(e?.message || e).slice(0, 160) }); }

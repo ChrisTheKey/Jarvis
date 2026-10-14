@@ -145,7 +145,7 @@ const CHECK150_STATE_WORDS = ["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT",
 // Zahlungs-/Phasen-Wörter (TF-041) – bewusst hier dupliziert (kein Import von payments.js in die Netlify-Funktion).
 const PAYMENT_STATE_WORDS = ["UNPAID", "PARTIAL", "DEPOSIT_MET", "PAID_FULL", "REFUNDED", "PAYMENT_REVIEW_REQUIRED"];
 const CHECK150_PHASE_WORDS = ["WAITING_FOR_CONFIRMATION", "WAITING_FOR_DEPOSIT", "DEPOSIT_RECEIVED", "AUDITING", "REPORT", "READY_FOR_DELIVERY", "SENT", "COMPLETED", "CANCELLED", "BLOCKED"];
-const REPAIR_PHASE_WORDS = ["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"];
+const REPAIR_PHASE_WORDS = ["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"];
 // Adapter-Wörter (TF-042) – nie Connector-Strings, Hosts oder Pfade.
 const REPAIR_ADAPTER_WORDS = ["GITHUB_NETLIFY", "WORDPRESS", "SFTP", "SSH", "UNSUPPORTED"];
 const REGISTRY_ADAPTERS = ["github_netlify", "wordpress", "sftp", "ssh"];
@@ -185,7 +185,7 @@ export function cleanCheck150(r) {
 // Commits, Preview-URLs, Freigabe-Referenzen oder Tokens. Die Cloud erzwingt die Whitelist erneut (wie bei den Leads).
 const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK", "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT",
   "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "BACKUP",
-  "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "BLOCKED_NO_ACCESS",
+  "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "BLOCKED_NO_ACCESS",
   "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED_UNSAFE_ACCESS",
   "BLOCKED_HOST_KEY_CHANGED"];
 const NAME_RE = /^[\p{L}\p{N} .,&'’()\/+-]{1,80}$/u;
@@ -215,9 +215,11 @@ export function cleanRepair(r) {
     browser_regression: word(o.browser_regression, BROWSER_REGRESSION_WORDS),
     // TF-046: Freigabe nur JA/NEIN, Lieferung nur als festes Wort – nie Draft-ID, Adresse oder Inhalt.
     authorized: bool(o.authorized), delivery_status: word(o.delivery_status, REPAIR_DELIVERY_WORDS),
+    // TF-055: offene manuelle Punkte nach dem Retest – nur eine Zahl.
+    manual_items_open: o.manual_items_open == null ? null : n(o.manual_items_open, 10_000),
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
-  return { total: n(r.total, 100_000), open: n(r.open, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
+  return { total: n(r.total, 100_000), open: n(r.open, 100_000), completed_with_manual_items: n(r.completed_with_manual_items, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
     waiting_payment: n(r.waiting_payment, 100_000), access_requested: n(r.access_requested, 100_000),
     payment_review: n(r.payment_review, 100_000), cancelled: n(r.cancelled, 100_000),
     ready_for_delivery: n(r.ready_for_delivery, 100_000), manual_review: n(r.manual_review, 100_000), unsafe_access: n(r.unsafe_access, 100_000),

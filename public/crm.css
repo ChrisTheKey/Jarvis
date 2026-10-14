@@ -49,6 +49,21 @@
 .crm-badge.fu-OVERDUE { color: var(--red); border-color: rgba(255,93,108,.5); } .crm-badge.fu-TODAY { color: var(--amber); border-color: rgba(255,181,71,.45); } .crm-badge.fu-LATER { color: var(--muted); }
 .crm-badge.draft-DRAFT { color: var(--cyan-2); } .crm-badge.draft-MANUALLY_SENT { color: var(--green); border-color: rgba(92,255,176,.35); }
 .crm-prob { color: var(--amber); font-weight: 700; } .crm-prob.zero { color: var(--muted); font-weight: 400; }
+/* TF-055 Website-Fehler: genaue Zahl (vollständig) kräftig, Mindestzahl/veraltet kursiv – nie verwechselbar */
+.crm-cards-h { grid-column: 1 / -1; color: var(--muted); font-size: 10px; letter-spacing: .18em; text-transform: uppercase; }
+.crm-card.err b { color: var(--amber); }
+.crm-err { font: 700 18px var(--ui); color: var(--amber); white-space: nowrap; } .crm-err.approx { font-style: italic; color: #ffd08a; } .crm-err.zero { color: var(--muted); font-weight: 400; }
+.crm-badge.au-FULL { color: var(--green); border-color: rgba(92,255,176,.4); } .crm-badge.au-PARTIAL { color: var(--amber); border-color: rgba(255,181,71,.35); }
+.crm-badge.au-STALE { color: var(--red); border-color: rgba(255,93,108,.45); } .crm-badge.au-NONE { color: var(--muted); }
+.crm-top2 { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.crm-table td.err { white-space: nowrap; } .crm-table td.top { min-width: 200px; max-width: 320px; }
+.crm-errline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.crm-lcard .lbl { color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.crm-lcard .dom { margin-top: -4px; overflow-wrap: anywhere; }
+.crm-top2wrap { display: grid; gap: 2px; min-width: 0; }
+.crm-drawer h5 { margin: 12px 0 6px; font: 600 11px var(--mono); letter-spacing: .16em; color: var(--cyan-2); text-transform: uppercase; }
+.crm-find li.manual { border-left-color: var(--cyan); }
+.crm-topd li { border-left-color: var(--red); }
 /* Mobile-Karten */
 .crm-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 8px; }
 .crm-lcard { border: 1px solid var(--line); background: var(--glass); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }

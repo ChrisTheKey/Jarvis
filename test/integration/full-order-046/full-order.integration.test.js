@@ -316,10 +316,12 @@ if (!ENABLED) {
       if (o.state !== states.at(-1)) states.push(o.state);
       snap(id);
       if (o.state === "FULL_AUDIT" && writesAtBackup == null) { writesAtBackup = wpWrites() - w0; assert.ok(o.backup?.rollback_point && o.backup?.backup_ref, "Backup + Rollback-Punkt vor jeder Änderung"); }
-      if (["COMPLETED", "REPAIR_FAILED", "MANUAL_REVIEW_REQUIRED", "VALIDATION_FAILED", "BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "PAYMENT_REVIEW_REQUIRED"].includes(o.state)) break;
+      if (["COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "REPAIR_FAILED", "MANUAL_REVIEW_REQUIRED", "VALIDATION_FAILED", "BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "PAYMENT_REVIEW_REQUIRED"].includes(o.state)) break;
     }
-    assert.equal(o.state, "COMPLETED", `${states.join(" → ")} · ${o.blocked_reason} · ${JSON.stringify(o.delivery)} · ${JSON.stringify(o.browser_validation?.codes)}`);
-    assert.ok(inOrder(states, ["ACCESS_CHECK", "ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED"]), states.join(" → "));
+    // TF-055: der geschützte AGB-Link auf dem Impressum bleibt bewusst offen → abgeschlossen MIT manuellem Punkt, nie «COMPLETED».
+    assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS", `${states.join(" → ")} · ${o.blocked_reason} · ${JSON.stringify(o.delivery)} · ${JSON.stringify(o.browser_validation?.codes)}`);
+    assert.ok(inOrder(states, ["ACCESS_CHECK", "ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED_WITH_MANUAL_ITEMS"]), states.join(" → "));
+    assert.match(o.report.body, /Die automatisch reparierbaren Probleme wurden behoben\. Weitere Punkte erfordern eine manuelle Prüfung\./);
 
     // Profil automatisch (kein Chris-Schritt).
     assert.deepEqual([o.route.adapter, o.access_profile.profile_status, o.access_profile.interface], ["wordpress", "PROFILE_READY", "wordpress_rest"]);
@@ -377,8 +379,8 @@ if (!ENABLED) {
     // Dashboard-Phasen (feste Wörter, keine Secrets).
     p = snap(id);
     assert.deepEqual([p.phase, p.payment_ok, p.access_received, p.authorized, p.profile_status, p.backup_ok, p.repaired, p.browser_desktop, p.browser_mobile, p.browser_regression, p.delivery_status],
-      ["COMPLETED", true, true, true, "PROFILE_READY", true, 2, "JA", "JA", "KEINE", "sent"]);
-    assert.ok(inOrder(phases, ["WAITING_FOR_DEPOSIT", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "ACCESS_PROFILE_PREFLIGHT", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED"]), phases.join(" → "));
+      ["COMPLETED_WITH_MANUAL_ITEMS", true, true, true, "PROFILE_READY", true, 2, "JA", "JA", "KEINE", "sent"]);
+    assert.ok(inOrder(phases, ["WAITING_FOR_DEPOSIT", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "ACCESS_PROFILE_PREFLIGHT", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED_WITH_MANUAL_ITEMS"]), phases.join(" → "));
     assert.deepEqual(Object.keys(p).sort(), [...PUBLIC_REPAIR_FIELDS].sort());
     for (const [f, text] of filesOf(ctx.dir)) assertNoSecrets(f, text);
     assertNoSecrets("Logs", ctx.logs.join("\n"));
