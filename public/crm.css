@@ -52,6 +52,7 @@
 /* TF-055 Website-Fehler: genaue Zahl (vollständig) kräftig, Mindestzahl/veraltet kursiv – nie verwechselbar */
 .crm-cards-h { grid-column: 1 / -1; color: var(--muted); font-size: 10px; letter-spacing: .18em; text-transform: uppercase; }
 .crm-card.err b { color: var(--amber); }
+.crm-card.pipe b { color: var(--cyan-2); } .crm-card.pipe.ok b { color: var(--green); } .crm-badge.draft-QUEUED { color: var(--amber); }
 .crm-err { font: 700 18px var(--ui); color: var(--amber); white-space: nowrap; } .crm-err.approx { font-style: italic; color: #ffd08a; } .crm-err.zero { color: var(--muted); font-weight: 400; }
 .crm-badge.au-FULL { color: var(--green); border-color: rgba(92,255,176,.4); } .crm-badge.au-PARTIAL { color: var(--amber); border-color: rgba(255,181,71,.35); }
 .crm-badge.au-STALE { color: var(--red); border-color: rgba(255,93,108,.45); } .crm-badge.au-NONE { color: var(--muted); }

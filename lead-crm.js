@@ -12,8 +12,9 @@
 //
 // Nichts hier sendet, ruft an oder erstellt Entwürfe. Do Not Contact wirkt sofort im CRM (keine Anruf-Empfehlung, kein Follow-up,
 // keine Outreach-Queue) und – über lead-registry.js registryBlock – auf neue Cold-Entwürfe des Mail-Workers.
-import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, priorityOf, followUpBucket, callRecommended } from "./public/crm-model.js";
+import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended } from "./public/crm-model.js";
 import { siteHealth, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES } from "./site-findings.js";
+import { buildIndex, findId } from "./lead-db.js";
 
 export const CRM_FILE = "lead_crm.json";
 export const CRM_AUDIT_FILE = "crm_audit.jsonl";
@@ -97,23 +98,43 @@ export const newCrmEntry = (lead_id, now = new Date()) => ({
 });
 
 // ---------- Sicht: Quellen + CRM zur Laufzeit zusammenführen ----------
-// Welche Leads gehören ins CRM? Alle Jarvis-eigenen Cold Leads (Kontaktverzeichnis) und alle Leads der Datenbank, mit denen es
-// bereits einen Vertriebsschritt gab (Entwurf, manuell angeschrieben, Antwort, Kunde, kein Interesse). Neue Leads erscheinen automatisch.
+// Welche Leads gehören ins CRM? Alle Jarvis-eigenen Cold Leads (Kontaktverzeichnis), alle Leads der Datenbank, mit denen es
+// bereits einen Vertriebsschritt gab (Entwurf, manuell angeschrieben, Antwort, Kunde, kein Interesse), und (TF-057) alle
+// qualifizierten Leads mit mindestens einem verifizierten, für Besucher sichtbaren Befund – auch ohne bzw. vor dem Gmail-Entwurf.
+// Die Lead-Datenbank enthält nur qualifizierte Discovery-Leads (no_issues/low_score/audit_error/excluded_* kommen nie hinein);
+// discovered.json bleibt Rohdaten und wird hier nicht gelesen. Neue Leads erscheinen automatisch.
 const CRM_REGISTRY_STATUSES = new Set(["DRAFT_CREATED", "MANUALLY_SENT", "REPLIED", "CUSTOMER", "NOT_INTERESTED"]);
+const PRE_DRAFT_STATUSES = new Set(["QUALIFIED", "WAITING_FOR_DRAFT"]);
+// Qualifiziert und vertriebsrelevant, aber noch ohne Entwurf: Firma + Domain + ≥ 1 kundensichtbarer Befund (gleiche Auswahl wie im Cold-Entwurf).
+export const qualifiedPreDraft = (l) => !!l && PRE_DRAFT_STATUSES.has(l.status) && l.qualified === true && !!str(l.company, 120) && !!normDomain(l.domain || "")
+  && (Array.isArray(l.customer_visible_findings) ? l.customer_visible_findings : []).some((f) => str(typeof f === "string" ? f : f?.text, 240));
 export function crmUniverse(src = {}) {
+  const leads = src.registry?.leads || {};
   const ids = new Set(Object.keys(src.directory?.leads || {}));
-  for (const [id, l] of Object.entries(src.registry?.leads || {})) if (CRM_REGISTRY_STATUSES.has(l?.status) || l?.customer_status === "customer") ids.add(id);
-  for (const [id, r] of Object.entries(src.reviews || {})) if (r?.draft_mode === COLD_MODE && r.gmail_draft_id) ids.add(id);
-  return new Set([...ids].filter((id) => LEAD_ID_RE.test(id)));
+  for (const [id, l] of Object.entries(leads)) if (CRM_REGISTRY_STATUSES.has(l?.status) || l?.customer_status === "customer" || qualifiedPreDraft(l)) ids.add(id);
+  // Cold-Entwurf in der Queue (queued) zählt schon – nicht erst mit gmail_draft_id.
+  for (const [id, r] of Object.entries(src.reviews || {})) if (r?.draft_mode === COLD_MODE && (r.gmail_draft_id || r.status === "queued")) ids.add(id);
+  // Dedupe wie die Lead-Datenbank (Domain / geschäftliche Adresse / Firma): ein Eintrag ausserhalb der Datenbank, der dort schon als
+  // anderer CRM-Lead geführt wird, ist kein zweiter Datensatz. Mit eigenen CRM-Daten (Notizen, Anrufe) bleibt er sichtbar – nie Datenverlust.
+  const idx = { ...buildIndex(leads), ids: new Set(Object.keys(leads)) };
+  return new Set([...ids].filter((id) => {
+    if (!LEAD_ID_RE.test(id)) return false;
+    if (leads[id] || src.crm?.leads?.[id]) return true;
+    const dir = src.directory?.leads?.[id], rv = src.reviews?.[id];
+    const hit = findId(idx, { domain: dir?.domain || rv?.domain || (id.includes("@") ? "" : id), email: dir?.email || rv?.recipient || (id.includes("@") ? id : ""), company: dir?.company_name || rv?.company });
+    return !(hit && hit !== id && ids.has(hit));
+  }));
 }
-function draftInfo(dir, rv, gmail) {
+function draftInfo(dir, rv, gmail, reg) {
   const draftId = rv?.gmail_draft_id || dir?.gmail_draft_id || null;
   const g = draftId ? gmail?.drafts?.[draftId] : null;
   const sent = draftId ? Object.values(gmail?.sent || {}).find((s) => s?.fromDraft === draftId) : null;
   const owned = !!g && g.mode === COLD_MODE && (!g.leadId || g.leadId === rv?.lead_id || g.leadId === dir?.lead_id);
   let status = oneOf(dir?.draft_status, ["DRAFT", "MANUALLY_SENT", "NO_LONGER_DRAFT", "SKIPPED"]);
   if (sent || rv?.manual_send_detected || rv?.status === "manually_sent") status = "MANUALLY_SENT";
-  else if (rv && !status) status = rv.status === "draft_created" ? (owned ? "DRAFT" : "NO_LONGER_DRAFT") : rv.status === "discarded" ? "NO_LONGER_DRAFT" : "SKIPPED";
+  else if (rv && !status) status = rv.status === "draft_created" ? (owned ? "DRAFT" : "NO_LONGER_DRAFT") : rv.status === "discarded" ? "NO_LONGER_DRAFT" : rv.status === "queued" ? "QUEUED" : "SKIPPED";
+  // TF-057: in der Entwurfs-Queue (Gmail-Entwurf folgt mit technischem Pacing) – nur Anzeige, ändert nichts an Gmail.
+  else if (!rv && !status && reg?.status === "WAITING_FOR_DRAFT") status = "QUEUED";
   if (status === "DRAFT" && draftId && gmail?.drafts && !owned) status = "NO_LONGER_DRAFT";
   return { status, url: status === "DRAFT" && owned ? draftUrl(g.messageId) : null, created_at: iso(rv?.draft_created_at) || iso(rv?.created_at) || iso(g?.createdAt),
     manual_sent_at: status === "MANUALLY_SENT" ? iso(sent?.sentAt) || iso(rv?.manual_send_at) : null };
@@ -139,7 +160,7 @@ export function effectiveStage(entry, f) {
 export function buildCrmLead(id, src = {}, now = new Date()) {
   const reg = src.registry?.leads?.[id] || null, dir = src.directory?.leads?.[id] || null, rv = src.reviews?.[id] || null, crm = src.crm?.leads?.[id] || null;
   const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || (id.includes("@") ? "" : id)) || null;
-  const d = draftInfo(dir, rv, src.gmail);
+  const d = draftInfo(dir, rv, src.gmail, reg);
   const findings = findingsOf(rv, reg);
   // TF-055: Website-Zustand – vollständiger Audit (passiv bzw. nach Reparatur) oder nur Teilprüfung („mindestens“). Je Domain.
   const sf = domain ? src.siteFindings?.domains?.[domain] : null;
@@ -354,7 +375,7 @@ export function cleanCrmLead(l) {
     findings: (Array.isArray(l.findings) ? l.findings : []).slice(0, 30).map((f) => (f && typeof f === "object" ? { key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
       status: oneOf(f.status, ["BESTÄTIGT", "AUDIT"]), confirmed: f.confirmed === true, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) } : null)).filter((f) => f?.text),
     findings_total: n(l.findings_total, 0, 1000), findings_confirmed: n(l.findings_confirmed, 0, 1000), errors: cleanErrors(l.errors),
-    draft_status: oneOf(l.draft_status, ["DRAFT", "MANUALLY_SENT", "NO_LONGER_DRAFT", "SKIPPED"]),
+    draft_status: oneOf(l.draft_status, DRAFT_STATUSES),
     draft_url: typeof l.draft_url === "string" && /^https:\/\/mail\.google\.com\/mail\/u\/0\/#drafts\?compose=[0-9a-f]{10,24}$/.test(l.draft_url) ? l.draft_url : null,
     draft_created_at: iso(l.draft_created_at), manual_sent: l.manual_sent === true, manual_sent_at: iso(l.manual_sent_at), replied: l.replied === true, customer: l.customer === true,
     sales_stage: oneOf(l.sales_stage, SALES_STAGES, "NEW"), stage_auto: l.stage_auto !== false, contact_status: oneOf(l.contact_status, CONTACT_STATUSES, "NOT_CONTACTED"),

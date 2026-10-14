@@ -3,7 +3,7 @@
 // kein Senden, kein Anruf, keine SMS/WhatsApp. Alle Inhalte per textContent (nie innerHTML mit Daten).
 import { SALES_STAGES, STAGE_LABEL, CALL_STATUSES, CALL_LABEL, CONTACT_STATUSES, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, CARDS,
   SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
-  ERROR_CARDS, AUDIT_LABEL, ISSUE_CATEGORIES, ISSUE_LABEL, SEVERITY_LABEL, errorCount, errorShort, errorLong, topIssues, repairLine } from "./crm-model.js";
+  ERROR_CARDS, PIPELINE_CARDS, AUDIT_LABEL, ISSUE_CATEGORIES, ISSUE_LABEL, SEVERITY_LABEL, errorCount, errorShort, errorLong, topIssues, repairLine } from "./crm-model.js";
 
 const $ = (id) => document.getElementById(id);
 const MOBILE = matchMedia("(max-width: 860px)");
@@ -75,6 +75,9 @@ function render() {
   cards.replaceChildren(...Object.entries(CARDS).map(([k, c]) => el("button", { type: "button", class: `crm-card${k === "dnc" ? " dnc" : k === "follow_ups" ? " fu" : k === "customers" ? " ok" : ""}`,
     "aria-pressed": String(S.card === k || (k === "all" && !S.card)), onclick: () => { S.card = k === "all" ? "" : S.card === k ? "" : k; renderList(); renderCardsPressed(); } },
     el("b", {}, String(k === "follow_ups" ? `${st.follow_ups}` : st[k] ?? 0)), el("span", {}, c.label + (k === "follow_ups" && st.follow_ups_overdue ? ` · ${st.follow_ups_overdue} überfällig` : "")))));
+  // TF-057: Pipeline – qualifizierte Leads gesamt und davon je genau eine Phase (Summe = gesamt). Nie mit der Entwurfszahl verwechseln.
+  $("crmPipeCards").replaceChildren(el("span", { class: "crm-cards-h" }, `Gesamte qualifizierte Leads: ${st.all} – davon`), ...Object.entries(PIPELINE_CARDS).map(([k, c]) => el("button", { type: "button", class: `crm-card pipe${k === "pipe_customer" ? " ok" : ""}`,
+    "aria-pressed": String(S.card === k), onclick: () => { S.card = S.card === k ? "" : k; renderList(); renderCardsPressed(); } }, el("b", {}, String(st[k] ?? 0)), el("span", {}, c.label))));
   // TF-055: Website-Fehler-Übersicht (nur Anzeige/Schnellfilter, keine Outreach-Automatik).
   $("crmErrCards").replaceChildren(el("span", { class: "crm-cards-h" }, "Website-Fehler"), ...Object.entries(ERROR_CARDS).map(([k, c]) => el("button", { type: "button", class: "crm-card err", "aria-pressed": String(S.card === k),
     onclick: () => { S.card = S.card === k ? "" : k; renderList(); renderCardsPressed(); } }, el("b", {}, String(st[k] ?? 0)), el("span", {}, c.label))));
@@ -87,6 +90,7 @@ function render() {
 }
 function renderCardsPressed() {
   [...$("crmCards").children].forEach((b, i) => { const k = Object.keys(CARDS)[i]; b.setAttribute("aria-pressed", String(S.card === k || (k === "all" && !S.card))); });
+  [...$("crmPipeCards").querySelectorAll("button")].forEach((b, i) => b.setAttribute("aria-pressed", String(S.card === Object.keys(PIPELINE_CARDS)[i])));
   [...$("crmErrCards").querySelectorAll("button")].forEach((b, i) => b.setAttribute("aria-pressed", String(S.card === Object.keys(ERROR_CARDS)[i])));
 }
 function facets() {
@@ -305,6 +309,7 @@ function build() {
     el("div", { class: "crm-top" }, el("h2", { id: "crmTitle" }, "CRM"), el("span", { class: "meta", id: "crmMeta" }, ""),
       el("button", { type: "button", class: "crm-btn", onclick: load }, "AKTUALISIEREN"), el("button", { type: "button", class: "crm-btn", onclick: exportCsv }, "EXPORT CSV"),
       el("button", { type: "button", class: "crm-btn", onclick: close }, "SCHLIESSEN")),
+    el("div", { class: "crm-cards pipe", id: "crmPipeCards", role: "group", "aria-label": "Qualifizierte Leads" }),
     el("div", { class: "crm-cards", id: "crmCards", role: "group", "aria-label": "Übersicht" }),
     el("div", { class: "crm-cards errs", id: "crmErrCards", role: "group", "aria-label": "Website-Fehler" }),
     el("div", { class: "crm-next", id: "crmNext" }),

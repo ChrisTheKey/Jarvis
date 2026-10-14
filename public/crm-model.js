@@ -15,7 +15,9 @@ export const CALL_LABEL = Object.freeze({ NOT_CALLED: "Nicht angerufen", NO_ANSW
 export const CONTACT_STATUSES = Object.freeze(["NOT_CONTACTED", "EMAIL_SENT", "CALLED", "REACHED", "REPLIED", "MEETING", "NO_RESPONSE"]);
 export const CONTACT_LABEL = Object.freeze({ NOT_CONTACTED: "Nicht kontaktiert", EMAIL_SENT: "E-Mail gesendet (manuell)", CALLED: "Angerufen",
   REACHED: "Erreicht", REPLIED: "Antwort erhalten", MEETING: "Termin vereinbart", NO_RESPONSE: "Keine Reaktion" });
-export const DRAFT_LABEL = Object.freeze({ DRAFT: "Entwurf", MANUALLY_SENT: "Manuell gesendet", NO_LONGER_DRAFT: "Kein Entwurf mehr", SKIPPED: "Übersprungen" });
+// QUEUED (TF-057): Cold-Entwurf in der Queue, Gmail-Entwurf folgt. Ohne Status (null): qualifiziert, aber kein Entwurf eingeplant.
+export const DRAFT_STATUSES = Object.freeze(["QUEUED", "DRAFT", "MANUALLY_SENT", "NO_LONGER_DRAFT", "SKIPPED"]);
+export const DRAFT_LABEL = Object.freeze({ QUEUED: "Wartet auf Entwurf", DRAFT: "Entwurf", MANUALLY_SENT: "Manuell gesendet", NO_LONGER_DRAFT: "Kein Entwurf mehr", SKIPPED: "Übersprungen" });
 export const FOLLOW_UP_LABEL = Object.freeze({ OVERDUE: "Überfällig", TODAY: "Heute fällig", LATER: "Später" });
 export const PRIORITY_LEVELS = Object.freeze(["HIGH", "MEDIUM", "LOW"]);
 // Stufen, die keine Kontaktaufnahme mehr empfehlen (Anruf-Empfehlung, Outreach-Queue, Follow-up).
@@ -88,6 +90,25 @@ export const ERROR_CARDS = Object.freeze({
   audit_partial: { label: "Nur teilgeprüft", test: (l) => errs(l).audit === "PARTIAL" },
 });
 
+// ---------- Pipeline (TF-057): qualifizierte Leads gesamt und davon je genau EINE Phase – Summe = gesamt ----------
+// Damit „1150 qualifizierte Leads“ nie mit „396 Entwürfe“ verwechselt wird. Kontaktiert = manuell gesendet, Antwort oder spätere Stufe.
+const CONTACTED_STAGES = ["CONTACTED", "FOLLOW_UP", "INTERESTED", "CHECK_150_INTEREST", "REPAIR_480_INTEREST", "NOT_INTERESTED", "CLOSED"];
+export function pipelinePhase(l) {
+  if (!l) return null;
+  if (l.customer || l.sales_stage === "CUSTOMER") return "customer";
+  if (l.manual_sent || l.replied || CONTACTED_STAGES.includes(l.sales_stage) || ["EMAIL_SENT", "CALLED", "REACHED", "REPLIED", "MEETING"].includes(l.contact_status)) return "contacted";
+  if (l.draft_status === "DRAFT") return "draft_ready";
+  if (l.draft_status === "QUEUED") return "waiting_draft";
+  return "no_draft";
+}
+export const PIPELINE_CARDS = Object.freeze({
+  pipe_waiting: { label: "Wartet auf Entwurf", test: (l) => pipelinePhase(l) === "waiting_draft" },
+  pipe_no_draft: { label: "Ohne Entwurf (nicht eingeplant)", test: (l) => pipelinePhase(l) === "no_draft" },
+  pipe_draft: { label: "Entwurf bereit", test: (l) => pipelinePhase(l) === "draft_ready" },
+  pipe_contacted: { label: "Kontaktiert", test: (l) => pipelinePhase(l) === "contacted" },
+  pipe_customer: { label: "Kunde", test: (l) => pipelinePhase(l) === "customer" },
+});
+
 // ---------- Priorität: einfache, transparente Punkte (kein „Kaufwahrscheinlichkeits-Score“) ----------
 export function priorityOf(lead) {
   const reasons = [];
@@ -142,7 +163,7 @@ const no = (v) => v === "0" || v === "no" || v === false;
 export function filterLeads(list = [], f = {}, now = new Date()) {
   return list.filter((l) => {
     if (!(f.archived === "only" ? l.archived : f.archived === "all" ? true : !l.archived)) return false;
-    const card = CARDS[f.card] || ERROR_CARDS[f.card];
+    const card = CARDS[f.card] || ERROR_CARDS[f.card] || PIPELINE_CARDS[f.card];
     if (f.card && card && !card.test(l, now)) return false;
     if (!searchMatch(l, f.q)) return false;
     if (f.stage && l.sales_stage !== f.stage) return false;
@@ -191,7 +212,7 @@ export function nextBestLead(list = []) {
 }
 export function crmStats(list = [], now = new Date()) {
   const out = {};
-  for (const [k, c] of Object.entries({ ...CARDS, ...ERROR_CARDS })) out[k] = list.filter((l) => !l.archived || k === "all").filter((l) => c.test(l, now)).length;
+  for (const [k, c] of Object.entries({ ...CARDS, ...ERROR_CARDS, ...PIPELINE_CARDS })) out[k] = list.filter((l) => !l.archived || k === "all").filter((l) => c.test(l, now)).length;
   out.archived = list.filter((l) => l.archived).length;
   out.all = list.filter((l) => !l.archived).length;
   out.follow_ups_overdue = list.filter((l) => followUpBucket(l, now) === "OVERDUE").length;

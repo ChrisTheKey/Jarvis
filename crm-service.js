@@ -216,7 +216,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const t = new Date(), v = buildCrmView({ ...sources(), crm: loadCrm(DATA, t) }, t), st = crmStats(v.leads, t);
       const ids = v.leads.map((l) => l.lead_id), crmEntries = Object.keys(loadCrm(DATA, t).leads).length;
       const audits = {}; for (const l of v.leads) audits[l.errors.audit] = (audits[l.errors.audit] || 0) + 1;
-      log({ event: "report", leads: v.total, duplicates: ids.length - new Set(ids).size, crm_entries: crmEntries, ...st,
+      const doms = v.leads.map((l) => l.domain).filter(Boolean);
+      log({ event: "report", leads: v.total, duplicates: ids.length - new Set(ids).size, domain_duplicates: doms.length - new Set(doms).size, crm_entries: crmEntries, ...st,
         with_findings_total: v.leads.filter((l) => l.findings_total > 0).length, audits, backup: backupSummary(DATA) });
       return 0;
     }
