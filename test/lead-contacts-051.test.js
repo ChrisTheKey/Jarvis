@@ -203,9 +203,9 @@ test("I: CSV korrekt (UTF-8-BOM, Semikolon, Kopf, Umlaute, Quoting, Formelschutz
   assert.equal(lines[0], CSV_HEADERS.join(";"));
   assert.equal(lines.length, 4);
   const row = lines.find((l) => l.includes("Bäckerei"));
-  assert.ok(row.startsWith('"Zürcher ""Bäckerei""; Söhne AG";f0.ch;info@f0.ch;\'+41 31 123 45 67;Hans;Keller;Geschäftsführer;ja (hoch);ja (hoch);Entwurf;'), row);
+  assert.ok(row.startsWith('"Zürcher ""Bäckerei""; Söhne AG";https://f0.ch/;info@f0.ch;\'+41 31 123 45 67;Hans;Keller;Geschäftsführer;ja (hoch);ja (hoch);Entwurf;'), row);
   assert.ok(lines.some((l) => /;nein;nein;Entwurf;/.test(l)));
-  assert.ok(!csv.includes("d-") && !csv.includes("http"));
+  assert.ok(!csv.includes("d-") && !csv.includes("impressum")); // keine Draft-IDs, keine Quell-URLs (Website-URL ist erlaubt, TF-052)
 });
 test("J: PDF erzeugt (A4 quer, mehrere Seiten, Seitenzahlen, atomar, keine IDs/URLs)", async () => {
   const dir = sampleDir(140), out = tmp();

@@ -17,7 +17,7 @@
 //   node lead-contacts.js --healthcheck
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, domainToUnicode } from "node:url";
 import { normDomain, normEmail } from "./lead-db.js";
 import { UA } from "./site-auditor.js";
 
@@ -80,7 +80,7 @@ export function writeAtomic(file, data) {
 }
 
 const emptyEntry = (inc, t) => ({
-  lead_id: inc.lead_id, company_name: null, domain: null, email: null,
+  lead_id: inc.lead_id, company_name: null, domain: null, website_url: null, email: null,
   phone: null, phone_normalized: null, phone_original: null, phone_source_url: null, phone_confidence: null,
   first_name: null, last_name: null, role: null, person_source_url: null, person_confidence: null, people: [],
   draft_status: null, gmail_draft_id: null, first_seen_at: t, last_seen_at: t, contact_enriched_at: null, sources: [],
@@ -108,6 +108,7 @@ export function syncDirectory(d, owned = [], now = new Date()) {
     if (!cur) created++;
     e.company_name = inc.company || e.company_name;
     e.domain = inc.domain || e.domain;
+    e.website_url = websiteOf(e)?.url || null;
     e.email = inc.email || e.email;
     e.draft_status = DRAFT_STATUSES.includes(inc.draft_status) ? inc.draft_status : e.draft_status;
     e.gmail_draft_id = inc.gmail_draft_id || e.gmail_draft_id;
@@ -121,6 +122,19 @@ export function syncDirectory(d, owned = [], now = new Date()) {
     e.draft_status = "NO_LONGER_DRAFT"; missing++;
   }
   return { created, updated, missing, total: Object.keys(d.leads).length };
+}
+// Website (TF-052): nur die offizielle Domain des Leads aus dem Register. Ist die Startseite bei der Recherche tatsächlich unter
+// https://<domain> bzw. https://www.<domain> erreicht worden, gilt dieser Ursprung, sonst https://<domain>/. Nie eine andere Domain
+// (auch keine Subdomain/Weiterleitung auf fremde Websites). Ohne gültige Domain → null („Nicht verifiziert“).
+export function websiteOf(e = {}) {
+  const domain = normDomain(e.domain || "");
+  if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domain)) return null;
+  let url = `https://${domain}/`;
+  for (const cand of [(e.sources || []).find((s) => s?.kind === "home")?.url, e.website_url]) {
+    let u; try { u = new URL(cand || ""); } catch { continue; }
+    if (u.protocol === "https:" && !u.port && (u.hostname === domain || u.hostname === `www.${domain}`)) { url = `${u.origin}/`; break; }
+  }
+  return { url, label: domainToUnicode(domain) || domain };
 }
 
 // ---------- 3) Telefonnummern ----------
@@ -473,6 +487,7 @@ export function applyEnrichment(e, res, now = new Date()) {
     : { first_name: null, last_name: null, role: null, person_source_url: null, person_confidence: null });
   e.people = people;
   e.sources = (res.sources || []).slice(0, 8);
+  e.website_url = websiteOf(e)?.url || null;
   e.contact_enriched_at = t;
   e.enrichment = { status: "done", attempts: e.enrichment.attempts, last_attempt_at: t, next_retry_at: new Date(now.getTime() + REVERIFY_AFTER_MS).toISOString(), last_error: null,
     ...(res.ambiguous_people ? { note: "person_ambiguous" } : {}) };
@@ -522,7 +537,7 @@ export function directoryStats(d) {
   const n = (f) => list.filter(f).length;
   const keys = list.map((e) => `${e.domain || ""}|${e.email || ""}`);
   return {
-    total: list.length, with_phone: n((e) => !!e.phone), with_person: n((e) => !!e.first_name && !!e.last_name), complete: n((e) => !!e.phone && !!e.first_name && !!e.last_name),
+    total: list.length, with_website: n((e) => !!websiteOf(e)), with_company: n((e) => !!e.company_name), with_phone: n((e) => !!e.phone), with_person: n((e) => !!e.first_name && !!e.last_name), complete: n((e) => !!e.phone && !!e.first_name && !!e.last_name),
     missing_phone: n((e) => !e.phone), missing_person: n((e) => !e.first_name), enriched: n((e) => e.enrichment?.status === "done"), failed: n((e) => e.enrichment?.status === "failed"),
     pending: n((e) => !e.enrichment || e.enrichment.status === "pending"), duplicates: keys.length - new Set(keys).size + (list.length - new Set(list.map((e) => e.lead_id)).size),
     phones_mobile: n((e) => !!e.phone && normalizeSwissPhone(e.phone)?.kind === "mobile"),
@@ -532,7 +547,8 @@ export function directoryStats(d) {
 const zurich = (iso) => (iso ? new Intl.DateTimeFormat("de-CH", { timeZone: "Europe/Zurich", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(iso)) : "");
 export const sortedEntries = (d) => Object.values(d.leads || {}).sort((a, b) => String(a.company_name || a.domain || "").localeCompare(String(b.company_name || b.domain || ""), "de", { sensitivity: "base", numeric: true }));
 const confLabel = (c) => (c === "high" ? "ja (hoch)" : c === "medium" ? "ja (mittel)" : "nein");
-export const CSV_HEADERS = Object.freeze(["Firma", "Domain", "E-Mail", "Telefon", "Vorname", "Nachname", "Rolle", "Telefon verifiziert", "Person verifiziert", "Draft Status", "Letzte Prüfung"]);
+export const NOT_VERIFIED = "Nicht verifiziert";
+export const CSV_HEADERS = Object.freeze(["Firma", "Website", "E-Mail", "Telefon", "Vorname", "Nachname", "Rolle", "Telefon verifiziert", "Person verifiziert", "Draft Status", "Letzte Prüfung"]);
 const csvCell = (v) => {
   let s = v == null ? "" : String(v).replace(/[\r\n]+/g, " ");
   if (/^[=+\-@\t]/.test(s)) s = "'" + s; // keine Formel-Injection (gleiche Regel wie lead-db.js)
@@ -541,7 +557,7 @@ const csvCell = (v) => {
 // Semikolon + UTF-8-BOM + CRLF: öffnet direkt in Excel/LibreOffice mit Schweizer Einstellungen (wie lead-db.js leadsToCsv).
 // „+41 …“ würde als Formel gelesen – darum wie überall in Jarvis mit vorangestelltem Apostroph als Text.
 export function directoryToCsv(d) {
-  const rows = sortedEntries(d).map((e) => [e.company_name, e.domain, e.email, e.phone, e.first_name, e.last_name, e.role, confLabel(e.phone && e.phone_confidence),
+  const rows = sortedEntries(d).map((e) => [e.company_name, websiteOf(e)?.url, e.email, e.phone, e.first_name, e.last_name, e.role, confLabel(e.phone && e.phone_confidence),
     confLabel(e.first_name && e.person_confidence), DRAFT_STATUS_LABEL[e.draft_status] || e.draft_status || "", zurich(e.contact_enriched_at)].map(csvCell).join(";"));
   return "﻿" + [CSV_HEADERS.join(";"), ...rows].join("\r\n") + "\r\n";
 }
@@ -549,22 +565,25 @@ export function directoryToCsv(d) {
 const WINANSI_EXTRA = new Set("–—‘’‚“”„•…€™ŠšŒœŽžŸ†‡ˆ‰‹›".split(""));
 const pdfText = (s) => [...String(s ?? "")].map((ch) => (ch.charCodeAt(0) <= 0xff && ch.charCodeAt(0) >= 0x20) || WINANSI_EXTRA.has(ch) ? ch
   : ch.normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^\x20-\xff]/g, "") || "?").join("");
-export async function renderPdf(d, file, { now = new Date() } = {}) {
+// Spalten (TF-052): Firma · Website (anklickbar, sichtbar nur die Domain) · E-Mail · Telefon · Ansprechpartner · Rolle.
+// Zeilen wachsen mit dem längsten Zelleninhalt (Umbruch, nie abgeschnitten); Kopf auf jeder Seite.
+export async function renderPdf(d, file, { now = new Date(), compress = true } = {}) {
   const { default: PDFDocument } = await import("pdfkit");
   const st = directoryStats(d);
-  const doc = new PDFDocument({ size: "A4", layout: "landscape", margins: { top: 40, bottom: 44, left: 36, right: 36 }, bufferPages: true,
+  const doc = new PDFDocument({ size: "A4", layout: "landscape", margins: { top: 40, bottom: 44, left: 36, right: 36 }, bufferPages: true, compress,
     info: { Title: "Jarvis – Lead-Kontaktliste", Author: "Jarvis", Subject: "Öffentlich verifizierte Geschäftskontakte", CreationDate: now } });
   const out = fs.createWriteStream(file, { mode: 0o600 });
   const done = new Promise((res, rej) => { out.on("finish", res); out.on("error", rej); doc.on("error", rej); });
   doc.pipe(out);
   const L = doc.page.margins.left, W = doc.page.width - L - doc.page.margins.right, bottom = () => doc.page.height - doc.page.margins.bottom;
-  const cols = [["Firma", 0.27], ["E-Mail", 0.25], ["Telefon", 0.13], ["Ansprechpartner", 0.19], ["Rolle", 0.16]].map(([h, f]) => [h, Math.floor(W * f)]);
+  const cols = [["Firma", 0.21], ["Website", 0.16], ["E-Mail", 0.21], ["Telefon", 0.11], ["Ansprechpartner", 0.16], ["Rolle", 0.15]].map(([h, f]) => [h, Math.floor(W * f)]);
   cols[cols.length - 1][1] += W - cols.reduce((a, [, w]) => a + w, 0);
   const PAD = 4, FS = 8.5;
   doc.font("Helvetica-Bold").fontSize(18).fillColor("#111").text(pdfText("Jarvis – Lead-Kontaktliste"), L, 40);
   doc.font("Helvetica").fontSize(11).fillColor("#444").text(pdfText("Öffentlich verifizierte Geschäftskontakte"));
   doc.moveDown(0.6).fontSize(9.5).fillColor("#111");
-  const facts = [["Stand", zurich(now.toISOString()) + " (Europe/Zurich)"], ["Gesamtzahl Leads", st.total], ["Mit Telefonnummer", st.with_phone], ["Mit Ansprechpartner", st.with_person], ["Vollständig angereichert", st.complete]];
+  const facts = [["Stand", zurich(now.toISOString()) + " (Europe/Zurich)"], ["Gesamtzahl Leads", st.total], ["Mit Telefonnummer", st.with_phone], ["Mit Ansprechpartner", st.with_person], ["Vollständig angereichert", st.complete],
+    ["Mit verifizierter Website", st.with_website]];
   for (const [k, v] of facts) doc.font("Helvetica-Bold").text(pdfText(k + ": "), { continued: true }).font("Helvetica").text(pdfText(String(v)));
   doc.moveDown(0.8);
   const header = () => {
@@ -579,15 +598,18 @@ export async function renderPdf(d, file, { now = new Date() } = {}) {
   let i = 0;
   for (const e of sortedEntries(d)) {
     const person = e.first_name && e.last_name ? `${e.first_name} ${e.last_name}` : null;
-    const cells = [[e.company_name || e.domain || "", false], [e.email || "", false], [e.phone || "nicht verifiziert", !e.phone], [person || "nicht verifiziert", !person], [person ? e.role || "" : "", false]];
+    const web = websiteOf(e);
+    const cells = [[e.company_name || NOT_VERIFIED, !e.company_name], [web?.label || NOT_VERIFIED, !web, web?.url], [e.email || "", false], [e.phone || NOT_VERIFIED, !e.phone],
+      [person || NOT_VERIFIED, !person], [person ? e.role || "" : "", false]];
     doc.fontSize(FS);
     const h = Math.max(...cells.map(([t, muted], k) => doc.font(muted ? "Helvetica-Oblique" : "Helvetica").heightOfString(pdfText(t) || " ", { width: cols[k][1] - 2 * PAD }))) + 2 * PAD;
     if (doc.y + h > bottom()) { doc.addPage(); doc.y = doc.page.margins.top; header(); }
     const y = doc.y;
     if (i++ % 2) doc.rect(L, y, W, h).fill("#eef2f6");
     let x = L;
-    cells.forEach(([t, muted], k) => {
-      doc.font(muted ? "Helvetica-Oblique" : "Helvetica").fontSize(FS).fillColor(muted ? "#888" : "#111").text(pdfText(t), x + PAD, y + PAD, { width: cols[k][1] - 2 * PAD });
+    cells.forEach(([t, muted, link], k) => {
+      doc.font(muted ? "Helvetica-Oblique" : "Helvetica").fontSize(FS).fillColor(muted ? "#888" : link ? "#1a5fb4" : "#111")
+        .text(pdfText(t), x + PAD, y + PAD, { width: cols[k][1] - 2 * PAD, ...(link ? { link, underline: true } : {}) });
       x += cols[k][1];
     });
     doc.y = y + h;
@@ -602,7 +624,7 @@ export async function renderPdf(d, file, { now = new Date() } = {}) {
   }
   doc.end();
   await done;
-  return { pages: range.count };
+  return { pages: range.count, rows: i };
 }
 // Exporte atomar: erst temporäre Datei vollständig schreiben + prüfen, dann umbenennen. Nie eine halbe Datei sichtbar.
 export async function writeExports(d, exportsDir, { now = new Date(), pdf = true } = {}) {
@@ -613,12 +635,12 @@ export async function writeExports(d, exportsDir, { now = new Date(), pdf = true
   if (pdf) {
     const tmp = `${pdfFile}.tmp-${process.pid}-${Date.now()}`;
     try {
-      const { pages } = await renderPdf(d, tmp, { now });
+      const { pages, rows } = await renderPdf(d, tmp, { now });
       const fd = fs.openSync(tmp, "r"), head = Buffer.alloc(5), size = fs.statSync(tmp).size, tail = Buffer.alloc(Math.min(32, size));
       fs.readSync(fd, head, 0, 5, 0); fs.readSync(fd, tail, 0, tail.length, size - tail.length); fs.closeSync(fd);
       if (head.toString() !== "%PDF-" || !tail.toString().includes("%%EOF")) throw new Error("PDF unvollständig");
       fs.renameSync(tmp, pdfFile);
-      res.pdf = { file: pdfFile, pages, bytes: size };
+      res.pdf = { file: pdfFile, pages, rows, bytes: size };
     } catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
   }
   return res;
@@ -687,7 +709,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (!acquireDirLock(DIR)) { log({ event: "locked", note: "anderer Lauf aktiv (Dienst oder Backfill)" }); return 2; }
     const hb = setInterval(() => { try { beatDirLock(DIR); } catch {} }, 60_000);
     try {
-      if (args.includes("--export")) { const r = await maybeExport(DIR, EXPORTS, { force: true }); log({ event: "export", csv_rows: r.csv.rows, pdf_pages: r.pdf?.pages, pdf_bytes: r.pdf?.bytes }); return 0; }
+      if (args.includes("--export")) { const r = await maybeExport(DIR, EXPORTS, { force: true }); log({ event: "export", csv_rows: r.csv.rows, pdf_pages: r.pdf?.pages, pdf_rows: r.pdf?.rows, pdf_bytes: r.pdf?.bytes }); return 0; }
       if (args.includes("--backfill")) {
         log({ event: "sync", ...syncFromMail(DIR, MAIL) });
         const researcher = createResearcher({});
@@ -697,7 +719,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         const st = directoryStats(loadDirectory(DIR));
         log({ event: "backfill_done", ...brief(s), requests: researcher.stats().requests, missing_phone: st.missing_phone, missing_person: st.missing_person });
         const r = await maybeExport(DIR, EXPORTS, { force: true });
-        log({ event: "export", csv_rows: r.csv.rows, pdf_pages: r.pdf?.pages, pdf_bytes: r.pdf?.bytes });
+        log({ event: "export", csv_rows: r.csv.rows, pdf_pages: r.pdf?.pages, pdf_rows: r.pdf?.rows, pdf_bytes: r.pdf?.bytes });
         return 0;
       }
       if (args.includes("--service")) {
@@ -714,7 +736,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
             const r = await enrichPending(DIR, { research: (e) => researcher.research(e), concurrency: 2, limit: 15, shouldStop: () => stop });
             if (r.processed) log({ event: "enriched", ...brief(r) });
             const ex = await maybeExport(DIR, EXPORTS, { now: new Date() });
-            if (!ex.skipped) log({ event: "export", csv_rows: ex.csv.rows, pdf_pages: ex.pdf?.pages ?? null });
+            if (!ex.skipped) log({ event: "export", csv_rows: ex.csv.rows, pdf_pages: ex.pdf?.pages ?? null, pdf_rows: ex.pdf?.rows ?? null });
           } catch (e) { log({ event: "iteration_failed", error: String(e?.message || e).slice(0, 160) }); }
           beatDirLock(DIR);
           for (let t = 0; t < pollMs && !stop; t += 1000) await new Promise((r) => setTimeout(r, 1000));
