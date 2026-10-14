@@ -4,6 +4,28 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-14
 
+## TF-053 – DNC MAIL-WORKER ENFORCEMENT DEPLOYED (2026-10-14, Mail-Worker LIVE 62bd95c)
+- **Code 62bd95c**: `registryBlock` (lead-registry.js) liest `lead_crm.json` nur lesend; `do_not_contact=true` → kein neuer Cold-Entwurf im
+  Draft-Worker (Eintrag `blocked`, „Lead-Datenbank: do-not-contact (CRM)“), keine Cold-Outreach-Queue (Cloud-Einzelentwurf verweigert,
+  Discovery queued nicht). **Fail-safe**: JARVIS_CRM_DIR gesetzt, Datei fehlt / unlesbar / ungültiges JSON / unbekanntes Schema →
+  `CRM_UNAVAILABLE`: Draft-Worker hält Einträge `queued` (nichts dauerhaft blockiert), Cloud-Einzelentwurf verweigert, Discovery-Lauf
+  übersprungen; kein veralteter Cache. Transaktionale Kunden-Mails (Repair-Outbox) lesen das CRM nie. Sendelogik unverändert.
+- **Vorbereitung**: `lead_crm.json` existierte noch nicht (CRM-Einträge entstehen erst bei der ersten Aktion) → vor dem Deploy über den
+  CRM-Dienst selbst (`docker exec`, withCrmLock + saveCrm, nur wenn fehlend) als leerer Zustand angelegt: Schema 1, 0 Leads, 600, uid 1000.
+  jarvis-crm-worker nicht recreated (c2391fb456dd, StartedAt 16:00:49, restarts 0).
+- **Mail-Cutover** (`deploy.sh fiverr`, ohne Secrets, Freigabe Chris, docker events; Quiet Point: letzter Draft 16:37, danach nur Ticks):
+  alter Worker 5510ab63fef9 (3216638) kill 16:50:27.841 / gestoppt 16:50:27.985 UTC, neuer 876020c249e3 gestartet 16:50:28.468,
+  healthy 16:50:33.676 → **Unterbrechung ≈ 5.7 s** (kill → healthy 5.8 s).
+- **Danach**: Commit 62bd95c, healthy, restarts 0, Authority vps/self, Scheduler-Ticks aktiv, Queue 392 lesbar (0 queued), State 16/16,
+  `gmail.js check` → **MAIL AUTH READY**, Repair-Outbox-Consumer aktiv (Gmail OAuth OK, offen 0), Backup OK, Disk 26 GB. Readiness wie
+  bisher nur «Chromium nicht installiert» (erwartet im Mail-Image). CRM-Mount `/opt/jarvis-mail/data → /data/crm` **RW=false**, Schreibprobe
+  im Container „Read-only file system“; echte CRM-Datei lesbar (kein Fail-safe-Halt).
+- **Repair-Worker unberührt** (acc10380926b, StartedAt 2026-10-13T20:06:34Z, restarts 0, healthy); **CRM-Worker** unberührt, healthy.
+- **Live-Verifikation im neuen Container** (isolierter Zustand in /tmp, `env -i`, Fake-Gmail, keine Produktions-Env/Outbox/Sync):
+  DNC → Cold-Entwurf `blocked` (do-not-contact (CRM)), Kontroll-Lead ohne DNC → Entwurf; DNC → Cloud-Queue verweigert, kein Eintrag;
+  kaputte CRM-Datei → HOLD (fail-safe). 0 Gmail-Aufrufe gegen echtes Gmail, 0 Sends, keine Änderung bestehender Entwürfe.
+- Tests: `test/dnc-mail-053.test.js` A–H (7); Unit gesamt 691 / 680 pass / 0 fail / 11 skip. Secret-Scan 0.
+
 ## TF-053 – JARVIS LEAD CRM (2026-10-14, Code 8a560fe, Dienst jarvis-crm LIVE, Netlify /api/crm LIVE, Mail-Worker unberührt)
 - **Was**: Dashboard-Hauptnavigation **CRM** (https://chrisjarvis.netlify.app/#crm): Übersichtskarten, Suche, Filter, Sortierung,
   Priorität (transparente Punkte HIGH/MEDIUM/LOW), Desktop-Tabelle, Mobile-Karten (ANRUFEN/WEBSITE/ENTWURF ÖFFNEN), Detail-Drawer A–F
@@ -25,10 +47,8 @@ Letzte Aktualisierung: 2026-10-14
   Restore-Test mit Testdaten/Testschlüssel im Unit-Test.
 - Tests: `test/lead-crm-053.test.js` (A–L, O, P, Cloud, Backup; 22) + `test/crm-browser-053.test.js` (M Mobile 390×844, N Desktop 1440×900,
   Chrome lokal); Unit gesamt 684 / 673 pass / 0 fail / 11 skip (Labs). Secret-Scan 0.
-- **OFFEN – MAIL WORKER DEPLOY REQUIRED (Freigabe Chris)**: „Do Not Contact“ aus dem CRM sperrt neue Cold-Entwürfe im Mail-Worker erst nach
-  dem nächsten Mail-Deploy (`registryBlock` liest lead_crm.json; Mount `/opt/jarvis-mail/data:/data/crm:ro` + JARVIS_CRM_DIR in
-  deploy/vps/docker-compose.yml). Bis dahin praktisch ohne Lücke: bestehende Leads bekommen ohnehin keinen zweiten Entwurf (Duplikatsperre,
-  nach Verwerfen 180 Tage). Erster echter CRM-Schreibvorgang live durch Chris (Cloud-Passwort); der Ablauf ist lokal Ende-zu-Ende getestet.
+- ~~OFFEN – MAIL WORKER DEPLOY REQUIRED~~ → erledigt 2026-10-14 16:50 UTC (siehe „DNC MAIL-WORKER ENFORCEMENT DEPLOYED“ oben).
+  Erster echter CRM-Schreibvorgang live durch Chris (Cloud-Passwort); der Ablauf ist lokal Ende-zu-Ende getestet.
 
 ## TF-052 – FIRMA + WEBSITE IN KONTAKT-PDF/CSV (2026-10-14, Code d931f9a, nur jarvis-contacts neu, Mail-Worker unberührt)
 - PDF-Spalten Firma · Website · E-Mail · Telefon · Ansprechpartner · Rolle; Website als anklickbarer Link (sichtbar nur die Domain),
