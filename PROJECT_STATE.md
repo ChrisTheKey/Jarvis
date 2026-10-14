@@ -4,6 +4,50 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-14
 
+## TF-055 – REPAIR FINAL HARDENING + CRM VERIFIZIERTE FEHLERZAHL (2026-10-14, Code f9223cf, Repair + CRM + Netlify LIVE, Mail-Worker unberührt)
+- **TF-054 Gate-Fix deployed**: Repair-Worker acc10380926b (f868b5a) → **6d7fac8e2a83 (f9223cf)**, `deploy-repair.sh fiverr`; docker events:
+  kill 18:57:41.63 → neuer Start 18:57:42.26 → healthy 18:57:47.48 UTC (**≈ 5.9 s**), restarts 0, 0 offene Aufträge beim Deploy,
+  Readiness **READY FOR FIRST CUSTOMER**. MAIL_WORKER_UNTOUCHED=YES (876020c249e3, StartedAt/Restarts/Health/Authority gleich).
+- **COMPLETED_WITH_MANUAL_ITEMS** (neuer terminaler Zustand, repair-workflow.js): Abschluss-Gate (TF-054) bestanden, aber mindestens ein
+  relevanter Befund offen (geschützt AGB/Datenschutz/Preise/Zahlung/Impressum, needs_review, gescheitert, Schweregrad ≥ medium; reine
+  low-Hinweise zählen nicht). Gilt für autoDeliver UND `completeOrder`. Bericht/Liefermail: «Die automatisch reparierbaren Probleme wurden
+  behoben. Weitere Punkte erfordern eine manuelle Prüfung.» – nie «vollständig repariert». Offener reparierbarer Plan-Befund → weiterhin
+  MANUAL_REVIEW_REQUIRED (kein COMPLETED, kein COMPLETED_WITH_MANUAL_ITEMS); Regression → Rollback → REPAIR_FAILED, keine Lieferung.
+  Dashboard/Cloud-Allowlist (server-control.js) kennen Zustand, Phase und `manual_items_open`. Lab-Beleg: WordPress-Full-Order mit
+  geschütztem AGB-Link auf dem Impressum endete vorher in COMPLETED → jetzt COMPLETED_WITH_MANUAL_ITEMS.
+- **CRM Fehlerzahl** (site-findings.js, keine zweite Fehlerdatenbank): gezählt nur aktuell verifizierte, reproduzierbare, besucherrelevante
+  Typen (Kontaktseite/-formular, E-Mail-Link, kaputter Link, Weiterleitungsschleife, Zertifikatswarnung, Bild, Handy-Viewport, reproduzierte
+  Darstellungs-/Button-Fehler); nicht: SEO/Barrierefreiheit/Technik, slow_response, mixed_content, nicht reproduzierbar, RESOLVED.
+  Dedupe type + Seite + Ziel (gleiches Ziel = gleiche Ursache, Kontakt-Link = Kontaktseite kaputt). Priorität: Kontakt > Hauptseite/
+  Navigation > 404/5xx > Bilder > Mobile > Andere, dann Schweregrad, dann Text.
+  **FULL** nur aus vollständigem Voll-Audit (gleicher Umfang wie CHF-480: Startseite, alle verlinkten eigenen Unterseiten ≤ 80, Bilder ≤ 25;
+  nichts übersprungen/robots/Netzaussetzer/Zeitbudget) → «7». Sonst **PARTIAL** (Cold-/Discovery-Befunde bzw. unvollständiger Audit) →
+  «≥3» / «Mindestens 3 verifizierte Fehler». **STALE** > 7 Tage → «7 (veraltet)», Neuprüfung ab 6 Tagen eingeplant. **NONE** → «–».
+- **CRM UI** (#crm, Netlify live ≈ 30 s nach Push): Tabelle Fehler + Wichtigste Fehler (Top 2), Mobile-Karte FEHLER + WICHTIGSTE 2,
+  Detail «C · Website-Zustand» (Zahl, Audit + Umfang, Zuletzt geprüft, #1/#2 mit Seite + Schweregrad, alle verifizierten Fehler,
+  Reparatur-Stand), Zähler 0 / 1–2 / 3–5 / 6+ / vollständig / teilgeprüft (nur Anzeige), Filter Fehler / Audit / Wichtiges Problem.
+  CSV-Export unverändert. Priorität, Outreach-Queue, Cold-Entwürfe (max. 3 Befunde im Mailtext), COLD_LEAD_DRAFT_ONLY unverändert.
+- **Passiver Hintergrund-Audit** (site-backfill.js im CRM-Dienst, `JARVIS_CRM_BACKFILL=off` schaltet ab): eine Website gleichzeitig, nur
+  GET, robots.txt, 1 Anfrage/1.5 s, 60 s Pause je Website, Checkpoint je Website atomar in `/opt/jarvis-mail/data/site_findings.json`
+  (nur normalisierte Befunde, keine Seiteninhalte), Fehler isoliert (Backoff 1 h…24 h), DNC/Opt-out/Suppression/Archiv ausgenommen.
+- **Repair → CRM**: Repair-Service schreibt nach bestandenem Retest `/opt/jarvis-repair/crm-export/repair_findings.json` (RESOLVED/OPEN +
+  manual, keine Adressen/IDs/Referenzen); CRM mountet read-only (`/data/repair-export`). Neuester vollständiger Stand gewinnt.
+- **CRM-Worker**: c2391fb456dd (8a560fe) → **d31d00f5f17d (f9223cf)** über `deploy-crm.sh build|start`, healthy, restarts 0;
+  Mounts Mail-Secrets ro, Repair-Export ro. MAIL_WORKER_UNTOUCHED=YES, CONTACTS_WORKER_UNTOUCHED=YES. Report nach Start: 396 Leads,
+  Duplikate 0, alle PARTIAL (0 / 1–2 / 3–5 / 6+ = 1 / 338 / 56 / 1) bis der Hintergrund-Audit vollständige Stände liefert.
+  Erster Live-Hintergrund-Audit 19:00:33 UTC: vollständig, 5 verifizierte Fehler → Report FULL 1 / PARTIAL 395; alle drei Worker healthy,
+  restarts 0. Initialer Durchlauf aller Websites dauert erwartungsgemäss viele Stunden (eine Website gleichzeitig + 60 s Pause).
+- **Live-UI**: deployte Netlify-Assets in Chromium Desktop 1440×900 + Mobile 390×844 mit synthetischer /api/crm-Antwort geprüft (genau vs
+  «≥», Top 2, Detail alle Befunde, kein Querscrollen, 0 JS-Fehler). Echte CRM-Daten im Browser nicht geprüft (Cloud-Passwort nicht auf
+  diesem Rechner) – echte Zahlen über `crm-service.js --report` auf dem VPS.
+- **Tests**: `test/repair-manual-055.test.js` (8: Tests 1–4, I/J Sync, Export ohne Kundendaten), `test/site-findings-055.test.js` (17:
+  A–H, Dedupe, unvollständig, M Filter, Allowlist, N/O kein Outreach-Effekt, Backfill Resume/Isolation/DNC, Auditor nur GET + robots),
+  Browser K/L in `test/crm-browser-053.test.js`. Unit 728/716/0/12, Repair 18/18, Browser 10/10, Full-Order 8/8, Repair-Quality 5/5,
+  Secret-Scan 0 Treffer, Lab-Cleanup 0 Reste.
+- **Token**: JARVIS_MAIL_WORKER_TOKEN nicht ausgegeben. Kein automatisierter Rotationsweg (Netlify + `.secrets/vps_worker.env` + Mail-.env +
+  Repair-.env, Mail-Worker-Neustart nötig) → **separate geplante Rotation erforderlich**, nicht in diesem Deploy.
+- Keine Mail gesendet, keine Entwürfe verändert, keine Kundenwebsite verändert, keine Zahlung.
+
 ## TF-054 – REPAIR QUALITY REVALIDATION (2026-10-14, nur Verifikation + Gate-Fix, NICHT deployed)
 - **Befund**: `completionGate` prüfte nicht, ob jeder geplante Befund wirklich behoben ist. Teilreparatur (Fix 2 scheitert) +
   Browser-Stichprobe ohne diesen Befund → COMPLETED + Liefermail (Unit-Test reproduziert). Im Lab fing das Browser-Gate es ab.
