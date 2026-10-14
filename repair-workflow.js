@@ -238,7 +238,7 @@ export function authorizeRepair(store, orderId, { authorized_domain, source, ref
   return saveOrder(store, order);
 }
 
-// TF-045: Abschluss-Gate. COMPLETED (und vorher READY_FOR_DELIVERY) nur, wenn die technische Adapter-Validierung, der öffentliche
+// TF-045/TF-054: Abschluss-Gate. COMPLETED (und vorher READY_FOR_DELIVERY) nur, wenn die technische Adapter-Validierung, der öffentliche
 // HTTP-Retest und – sobald für den Auftrag ein Browser-Gate gilt – Desktop- UND Mobile-Browser-Validierung bestanden sind und
 // keine Regression offen ist. Ohne Browser-Gate (kein Plan/ältere Aufträge) gelten Desktop- und Smartphone-Retest wie bisher.
 export function completionGate(order = {}) {
@@ -254,6 +254,14 @@ export function completionGate(order = {}) {
     if (order.retest?.desktop?.ok !== true) missing.push("desktop_retest");
     if (order.retest?.mobile?.ok !== true) missing.push("mobile_retest");
   }
+  // TF-054: Freigabe, Zahlung, Zugang, Profil und Backup erneut (nicht nur über den Zustandsweg) – und jeder geplante Befund muss
+  // tatsächlich behoben sein. Teilreparatur (ein geplanter Fix gescheitert/zurückgerollt/weiterhin vorhanden) → nie COMPLETED.
+  if (!authorizationOk(order)) missing.push("authorization");
+  if (order.payment?.satisfied !== true) missing.push("payment");
+  if (order.access?.ok !== true) missing.push("access");
+  if (order.access_profile && order.access_profile.profile_status !== "PROFILE_READY") missing.push("access_profile");
+  if (!order.backup?.rollback_point) missing.push("backup");
+  if ((order.plan || []).some((p) => order.issues?.[p.issue_id]?.repair_status !== "repaired")) missing.push("repair_unresolved");
   return { ok: !missing.length, missing };
 }
 

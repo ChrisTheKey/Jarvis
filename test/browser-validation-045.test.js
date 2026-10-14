@@ -224,7 +224,8 @@ test("Mobile-Gate Pflicht: Desktop ok, Smartphone mit neuem Overflow → kein RE
   const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });
   Object.assign(data.orders[id], { state: "READY_FOR_DELIVERY", browser_gate: { ...o.browser_gate, desktop: "JA", mobile: "NEIN", regression: "KEINE" } });
   store.write(REPAIR_ORDERS_FILE, data);
-  assert.deepEqual(completionGate(readOrder(store, id)).missing, ["browser_mobile"]);
+  // TF-054: der zurückgerollte Fix ist zusätzlich nicht behoben (repair_unresolved).
+  assert.deepEqual(completionGate(readOrder(store, id)).missing, ["browser_mobile", "repair_unresolved"]);
   assert.throws(() => completeOrder(store, id), /browser_mobile/);
   data.orders[id].browser_gate.mobile = "WARTET";
   store.write(REPAIR_ORDERS_FILE, data);

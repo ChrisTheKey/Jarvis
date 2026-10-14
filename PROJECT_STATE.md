@@ -4,6 +4,16 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-14
 
+## TF-054 – REPAIR QUALITY REVALIDATION (2026-10-14, nur Verifikation + Gate-Fix, NICHT deployed)
+- **Befund**: `completionGate` prüfte nicht, ob jeder geplante Befund wirklich behoben ist. Teilreparatur (Fix 2 scheitert) +
+  Browser-Stichprobe ohne diesen Befund → COMPLETED + Liefermail (Unit-Test reproduziert). Im Lab fing das Browser-Gate es ab.
+- **Fix** (repair-workflow.js): Gate zusätzlich `authorization`, `payment`, `access`, `access_profile` (PROFILE_READY), `backup`
+  (rollback_point), `repair_unresolved` (jeder Plan-Befund `repaired`). Gilt für RETEST, Lieferung und `completeOrder`.
+- **Tests**: `test/repair-quality-054.test.js` (11); Lab `npm run test:repair-quality-integration` (5: Positiv, Regression→Rollback,
+  Teilreparatur, geschützt AGB/Preise, Absturz mitten in REPAIRING) mit echtem site-auditor + Chromium; Unit 700/688/0/12,
+  Repair 18/18, Browser 10/10, Full-Order 8/8, Secret-Scan 0, Lab-Cleanup 0.
+- **Produktion**: Repair-Worker f868b5a (acc10380926b) unberührt → **REPAIR FIX DEPLOY REQUIRED** (Freigabe Chris).
+
 ## TF-053 – DNC MAIL-WORKER ENFORCEMENT DEPLOYED (2026-10-14, Mail-Worker LIVE 62bd95c)
 - **Code 62bd95c**: `registryBlock` (lead-registry.js) liest `lead_crm.json` nur lesend; `do_not_contact=true` → kein neuer Cold-Entwurf im
   Draft-Worker (Eintrag `blocked`, „Lead-Datenbank: do-not-contact (CRM)“), keine Cold-Outreach-Queue (Cloud-Einzelentwurf verweigert,

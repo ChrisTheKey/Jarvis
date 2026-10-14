@@ -8,10 +8,13 @@
 // npm run test:separation-integration. Release-Gate TF-047: npm run test:release-047.
 // Läuft nur lokal/isoliert (Docker Desktop bzw. Docker-Engine), nie auf dem Produktions-VPS; räumt Container/Volumes/Netze ab.
 // Temp-Verzeichnisse des Laufs liegen in einem eigenen Lauf-Verzeichnis und werden danach entfernt (scripts/test-temp.mjs).
+// TF-054: --quality startet die Repair-Quality-Revalidierung (echter site-auditor + Chromium, Positiv/Regression/Teilreparatur/
+// geschützt/Neustart) gegen dasselbe Lab: npm run test:repair-quality-integration.
 import { runIsolated } from "./test-temp.mjs";
 const args = process.argv.slice(2);
-const flags = ["--browser", "--full-order", "--separation"];
-const file = args.includes("--separation") ? "test/integration/service-separation-047/separation.integration.test.js"
+const flags = ["--browser", "--full-order", "--separation", "--quality"];
+const file = args.includes("--quality") ? "test/integration/repair-quality-054/repair-quality.integration.test.js"
+  : args.includes("--separation") ? "test/integration/service-separation-047/separation.integration.test.js"
   : args.includes("--full-order") ? "test/integration/full-order-046/full-order.integration.test.js"
   : args.includes("--browser") ? "test/integration/repair-lab/browser-validation.integration.test.js" : "test/integration/repair-lab/repair-lab.integration.test.js";
 process.exit(runIsolated(["--test", "--test-concurrency=1", "--test-timeout=1800000", ...args.filter((a) => !flags.includes(a)), file], { env: { JARVIS_REPAIR_LAB: "1" } }));
