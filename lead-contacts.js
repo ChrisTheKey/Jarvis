@@ -294,7 +294,7 @@ export function extractPeople(html = "", { url = null, kind: page = "other", com
   };
   const ROLE_CHAIN = `${B}(${ROLE_CI}(?:\\s*\\([Ii]n\\))?(?:\\s*(?:und|&|/|,)\\s*${ROLE_CI}(?:\\s*\\([Ii]n\\))?)?)${E}`;
   const roleThenName = new RegExp(`${ROLE_CHAIN}\\s*(?:[:\\-–—|]\\s*)?${HONORIFIC}${NAME_RE_SRC}`, "g");
-  const nameThenRole = new RegExp(`${HONORIFIC}${NAME_RE_SRC}\\s*(?:,|–|—|-|\\||\\(|:)\\s*(?:[\\wäöüé.]+\\s+){0,3}?${ROLE_CHAIN}`, "g");
+  const nameThenRole = new RegExp(`${HONORIFIC}${NAME_RE_SRC}\\s*(?:,|–|—|-|\\||\\(|:)\\s*(?:[\\wäöüéÄÖÜ.]+(?:\\s+|\\s*/\\s*)){0,3}?${ROLE_CHAIN}`, "g");
   const nameOnly = new RegExp(`^${HONORIFIC}${NAME_RE_SRC}$`);
   const roleOnly = (s) => s.length <= 60 && !!roleOf(s) && s.replace(new RegExp(ROLE_CI, "g"), "").replace(/[\s,:&/()|·•–-]|und|\b[Ii]n\b/g, "").length <= 3;
   for (let i = 0; i < lines.length; i++) {

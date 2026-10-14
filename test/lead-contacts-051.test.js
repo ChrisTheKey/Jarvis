@@ -162,6 +162,10 @@ test("Person: Inhaber/Geschäftsführer aus Impressum/Team, höchste Verantwortu
   assert.equal(c.people[0].confidence, "high");
   const nameRole = extractPeople(page(`<p>Dr. Anna Maria von Arx, Inhaberin und Geschäftsführerin</p>`), { url: "i", kind: "impressum" });
   assert.deepEqual(nameRole.map((p) => [p.first_name, p.last_name, p.role]), [["Anna Maria", "von Arx", "Inhaberin"]]);
+  const slash = extractPeople(page(`<p>Hans Keller, Mitinhaber/Geschäftsführer, eidg. dipl. Schreinermeister</p>`), { url: "h", kind: "home" });
+  assert.deepEqual(slash.map((p) => [p.first_name, p.last_name, p.role]), [["Hans", "Keller", "Geschäftsführer"]]);
+  assert.equal(extractPeople(page(`<p>Inhaber Hans &amp; Petra.</p>`), { url: "i", kind: "impressum" }).length, 0); // nur Vornamen
+  assert.equal(extractPeople(page(`<p>Vertretungsberechtigte Personen</p><p>Hans Keller</p>`), { url: "i", kind: "impressum" }).length, 0); // Rolle unklar
   const joint = choosePeople(extractPeople(page(`<p>Geschäftsleitung</p><p>Hans Keller</p><p>Petra Brunner</p>`), { url: "a", kind: "about" }));
   assert.equal(joint.people.length, 2);
 });
