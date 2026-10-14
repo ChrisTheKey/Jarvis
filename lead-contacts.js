@@ -435,7 +435,10 @@ export function createResearcher({ fetchFn = globalThis.fetch, timeoutMs = 15_00
       fetched.add(url);
       if (robotsTxt && !robotsAllows(robotsTxt, new URL(url).pathname)) { errors.push("robots"); continue; }
       const r = await get(url);
-      if (r.html && r.status < 400) pages.push({ kind, url: r.url, html: r.html });
+      let finalHost = ""; try { finalHost = new URL(r.url).hostname; } catch {}
+      // Nach Redirects nur Seiten derselben offiziellen Website (nie Mutterfirma/Agentur/Verzeichnis).
+      if (r.html && r.status < 400 && (origin ? new URL(r.url).origin === base : sameSite(finalHost, domain))) pages.push({ kind, url: r.url, html: r.html });
+      else if (r.html) errors.push("subpage_offsite");
     }
     const phones = pages.flatMap((p) => extractPhones(p.html, { url: p.url, kind: p.kind }));
     const people = pages.flatMap((p) => extractPeople(p.html, { url: p.url, kind: p.kind, company: lead.company }));

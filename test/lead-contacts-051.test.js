@@ -290,6 +290,9 @@ test("Integration: Website-Recherche (Links, Impressum, Kontakt, robots.txt, Cac
   };
   const server = http.createServer((req, res) => {
     hits.push(req.url);
+    // Kontaktseite leitet auf eine fremde Website um → wird nie als Quelle verwendet
+    if (req.url === "/kontakt-anfahrt") { res.writeHead(302, { location: `http://localhost:${server.address().port}/fremd` }); return res.end(); }
+    if (req.url === "/fremd") { res.writeHead(200, { "content-type": "text/html" }); return res.end(page(`<p>Geschäftsführer: Fritz Fremdmann<br>Tel. 044 777 88 99</p>`)); }
     const body = site[req.url];
     if (!body) { res.writeHead(404, { "content-type": "text/html" }); return res.end("nf"); }
     res.writeHead(200, { "content-type": req.url === "/robots.txt" ? "text/plain" : "text/html; charset=utf-8" }); res.end(body);
@@ -310,6 +313,7 @@ test("Integration: Website-Recherche (Links, Impressum, Kontakt, robots.txt, Cac
     assert.equal(e.phone, "+41 31 123 45 67"); assert.equal(e.phone_confidence, "high");
     assert.deepEqual([e.first_name, e.last_name, e.role, e.person_confidence], ["Hans", "Keller", "Inhaber", "high"]);
     assert.ok(e.sources.some((s) => s.kind === "impressum" && s.used_for.includes("person")));
+    assert.ok(e.sources.every((s) => s.url.startsWith(origin)), "keine fremde Website als Quelle");
     assert.ok(!hits.includes("/team"), "robots.txt Disallow respektiert");
     assert.equal(hits.filter((h) => h === "/").length, 2, "je Domain einmal geladen");
     assert.equal(loadDirectory(dir).leads["keller.ch"].enrichment.status, "done");
