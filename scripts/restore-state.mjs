@@ -5,6 +5,7 @@
 //   node scripts/restore-state.mjs --verify [--date 2026-10-07]         Herunterladen + ohne Schlüssel prüfen
 //   node scripts/restore-state.mjs --date 2026-10-07 --out restore-dir  Entschlüsseln + prüfen + nach restore-dir schreiben
 //   node scripts/restore-state.mjs --file state-….json --out restore-dir (lokale Backup-Datei statt Offsite)
+//   --crm                                                               CRM-Backups (TF-053, Schlüssel crm/<Tag>) statt daily/<Tag>
 // Zugang offsite: x-jarvis-worker aus .secrets/vps_worker.env oder JARVIS_PASSWORD (Umgebungsvariable). Private Key:
 // --key <pem> oder .secrets/backup_private.pem (aus dem Passwort-Manager wiederhergestellt).
 import fs from "node:fs";
@@ -34,13 +35,15 @@ async function get(q) {
 
 const out = {};
 try {
-  if (has("--list")) { out.backups = (await get("")).backups; }
+  const kind = has("--crm") ? "crm" : "daily";
+  const listQ = kind === "crm" ? "?prefix=crm" : "";
+  if (has("--list")) { out.backups = (await get(listQ)).backups; }
   else {
     let env;
     if (arg("--file")) env = JSON.parse(fs.readFileSync(arg("--file"), "utf8"));
     else {
-      const list = (await get("")).backups;
-      const key = arg("--date") ? `daily/${arg("--date")}` : list.at(-1);
+      const list = (await get(listQ)).backups;
+      const key = arg("--date") ? `${kind}/${arg("--date")}` : list.at(-1);
       if (!key || !list.includes(key)) throw new Error(`Kein Backup ${key || ""} gefunden (vorhanden: ${list.length}).`);
       env = await get(`?key=${encodeURIComponent(key)}`);
       out.source = key;

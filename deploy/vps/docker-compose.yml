@@ -25,9 +25,12 @@ services:
       # (Sender Authority) genau einmal sendet. Repair-Zustand nur lesend (Dashboard, Kunden-Dedupe).
       - /opt/jarvis-repair/outbox:/data/repair-outbox
       - /opt/jarvis-repair/state/mail_worker:/data/repair-state:ro
+      # TF-053: Lead-CRM (Dienst jarvis-crm ist einziger Schreiber) – hier NUR lesend: „Do Not Contact“ sperrt neue Cold-Entwürfe.
+      - /opt/jarvis-mail/data:/data/crm:ro
     environment:
       JARVIS_REPAIR_OUTBOX: /data/repair-outbox
       JARVIS_REPAIR_STATE_DIR: /data/repair-state
+      JARVIS_CRM_DIR: /data/crm
     read_only: true
     tmpfs:
       - /tmp

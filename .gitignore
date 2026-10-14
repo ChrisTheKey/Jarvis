@@ -13,3 +13,8 @@ deploy/vps/.env
 # TF-051 Lead-Kontaktverzeichnis: personenbezogene Daten + Exporte nie committen
 data/lead_contact_directory.json
 exports/
+
+# TF-053 Lead-CRM: CRM-Zustand, Audit und Backups nie committen
+data/lead_crm.json
+data/crm_*
+data/crm.lock

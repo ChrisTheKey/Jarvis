@@ -29,9 +29,10 @@ export function stateFiles(secretsDir) {
 export const keyId = (publicKeyPem) => crypto.createHash("sha256").update(crypto.createPublicKey(publicKeyPem).export({ type: "spki", format: "der" })).digest("hex").slice(0, 16);
 const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
 
-export function createBackup({ secretsDir, publicKeyPem, now = new Date() }) {
-  const files = stateFiles(secretsDir);
+// files: optional eigener Umfang relativ zu secretsDir (z. B. CRM-Dienst: lead_crm.json, crm_audit.jsonl) – gleiche Sperren.
+export function createBackup({ secretsDir, publicKeyPem, now = new Date(), files = stateFiles(secretsDir) }) {
   if (files.some((f) => SECRET_NAMES.test(path.basename(f)))) throw new Error("Secret im Backup-Umfang – Abbruch.");
+  if (files.some((f) => f.includes("..") || path.isAbsolute(f))) throw new Error("Unzulässiger Pfad im Backup-Umfang – Abbruch.");
   const payload = { format: BACKUP_FORMAT, v: BACKUP_VERSION, created_at: now.toISOString(), files: Object.fromEntries(files.map((f) => [f, fs.readFileSync(path.join(secretsDir, f), "utf8")])) };
   const plain = zlib.gzipSync(Buffer.from(JSON.stringify(payload)));
   const key = crypto.randomBytes(32), iv = crypto.randomBytes(12);

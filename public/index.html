@@ -6,6 +6,7 @@
 <title>J.A.R.V.I.S.</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600&family=Share+Tech+Mono&display=swap">
+<link rel="stylesheet" href="crm.css">
 <style>
 /* Layout: Iron-Man-HUD – Reaktor-Kern als Vollbild-Canvas, links Uhr und Systemwerte, rechts Protokoll, unten Untertitel und Eingabe. Bewusst nur dunkel. */
 :root {
@@ -257,6 +258,7 @@ form.cmd button.stop { color: var(--red); }
     <div class="tag">Just A Rather Very Intelligent System</div>
     <div class="pill" id="state">Bereit</div>
     <div class="pill mode" id="modePill" title="Wo Jarvis gerade läuft">–</div>
+    <button type="button" class="pill nav" id="crmBtn" title="Lead-CRM: alle Leads, Probleme, Kontakt, Status, Anrufe, Notizen, Follow-ups">CRM</button>
   </header>
   <section class="panel quick" id="quick" aria-label="Cloud-Status">
     <div class="q">
@@ -520,6 +522,10 @@ form.cmd button.stop { color: var(--red); }
   </div>
 </div>
 
+<!-- Lead-CRM (TF-053): Inhalt baut crm.js; Schreiben nur über /api/crm (crm.*-Allowlist → VPS-Dienst) -->
+<div class="crm" id="crm" hidden role="dialog" aria-modal="true" aria-labelledby="crmTitle"></div>
+<aside class="crm-drawer" id="crmDrawer" hidden aria-label="Lead-Details"></aside>
+
 <div class="boot" id="boot">
   <div class="boot-in">
     <h1>J.A.R.V.I.S.</h1>
@@ -539,6 +545,7 @@ form.cmd button.stop { color: var(--red); }
 <script src="mail-status.js"></script>
 <script src="server-status.js"></script>
 <script src="composer.js"></script>
+<script type="module" src="crm.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const store = {

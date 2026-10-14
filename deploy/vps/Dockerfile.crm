@@ -1,0 +1,18 @@
+# Jarvis Lead-CRM (TF-053) – eigener Container jarvis-crm-worker, getrennt vom 24/7-Mail-Worker (jarvis-mail) und vom Kontaktdienst.
+# Build-Kontext ist das Repository-Wurzelverzeichnis (siehe deploy/vps/crm/docker-compose.yml, auf dem VPS /opt/jarvis-crm/app).
+# Enthält bewusst KEIN gmail.js, keinen Mail-Worker, keine npm-Pakete: der Dienst liest Register/Verzeichnis nur, schreibt allein
+# lead_crm.json + crm_audit.jsonl + verschlüsselte Backups und spricht nur ausgehend mit /api/crm. Er kann strukturell nicht senden.
+FROM node:22-alpine
+RUN apk add --no-cache tzdata
+ENV NODE_ENV=production TZ=Europe/Zurich JARVIS_CRM_DIR=/data/crm JARVIS_MAIL_SECRETS=/data/mail
+WORKDIR /app
+COPY package.json crm-service.js crm-api.js lead-crm.js shared-state.js backup.js ./
+COPY public/crm-model.js ./public/
+COPY deploy/vps/backup-public.pem ./
+COPY deploy/vps/crm-derive-token.mjs ./deploy/vps/
+USER node
+ARG JARVIS_COMMIT=unknown
+ENV JARVIS_COMMIT=$JARVIS_COMMIT
+# Gesund, solange der Dienst seinen Herzschlag in den letzten 3 Minuten geschrieben hat.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 CMD ["node", "crm-service.js", "--healthcheck"]
+CMD ["node", "crm-service.js", "--service"]

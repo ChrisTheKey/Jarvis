@@ -7,6 +7,8 @@ import { verifyBackup, BACKUP_FORMAT } from "./backup.js";
 export const OFFSITE_KEEP = 30;
 export const MAX_BACKUP_BYTES = 5_000_000;
 const KEY_RE = /^daily\/\d{4}-\d{2}-\d{2}$/;
+// CRM-Backups (TF-053) liegen unter crm/<Tag> – abgelegt vom CRM-Dienst über /api/crm, hier nur lesbar (Liste/Download).
+const READ_KEY_RE = /^(daily|crm)\/\d{4}-\d{2}-\d{2}$/;
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 export function createBackupHandler({ getStore, env }) {
@@ -20,12 +22,13 @@ export function createBackupHandler({ getStore, env }) {
     if (req.method === "GET") {
       const key = url.searchParams.get("key");
       if (key) {
-        if (!KEY_RE.test(key)) return reply(400, { error: "Ungültiger Schlüssel." });
+        if (!READ_KEY_RE.test(key)) return reply(400, { error: "Ungültiger Schlüssel." });
         const bak = await store.get(key, { type: "json" });
         return bak ? reply(200, bak) : reply(404, { error: "Nicht gefunden." });
       }
-      const { blobs } = await store.list({ prefix: "daily/" });
-      return reply(200, { backups: blobs.map((b) => b.key).filter((k) => KEY_RE.test(k)).sort() });
+      const prefix = url.searchParams.get("prefix") === "crm" ? "crm/" : "daily/";
+      const { blobs } = await store.list({ prefix });
+      return reply(200, { backups: blobs.map((b) => b.key).filter((k) => READ_KEY_RE.test(k) && k.startsWith(prefix)).sort() });
     }
     if (req.method !== "POST") return reply(405, { error: "Nur GET oder POST." });
     if (!isWorker) return reply(403, { error: "Nur der Cloud Core darf Backups ablegen." });

@@ -74,8 +74,25 @@ export function knownKeys(store) {
 // Darf für diese Firma ein NEUER Cold-Entwurf entstehen? Grund (blockiert) oder null. Prüft jeden Datensatz derselben Firma
 // (Domain, Adresse, Firmenname): angeschrieben, Antwort, Kunde, kein Interesse, Suppression, Opt-out, Do-not-contact.
 export function registryBlock(store, q = {}, reg = loadRegistry(store)) {
-  for (const l of matchingLeads(reg.leads, q)) { const why = contactBlockReason(l); if (why) return why; }
+  const hits = matchingLeads(reg.leads, q);
+  for (const l of hits) { const why = contactBlockReason(l); if (why) return why; }
+  // TF-053: „Do Not Contact“ aus dem Lead-CRM (lead_crm.json, nur lesend; Verzeichnis per JARVIS_CRM_DIR eingebunden).
+  const dnc = crmDoNotContact();
+  if (dnc.size && [q.lead_id, normDomain(q.domain || ""), ...hits.map((l) => l.lead_id), ...hits.map((l) => l.domain)].some((k) => k && dnc.has(String(k).toLowerCase()))) return "do-not-contact (CRM)";
   return null;
+}
+// lead_crm.json gehört dem CRM-Dienst (einziger Schreiber); hier nur gelesen, nach Grösse+Änderungszeit gecacht. Nicht lesbar → letzter Stand.
+let crmCache = { key: null, set: new Set() };
+export function crmDoNotContact(dir = process.env.JARVIS_CRM_DIR) {
+  if (!dir) return new Set();
+  const file = path.join(dir, "lead_crm.json");
+  let key; try { const s = fs.statSync(file); key = `${s.size}|${s.mtimeMs}`; } catch { return crmCache.set; }
+  if (key === crmCache.key) return crmCache.set;
+  try {
+    const leads = JSON.parse(fs.readFileSync(file, "utf8")).leads || {};
+    crmCache = { key, set: new Set(Object.entries(leads).filter(([, e]) => e?.do_not_contact === true).map(([id]) => id.toLowerCase())) };
+  } catch {}
+  return crmCache.set;
 }
 
 // Herkunft „OpenStreetMap node/1 (Köniz, office=accountant)“ → Gemeinde/Kanton/Branche (für Leads ohne gespeicherte Gebietsangabe).
