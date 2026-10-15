@@ -2,7 +2,48 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-15 (TF-063)
+Letzte Aktualisierung: 2026-10-15 (TF-064)
+
+## TF-064 – VIETNAM MAIL PROFILE + VND PRICING + VN ORDER FLOW (2026-10-15, Code a9d84c0, Netlify LIVE, Repair LIVE, Mail LIVE, CRM/Contacts/VN NICHT neu gestartet)
+- **Zentrale Preisquelle** `pricing.js` (ohne Abhängigkeiten): CH unverändert REPAIR_CHECK_150 CHF 150 / REPAIR_FIX_500 CHF 480 (CA150-/RF480-IDs bleiben);
+  VN fest: VN_REPAIR_CHECK «Kiểm tra website & hướng dẫn sửa lỗi» **990000 VND**, VN_REPAIR_FIX «Kiểm tra & sửa lỗi website» **3900000 VND**, IDs VNCHECK-/VNFIX-.
+  Genau zwei Angebote je Markt, keine Umrechnung, kein Wechselkurs. Schwelle 50 %: **495000 / 1950000 VND** (CH 75 / 240). sales.js-OFFERS lesen daraus.
+- **Minor Units**: CHF Exponent 2, VND Exponent 0 (990000 VND = 990000, nie 99000000). Anzeige CHF 150.00 bzw. 990.000 ₫.
+- **Payment-Ledger** (`payments.js`): Zahlung an ORDER_ID + Auftragswährung gebunden (VND nie auf CHF-Auftrag und umgekehrt, VND nur ganze Beträge);
+  CH-Einträge weiter amount_chf (+ amount/currency), VN amount + currency VND; Leser verstehen beide Formate, keine Migration. Nur Chris (CLI) verbucht –
+  keine Cloud-/Verkäufer-Operation zum Erfassen/Ändern/Erstatten.
+- **Provision** (`commission-ledger.js`): Markt/Währung aus dem Auftrag (Legacy CH ohne Felder → CH/CHF; VN ohne explizites market VN + currency VND → ignoriert).
+  Lap 35 % (3500 bps): **CHECK 346500 VND, FIX 1365000 VND** (Preis × bps, nicht hart codiert). PAYABLE nur COMPLETED|COMPLETED_WITH_MANUAL_ITEMS + PAID_FULL,
+  Refund nach PAYABLE → REVERSED. Lap sieht nur eigene VND-Provision; Owner: totals_by_currency CHF und VND getrennt (totals = CHF, nie gemischt).
+  MARKET_PRICING VN = CONFIGURED.
+- **VN-Order-Flow**: `/api/sales` op `order.createConfirmed` (nur lead_id, offer CHECK|FIX, confirmed) – nur Lap (SALES_AGENT_VN) oder Owner, nur VN-Lead im
+  eigenen Scope mit Seller lap, nicht DNC/archiviert/kein Interesse, E-Mail vorhanden, keine offene Anfrage/kein offener Auftrag der Domain; Domain/Website/Firma/
+  E-Mail/Markt/Währung/Preis bestimmt der Server (jedes weitere Feld → 400; CH-Verkäufer 403, CH-/fremder Lead 403). Repair-Dienst holt ab
+  (`order-intake.js`, x-jarvis-worker, idempotent je request_id, Preis erneut aus pricing.js geprüft) → Verkauf (sales.json, Quelle vn_sales_confirmed) +
+  VNCHECK-/VNFIX-Auftrag im bestehenden Workflow (gleiche Gates: Zahlung, Freigabe, Zugang, Backup, Audit, Repair, Validierung, Browser Desktop/Mobile,
+  Regression, Retest, Bericht; TF-062 ohne Post-Repair-ZIP). `?view=orders`: Mã đơn hàng, Dịch vụ, Tổng giá, Đã thanh toán, Còn lại, Zahlungs-/Arbeitsstatus,
+  Hoa hồng dự kiến – ohne Kunden-E-Mail. Snapshot-Allowlist um market/currency/*_amount erweitert; Owner-Dashboard zeigt VN-Aufträge in VND.
+- **VN-Kundentexte** (`vn-customer-texts.js`): Zugangs-Anfrage, Host-Key, Check-Bericht/Anleitung/Liefermail, Reparatur-Abschlussbericht, manuelle Punkte –
+  vollständig Vietnamesisch, nur VND; sicherer Zugangslink mit `&l=vi`, Formular/Freigabetext vietnamesisch (Registrierung VNFIX nur mit vi-VN).
+- **Mail**: `sender-profiles.js` – CH = cfg.sender exakt unverändert; VN (actor lap ODER market VN): Signatur «Trân trọng, / Lap / Hỗ trợ khách hàng Việt Nam /
+  Helvetic Webdesign / https://lapvietnamese.netlify.app/» (keine Adresse/Telefon/Register-/Steuernummer). UNSUB_LINE.vi «Nếu anh/chị không muốn nhận thêm email từ
+  chúng tôi, chỉ cần trả lời “Hủy đăng ký”.»; UNSUB_RE + hủy/huỷ đăng ký, không muốn nhận thêm email, không liên hệ (DE/EN/FR/IT unverändert). Metadaten
+  actor_user_id/market/locale/lead_id serverseitig aus Session + Lead (Browser-Feld meta → 400). VN-/Verkäufer-Aufträge nie Versand (COLD_LEAD_DRAFT_ONLY).
+  Bestehender Gmail-Sender, kein neues Konto. Externe VN-Landingpage (nur gelesen): 990.000đ / 3.900.000đ – keine Abweichung.
+- **UI**: VN-Lead-Detail «H · Đơn hàng» (Buttons Kiểm tra & hướng dẫn · 990.000 ₫ / Kiểm tra & sửa lỗi · 3.900.000 ₫, Pflicht-Bestätigung «Khách hàng đã xác nhận
+  đặt dịch vụ này.», keine Zahlungsbuttons); Verkäufer-Provision in VND; Owner-ZUGÄNGE Total CHF / Total VND getrennt; Lap-Chat kennt die zwei VN-Festpreise.
+- **Deploy**: Netlify via Push (a9d84c0; /api/* ohne Sitzung 401, Worker-Pfad /api/sales falscher Token 401). Repair c84e16083363 → **ca12979b2461** (a9d84c0,
+  deploy-repair.sh, healthy, restarts 0, READY FOR FIRST CUSTOMER, MAIL_WORKER_UNTOUCHED=YES, Order-Intake ohne Fehler). Mail 28fdac842b64 → **bedf15f75c1c**
+  (a9d84c0, deploy.sh, Start 17:46:23 UTC, healthy, restarts 0, genau ein Mail-Worker, Authority vps/self, neue Module importierbar). Vorher/nachher: Queue
+  pending 0/0, Drafts 761/761, Sent today 0/0. CRM a83f13203334, Contacts 338a201c89c9, VN-Discovery b671eefab7ee unverändert (StartedAt, restarts 0).
+  CRM nicht neu deployt (Order-Funktion in Netlify + Repair). Live-Rendertest im Mail-Image (ohne Gmail): VN-Signatur + vi-Abmeldezeile, keine deutsche Fusszeile.
+- TF-058-Recheck: Checkpoint erhalten – vor TF-064 1005 erledigt / 10341 offen, danach 1017 / 10329 (nicht zurückgesetzt).
+- **Tests**: neu pricing-064, commission-064, vn-order-064, mail-064, vn-transactional-064 (`npm run test:tf064`, 22/22). Angepasst (Anforderung geändert):
+  commission-063 (VN jetzt CONFIGURED, Lap-Provision VND), scope-063 (Lap-Chat in ₫). secure-access-041 «CHF-480 E2E» schlug bereits auf fab8719 fehl
+  (repairPhase vs. echte Uhr, Fixture-Link T0+72 h abgelaufen) → nur Test-Fixture auf deterministische Uhr umgestellt. Gesamtlauf sequenziell 847 / 833 pass /
+  2 fail / 12 skip; die 2 Fehler (ux-mail-020, zu breite neue Send-Sperre) behoben, Mail-Suiten danach 87/87. Secret-Scan 0 Treffer, Lab-Cleanup 0.
+- 0 Mails gesendet, 0 echte Entwürfe, 0 echte Aufträge/Zahlungen, 0 Kundenwebsites verändert. Keine Token-Rotation. workspace/memory/chris.md und /opt/fiverr
+  nicht angefasst.
 
 ## TF-063 – MULTI-USER SALES ACCESS + LEAD OWNERSHIP + 35 % PROVISION + VIETNAM (2026-10-15, Code c745b6c + f5fd051, Netlify LIVE, VN-Dienst LIVE, Mail/Repair/CRM/Contacts NICHT neu gestartet)
 - **Auth** (`auth-core.js` ohne Node-Deps, `auth-api.js`, `/api/auth/login|me|logout|admin/*`, Blobs `jarvis-auth`): feste Benutzer chris (OWNER, de-CH),
