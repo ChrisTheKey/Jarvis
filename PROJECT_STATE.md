@@ -2,7 +2,60 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-15 (TF-062)
+Letzte Aktualisierung: 2026-10-15 (TF-063)
+
+## TF-063 – MULTI-USER SALES ACCESS + LEAD OWNERSHIP + 35 % PROVISION + VIETNAM (2026-10-15, Code c745b6c + f5fd051, Netlify LIVE, VN-Dienst LIVE, Mail/Repair/CRM/Contacts NICHT neu gestartet)
+- **Auth** (`auth-core.js` ohne Node-Deps, `auth-api.js`, `/api/auth/login|me|logout|admin/*`, Blobs `jarvis-auth`): feste Benutzer chris (OWNER, de-CH),
+  giuliano (SALES_MANAGER_CH, de-CH), mario/damiano (SALES_AGENT_CH, de-CH), lap (SALES_AGENT_VN, vi-VN); Rolle/Sprache/Markt/Satz sind Code.
+  Passwörter: scrypt N=32768 r=8 p=1, Salt je Passwort, timingSafeEqual, ≥ 12 Zeichen; gespeichert nur Parameter/Salt/Hash. Session: 32-Byte-Token,
+  Cookie `jarvis_session` HttpOnly/Secure/SameSite=Strict/Path=/, 7 Tage absolut, im Speicher nur SHA-256; Logout/Revoke/Deaktivieren löschen serverseitig.
+  Rate Limit 5 Fehlversuche/Benutzer bzw. 20/IP je 15 min (429). Origin-Prüfung für schreibende Cookie-Requests (CSRF → 403). Audit ohne Passwort/Token.
+  **Chris-Bootstrap**: Benutzer „chris“ + bestehendes JARVIS_PASSWORD → nur scrypt-Hash gespeichert; JARVIS_PASSWORD bleibt Owner-Wiederherstellung.
+  Legacy-Header x-jarvis-key = OWNER nur noch für Chris' Skripte (restore-state, dr-probe); die Oberfläche speichert KEIN Passwort mehr (localStorage
+  `jarvis.cloudKey` wird gelöscht, `?key=` entfernt) – Login über `/login.html` (Deutsch/Tiếng Việt), Verkäufer landen auf `/sales.html`.
+- **RBAC serverseitig**: Server Control, Backup, Benutzerverwaltung, Discovery-Steuerung, Zuweisungen, Provisions-Korrektur = OWNER ONLY (Verkäufer GET/POST 403).
+  `/api/state`: Verkäufer nur eigener Gesprächsverlauf (`jarvis-user-state/conv/<id>`), nie Chris' Notizen/Verlauf/Meldungen. `/api/mail-requests`: Verkäufer
+  nur `lead_draft` für eigene VN-Leads, Empfänger serverseitig aus dem Lead (mitgeschickter recipient → 400), immer Entwurf; DNC → 409.
+  Edge `/api/cloud`: Verkäufer ohne Persona/Shared State/Mail-Werkzeug, System-Kontext nur Name, Sprache, eigene Lead-Zahlen, eigene Provision.
+- **Lead-Scope** (`sales-scope.js`, in `/api/crm` Liste/Detail/Auftragsstatus/CSV/jede crm.*-Schreibaktion): OWNER alles (CH+VN, mit Feld seller);
+  Mario/Damiano nur ihr Portfolio; Giuliano alle übrigen CH-Leads inkl. neuer; Lap nur market VN. Fremder Lead → 403 OUT_OF_SCOPE (auditiert), auch per direktem API-Aufruf.
+- **Faire Verteilung** (einmalig, Agent-Op `assign_init`, Dry-Run zuerst; Blobs `jarvis-sales/assignments`, NICHT in lead_registry.json): geeignet = CH, nicht DNC/
+  Opt-out/Suppression/Kunde/abgeschlossen/archiviert, kein reiner historischer Fund, Firma+Domain+Kanton, Telefon oder E-Mail. Die 400 bearbeitbarsten
+  (Telefon, E-Mail, Priorität, Hash-Tiebreak) → Strata (Priorität, Telefon, E-Mail, Kanton, Branche, Score) → Schlange A-B-B-A. locked=true, keine stille
+  Neuverteilung (zweiter Lauf 409), Owner-Neuzuweisung über `/api/sales` auditiert. **Live**: Kandidaten 1028, CH gesamt 1461, Mario 200 / Damiano 200,
+  Overlap 0, Giuliano ausgeschlossen 400, Giuliano sichtbar 1061. Mario HIGH 39 / MEDIUM 161 / LOW 0, Damiano 40 / 160 / 0; Telefon+E-Mail je 200/200;
+  Ø Priorität 5.15 / 5.16; 25 bzw. 25 Kantone (grösste Abweichung 3), Branchen Geschäft 69/72, Restaurant 53/56, Handwerk 17/17, Firma/Büro 15/13, Hotel 14/13.
+- **Provision** (`commission-ledger.js`, `/api/sales?view=commission`, Blobs `jarvis-sales/commissions`): 35 % (3500 bps) für alle vier, Chris 0. Abgeleitet aus
+  Server-Control-Snapshot (Aufträge, Zustand, payment_status/paid_chf) + Zuständigkeit; PAYABLE nur COMPLETED|COMPLETED_WITH_MANUAL_ITEMS UND PAID_FULL,
+  Betrag 35 % von min(bezahlt, Preis) (CHF 150 → 52.50, CHF 480 → 168.00); sonst PENDING; Storno/Refund/Deckung weg → REVERSED (Historie bleibt).
+  commission_eligible_from = Aktivierung (nicht rückwirkend, historische Aufträge 0). Seller: Mario-/Damiano-Lead → Mario/Damiano, übrige CH-Leads → Giuliano,
+  VN → Lap, Auftrag ohne CRM-Lead → unzugeordnet (Owner ordnet zu); nach PAYABLE gesperrt. Keine Auszahlung, keine Bankdaten. **VN-Preise: NICHT konfiguriert**
+  (MARKET_PRICING.VN) – keine VND-Aufträge erfunden.
+- **Vietnam-Discovery** (`vn-discovery.js`, Docker-Projekt `jarvis-vn`, Container `jarvis-vn-discovery`, Daten `/opt/jarvis-vn/data`, eigener Schlüssel
+  HMAC(JARVIS_SERVER_CONTROL_TOKEN, "jarvis-vn-agent-v1"), `deploy/vps/deploy-vn.sh build|start|status|report`): Geografie `data/vietnam-admin.json`
+  (dataset vn-admin-2025-07-01, Resolution 202/2025/QH15, 34 Einheiten = 6 Städte + 28 Provinzen, 63 frühere Provinzen als Herkunft, deren Hauptorte nur
+  als Such-Anker). Overpass nur innerhalb area ISO3166-1=VN (Belege: osm_area_vn, + tld_vn/phone_84/addr_vn), keine Plattformen/Ketten/Namenlosen.
+  Rotation Einheit für Einheit, je Einheit 6 Branchengruppen, dann nächster Anker; Cursor vor der Abfrage gespeichert (Überlast blockiert keine Einheit),
+  Backoff 1–15 min. Kontingent VN_DAILY_WEBSITE_AUDITS = 1000 abgeschlossene Audits je Tag Asia/Ho_Chi_Minh (1001. startet nie), 2 parallel, 60 s Takt.
+  Dedupe je Domain (Cooldown 30 Tage, nie am selben Tag), Cloud verwirft VN-Domains, die schon CH-CRM-Leads sind. Passives Audit wie CH (+ „liên hệ“).
+  Leads → `/api/crm` VN-Sicht (`jarvis-crm/vn-view`), CRM-Aufträge für VN über `vn-queue` (gleiche Allowlist, `vn_crm.json`). COLD_LEAD_DRAFT_ONLY, sendet nie.
+  Owner kann VN pausieren (`/api/sales` vn.pause/resume). Live ab 15:31 UTC; Overpass anfangs „at capacity“ (502), erste Suche Huế → erster VN-Lead.
+- **i18n** (`public/i18n.js`): de-CH (bestehende Texte unverändert, aus crm-model.js) und vi-VN für Login, Verkäufer-App, Provision, Chat, CRM (Karten, Filter,
+  Tabelle, Mobile-Karten, Detail, Formulare, Fehlermeldungen, Statuswörter, Branchen, Priorisierungspunkte, Befundzeilen), CSV-Kopfzeile. crm-model.js
+  Textfunktionen parametrisiert (Standard Deutsch). Owner-HUD: neue Buttons ZUGÄNGE (Karten Giuliano/Mario/Damiano/Lap: Rolle, Sprache, Markt, Lead-Zugriff,
+  35 %, Aktiv, letzter Login, aktive Sessions; PASSWORT SETZEN/ZURÜCKSETZEN, SESSIONS ABMELDEN, DEAKTIVIEREN; Provisionen aller + Total; Zuweisungsbericht) und ABMELDEN.
+- **Deploy**: Netlify via Push (c745b6c; Endpunkte ohne Sitzung 401, Login falsch 401, fremde Herkunft 403, CSP auf /login* /sales*). CRM-Backup vorher
+  (backup-now, offsite ok). Zuweisung Dry-Run → Commit über den CRM-Container (docker exec, stdin, kein Neustart). VN-Dienst build/start (c745b6c, dann f5fd051).
+  Mail 28fdac842b64, Repair c84e16083363, CRM a83f13203334, Contacts 338a201c89c9: Id/StartedAt/Restarts vor = nach (0 Restarts). CRM-Dienst NICHT neu deployt
+  (Scope/Auth laufen in Netlify); Dockerfile.crm kopiert die neuen Importe für den nächsten CRM-Build.
+- TF-058-Recheck: Checkpoint erhalten – vor TF-063 851 erledigt / 10495 offen, danach 916 / 10430 (nicht zurückgesetzt/beschleunigt).
+- **Tests**: neu auth-063 (A–L + Owner-only + CSRF + Chat), scope-063 (Isolation A–L, Zuweisung, Fairness, Cloud-Kontext), commission-063 (A–L),
+  vn-063 (A–L), lap-vi-browser-063 (Chromium, Login + App + CRM Mobile/Desktop, 0 deutsche Reste, 0 CH-Leads); crm-browser-053/crm-detail-059 auf
+  Session-Login umgestellt (14/14). Gesamtlauf 825 / 812 pass / 1 fail / 12 skip – Fehlschlag secure-access-041 „CHF-480 E2E“ besteht auch auf dem
+  unveränderten HEAD (zeitabhängiges Fixture T0 + 72 h, Repair-Bereich, nicht TF-063). Secret-Scan 0 Treffer. `npm run test:tf063`.
+- **Offen für Chris**: im HUD unter ZUGÄNGE nacheinander Passwörter für Giuliano, Mario, Damiano, Lap setzen (keine Passwörter erzeugt/ausgegeben).
+  Erste Anmeldung von Chris: Benutzername „chris“ + bisheriges Cloud-Passwort.
+- Keine Mail gesendet, keine Entwürfe verändert, keine Kundenwebsite verändert. workspace/memory/chris.md und /opt/fiverr nicht angefasst.
 
 ## TF-062 – POST-REPAIR-ZIP / WEBSITE-PAKET ENTFERNT (2026-10-15, Code 3c60b40, Repair LIVE, Netlify via Push, Mail/CRM/Contacts NICHT neu gestartet)
 - **Entscheidung Chris**: die Dienstleistung ist Sichern → Reparieren → Validieren → Desktop + Mobile → Regression → reparierte Website
