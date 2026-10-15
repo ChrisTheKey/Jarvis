@@ -12,7 +12,7 @@
 //     wird der Hash geprüft; Rollback stellt exakt den Originalinhalt wieder her und prüft ihn erneut.
 import { WORKER_DIR } from "../mail-worker.js";
 import { ISSUE_FIX_MATRIX, fixSpecFor, requiredCapabilities, patchReference, isProtectedText, assertDomainBinding, liveTarget,
-  objectBackups, sha256, normDomain, DomainBindingError, MAX_FILES_PER_FIX } from "./common.js";
+  objectBackups, sha256, normDomain, DomainBindingError, MAX_FILES_PER_FIX, patchVisibleText, visibleCandidates, uniqueCandidate, contentChangeTexts, visibleIncludes } from "./common.js";
 
 export const WP_OBJECT_TYPES = Object.freeze(["pages", "posts", "navigation"]);
 // Einzige Schreibziele. Alles andere (plugins, themes, users, settings, …) wird vor dem Request verweigert.
@@ -110,6 +110,7 @@ export function wordpressAdapter({ dir = WORKER_DIR, fetchFn = globalThis.fetch,
     // Nur eindeutige Ursachen: genau ein Ersatzziel, betroffene Objekte vollständig bekannt (≤ 3), jede Stelle exakt patchbar.
     async locate(issue, order, cred) {
       const spec = fixSpecFor(issue?.type);
+      if (spec?.fix === "replace_text") return locateText(issue, order, cred);
       if (!spec || !spec.families.includes("content") || !spec.attr) return null;
       let broken; try { broken = new URL(issue.url); } catch { return null; }
       if (normDomain(broken.hostname) !== normDomain(order.domain)) return null; // externer Verweis – Ziel unbekannt
@@ -168,7 +169,8 @@ export function wordpressAdapter({ dir = WORKER_DIR, fetchFn = globalThis.fetch,
           if (curHash !== obj.before_hash && !bk.entries().some((e) => e.object_type === `wp_${obj.object_type}` && e.object_id === String(obj.object_id) && e.status === "applied" && e.after_hash === curHash))
             throw new Error("Objekt wurde seit dem Plan verändert – kein Write.");
           if (isProtectedText(cur.slug, cur.title)) throw new Error("Geschütztes Objekt – kein Write.");
-          const p = patchReference(cur.raw, { attr: location.attr, brokenPath: location.brokenPath, fullUrl: location.fullUrl, replacement: location.replacement, domain: order.domain, blockJson: true });
+          const p = location.fix_type === "replace_text" ? patchVisibleText(cur.raw, { from: location.from, to: location.to, kind: location.kind })
+            : patchReference(cur.raw, { attr: location.attr, brokenPath: location.brokenPath, fullUrl: location.fullUrl, replacement: location.replacement, domain: order.domain, blockJson: true });
           if (!p.ok) throw new Error(`Verweis nicht exakt patchbar (${p.reason}).`);
           const entry = bk.add({ object_type: `wp_${obj.object_type}`, object_id: obj.object_id, original_hash: curHash, original_content: cur.raw, modified_at: cur.modified });
           const afterHash = await writeObject(cred, b.base, obj.object_type, obj.object_id, p.text);
@@ -197,6 +199,11 @@ export function wordpressAdapter({ dir = WORKER_DIR, fetchFn = globalThis.fetch,
         const cur = await getObject(cred, b.base, obj.object_type, obj.object_id);
         if (sha256(cur.raw) !== e.after_hash) return { build_ok: false };
       }
+      if (loc.fix_type === "replace_text") {
+        const live = await liveTarget(fetchFn, loc.page_url || order.website, order.domain);
+        if (live.status >= 400) return { build_ok: false };
+        return { build_ok: (loc.to.includes(loc.from) || !visibleIncludes(live.html, loc.from)) && (loc.to === "" || visibleIncludes(live.html, loc.to)) };
+      }
       const live = await liveTarget(fetchFn, issue.page || order.website, order.domain);
       if (live.status >= 400) return { build_ok: false };
       const still = patchReference(live.html, { attr: loc.attr, brokenPath: loc.brokenPath, fullUrl: loc.fullUrl, replacement: loc.replacement, domain: order.domain });
@@ -219,6 +226,37 @@ export function wordpressAdapter({ dir = WORKER_DIR, fetchFn = globalThis.fetch,
 
     async cleanup() { return { ok: true, revoked_required: true }; },
   };
+
+  // TF-066: bestätigte Kunden-Inhaltsänderung – nur sichtbarer Text in Seiten/Beiträgen (Block-Kommentare/Attribute nie),
+  // alle Objekte vollständig gelesen, ≤ 3 Objekte, geschützte Seiten (Impressum, Datenschutz, AGB, Checkout …) nie.
+  async function locateText(issue, order, cred) {
+    const ch = issue.customer_change || {};
+    let { from, to } = contentChangeTexts(ch);
+    if (to == null) return null;
+    const b = baseOf(cred, order);
+    const objs = [];
+    for (const type of WP_OBJECT_TYPES) {
+      const r = await api(cred, b.base, `/wp/v2/${type}?context=edit&status=publish&per_page=${maxObjects}&_fields=id,slug,title,content,modified_gmt,link`);
+      if (r.status !== 200 || !Array.isArray(r.json)) { if (type === "navigation") continue; return null; }
+      if (r.total_pages > 1) return null;
+      for (const o of r.json) if (typeof o?.content?.raw === "string") objs.push({ type, o });
+    }
+    if (!from) from = ["phone", "email"].includes(ch.kind) ? uniqueCandidate(objs.flatMap(({ o }) => visibleCandidates(o.content.raw, ch.kind)), ch.kind) : null;
+    if (!from || from === to) return null;
+    const hits = [];
+    for (const { type, o } of objs) {
+      const p = patchVisibleText(o.content.raw, { from, to, kind: ch.kind });
+      if (p.reason === "not_found") continue;
+      if (!p.ok || isProtectedText(o.slug, o.title?.raw || o.title?.rendered)) return null;
+      let link = null; try { const u = new URL(o.link); if (normDomain(u.hostname) === normDomain(order.domain)) link = u.href; } catch {}
+      hits.push({ object_type: type, object_id: Number(o.id), before_hash: sha256(o.content.raw), modified: o.modified_gmt || null, occurrences: p.count, link });
+    }
+    if (!hits.length || hits.length > MAX_FILES_PER_FIX) return null;
+    const where = hits.map((h) => `WordPress ${h.object_type}#${h.object_id}`).join(", ");
+    return { family: "content", fix_type: "replace_text", kind: ch.kind, from, to, objects: hits, page_url: hits[0].link || null,
+      required_capabilities: requiredCapabilities("content"), risk: "niedrig", target: where,
+      cause: `Vom Kunden bestätigte Inhaltsänderung – sichtbarer Text eindeutig in ${where}.`, planned_change: `Sichtbarer Text «${from}» → «${to}» (nur diese Stellen)` };
+  }
 
   // Rückwärts wiederherstellen; nur wenn der aktuelle Stand exakt unser geschriebener ist (sonst hat jemand anderes geändert).
   async function restoreEntries(cred, base, bk, ids) {

@@ -229,7 +229,10 @@ export const AI_BUDGET_FILE = "ai_budget.json";
 // sendGuard: serverseitiges Send-Lock vor jedem Gmail-Send (VPS/Windows können nie dieselbe Mail senden).
 // escalate: Meldung an Chris, wenn eine Antwort nicht automatisch gesendet werden darf.
 // aiPaused: Meldung an Chris, wenn das Anthropic-Guthaben aufgebraucht ist (einmal je Pause).
-export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, aiPaused = async () => {}, sendGuard = ALLOW_ALL }) {
+// TF-066: onboardingThreads() → Map threadId → order_id der gebundenen Auftrags-Threads (Dialog läuft in onboarding-dialogue.js,
+// hier werden sie weder gelesen noch beantwortet noch mit Follow-ups versehen).
+export const SERVICE_THREAD_CLASSES = new Set(["CUSTOMER_ONBOARDING_DIALOGUE", "CUSTOMER_ACCESS_REQUEST"]);
+export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, aiPaused = async () => {}, sendGuard = ALLOW_ALL, onboardingThreads = null }) {
   const store = createStore(dir);
   // KI-Budget-Sperre (fail closed, persistiert): nach einem Guthabenfehler keine weiteren KI-Aufrufe. Höchstens ein Prüfversuch
   // je aiRecheckMinutes (von Anthropic abgelehnte Aufrufe kosten nichts); gelingt er, ist die KI wieder frei.
@@ -404,8 +407,11 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     const followUps = [];
     // Kandidaten ohne Gmail-Kosten vorfiltern (Ausschlussadressen, inaktive Threads kosten keinen API-Call).
     const scanCandidates = [];
+    let onbThreads = new Map();
+    try { onbThreads = typeof onboardingThreads === "function" ? onboardingThreads() || new Map() : new Map(); } catch (e) { log("error", "onboarding_threads_failed", { error: e.message }); }
     for (const [threadId, entries] of threads) {
       const recips = [...new Set(entries.map((e) => normEmail(e.to)))];
+      if (onbThreads.has(threadId)) { ownThreads.push({ threadId, to: recips.join(", "), skipped: "onboarding" }); continue; }
       if (recips.some((r) => exclude.has(r))) { ownThreads.push({ threadId, to: recips.join(", "), skipped: "excludeAddresses" }); continue; }
       if (t - Math.max(...entries.map((e) => new Date(e.sentAt))) > cfg.activeDays * DAY_MS) { ownThreads.push({ threadId, to: recips.join(", "), skipped: "inaktiv" }); continue; }
       scanCandidates.push({ threadId, entries, recips });
@@ -458,6 +464,14 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           else if (m.internalDate < lastOwnAt) state.handled[m.messageId] = "already-answered";
           else toAnswer = { m, sender, text, hc: detectHumanContact(text) };
         }
+        // TF-066: Auftrags-Thread (Zugangs-Anfrage/Onboarding) ohne eindeutige Bindung → nie automatisch beantworten, Chris prüft.
+        if (toAnswer && entries.some((e) => SERVICE_THREAD_CLASSES.has(e.messageClass))) {
+          for (const x of ext) state.handled[x.messageId] ||= "service_thread_unbound";
+          escalations.push({ threadId });
+          try { await escalate({ messageId: toAnswer.m.messageId, threadId, company: companyFor(toAnswer.sender), contactName: displayName(toAnswer.m.from), reason: "Antwort im Auftrags-Thread ohne eindeutige Auftragsbindung" }); }
+          catch (e) { log("error", "escalate_failed", { threadId, error: e.message }); }
+          continue;
+        }
         const blocked = recips.some((r) => supp[r]) || (toAnswer && supp[toAnswer.sender]);
         const pendingDraft = state.threadDrafts[threadId];
         if (blocked) {
@@ -504,7 +518,8 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
 
         // Follow-ups nur, wenn noch nie eine externe Antwort kam und kein eigener Entwurf offen ist.
         // Kein automatischer Follow-up für Einzel-/Cold-Threads (auch nicht nach manuellem Versand durch Chris).
-        const coldThread = entries.some((e) => e.mode === COLD_MODE || e.manual) || state.compliantThreads[threadId]?.basis === INDIVIDUAL_BASIS;
+        // TF-066: Service-Threads bezahlter Aufträge (Zugang, Onboarding, Lieferung) bekommen nie einen Follow-up-Funnel.
+        const coldThread = entries.some((e) => e.mode === COLD_MODE || e.manual || e.messageClass) || state.compliantThreads[threadId]?.basis === INDIVIDUAL_BASIS;
         if (ext.length === 0 && !isPending(pendingDraft) && !coldThread) {
           const n = own.length;
           const due = n === 1 ? own[0].internalDate + cfg.followUpDays[0] * DAY_MS : n === 2 ? own[1].internalDate + cfg.followUpDays[1] * DAY_MS : null;
@@ -1094,7 +1109,13 @@ async function loop() {
   const sendGuard = shared.syncConfig().token || shared.syncConfig().workerToken ? mailRequests.cloudSendGuard({ config: shared.syncConfig() }) : undefined;
   // VPS: Anthropic-API (kein Claude Code angemeldet); Windows: wie bisher Claude Code.
   const compose = role === "vps" || process.env.JARVIS_COMPOSE === "api" ? apiCompose() : (task) => claudeCompose({ model: worker.config().model })(task);
-  let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard });
+  // TF-066: Kunden-Onboarding-Dialog (nur mit Repair-Outbox, d. h. auf dem VPS neben dem Repair-Service; Notschalter JARVIS_ONBOARDING=off).
+  const onbMod = await import("./onboarding-dialogue.js");
+  const onbDir = repairOutboxDir() && process.env.JARVIS_ONBOARDING !== "off" ? (await import("./onboarding-store.js")).onboardingDirOf(repairOutboxDir()) : null;
+  const onboarding = onbDir ? onbMod.createOnboarding({ dir: WORKER_DIR, onboardingDir: onbDir, gmail, extract: role === "vps" || process.env.JARVIS_COMPOSE === "api" ? onbMod.apiExtract() : null,
+    log, notify: shared.createOnboardingNotifier({ local, log }) }) : null;
+  const onboardingThreads = onboarding ? () => onboarding.boundThreads() : null;
+  let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads });
   const startedAt = new Date().toISOString();
   // Server Control (nur VPS): Pause zwischen Durchläufen ist weckbar; Neustart des Cores = sauberes Ende nach dem Durchlauf,
   // Docker (restart: unless-stopped) startet den Container-Prozess neu. Nie mitten in einem Gmail-Durchlauf.
@@ -1115,7 +1136,7 @@ async function loop() {
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
     queue: () => { const inbox = createStore(WORKER_DIR).read(CLOUD_INBOX, {}); const st = Object.values(inbox).map((e) => e.status); return { pending: st.filter((x) => x === "pending").length, processing: st.filter((x) => x === "accepted_local").length }; },
     restartCore: () => { restartRequested = true; wake(); },
-    restartMailWorker: () => { worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard }); standbyLogged = false; wake(); },
+    restartMailWorker: () => { worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads }); standbyLogged = false; wake(); },
     restartScheduler: () => wake(),
     // Cloud/Handy: Lead-Liste (Allowlist) und Cold-Entwurf je genau einem Lead – nur Entwurf, nie Versand.
     leads: () => publicLeads(salesMod.loadPipeline({ dir: WORKER_DIR, registry: gmail.listOwned() }).leads),
@@ -1125,9 +1146,10 @@ async function loop() {
     // Lead-Datenbank (Allowlist, lead-db.js) für Cloud/Handy: Suche, Filter, Detail, CSV-/JSON-Export – nie Gmail-IDs oder Roh-Evidence.
     leadDb: () => publicRegistry(createStore(WORKER_DIR)),
     // Reparaturaufträge (TF-036): Allowlist-Sicht (Zähler + ungefährliche Felder) fürs Dashboard – keine Aktionen aus der Cloud.
-    repair: () => repairMod.publicRepairOrders(repairDir),
+    // TF-066: je Auftrag zusätzlich die Onboarding-Sicht (Allowlist: Status, Zugang als Wort, bestätigte Website-Angaben – nie Secrets).
+    repair: () => onbMod.attachOnboarding(repairMod.publicRepairOrders(repairDir), onboarding ? onboarding.publicByOrder() : {}),
     // Check & Anleitung CHF 150 (TF-038): Allowlist-Sicht fürs Dashboard – reine Anzeige, keine Aktionen aus der Cloud.
-    check150: () => check150Mod.publicCheck150Orders(repairDir),
+    check150: () => onbMod.attachOnboarding(check150Mod.publicCheck150Orders(repairDir), onboarding ? onboarding.publicByOrder() : {}),
     // Payment Worker (TF-041): Ledger-Zähler + offene Zahlungsschwellen beider Workflows – nie Referenzen/payment_ids.
     payments: () => {
       const c = check150Mod.check150Status(repairDir), r = repairMod.repairOrdersStatus(repairDir);
@@ -1193,8 +1215,13 @@ async function loop() {
       else if (gmailAuth.ok && prev?.ok === false) log("info", "gmail_auth_recovered");
     }
     if (outboxDir) {
-      try { const ob = await outboxMod.processRepairOutbox({ dir: outboxDir, gmail, gmailAuth, log }); if (ob.processed) log("info", "repair_outbox_processed", ob); }
+      try { const ob = await outboxMod.processRepairOutbox({ dir: outboxDir, gmail, gmailAuth, log, onboarding }); if (ob.processed) log("info", "repair_outbox_processed", ob); }
       catch (e) { log("error", "repair_outbox_failed", { error: e.message }); }
+    }
+    // TF-066: Onboarding-Dialog (gebundene Auftrags-Threads, Reminder, Brief-Export) – nur mit funktionierendem Gmail-OAuth.
+    if (onboarding && gmailAuth?.ok !== false) {
+      try { const ob = await onboarding.process(); if (ob.processed) log("info", "onboarding_processed", ob); }
+      catch (e) { log("error", "onboarding_failed", { error: String(e.message).slice(0, 160) }); }
     }
     // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.
     try {

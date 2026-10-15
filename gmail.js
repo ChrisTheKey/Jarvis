@@ -30,7 +30,9 @@ export const LABEL = "JARVIS";
 // Nur Chris versendet sie selbst in Gmail. Diese Sperre sitzt hier, auf der untersten Ebene vor jedem Send.
 export const COLD_DRAFT_MODE = "COLD_LEAD_DRAFT_ONLY";
 // Einzige automatisch sendbare Service-Klassen für echte, bezahlte Kundenaufträge (TF-041, nach Zahlungsschwelle).
-export const SERVICE_MESSAGE_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST"]);
+// TF-066: + CUSTOMER_ONBOARDING_DIALOGUE – transaktionaler Dialog zu einem bestätigten, bezahlten Auftrag (nur im Auftrags-Thread).
+export const SERVICE_MESSAGE_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE"]);
+const ORDER_ID_RE = /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/;
 
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } };
 function writeSecret(file, data) {
@@ -316,7 +318,8 @@ export async function createDraft(fields) {
   const reply = fields.inReplyTo ? { inReplyTo: fields.inReplyTo, references: fields.references } : {};
   const cold = fields.mode === COLD_DRAFT_MODE ? { mode: COLD_DRAFT_MODE, leadId: fields.leadId || null, draftHash: fields.draftHash || null, legalBasis: "NONE" } : {};
   // Service-Mails bezahlter Kundenaufträge (TF-041) tragen ihre Nachrichtenklasse – nie zusammen mit einem Cold-Entwurf.
-  const service = !cold.mode && SERVICE_MESSAGE_CLASSES.includes(fields.messageClass) ? { messageClass: fields.messageClass } : {};
+  const service = !cold.mode && SERVICE_MESSAGE_CLASSES.includes(fields.messageClass) ? { messageClass: fields.messageClass,
+    ...(ORDER_ID_RE.test(String(fields.orderId || "")) ? { orderId: fields.orderId } : {}) } : {}; // TF-066: Auftrag des Service-Threads
   updateRegistry((r) => { r.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, ...cold, ...service, createdAt: new Date().toISOString() }; });
   return { draftId: draft.id, ...info };
 }
@@ -381,7 +384,8 @@ export const sendDraft = async (draftId, { window = null } = {}) => { assertSend
   updateRegistry((r) => {
     delete r.drafts[draftId];
     delete r.sending[draftId];
-    r.sent[sent.id] = { ...info, to: entry.to, subject: entry.subject, fromDraft: draftId, ...(window && { window }), sentAt: new Date().toISOString() };
+    r.sent[sent.id] = { ...info, to: entry.to, subject: entry.subject, fromDraft: draftId, ...(window && { window }),
+      ...(entry.messageClass ? { messageClass: entry.messageClass } : {}), ...(entry.orderId ? { orderId: entry.orderId } : {}), sentAt: new Date().toISOString() };
   });
   return info;
 }); };
@@ -532,6 +536,20 @@ export async function replyToThread(threadId, { body, mode } = {}) {
     inReplyTo: last?.rfcMessageId || "", references: [last?.references, last?.rfcMessageId].filter(Boolean).join(" "),
   });
   return { ...draft, to };
+}
+
+// TF-066: Antwort-Entwurf einer Service-Klasse im EIGENEN Auftrags-Thread. Anders als replyToThread wird der Empfänger NICHT aus
+// dem Thread abgeleitet, sondern ist fest vorgegeben (bestätigte Kundenadresse des Auftrags). Thread-Besitz wird wie bei readThread
+// geprüft (Register + Gmail); landet der Entwurf nicht im Thread, wird er verworfen. Gesendet wird nur über sendDraft.
+export async function replyDraftInThread(threadId, { to, body, messageClass, orderId = null } = {}) {
+  if (!SERVICE_MESSAGE_CLASSES.includes(messageClass)) throw new Error("Nur Service-Nachrichten im Auftrags-Thread.");
+  if (!to || !body) throw new Error("Empfänger oder Text fehlt.");
+  const { own, messages } = await fetchOwnedThread(threadId, loadRegistry());
+  const mails = messages.filter((m) => !m.draft);
+  const last = mails.at(-1);
+  const subject = own[0]?.subject || last?.subject || "";
+  return createDraft({ to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId, messageClass, orderId,
+    inReplyTo: last?.rfcMessageId || "", references: [last?.references, last?.rfcMessageId].filter(Boolean).join(" ") });
 }
 
 // ---------- Kommandozeile ----------

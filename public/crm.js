@@ -7,6 +7,7 @@ import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, CARDS, SORTS, filterLead
   ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts } from "./crm-model.js";
 import { createI18n } from "./i18n.js";
 import { callingTexts, leadCallBox } from "./calling-ui.js";
+import { onboardingTexts, leadOnboardingBox, onboardingPanel } from "./onboarding-ui.js";
 
 const $ = (id) => document.getElementById(id);
 const MOBILE = matchMedia("(max-width: 860px)");
@@ -250,6 +251,8 @@ function renderDrawer() {
     ...(l.market === "VN" && ["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) ? [el("h4", {}, t("sec.order")), orderBox(l, blocked)] : []),
     // TF-065: Calling-Agent-Sektion (letzter Anruf, Ergebnis, Dauer, Rückruf, Versuche, Zusammenfassung) – nur Chris und Lap, Server prüft den Scope.
     ...(["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) && (S.actor?.role === "OWNER" || l.market === "VN") ? [el("h4", {}, callingTexts(I.locale).lead.h), leadCallBox(l, I.locale)] : []),
+    // TF-066: Kunden-Onboarding der Aufträge dieses Leads (Server prüft Bereich/Markt; nie Zugangsdaten).
+    el("h4", {}, onboardingTexts(I.locale).h), leadOnboardingBox(l, I.locale),
     el("h4", {}, t("sec.admin")),
     el("div", { class: "crm-qa" },
       l.do_not_contact && l.dnc_source !== "crm" ? el("span", { class: "crm-note" }, t("dncLocked"))
@@ -402,7 +405,9 @@ function build() {
   box.replaceChildren(
     el("div", { class: "crm-top" }, el("h2", { id: "crmTitle" }, t("crm.title")), el("span", { class: "meta", id: "crmMeta" }, ""),
       el("button", { type: "button", class: "crm-btn", onclick: load }, t("btn.refresh")), el("button", { type: "button", class: "crm-btn", onclick: exportCsv }, t("btn.csv")),
+      el("button", { type: "button", class: "crm-btn", id: "crmOnbBtn", onclick: toggleOnboarding }, onboardingTexts(I.locale).panel),
       el("button", { type: "button", class: "crm-btn", onclick: close }, t("btn.close"))),
+    el("div", { id: "crmOnbSlot" }),
     el("div", { class: "crm-cards pipe", id: "crmPipeCards", role: "group", "aria-label": t("aria.pipe") }),
     el("div", { class: "crm-cards", id: "crmCards", role: "group", "aria-label": t("aria.cards") }),
     el("div", { class: "crm-cards errs", id: "crmErrCards", role: "group", "aria-label": t("aria.errs") }),
@@ -433,6 +438,12 @@ function build() {
     box.addEventListener("change", (e) => { if (e.target.closest(".crm-fgrid") || e.target.id === "crmSort") renderList(); });
     MOBILE.addEventListener("change", () => { if (!box.hidden) renderList(); });
   }
+}
+// TF-066: Übersicht Kunden-Onboarding mit Filtern (Owner: alle Aufträge; Verkäufer: nur eigener Bereich – Server prüft).
+function toggleOnboarding() {
+  const slot = $("crmOnbSlot");
+  if (slot.childElementCount) { slot.replaceChildren(); return; }
+  slot.replaceChildren(onboardingPanel(I.locale, { onClose: () => slot.replaceChildren() }));
 }
 function open() {
   if (!$("crm").childElementCount) build();

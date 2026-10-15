@@ -10,6 +10,7 @@
 import { safeEqual } from "./shared-state.js";
 import { LEAD_ID_RE, cleanLeads } from "./cloud-leads.js";
 import { cleanLead as cleanDbLead, filterLeads, leadStats, leadsToCsv, FILTER_KEYS, CANTON_CODES } from "./lead-db.js";
+import { ONBOARDING_STATES, BRIEF_STATUSES, CHANGE_KINDS, CHANGE_GROUPS, AWAITING, detectSensitive } from "./onboarding-core.js";
 
 export const TIERS = ["read", "control", "dangerous"];
 export const LOG_SOURCES = ["core", "mail", "scheduler", "backup", "deploy"];
@@ -145,7 +146,7 @@ const CHECK150_STATE_WORDS = ["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT",
 // Zahlungs-/Phasen-Wörter (TF-041) – bewusst hier dupliziert (kein Import von payments.js in die Netlify-Funktion).
 const PAYMENT_STATE_WORDS = ["UNPAID", "PARTIAL", "DEPOSIT_MET", "PAID_FULL", "REFUNDED", "PAYMENT_REVIEW_REQUIRED"];
 const CHECK150_PHASE_WORDS = ["WAITING_FOR_CONFIRMATION", "WAITING_FOR_DEPOSIT", "DEPOSIT_RECEIVED", "AUDITING", "REPORT", "READY_FOR_DELIVERY", "SENT", "COMPLETED", "CANCELLED", "BLOCKED"];
-const REPAIR_PHASE_WORDS = ["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"];
+const REPAIR_PHASE_WORDS = ["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "WAITING_FOR_CUSTOMER_BRIEF", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"];
 // Adapter-Wörter (TF-042) – nie Connector-Strings, Hosts oder Pfade.
 const REPAIR_ADAPTER_WORDS = ["GITHUB_NETLIFY", "WORDPRESS", "SFTP", "SSH", "UNSUPPORTED"];
 const REGISTRY_ADAPTERS = ["github_netlify", "wordpress", "sftp", "ssh"];
@@ -154,6 +155,24 @@ const ACCESS_TYPE_WORDS = ["github_netlify", "wordpress_cms", "sftp", "ssh", "ho
 const BROWSER_GATE_WORDS = ["JA", "NEIN", "WARTET"]; // TF-045
 const BROWSER_REGRESSION_WORDS = ["KEINE", "GEFUNDEN", "ROLLBACK"];
 const REPAIR_DELIVERY_WORDS = ["none", "draft_ready", "sent", "attachment_required", "unclear", "report_unsafe", "failed", "manual"]; // TF-046
+// TF-066: Kunden-Onboarding je Auftrag – nur Statuswörter, Zeitpunkte, Zahlen und die BESTÄTIGTEN/strukturierten Website-Angaben
+// (Telefon/Adresse/Texte, die auf die Website sollen). Nie Zugangsdaten, Links, Token, Rohmails, Mailadressen des Kunden.
+const ONB_ACCESS_WORDS = ["not_required", "missing", "link_sent", "link_expired", "received", "checked"];
+const ONB_CONTENT_WORDS = ["none", "open", "confirmed", "unknown"];
+const onbText = (v, max = 300) => (typeof v === "string" && !detectSensitive(v) ? v.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, max) : null);
+export function cleanOnboarding(x) {
+  if (!x || typeof x !== "object") return null;
+  const item = (i) => (i && typeof i === "object" ? { id: onbText(i.id, 40), kind: word(i.kind, CHANGE_KINDS), page: onbText(i.page, 80), section: onbText(i.section, 80),
+    old_text: onbText(i.old_text), new_text: onbText(i.new_text),
+    address: i.address && typeof i.address === "object" ? { street: onbText(i.address.street, 120), postal_code: onbText(i.address.postal_code, 20), city: onbText(i.address.city, 80), country: onbText(i.address.country, 60) } : null,
+    customer_confirmed: bool(i.customer_confirmed), complete: bool(i.complete) } : null);
+  const changes = {};
+  for (const g of Object.values(CHANGE_GROUPS)) changes[g] = (Array.isArray(x.changes?.[g]) ? x.changes[g] : []).slice(0, 20).map(item).filter((i) => i && i.kind);
+  return { kind: word(x.kind, ["CHECK", "FIX"]), market: word(x.market, ["CH", "VN"]), locale: word(x.locale, ["de-CH", "vi-VN"]), state: word(x.state, ONBOARDING_STATES),
+    awaiting: word(x.awaiting, AWAITING), payment_gate: word(x.payment_gate, ["met", "open"]), access: word(x.access, ONB_ACCESS_WORDS), content: word(x.content, ONB_CONTENT_WORDS),
+    brief_status: word(x.brief_status, BRIEF_STATUSES), open_items: num(x.open_items, 100), reminders: num(x.reminders, 10),
+    last_customer_reply_at: iso(x.last_customer_reply_at), last_jarvis_reply_at: iso(x.last_jarvis_reply_at), manual_reason: onbText(x.manual_reason, 160), changes };
+}
 const PROFILE_STATUS_WORDS = ["PROFILE_READY", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "MANUAL_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS", "BLOCKED_NO_ACCESS", "PREFLIGHT_RETRY"];
 // TF-064: Markt/Währung/Beträge in Auftragswährung (VND bis 1e9, ganze Zahlen) – zusätzlich zu den Legacy-*_chf-Feldern.
 const MARKET_WORDS = ["CH", "VN"], CURRENCY_WORDS = ["CHF", "VND"];
@@ -181,6 +200,7 @@ export function cleanCheck150(r) {
     // Zahlungsstand (TF-041): nur Zahlen/Flag/Zustandswort – nie Referenzen oder Zahlungsdetails.
     ...payFields(o, n), phase: word(o.phase, CHECK150_PHASE_WORDS),
     source: word(o.source, ["direct_customer", "jarvis_lead"]),
+    onboarding: cleanOnboarding(o.onboarding), // TF-066
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), ready_for_delivery: n(r.ready_for_delivery, 100_000),
@@ -190,7 +210,7 @@ export function cleanCheck150(r) {
 // Reparaturaufträge (TF-036): nur Zähler, feste Zustandswörter und ungefährliche Auftragsfelder – nie Evidence, Branches,
 // Commits, Preview-URLs, Freigabe-Referenzen oder Tokens. Die Cloud erzwingt die Whitelist erneut (wie bei den Leads).
 const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK", "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT",
-  "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "BACKUP",
+  "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "WAITING_FOR_CUSTOMER_BRIEF", "BACKUP",
   "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "BLOCKED_NO_ACCESS",
   "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK", "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED_UNSAFE_ACCESS",
   "BLOCKED_HOST_KEY_CHANGED"];
@@ -223,6 +243,7 @@ export function cleanRepair(r) {
     authorized: bool(o.authorized), delivery_status: word(o.delivery_status, REPAIR_DELIVERY_WORDS),
     // TF-055: offene manuelle Punkte nach dem Retest – nur eine Zahl.
     manual_items_open: o.manual_items_open == null ? null : n(o.manual_items_open, 10_000),
+    onboarding: cleanOnboarding(o.onboarding), // TF-066
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), completed_with_manual_items: n(r.completed_with_manual_items, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),

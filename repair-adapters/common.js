@@ -63,6 +63,9 @@ export const ISSUE_FIX_MATRIX = Object.freeze({
   missing_asset: Object.freeze({ fix: "replace_src", attr: "src", families: ["content", "files"] }),
   // Nur mit exakt belegter CSS-Ursache (Datei + exakter Ausschnitt + exakte Korrektur) und nur über Dateien.
   mobile_overflow: Object.freeze({ fix: "css_exact", attr: null, families: ["files"] }),
+  // TF-066: vom Kunden im Auftragsdialog ausdrücklich bestätigte Inhaltsänderung (alter → neuer Text, Telefon, E-Mail …).
+  // Nur sichtbarer Text (patchVisibleText), nie Code, Attribute, Skripte, Dateinamen oder Datenbanken; ≤ 3 Stellen, ≤ 3 Objekte.
+  customer_content_change: Object.freeze({ fix: "replace_text", attr: null, families: ["content", "files"] }),
 });
 // Ausdrücklich NIE automatisch (auch wenn ein anderes Modul sie als „fix“ einstuft).
 export const NEVER_AUTO_FIX = Object.freeze(["https_certificate", "certificate_error", "no_https", "no_https_redirect", "redirect_loop", "mixed_content",
@@ -130,6 +133,95 @@ export function patchExact(text, { from, to }) {
   const n = text.split(from).length - 1;
   if (n !== 1) return { ok: false, reason: n ? "ambiguous_location" : "not_found" };
   return { ok: true, text: text.replace(from, () => to), count: 1, diff: [{ before: from, after: to, count: 1 }] };
+}
+
+// ---------- TF-066: bestätigte Kunden-Inhaltsänderung – nur SICHTBARER Text ----------
+// HTML grob in Abschnitte zerlegen: Text (zwischen Tags) vs. alles andere (Tags samt Attributen, Kommentare, <script>, <style>,
+// <template>, <noscript>). Ersetzt wird ausschliesslich in Text-Abschnitten. Kommt der alte Text zusätzlich irgendwo anders vor
+// (Attribut, Skript, Meta, Dateiname …), wird NICHTS geändert – die Stelle ist dann nicht eindeutig (nie raten, nie global).
+// Ausnahme nur für die zugehörigen Kontakt-Links: kind=email → href="mailto:<alt>", kind=phone → href="tel:<gleiche Nummer>".
+const RAW_BLOCK_RE = /<(script|style|template|noscript|textarea)\b[^>]*>[\s\S]*?<\/\1\s*>|<!--[\s\S]*?-->|<[^>]*>/gi;
+export function htmlSegments(html) {
+  const out = [];
+  let last = 0;
+  for (const m of String(html).matchAll(RAW_BLOCK_RE)) {
+    if (m.index > last) out.push({ text: true, s: html.slice(last, m.index) });
+    out.push({ text: false, s: m[0] });
+    last = m.index + m[0].length;
+  }
+  if (last < html.length) out.push({ text: true, s: html.slice(last) });
+  return out;
+}
+const countIn = (s, needle) => (needle ? s.split(needle).length - 1 : 0);
+// Telefonnummern gleich? (Ziffern; 0… national gegen +CC… international, CH 41 / VN 84 und jede andere 1–3-stellige Vorwahl)
+export function samePhone(a, b) {
+  const x = String(a).replace(/\D/g, "").replace(/^00/, ""), y = String(b).replace(/\D/g, "").replace(/^00/, "");
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const nat = (d) => (d.startsWith("0") ? d.slice(1) : null);
+  for (const [n, i] of [[x, y], [y, x]]) { const core = nat(n); if (core && core.length >= 6 && i.endsWith(core) && i.length - core.length >= 1 && i.length - core.length <= 3) return true; }
+  return false;
+}
+// Neuer tel:-Wert im Stil des alten (international bleibt international, sofern die neue Nummer national angegeben ist).
+function telValue(oldHref, from, to) {
+  const href = oldHref.replace(/^tel:/i, "").replace(/[^\d+]/g, "").replace(/^00/, "+");
+  const next = String(to).replace(/[^\d+]/g, "").replace(/^00/, "+");
+  const fromD = String(from).replace(/\D/g, "");
+  if (!href.startsWith("+") || !next.startsWith("0") || !fromD.startsWith("0")) return next;
+  const hd = href.slice(1), cc = hd.slice(0, hd.length - (fromD.length - 1));
+  return /^\d{1,3}$/.test(cc) ? `+${cc}${next.slice(1)}` : next;
+}
+const TEL_HREF_RE = /(\bhref\s*=\s*["'])(tel:[^"']+)(["'])/gi;
+const MAILTO_HREF_RE = /(\bhref\s*=\s*["'])mailto:([^"'?]+)((?:\?[^"']*)?["'])/gi;
+export function patchVisibleText(text, { from, to, kind = "text_replacement", maxOccurrences = MAX_OCCURRENCES_PER_OBJECT } = {}) {
+  if (typeof text !== "string" || typeof from !== "string" || !from.trim() || typeof to !== "string" || from === to) return { ok: false, reason: "invalid_input" };
+  if (/[<>]/.test(from) || /[<>]/.test(to)) return { ok: false, reason: "markup_not_allowed" };
+  const segs = htmlSegments(text);
+  const inText = segs.filter((s) => s.text).reduce((n, s) => n + countIn(s.s, from), 0);
+  let linkHits = 0;
+  const patchedSegs = segs.map((s) => {
+    if (s.text) return { ...s, out: s.s.split(from).join(to) };
+    let out = s.s;
+    if (kind === "phone") out = out.replace(TEL_HREF_RE, (m, a, href, b) => (samePhone(href.slice(4), from) ? (linkHits++, `${a}tel:${telValue(href, from, to)}${b}`) : m));
+    if (kind === "email") out = out.replace(MAILTO_HREF_RE, (m, a, addr, b) => (addr.trim().toLowerCase() === from.trim().toLowerCase() ? (linkHits++, `${a}mailto:${to}${b}`) : m));
+    return { ...s, out };
+  });
+  if (!inText) return { ok: false, reason: "not_found" };
+  // Alter Text ausserhalb des sichtbaren Texts (Attribut, Skript, Meta …), der nicht der zugehörige Kontakt-Link ist → nicht eindeutig.
+  const rawElsewhere = segs.filter((s) => !s.text).reduce((n, s) => n + countIn(s.s, from), 0);
+  const allowedElsewhere = kind === "email" ? segs.filter((s) => !s.text).reduce((n, s) => n + [...s.s.matchAll(MAILTO_HREF_RE)].filter((m) => m[2].trim().toLowerCase() === from.trim().toLowerCase()).length, 0) : 0;
+  if (rawElsewhere > allowedElsewhere) return { ok: false, reason: "ambiguous_location" };
+  if (inText + linkHits > maxOccurrences) return { ok: false, reason: "too_many_occurrences" };
+  const out = patchedSegs.map((s) => s.out).join("");
+  if (countRe(out, /</g) !== countRe(text, /</g) || countRe(out, />/g) !== countRe(text, />/g)) return { ok: false, reason: "structure_changed" };
+  return { ok: true, text: out, count: inText + linkHits, diff: [{ before: from, after: to, count: inText }, ...(linkHits ? [{ before: kind === "phone" ? "tel:" : "mailto:", after: kind === "phone" ? "tel:" : "mailto:", count: linkHits }] : [])] };
+}
+export const visibleIncludes = (html, s) => !!s && htmlSegments(String(html || "")).some((x) => x.text && x.s.includes(s));
+// Kandidaten im sichtbaren Text (nur Telefon/E-Mail, wenn der Kunde die bisherige Angabe nicht genannt hat). Genau EIN eindeutiger
+// Wert (eine Schreibweise) → dieser wird ersetzt; sonst null (manuell) – nie raten, welche von mehreren Nummern gemeint ist.
+const PHONE_SURFACE_RE = /(?:\+\d{1,3}[\s.\/-]?(?:\(0\)\s?)?|\b0)\d{1,4}(?:[\s.\/-]?\d{2,4}){2,4}\b/g;
+const EMAIL_SURFACE_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+export function visibleCandidates(html, kind) {
+  const re = kind === "phone" ? PHONE_SURFACE_RE : kind === "email" ? EMAIL_SURFACE_RE : null;
+  if (!re) return [];
+  const out = [];
+  for (const s of htmlSegments(html)) if (s.text) for (const m of s.s.matchAll(re)) { const v = m[0].trim(); if (kind !== "phone" || v.replace(/\D/g, "").length >= 9) out.push(v); }
+  return out;
+}
+export function uniqueCandidate(values, kind) {
+  const forms = [...new Set(values)];
+  if (!forms.length) return null;
+  if (kind === "phone") return forms.every((f) => samePhone(f, forms[0])) && forms.length === 1 ? forms[0] : null;
+  return forms.length === 1 ? forms[0] : null;
+}
+// Text, der für eine Inhaltsänderung ersetzt wird (alter Wert + neuer Wert je Art) – Adressen nur mit exaktem alten Text.
+export function contentChangeTexts(change = {}) {
+  const k = change.kind;
+  const addr = (a) => [a?.street, [a?.postal_code, a?.city].filter(Boolean).join(" "), a?.country].filter(Boolean).join(", ");
+  if (k === "address") return { from: change.old_text || null, to: addr(change.address) || null };
+  if (k === "removal") return { from: change.old_text || null, to: "" };
+  if (k === "addition" || k === "other") return { from: null, to: null }; // Ergänzungen/sonstiges: Ort im Layout nicht eindeutig → manuell
+  return { from: change.old_text || null, to: change.new_text || null };
 }
 
 // ---------- Domain-Bindung (unmittelbar vor JEDEM Write) ----------

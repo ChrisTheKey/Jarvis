@@ -3,6 +3,7 @@
 // Beträge nur in VND. Firmennamen, Domains, URLs und technische Pfade werden nie übersetzt. Keine zusätzlichen Leistungsversprechen.
 import { offerFor, formatMoney } from "./pricing.js";
 import { VN_SIGNATURE } from "./sender-profiles.js";
+import { contentQuestionLines, NO_PASSWORD_VI } from "./onboarding-core.js";
 
 export const isVnOrder = (o) => o?.market === "VN";
 const CHECK = offerFor("VN", "CHECK"), FIX = offerFor("VN", "FIX");
@@ -165,8 +166,33 @@ export function buildVnCheckDeliveryDraft(order, reportText, inline) {
 }
 
 // ---------- Check & Reparatur (VN FIX): Zugang, Host-Key, Bericht, Liefermail ----------
-export function buildVnAccessRequestMail(order, { link = null, expires_at = null } = {}) {
+export function buildVnAccessRequestMail(order, { link = null, expires_at = null, onboarding = false } = {}) {
   const until = expires_at ? vnDate(expires_at) : null;
+  if (onboarding) {
+    // TF-066: Onboarding-Start (§14) – vollständig Vietnamesisch: sicherer Link, keine Passwörter per E-Mail, Inhaltsfrage.
+    const [q, ...rest] = contentQuestionLines("vi-VN");
+    const body = [
+      greet(order),
+      "",
+      `Cảm ơn anh/chị – chúng tôi đã nhận được khoản thanh toán đầu tiên cho dịch vụ «${VN_FIX_NAME}», mức thanh toán cần thiết đã đạt.`,
+      "",
+      `Để sửa lỗi website ${order.domain} một cách chính xác, chúng tôi cần thêm hai điều:`,
+      "",
+      "1. Một quyền truy cập tạm thời và an toàn qua đường liên kết cá nhân, chỉ có hiệu lực cho đơn hàng này" + (until ? ` (có hiệu lực đến ${until}, chỉ dùng được một lần):` : " (chỉ dùng được một lần):"),
+      link || "(đường liên kết sẽ được gửi riêng)",
+      "",
+      "Quan trọng: Vui lòng KHÔNG gửi mật khẩu qua email. " + NO_PASSWORD_VI,
+      "An toàn nhất: mời chúng tôi làm cộng tác viên hoặc tạo một tài khoản tạm thời chỉ với các quyền cần thiết (không dùng mật khẩu chính). Trong biểu mẫu, anh/chị cũng xác nhận đồng ý cho việc sửa lỗi đã thỏa thuận.",
+      "",
+      `2. ${q}`,
+      ...rest,
+      "",
+      "Trước thay đổi đầu tiên, chúng tôi sẽ sao lưu toàn bộ website; khi hoàn tất, anh/chị sẽ nhận được một báo cáo dễ hiểu.",
+      "",
+      VN_SIGNATURE,
+    ].join("\n");
+    return { subject: `Sửa lỗi website ${order.domain} – quyền truy cập an toàn và yêu cầu của anh/chị`, body };
+  }
   const body = [
     greet(order),
     "",
@@ -217,7 +243,8 @@ export function buildVnHostKeyConfirmationMail(order, { link = null, expires_at 
 }
 // Bericht ohne Signatur/URLs (läuft durch reportUnsafe); manualOpen/fixed/openForReview wie im Schweizer Bericht.
 export function buildVnRepairReport(order, { now = new Date(), fixed, openForReview, relevant, manualOpen }) {
-  const line = (i) => `• ${vnFindingText(i.type, { page: i.page, label: i.label, location: i.location }).title}`;
+  // TF-066: bestätigte Inhaltsänderung des Kunden mit eigenem vietnamesischem Text.
+  const line = (i) => `• ${i.type === "customer_content_change" && i.customer_text_vi ? i.customer_text_vi : vnFindingText(i.type, { page: i.page, label: i.label, location: i.location }).title}`;
   const g = order.browser_gate;
   return [
     `Kiểm tra website – Báo cáo hoàn tất «${VN_FIX_NAME}» (${formatMoney(FIX.price, "VND")})`,

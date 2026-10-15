@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createLogger, acquireLock, heartbeat, releaseLock, backupPublicKey, zurichDay } from "./mail-worker.js";
 import { createOutboxMailer, outboxStatus } from "./repair-outbox.js";
+import { onboardingDirOf } from "./onboarding-store.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -28,6 +29,8 @@ export const CRM_EXPORT_DIR = process.env.JARVIS_REPAIR_CRM_EXPORT || null;
 // Was in diesem Container nie liegen darf – sonst könnte er zur zweiten Sender Authority werden.
 export const FORBIDDEN_FILES = Object.freeze(["gmail_token.json", "gmail_credentials.json", "gmail_jarvis.json"]);
 export const FORBIDDEN_ENV = Object.freeze(["ANTHROPIC_API_KEY", "JARVIS_SERVER_CONTROL_TOKEN"]);
+// TF-066: Kunden-Onboarding-Dialog (Notschalter JARVIS_ONBOARDING=off → Verhalten wie vor TF-066).
+export const onboardingEnabled = (env = process.env) => env.JARVIS_ONBOARDING !== "off";
 export const pollMs = (env = process.env) => Math.max(30, Number(env.JARVIS_REPAIR_POLL_SECONDS) || 120) * 1000;
 
 // Isolation (fail closed): nur Namen, nie Werte.
@@ -44,8 +47,10 @@ export function serviceHealthy(dir = WORKER_DIR, now = Date.now(), maxAgeMs = 5 
 }
 
 // Ein Durchlauf: CHF-480 und CHF-150 mit der Outbox als einzigem Versandweg. Fehler eines Workflows stoppen den anderen nie.
-export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR, crmExportDir = CRM_EXPORT_DIR, intake = null, orderIntake = null, log = () => {}, runRepair = null, runCheck150 = null } = {}) {
+export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR, crmExportDir = CRM_EXPORT_DIR, intake = null, orderIntake = null, log = () => {}, runRepair = null, runCheck150 = null,
+  onboarding = false } = {}) {
   const mailer = createOutboxMailer({ dir: outboxDir });
+  const onboardingDir = onboarding ? onboardingDirOf(outboxDir) : null;
   const out = {};
   // TF-064: bestätigte VN-Aufträge (Lap/Chris über /api/sales) übernehmen – vor den Workflows, Fehler stoppen den Service nie.
   if (orderIntake) {
@@ -54,14 +59,19 @@ export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUT
   }
   runRepair ||= (await import("./repair-workflow.js")).runRepairOrders;
   runCheck150 ||= (await import("./check-150-workflow.js")).runCheck150Orders;
-  try { out.repair = await runRepair({ dir, gmail: mailer, intake, log }); if (out.repair?.advanced) log("info", "repair_orders_processed", out.repair); }
+  try { out.repair = await runRepair({ dir, gmail: mailer, intake, log, onboardingDir }); if (out.repair?.advanced) log("info", "repair_orders_processed", out.repair); }
   catch (e) { out.repair = { error: true }; log("error", "repair_orders_failed", { error: e.message }); }
-  try { out.check150 = await runCheck150({ dir, gmail: mailer, log }); if (out.check150?.advanced) log("info", "check150_orders_processed", out.check150); }
+  try { out.check150 = await runCheck150({ dir, gmail: mailer, log, onboarding: !!onboardingDir }); if (out.check150?.advanced) log("info", "check150_orders_processed", out.check150); }
   catch (e) { out.check150 = { error: true }; log("error", "check150_orders_failed", { error: e.message }); }
   // TF-055: Stand nach Reparaturen fürs CRM (behoben = RESOLVED, manuelle Punkte bleiben). Fehler stoppen den Service nie.
   if (crmExportDir) {
     try { out.crm_export = (await import("./repair-workflow.js")).writeRepairFindingsExport({ dir, exportDir: crmExportDir }); if (out.crm_export.written) log("info", "repair_crm_export", out.crm_export); }
     catch (e) { out.crm_export = { error: true }; log("error", "repair_crm_export_failed", { error: e.message }); }
+  }
+  // TF-066: Auftragsfakten für den Onboarding-Dialog im Mail-Worker (nur Allowlist, nie Secrets). Fehler stoppen den Service nie.
+  if (onboardingDir) {
+    try { out.onboarding = (await import("./onboarding-repair.js")).writeOnboardingOrders({ dir, onboardingDir }); }
+    catch (e) { out.onboarding = { error: true }; log("error", "onboarding_export_failed", { error: String(e.message).slice(0, 160) }); }
   }
   out.outbox = outboxStatus(outboxDir);
   return out;
@@ -101,7 +111,7 @@ async function loop() {
   try { await backupLocal({ dir, log, first: true }); } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
   while (!stop) {
     heartbeat(dir, process.pid, SERVICE_LOCK);
-    await repairServiceIteration({ dir, intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log });
+    await repairServiceIteration({ dir, intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log, onboarding: onboardingEnabled() });
     try { await backupLocal({ dir, log }); } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
     if (!stop) await nap(pollMs());
   }
@@ -122,7 +132,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const { intakeClient } = await import("./access-intake.js");
       const { orderIntakeClient } = await import("./order-intake.js");
       const { syncConfig } = await import("./local-state.js");
-      console.log(JSON.stringify(await repairServiceIteration({ intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log: createLogger(WORKER_DIR) }), null, 2));
+      console.log(JSON.stringify(await repairServiceIteration({ intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log: createLogger(WORKER_DIR), onboarding: onboardingEnabled() }), null, 2));
       return 0;
     },
   }[arg] || loop;

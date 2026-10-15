@@ -17,7 +17,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-export const OUTBOX_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST"]);
+// TF-066: + CUSTOMER_ONBOARDING_DIALOGUE (transaktionaler Auftragsdialog, z. B. CHECK-Startnachricht). Trägt ein Auftrag eine
+// order_id, sendet der Mail-Worker im gebundenen Auftrags-Thread (bzw. eröffnet ihn mit der ersten Nachricht und bindet ihn).
+export const OUTBOX_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE"]);
+export const ONBOARDING_CLASS = "CUSTOMER_ONBOARDING_DIALOGUE";
+const ORDER_ID_RE = /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/;
+export const OUTBOX_PURPOSES = Object.freeze(["first", "reissue", "host_key", "check_intro"]);
 export const OUTBOX_PENDING = "OUTBOX_PENDING";
 export const OUTBOX_RESULTS = Object.freeze(["sent", "failed", "unclear", "rejected"]);
 export const CONSUMER_FILE = "consumer.json";
@@ -46,13 +51,17 @@ export function createOutboxMailer({ dir, now = () => new Date() } = {}) {
   const check = (id) => { if (!ID_RE.test(String(id || ""))) throw new Error("Outbox: unbekannte Auftrags-ID."); };
   return {
     outbox: dir,
-    async createDraft({ to, subject, body, messageClass } = {}) {
-      if (!OUTBOX_CLASSES.includes(messageClass)) throw new Error("Outbox: nur Service-Mails (CUSTOMER_ACCESS_REQUEST / CUSTOMER_ORDER_FULFILLMENT).");
+    async createDraft({ to, subject, body, messageClass, orderId = null, purpose = null, seq = null } = {}) {
+      if (!OUTBOX_CLASSES.includes(messageClass)) throw new Error("Outbox: nur Service-Mails (CUSTOMER_ACCESS_REQUEST / CUSTOMER_ORDER_FULFILLMENT / CUSTOMER_ONBOARDING_DIALOGUE).");
+      if (orderId != null && !ORDER_ID_RE.test(String(orderId))) throw new Error("Outbox: Auftrags-ID ungültig.");
+      if (messageClass === ONBOARDING_CLASS && !orderId) throw new Error("Outbox: Onboarding-Nachricht nur zu einem Auftrag.");
+      if (purpose != null && !OUTBOX_PURPOSES.includes(purpose)) throw new Error("Outbox: Zweck ungültig.");
       if (!EMAIL_RE.test(String(to || ""))) throw new Error("Outbox: Empfänger ungültig.");
       if (!subject || !body || String(subject).length > MAX_SUBJECT || String(body).length > MAX_BODY) throw new Error("Outbox: Betreff/Text fehlt oder zu lang.");
       ensure();
       const id = "ob-" + crypto.randomBytes(12).toString("hex");
-      writeAtomic(file(dir, id, "draft.json"), { v: 1, id, message_class: messageClass, to: String(to), subject: String(subject), body: String(body), created_at: now().toISOString() });
+      writeAtomic(file(dir, id, "draft.json"), { v: 1, id, message_class: messageClass, to: String(to), subject: String(subject), body: String(body),
+        ...(orderId ? { order_id: String(orderId), purpose: purpose || null, ...(Number.isInteger(seq) ? { seq } : {}) } : {}), created_at: now().toISOString() });
       return { draftId: id, threadId: null };
     },
     async updateDraft(id, { subject, body } = {}) {
@@ -108,7 +117,10 @@ export function outboxStatus(dir, { now = Date.now() } = {}) {
 // Versand belegt). Gibt nie Adressen/Inhalte in Logs aus.
 // gmailAuth (TF-049): Ergebnis von gmail.checkAuth – landet im Herzschlag (nur ok/Kategorie). Ist Gmail OAuth kaputt, bleibt jeder
 // Auftrag unangetastet offen (kein Claim, kein «failed») – sonst gingen Service-Mails bei abgelaufenem Token endgültig verloren.
-export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = () => {}, now = () => new Date(), max = 10 } = {}) {
+// TF-066 onboarding (optional, Mail-Worker): route(rq) → { threadId } (Antwort im gebundenen Auftrags-Thread) | { newThread } |
+// { defer } (Auftragsstand noch nicht aktuell) | { reject } ; onSent(rq, info) bindet Auftrag ↔ Thread nach dem Versand;
+// threadLost(rq) → manuelle Prüfung (nie ein neuer freier Thread). Ohne onboarding: Auftrags-Mails wie bisher, Onboarding-Klasse abgelehnt.
+export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = () => {}, now = () => new Date(), max = 10, onboarding = null } = {}) {
   const out = { processed: 0, sent: 0, failed: 0, unclear: 0, rejected: 0, deferred: 0 };
   let names;
   try { names = fs.readdirSync(dir); } catch { return { ...out, missing: true }; }
@@ -138,26 +150,45 @@ export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = 
     }
     const rq = readJson(file(dir, id, "request.json"));
     const valid = rq && rq.id === id && OUTBOX_CLASSES.includes(rq.message_class) && EMAIL_RE.test(String(rq.to || ""))
-      && rq.subject && rq.body && String(rq.subject).length <= MAX_SUBJECT && String(rq.body).length <= MAX_BODY;
+      && rq.subject && rq.body && String(rq.subject).length <= MAX_SUBJECT && String(rq.body).length <= MAX_BODY
+      && (rq.order_id == null || ORDER_ID_RE.test(String(rq.order_id))) && (rq.message_class !== ONBOARDING_CLASS || (!!rq.order_id && !!onboarding));
     if (!valid) { result(id, "rejected", { message_class: OUTBOX_CLASSES.includes(rq?.message_class) ? rq.message_class : null }); continue; }
     if (!gmail || typeof gmail.createDraft !== "function" || typeof gmail.sendDraft !== "function") { out.deferred++; continue; }
+    let route = null;
+    if (rq.order_id && onboarding) {
+      try { route = onboarding.route(rq); } catch (e) { log("error", "onboarding_route_failed", { id, error: String(e.message).slice(0, 120) }); out.deferred++; continue; }
+      if (route?.defer) { out.deferred++; continue; }
+      if (route?.reject) { result(id, "rejected", { message_class: rq.message_class, reason: String(route.reject).slice(0, 40) }); continue; }
+      if (route?.threadId && typeof gmail.replyDraftInThread !== "function") { out.deferred++; continue; }
+    }
     try { fs.writeFileSync(claimFile, JSON.stringify({ at: now().toISOString(), message_class: rq.message_class }), { flag: "wx", mode: 0o600 }); }
     catch (e) { if (e.code === "EEXIST") continue; throw e; }
     let d;
-    try { d = await gmail.createDraft({ to: rq.to, subject: rq.subject, body: rq.body, messageClass: rq.message_class }); }
+    try {
+      d = route?.threadId
+        ? await gmail.replyDraftInThread(route.threadId, { to: rq.to, body: rq.body, messageClass: rq.message_class, orderId: rq.order_id })
+        : await gmail.createDraft({ to: rq.to, subject: rq.subject, body: rq.body, messageClass: rq.message_class, ...(rq.order_id && onboarding ? { orderId: rq.order_id } : {}) });
+    }
     catch (e) {
       // Vor dem Versand: vorübergehender Fehler → Claim zurücknehmen, nächster Durchlauf; sonst endgültig fehlgeschlagen.
       if (TRANSIENT_RE.test(String(e.message))) { rm(claimFile); out.deferred++; log("warn", "repair_outbox_deferred", { id }); break; }
+      // TF-066: Auftrags-Thread nicht mehr eindeutig → nie ein neuer freier Thread, manuelle Prüfung.
+      if (route?.threadId) { try { onboarding.threadLost(rq); } catch {} }
       result(id, "failed", { message_class: rq.message_class, reason: "draft_failed" }); continue;
     }
     fs.writeFileSync(claimFile, JSON.stringify({ at: now().toISOString(), message_class: rq.message_class, draft_id: d.draftId }), { mode: 0o600 });
-    try { await gmail.sendDraft(d.draftId); }
+    let info = null;
+    try { info = await gmail.sendDraft(d.draftId); }
     catch (e) {
       // Während des Versands: Ausgang ungewiss (5xx/Netz) → unklar; eindeutige Ablehnung → fehlgeschlagen. Nie ein zweiter Versuch.
       result(id, TRANSIENT_RE.test(String(e.message)) ? "unclear" : "failed", { message_class: rq.message_class });
       continue;
     }
     result(id, "sent", { message_class: rq.message_class });
+    if (rq.order_id && onboarding) {
+      try { onboarding.onSent(rq, { threadId: info?.threadId || d.threadId || null, messageId: info?.messageId || null }); }
+      catch (e) { log("error", "onboarding_bind_failed", { id, error: String(e.message).slice(0, 120) }); }
+    }
   }
   // Aufräumen (nur eigene Dateien): Ergebnis + Claim, deren Auftrag der Repair-Service längst abgeholt hat.
   for (const n of names.filter((x) => x.endsWith(".result.json"))) {

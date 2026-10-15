@@ -7,6 +7,11 @@
 //   GET  ?view=assignments       OWNER: Verteilungsbericht (nur Zählwerte/Verteilungen) + Audit
 //   GET  ?view=orders[&lead_id]  Lap: eigene VN-Aufträge (Angebot, Preis, bezahlt, offen, Zahlungs-/Arbeitsstatus, erwartete Provision);
 //                                OWNER: alle VN-Aufträge. Nie Kunden-E-Mail, Zahlungsreferenzen oder interne Pfade.
+//   GET  ?view=onboarding[&lead_id][&filter]  TF-066 Kunden-Onboarding je Auftrag (Zahlungsschwelle, Zugang als Wort, Inhaltsänderungen,
+//                                wartet auf, letzte Antworten, offene Punkte, bestätigte Website-Angaben). Serverseitig gescoped:
+//                                OWNER alle; Verkäufer nur Aufträge zu Leads im EIGENEN Bereich (gleicher Markt). Nie Zugangsdaten,
+//                                Links, Token, Rohmails oder die Kunden-E-Mail. filter: open|waiting_customer|waiting_access|
+//                                waiting_confirmation|manual_review|ready
 //   POST { op: "order.createConfirmed", lead_id, offer: "CHECK"|"FIX", confirmed: true }
 //                                Lap (SALES_AGENT_VN) bzw. OWNER: bewusst bestätigter Kundenauftrag für einen EIGENEN VN-Lead. Der Client
 //                                sendet NUR lead_id + Angebot + Bestätigung – Domain, Website, Firma, E-Mail, Markt, Währung und Preis
@@ -24,6 +29,7 @@ import { sellerOf, reassign, distributionReport, leadMarket, VN_SELLER } from ".
 import { deriveLedger, ordersFromSnapshot, summarize, totalsByCurrency, overrideSeller, emptyLedger, MARKET_PRICING, RATE_BPS, commissionMinor, fromMinor } from "./commission-ledger.js";
 import { offerFor, offerInfo, toMinor, ORDER_ID_RE } from "./pricing.js";
 import { safeEqual } from "./shared-state.js";
+import { ONBOARDING_FILTERS } from "./onboarding-core.js";
 
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const LEAD_RE = /^[a-z0-9][a-z0-9.@_+-]{2,252}$/;
@@ -211,6 +217,25 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
         const list = (doc.requests || []).filter((r) => (owner || (ids.has(r.lead_id) && r.seller_id === actor.user_id)) && (!leadFilter || r.lead_id === leadFilter))
           .sort((x, y) => String(y.created_at).localeCompare(String(x.created_at))).slice(0, 100).map((r) => orderView(r, snap, L));
         return reply(200, { orders: list, rate_bps: RATE_BPS[VN_SELLER], offers: ["CHECK", "FIX"].map((k) => { const o = offerFor("VN", k); return { offer: k, offer_class: o.offer_class, name: o.name_vi, price: o.price, deposit: o.deposit, currency: o.currency }; }) });
+      }
+      if (view === "onboarding") {
+        // TF-066: jeder angemeldete Benutzer, aber nur im eigenen Bereich (sales-scope über d.scoped) – fremde Kunden nie.
+        const leadFilter = url.searchParams.get("lead_id"), filter = url.searchParams.get("filter");
+        if (leadFilter && !LEAD_RE.test(leadFilter)) return reply(400, { error: "lead_id ungültig." });
+        if (filter && !Object.hasOwn(ONBOARDING_FILTERS, filter)) return reply(400, { error: "Filter ungültig." });
+        const d = await data();
+        const [snapshot, scoped] = await Promise.all([d.snapshot(), d.scoped(actor)]);
+        const byDomain = new Map(scoped.filter((l) => l.domain).map((l) => [normDom(l.domain), l]));
+        const all = snapshotOrders(snapshot).filter((o) => o.onboarding && typeof o.onboarding === "object").map((o) => {
+          const l = o.domain ? byDomain.get(normDom(o.domain)) : null;
+          return { o, l };
+        }).filter(({ o, l }) => (owner ? true : !!l && leadMarket(l) === (o.market === "VN" ? "VN" : "CH") && (actor.role !== "SALES_AGENT_VN" || leadMarket(l) === "VN")))
+          .filter(({ l }) => !leadFilter || l?.lead_id === leadFilter)
+          .map(({ o, l }) => ({ order_id: o.order_id, lead_id: l?.lead_id || null, company: o.company || null, domain: o.domain || null, offer_class: o.offer_class || null,
+            market: o.market === "VN" ? "VN" : "CH", state: o.state || null, phase: o.phase || null, onboarding: o.onboarding }));
+        const counts = Object.fromEntries(Object.entries(ONBOARDING_FILTERS).map(([k, f]) => [k, all.filter((x) => f(x.onboarding)).length]));
+        const list = (filter ? all.filter((x) => ONBOARDING_FILTERS[filter](x.onboarding)) : all).slice(0, 100);
+        return reply(200, { orders: list, counts, total: all.length });
       }
       if (view === "assignments") {
         if (!owner) return forbidden();

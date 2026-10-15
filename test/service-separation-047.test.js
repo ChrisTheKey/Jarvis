@@ -316,7 +316,7 @@ test("IMAGES: Chromium nur im Repair-Image; Repair-Image ohne Gmail-/Cloud-Mail-
   const mw = read("mail-worker.js");
   assert.match(mw, /if \(!repairRunning && !repairExternal\)/);
   assert.match(mw, /if \(!check150Running && !repairExternal\)/);
-  assert.match(mw, /processRepairOutbox\(\{ dir: outboxDir, gmail, gmailAuth, log \}\)/);
+  assert.match(mw, /processRepairOutbox\(\{ dir: outboxDir, gmail, gmailAuth, log(, onboarding)? \}\)/); // TF-066: + Onboarding-Hook
   // Outbox-Zustellung nur nach der Standby-Prüfung (send_authority) – im Standby-Zweig steht sie nicht.
   const loopSrc = mw.slice(mw.indexOf("async function loop()"));
   assert.ok(loopSrc.indexOf("if (it.standby)") < loopSrc.indexOf("processRepairOutbox"), "Zustellung nur mit send_authority");

@@ -110,3 +110,9 @@
   .crm-form .two { grid-template-columns: 1fr; }
 }
 .crm-table a[href^="tel:"] { white-space: nowrap; }
+
+/* TF-066 Kunden-Onboarding */
+.crm-onb-panel { border: 1px solid var(--line); background: var(--glass); padding: 10px 12px; margin: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+.crm-onb-list { display: grid; gap: 10px; }
+.crm-onb-list h4 { margin: 4px 0 0; }
+.crm-onb .crm-hist small { display: inline; margin-left: 6px; }

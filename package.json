@@ -32,7 +32,8 @@
     "test:tf063": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/auth-063.test.js test/scope-063.test.js test/commission-063.test.js test/vn-063.test.js test/lap-vi-browser-063.test.js",
     "vn-report": "node vn-discovery.js --report",
     "test:tf064": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/pricing-064.test.js test/commission-064.test.js test/vn-order-064.test.js test/mail-064.test.js test/vn-transactional-064.test.js",
-    "test:tf065": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/calling-065.test.js test/calling-browser-065.test.js"
+    "test:tf065": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/calling-065.test.js test/calling-browser-065.test.js",
+    "test:tf066": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/onboarding-066.test.js test/onboarding-browser-066.test.js"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",

@@ -239,12 +239,12 @@ export const PHASE_LABELS = Object.freeze({
   "de-CH": { WAITING_FOR_CONFIRMATION: "Wartet auf Bestätigung", WAITING_FOR_DEPOSIT: "Wartet auf Anzahlung", DEPOSIT_RECEIVED: "Anzahlung erhalten", AUDITING: "Website wird geprüft",
     REPORT: "Bericht wird erstellt", READY_FOR_DELIVERY: "Bereit zur Übergabe", SENT: "Bericht gesendet", COMPLETED: "Abgeschlossen", COMPLETED_WITH_MANUAL_ITEMS: "Abgeschlossen (manuelle Punkte offen)",
     CANCELLED: "Storniert", BLOCKED: "Angehalten", WAITING_FOR_ACCESS: "Wartet auf Zugang", ACCESS_REQUEST_SENT: "Zugangs-Anfrage gesendet", ACCESS_RECEIVED: "Zugang erhalten",
-    ACCESS_PROFILE_PREFLIGHT: "Zugang wird geprüft", HOST_KEY_CONFIRMATION: "Wartet auf Sicherheitsbestätigung", WAITING_FOR_ACCESS_PROFILE: "Wartet auf Zugangsangaben", BACKUP: "Sicherung läuft",
+    ACCESS_PROFILE_PREFLIGHT: "Zugang wird geprüft", HOST_KEY_CONFIRMATION: "Wartet auf Sicherheitsbestätigung", WAITING_FOR_ACCESS_PROFILE: "Wartet auf Zugangsangaben", WAITING_FOR_CUSTOMER_BRIEF: "Wartet auf Kundenangaben", BACKUP: "Sicherung läuft",
     REPAIRING: "Reparatur läuft", VALIDATING: "Ergebnis wird geprüft", LIVE_RETEST: "Erneute Prüfung", MANUAL_REVIEW: "Manuelle Prüfung nötig", PAYMENT_REVIEW_REQUIRED: "Zahlung wird geprüft" },
   "vi-VN": { WAITING_FOR_CONFIRMATION: "Chờ xác nhận", WAITING_FOR_DEPOSIT: "Chờ tiền đặt cọc", DEPOSIT_RECEIVED: "Đã nhận tiền đặt cọc", AUDITING: "Đang kiểm tra website",
     REPORT: "Đang soạn báo cáo", READY_FOR_DELIVERY: "Sẵn sàng bàn giao", SENT: "Đã gửi báo cáo", COMPLETED: "Hoàn thành", COMPLETED_WITH_MANUAL_ITEMS: "Hoàn thành (còn mục xử lý thủ công)",
     CANCELLED: "Đã hủy", BLOCKED: "Tạm dừng", WAITING_FOR_ACCESS: "Chờ quyền truy cập", ACCESS_REQUEST_SENT: "Đã gửi yêu cầu truy cập", ACCESS_RECEIVED: "Đã nhận quyền truy cập",
-    ACCESS_PROFILE_PREFLIGHT: "Đang kiểm tra quyền truy cập", HOST_KEY_CONFIRMATION: "Chờ xác nhận bảo mật", WAITING_FOR_ACCESS_PROFILE: "Chờ thông tin truy cập", BACKUP: "Đang sao lưu",
+    ACCESS_PROFILE_PREFLIGHT: "Đang kiểm tra quyền truy cập", HOST_KEY_CONFIRMATION: "Chờ xác nhận bảo mật", WAITING_FOR_ACCESS_PROFILE: "Chờ thông tin truy cập", WAITING_FOR_CUSTOMER_BRIEF: "Chờ thông tin từ khách hàng", BACKUP: "Đang sao lưu",
     REPAIRING: "Đang sửa lỗi", VALIDATING: "Đang kiểm tra kết quả", LIVE_RETEST: "Đang kiểm tra lại", MANUAL_REVIEW: "Cần kiểm tra thủ công", PAYMENT_REVIEW_REQUIRED: "Đang kiểm tra thanh toán" },
 });
 export const DICTS = Object.freeze({ "de-CH": DE, "vi-VN": VI });

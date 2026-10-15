@@ -227,6 +227,24 @@ export function createEscalationNotifier({ local = createLocalState(), toast = s
   };
 }
 
+// TF-066: Kunden-Onboarding braucht Chris (manuelle Prüfung, Stopp/Storno, KI-Pause, Reminder ausgeschöpft …). Typ wie die
+// bestehende Eskalation (gleiche Cloud-Allowlist), eigener Text, je Auftrag+Grund nur einmal. Nie Kundeninhalte oder Zugangsdaten.
+export function createOnboardingNotifier({ local = createLocalState(), toast = showToast, sync = (o) => syncWithCloud({ local, ...o }), log = () => {} } = {}) {
+  return async ({ order_id, company, threadId, reason }) => {
+    try {
+      const summary = `${company || "Kunde"}: Kunden-Onboarding ${order_id} braucht Ihre Prüfung (${String(reason || "manuelle Prüfung").slice(0, 100)}). Nichts automatisch gesendet.`;
+      const r = local.addNotification({ sourceId: `onb:${order_id}:${String(reason || "").slice(0, 60)}`, type: "mail_escalation", kind: null, company, contactName: "", threadId, summary });
+      if (!r.created) return { ...r, duplicate: true };
+      const shown = await toast({ title: "Jarvis – Kunden-Onboarding", body: summary }).catch((e) => ({ ok: false, error: e.message }));
+      await Promise.resolve(sync({ force: true })).catch(() => {});
+      return { ...r, toast: shown.ok };
+    } catch (e) {
+      log("error", "notify_failed", { error: e.message });
+      return { created: false, error: e.message };
+    }
+  };
+}
+
 // Anthropic-API-Guthaben aufgebraucht: eine Meldung je Pause, Toast wo möglich, sofort in die Cloud. Wirft nie.
 export function createAiBudgetNotifier({ local = createLocalState(), toast = showToast, sync = (o) => syncWithCloud({ local, ...o }), log = () => {} } = {}) {
   return async ({ since }) => {

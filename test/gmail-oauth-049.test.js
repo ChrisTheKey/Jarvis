@@ -192,6 +192,7 @@ test("G: Readiness-Quelltext enthält keine Gmail-Write-Operation; checkAuth ruf
   const pkg = JSON.parse(read("package.json"));
   assert.equal(pkg.scripts[RELEASE_GATE_SCRIPT], "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration && npm run test:separation-integration && node scripts/secret-scan.mjs && node scripts/lab-cleanup.mjs");
   const mw = read("mail-worker.js");
-  assert.match(mw, /processRepairOutbox\(\{ dir: outboxDir, gmail, gmailAuth, log \}\)/);
+  // TF-066: zusätzlich der Onboarding-Hook (Thread-Bindung) – Gmail-Auth-Weitergabe unverändert.
+  assert.match(mw, /processRepairOutbox\(\{ dir: outboxDir, gmail, gmailAuth, log(, onboarding)? \}\)/);
   assert.match(mw, /gmail\.checkAuth\(\)/);
 });

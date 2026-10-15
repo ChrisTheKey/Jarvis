@@ -17,7 +17,7 @@ import path from "node:path";
 import { WORKER_DIR } from "../mail-worker.js";
 import { uniqueReplacement, uniqueImageReplacement } from "./github-netlify.js";
 import { ISSUE_FIX_MATRIX, fixSpecFor, requiredCapabilities, patchReference, patchExact, isProtectedText, assertDomainBinding, liveTarget,
-  objectBackups, sha256, normDomain, normFingerprint, MAX_FILES_PER_FIX } from "./common.js";
+  objectBackups, sha256, normDomain, normFingerprint, MAX_FILES_PER_FIX, patchVisibleText, visibleCandidates, uniqueCandidate, contentChangeTexts, visibleIncludes } from "./common.js";
 import { HostKeyError, discoverHostKeys, matchHostKey, pinnedHostKeyOptions, isSafeHostKeyAlgorithm } from "./host-key.js";
 
 const P = path.posix;
@@ -157,6 +157,13 @@ export const ssh2SftpConnector = (opts = {}) => async (cred) => {
   return s.client;
 };
 
+// Öffentliche URL einer statischen HTML-Datei (index.html → Verzeichnis). Nur für die Prüfung nach der Änderung.
+export function staticUrl(order, rel) {
+  const base = (() => { try { return new URL(order.website || `https://${order.domain}/`).origin; } catch { return `https://${order.domain}`; } })();
+  const p = `/${String(rel).replace(/^\/+/, "")}`.replace(/(^|\/)index\.html?$/i, "$1");
+  return base + (p || "/");
+}
+
 // ---------- Adapter ----------
 export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), fetchFn = globalThis.fetch, connector = "sftp",
   maxDepth = 5, maxFiles = 400, maxScan = 80 } = {}) {
@@ -263,6 +270,33 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
       if (!spec || !spec.families.includes("files")) return null;
       const root = rootOf(cred);
       return withClient(cred, async (c) => {
+        // TF-066: bestätigte Kunden-Inhaltsänderung – nur sichtbarer Text, nur HTML-Dateien, ≤ 3 Dateien, geschützte Seiten nie.
+        if (spec.fix === "replace_text") {
+          const ch = issue.customer_change || {};
+          let { from, to } = contentChangeTexts(ch);
+          if (to == null) return null;
+          const tree = await listTree(c, root);
+          if (!tree.complete) return null;
+          const html = tree.files.filter((f) => /\.html?$/i.test(f));
+          if (html.length > maxScan) return null;
+          const texts = [];
+          for (const f of html) { const t = await readText(c, root, f).catch(() => null); if (t == null) return null; texts.push([f, t]); }
+          // Bisherige Angabe nicht genannt: nur Telefon/E-Mail und nur bei GENAU einem Wert auf der ganzen Website.
+          if (!from) from = ["phone", "email"].includes(ch.kind) ? uniqueCandidate(texts.flatMap(([, t]) => visibleCandidates(t, ch.kind)), ch.kind) : null;
+          if (!from || from === to) return null;
+          const hits = [];
+          for (const [f, t] of texts) {
+            const p = patchVisibleText(t, { from, to, kind: ch.kind });
+            if (p.reason === "not_found") continue;
+            if (!p.ok || isProtectedText(f)) return null; // nicht eindeutig oder geschützte Seite → manuell
+            hits.push({ path: f, before_hash: sha256(t), occurrences: p.count });
+          }
+          if (!hits.length || hits.length > MAX_FILES_PER_FIX) return null;
+          const where = hits.map((h) => h.path).join(", ");
+          return { family: "files", fix_type: "replace_text", kind: ch.kind, from, to, files: hits, page_url: staticUrl(order, hits[0].path),
+            required_capabilities: requiredCapabilities("files"), risk: "niedrig", target: where,
+            cause: `Vom Kunden bestätigte Inhaltsänderung – sichtbarer Text eindeutig in ${where}.`, planned_change: `Sichtbarer Text «${from}» → «${to}» (nur diese Stellen)` };
+        }
         // Exakte CSS-Korrektur: nur mit belegter Datei + exaktem Ausschnitt (genau einmal vorhanden).
         if (spec.fix === "css_exact") {
           const cf = issue.css_fix;
@@ -323,6 +357,7 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
             if (cur !== f.before_hash && !bk.entries().some((e) => e.object_type === "file" && e.object_id === f.path && e.status === "applied" && e.after_hash === cur))
               throw new Error("Datei wurde seit dem Plan verändert – kein Write.");
             const p = location.fix_type === "css_exact" ? patchExact(text, location.css || {})
+              : location.fix_type === "replace_text" ? patchVisibleText(text, { from: location.from, to: location.to, kind: location.kind })
               : patchReference(text, { attr: location.attr, brokenPath: location.brokenPath, fullUrl: location.fullUrl, replacement: location.replacement, domain: order.domain });
             if (!p.ok) throw new Error(`Stelle nicht exakt patchbar (${p.reason}).`);
             const entry = bk.add({ object_type: "file", object_id: f.path, original_hash: cur, original_content: text, mode: st.mode ?? null, modified_at: st.mtime ? new Date(Number(st.mtime) * 1000).toISOString() : null });
@@ -354,6 +389,12 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
       });
       if (!filesOk) return { build_ok: false };
       if (loc.fix_type === "css_exact") return { build_ok: true };
+      if (loc.fix_type === "replace_text") {
+        // Öffentliche Seite: alter Text sichtbar weg, neuer Text sichtbar da (Entfernen: nur alter Text weg).
+        const live = await liveTarget(fetchFn, loc.page_url || order.website, order.domain);
+        if (live.status >= 400) return { build_ok: false };
+        return { build_ok: (loc.to.includes(loc.from) || !visibleIncludes(live.html, loc.from)) && (loc.to === "" || visibleIncludes(live.html, loc.to)) };
+      }
       const live = await liveTarget(fetchFn, issue.page || order.website, order.domain);
       if (live.status >= 400) return { build_ok: false };
       const still = patchReference(live.html, { attr: loc.attr, brokenPath: loc.brokenPath, fullUrl: loc.fullUrl, replacement: loc.replacement, domain: order.domain });

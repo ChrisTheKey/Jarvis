@@ -22,7 +22,7 @@ export const exe = BROWSERS.find((p) => fs.existsSync(p));
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json" };
 
 // TF-063: Anmeldung wie in Produktion (Session-Cookie über /api/auth/*); vnLeads = optionale VN-Sicht, seller = Verkäufer-Passwörter.
-export async function startServer({ n = 387, prepare = null, vnLeads = null, sellers = null } = {}) {
+export async function startServer({ n = 387, prepare = null, vnLeads = null, sellers = null, snapshot = null } = {}) {
   const src = makeSources(n), dirs = writeSources(src);
   const repairDir = path.join(dirs.base, "repair-export"); fs.mkdirSync(repairDir);
   if (prepare) prepare({ ...dirs, repairDir });
@@ -36,7 +36,8 @@ export async function startServer({ n = 387, prepare = null, vnLeads = null, sel
   const handler = createCrmHandler({ getQueueStore: async () => qs, getViewStore: async () => vs, getVnQueueStore: async () => vnq, getVnViewStore: async () => vnv, getSalesStore, getAuthStore, env });
   const qs = memoryStore(), vs = memoryStore();
   const auth = createAuthHandler({ env, getStore: getAuthStore });
-  const data = async () => createSalesData({ getViewStore: async () => vs, getVnViewStore: async () => vnv, getSalesStore });
+  const cs = memoryStore(snapshot ? { snapshot } : null); // TF-066: optionaler Server-Control-Snapshot (Aufträge + Onboarding)
+  const data = async () => createSalesData({ getViewStore: async () => vs, getVnViewStore: async () => vnv, getSalesStore, getControlStore: async () => cs });
   const ra = (req) => resolveActor(req, { env, getAuthStore });
   const apis = { "/api/crm": handler, "/api/sales": createSalesHandler({ env, data, getSalesStore, getAuthStore }),
     "/api/state": createStateHandler({ env, getStore: async () => memoryStore(), resolveActor: ra, getUserStore: async (u) => (userMem[u] ||= memoryStore()) }),

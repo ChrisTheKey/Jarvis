@@ -33,6 +33,7 @@ import { offerInfo, isCheckOffer } from "./pricing.js";
 import { isVnOrder, vnFindingText, vnInstructionsFor, pageLabelVi, buildVnCheckReport, buildVnCheckDeliveryDraft } from "./vn-customer-texts.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { fullSiteAudit, detectStack, normDomain } from "./repair-workflow.js";
+import { ONBOARDING_CLASS, buildCheckIntroMail } from "./onboarding-core.js";
 
 export const CHECK150_ORDERS_FILE = "check150_orders.json";
 export const CHECK150_OFFER = "REPAIR_CHECK_150"; // Kundenbezeichnung «Check & Anleitung», Preis aus OFFERS (CHF 150)
@@ -327,8 +328,33 @@ export function buildDeliveryDraft(order, reportText) {
 
 // ---------- Engine ----------
 export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir), gmail = null, auditor = null,
-  now = () => new Date(), log = () => {} } = {}) {
+  onboarding = false, now = () => new Date(), log = () => {} } = {}) {
   const block = (order, state, reason) => { order.blocked_reason = reason; transition(order, state, reason, now()); return saveOrder(store, order); };
+  // TF-066: Onboarding-Start für CHECK – GENAU EINE kurze Nachricht (CUSTOMER_ONBOARDING_DIALOGUE) nach erfüllter Zahlungsschwelle:
+  // Zahlung erhalten, kein Zugang nötig, optional ein Bereich, der zusätzlich berücksichtigt werden soll. Blockiert den Check nie;
+  // nur die Liefermail wartet, bis diese Nachricht zugestellt (oder endgültig gescheitert) ist – Reihenfolge im Kunden-Thread.
+  const introSend = async (order, t) => {
+    const i = order.onboarding_intro;
+    if (!i?.draft_id || i.sent_at || i.failed_at) return true;
+    try { await gmail.sendDraft(i.draft_id); }
+    catch (e) {
+      if (TRANSIENT_RE.test(e.message)) return false; // Outbox: Mail-Worker hat noch nicht bestätigt → nächster Lauf
+      order.onboarding_intro = { ...i, failed_at: t.toISOString(), reason: String(e.message).slice(0, 120) }; saveOrder(store, order); return true;
+    }
+    order.onboarding_intro = { ...i, sent_at: t.toISOString() }; saveOrder(store, order);
+    log("info", "check150_onboarding_intro_sent", { order_id: order.order_id, message_class: ONBOARDING_CLASS });
+    return true;
+  };
+  const queueIntro = async (order, t) => {
+    if (!onboarding || order.onboarding_intro || typeof gmail?.createDraft !== "function" || typeof gmail?.sendDraft !== "function" || !EMAIL_RE.test(String(order.delivery_email || ""))) return;
+    const m = buildCheckIntroMail(order);
+    try {
+      const d = await gmail.createDraft({ to: order.delivery_email, subject: m.subject, body: m.body, messageClass: ONBOARDING_CLASS, orderId: order.order_id, purpose: "check_intro" });
+      order.onboarding_intro = { draft_id: d.draftId, message_class: ONBOARDING_CLASS, created_at: t.toISOString() };
+    } catch (e) { order.onboarding_intro = { failed_at: t.toISOString(), reason: String(e.message).slice(0, 120) }; }
+    saveOrder(store, order);
+    await introSend(order, t);
+  };
 
   async function step(order) {
     const t = now();
@@ -361,6 +387,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
       order.payment = gate;
       order.automatic_send_allowed = true; // Schwelle erfüllt → die Service-Mail darf automatisch an den bestätigten Kunden
       order.blocked_reason = null;
+      await queueIntro(order, t);
       transition(order, "FULL_AUDIT", `Zahlungsschwelle erfüllt (${gate.currency === "VND" ? `${amountText(gate.paid, "VND")} ≥ ${amountText(gate.required, "VND")}` : `CHF ${gate.paid_chf} ≥ ${gate.required_chf}`}) – Start vollständiger passiver Check`, t);
       saveOrder(store, order); return true;
     }
@@ -456,6 +483,9 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
         return handOver("ATTACHMENT_REQUIRED: Bericht braucht einen Anhang – Chris hängt die Berichtsdatei an und sendet den Entwurf");
       }
       if (!gmail || typeof gmail.sendDraft !== "function") return handOver("Kein automatischer Versandweg verfügbar – Entwurf bleibt für Chris");
+      // TF-066: Onboarding-Startnachricht zuerst zustellen (höchstens 6 h warten, danach liefert der Check trotzdem).
+      if (order.onboarding_intro?.draft_id && !order.onboarding_intro.sent_at && !order.onboarding_intro.failed_at
+        && !(await introSend(order, t)) && +t - Date.parse(order.onboarding_intro.created_at || t.toISOString()) < 6 * 3600_000) return false;
       order.delivery_send_attempted_at = t.toISOString();
       saveOrder(store, order); // VOR dem Versand persistieren – ein Absturz danach führt nie zu einem Doppel-Versand
       try { await gmail.sendDraft(order.delivery_draft.draft_id); }
@@ -547,11 +577,11 @@ export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
 
 // ---------- Worker-Hook (eigenes Lock, No-op ohne offene Aufträge; blockiert weder Mail noch Discovery noch CHF-480) ----------
 // auditor nur für isolierte Tests (Lab-Auditor, TF-046); im Produktivbetrieb null = Standard-Auditor.
-export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, auditor = null, log = createLogger(dir) } = {}) {
+export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, auditor = null, onboarding = false, log = createLogger(dir) } = {}) {
   const status = check150Status(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "check150.lock" })) return { busy: true };
-  try { return { busy: false, ...(await createCheck150Engine({ dir, gmail, auditor, log }).processAll()) }; }
+  try { return { busy: false, ...(await createCheck150Engine({ dir, gmail, auditor, onboarding, log }).processAll()) }; }
   finally { releaseLock(dir, process.pid, "check150.lock"); }
 }
 

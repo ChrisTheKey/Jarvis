@@ -71,6 +71,8 @@ import { createAuditor } from "./site-auditor.js";
 import { MAX_AUTO_FIXES_PER_ORDER, hasCapabilities, onlyCapabilities } from "./repair-adapters/common.js";
 import { combineDecisions, rollbackMatchesBaseline, safeSnapshot, browserRuntimeStatus } from "./repair-browser-validator.js";
 import { REPAIR_FINDINGS_FILE, normalizeIssue, dedupeFindings, rankFindings } from "./site-findings.js";
+import { contentQuestionLines, buildReissueMail, MAX_AUTO_REISSUES, localeOf } from "./onboarding-core.js";
+import { readBrief, listReissueRequests } from "./onboarding-store.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 // Gate-Vergleich für Zustandsgründe: CH exakt wie bisher «CHF 240 ≥ 240», VN «1.950.000 ₫ ≥ 1.950.000 ₫».
@@ -91,8 +93,10 @@ export const DELIVERY_STATUSES = Object.freeze(["none", "draft_ready", "sent", "
 // TF-043: ACCESS_PROFILE_PREFLIGHT (Zugangsprofil wird automatisch und nur lesend erzeugt), HOST_KEY_CONFIRMATION_REQUIRED
 // (unbekannter SSH-Host-Key – wartet auf die Bestätigung des Kunden bzw. von Chris), WAITING_FOR_ACCESS_PROFILE (Webroot/Angaben
 // nicht eindeutig – wartet, bis Chris das Profil ergänzt). Alle drei warten, nichts wird verändert.
+// TF-066: WAITING_FOR_CUSTOMER_BRIEF – Zugang geprüft, aber der Kunden-Brief (Inhaltsänderungen) ist weder bestätigt (CONFIRMED) noch
+// ausdrücklich leer (NO_CONTENT_CHANGES). Wartet, nichts wird verändert; der Dialog läuft im Mail-Worker.
 export const ORDER_STATES = Object.freeze(["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK",
-  "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
+  "ACCESS_REQUESTED", "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "WAITING_FOR_CUSTOMER_BRIEF",
   "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"]);
 export const BLOCKED_STATES = Object.freeze(["BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "BLOCKED_UNSUPPORTED_STACK",
   "REPAIR_FAILED", "VALIDATION_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS", "BLOCKED_HOST_KEY_CHANGED"]);
@@ -106,7 +110,7 @@ export const COMPLETED_WITH_MANUAL_ITEMS = "COMPLETED_WITH_MANUAL_ITEMS";
 export const COMPLETED_STATES = Object.freeze(["COMPLETED", COMPLETED_WITH_MANUAL_ITEMS]);
 const TERMINAL = new Set([...COMPLETED_STATES, REPAIR_CANCELLED, ...BLOCKED_STATES]);
 // Ab diesen Zuständen wird mit dem Kundenzugang gearbeitet – fällt die Zahlung unter die Schwelle, stoppt der Auftrag.
-const WORK_STATES = new Set(["ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE",
+const WORK_STATES = new Set(["ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "WAITING_FOR_CUSTOMER_BRIEF",
   "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY"]);
 const MAX_PREFLIGHT_ATTEMPTS = 6; // vorübergehende Fehler (Server nicht erreichbar) – danach Chris
 // TF-044: Fehlercodes der Host-Key-Prüfung (repair-adapters/host-key.js, sftp.js), die einen Auftrag sofort stoppen.
@@ -287,8 +291,29 @@ export function completionGate(order = {}) {
   if (order.access_profile && order.access_profile.profile_status !== "PROFILE_READY") missing.push("access_profile");
   if (!order.backup?.rollback_point) missing.push("backup");
   if ((order.plan || []).some((p) => order.issues?.[p.issue_id]?.repair_status !== "repaired")) missing.push("repair_unresolved");
+  // TF-066: Auftrag mit Onboarding-Dialog → Kunden-Brief muss bestätigt oder ausdrücklich ohne Inhaltsänderungen sein.
+  if (order.onboarding_required && !BRIEF_GATE_OK.includes(order.customer_brief?.status)) missing.push("customer_brief");
   return { ok: !missing.length, missing };
 }
+export const BRIEF_GATE_OK = Object.freeze(["CONFIRMED", "NO_CONTENT_CHANGES"]);
+// TF-066 Brief-Gate (§23): ohne Onboarding-Dialog (ältere Aufträge, Zugang von Chris direkt konfiguriert) gilt es nicht.
+export function briefGate(order = {}, onboardingDir = null) {
+  if (!order.onboarding_required) return { ok: true, status: "NOT_REQUIRED", changes: [] };
+  const b = onboardingDir ? readBrief(onboardingDir, order.order_id) : null;
+  if (!b) return { ok: false, status: "OPEN", changes: [] };
+  if (b.manual) return { ok: false, status: "MANUAL", changes: [] };
+  const ok = BRIEF_GATE_OK.includes(b.status);
+  return { ok, status: b.status, confirmed_at: b.confirmed_at || null, changes: ok && b.status === "CONFIRMED" ? (b.changes || []).filter((c) => c && c.customer_confirmed === true).slice(0, 10) : [] };
+}
+// Text für Bericht/Plan: «alt» → «neu» bzw. Art der Angabe (nur die bestätigten Kundenwerte, nie Rohmails).
+const changeText = (c, vi = false) => {
+  const addr = [c.address?.street, [c.address?.postal_code, c.address?.city].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  const nv = c.kind === "address" ? addr : c.new_text;
+  const label = vi ? { phone: "Số điện thoại", email: "Email", address: "Địa chỉ", opening_hours: "Giờ mở cửa", removal: "Xóa nội dung", addition: "Bổ sung nội dung" }[c.kind] || "Nội dung"
+    : { phone: "Telefonnummer", email: "E-Mail-Adresse", address: "Adresse", opening_hours: "Öffnungszeiten", removal: "Entfernt", addition: "Ergänzt" }[c.kind] || "Text";
+  if (c.kind === "removal") return `${label}: «${c.old_text}»`;
+  return c.old_text ? `${label}: «${c.old_text}» → «${nv}»` : `${label}: ${nv}`;
+};
 
 // TF-055: offene, relevante Befunde NACH der Reparatur = manuelle Punkte. Relevant: geschützter Inhalt, bewusst nicht automatisch
 // repariert/Ursache unklar (needs_review), gescheitert/weiterhin vorhanden/zurückgerollt oder Schweregrad ≥ medium. Reine Hinweise
@@ -364,7 +389,10 @@ function destroyOrderSecret(store, order, now) {
 // Zugangsprofil automatisch (ACCESS_PROFILE_PREFLIGHT). Ohne preflight bleibt alles wie in TF-042 (Profil von Chris).
 export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir), adapters = {}, auditor = null, retester = null,
   gmail = null, intake = null, router = null, preflight = null, alert = null, browserValidator = null, requireBrowser = false, autoDeliver = false,
-  now = () => new Date(), log = () => {} } = {}) {
+  onboardingDir = null, now = () => new Date(), log = () => {} } = {}) {
+  // TF-066: onboardingDir (gemeinsames Outbox-Unterverzeichnis) aktiviert den Kunden-Onboarding-Dialog: Inhaltsfrage in der ersten
+  // Zugangs-Anfrage, Auftrags-ID an jeder Service-Mail (Mail-Worker bindet den Thread), Brief-Gate vor dem Backup, bestätigte
+  // Inhaltsänderungen im Plan, automatisch neuer Link nur bei abgelaufenem Link. Ohne onboardingDir: Verhalten exakt wie bisher.
 
   const adapterOf = (order) => (order.stack ? adapters[order.route?.adapter || order.stack.type] || null : null);
   const block = (order, state, reason) => {
@@ -384,7 +412,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
   // One-Time-Link registrieren + Service-Mail genau EINMAL senden (Zugangs-Anfrage bzw. Host-Key-Bestätigung). Draft-ID und
   // Sendeversuch werden VOR dem Versand persistiert – ein Neustart erzeugt nie eine zweite Mail; unklarer Ausgang → nie wiederholen.
   // Rückgabe: "sent" | "unclear" | "deferred" (vorübergehender Fehler, nächster Lauf) | { error }.
-  const sendLinkMail = async (order, field, { register = {}, build, extra = {}, events }) => {
+  const sendLinkMail = async (order, field, { register = {}, build, extra = {}, events, meta = {} }) => {
     const t = now();
     if (order[field]?.sent_at) return "sent";
     if (order[field]?.send_attempted_at) {
@@ -398,7 +426,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         await intake.register({ order_id: order.order_id, domain: order.domain, token_hash: tk.token_hash, expires_at: tk.expires_at, public_key: accessKeys(store.dir).publicKeyPem, ...register,
           ...(isVnOrder(order) ? { locale: "vi-VN" } : {}) }); // TF-064: Formular für VN-Kunden auf Vietnamesisch
         const mail = build({ link: accessLink(intake.origin, tk.token, isVnOrder(order) ? "vi-VN" : "de-CH"), expires_at: tk.expires_at });
-        const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: ACCESS_REQUEST_CLASS });
+        const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: ACCESS_REQUEST_CLASS,
+          ...(onboardingDir ? { orderId: order.order_id, ...meta } : {}) }); // TF-066: Mail-Worker sendet im Auftrags-Thread
         order[field] = { to: order.delivery_email, draft_id: d.draftId, message_class: ACCESS_REQUEST_CLASS, token_hash: tk.token_hash, expires_at: tk.expires_at, created_at: t.toISOString(), ...extra };
         order.updated_at = t.toISOString();
         saveOrder(store, order); // Draft-ID sofort persistieren – ein Neustart erzeugt nie ein Duplikat
@@ -440,6 +469,19 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     return false;
   };
   const manual = (order, reason) => { order.manual_review.push({ at: now().toISOString(), reason }); return block(order, "MANUAL_REVIEW_REQUIRED", reason); };
+  // TF-066 Brief-Gate unmittelbar vor dem Backup (= vor der ersten möglichen Änderung). Bestätigte Änderungen werden hier am Auftrag
+  // eingefroren (customer_brief) – spätere Brief-Änderungen wirken nie auf einen laufenden Plan.
+  const toBackup = (order, reason, t) => {
+    const g = briefGate(order, onboardingDir);
+    if (!g.ok) {
+      if (order.state !== "WAITING_FOR_CUSTOMER_BRIEF") { transition(order, "WAITING_FOR_CUSTOMER_BRIEF", `${reason} – wartet auf den Kunden-Brief (Inhaltsänderungen bestätigt oder keine)`, t); saveOrder(store, order); }
+      else if (order.customer_brief?.status !== g.status) { order.customer_brief = { status: g.status, changes: [] }; order.updated_at = t.toISOString(); saveOrder(store, order); }
+      return false;
+    }
+    if (g.status !== "NOT_REQUIRED") order.customer_brief = { status: g.status, confirmed_at: g.confirmed_at || null, changes: g.changes, frozen_at: t.toISOString() };
+    transition(order, "BACKUP", g.status === "NOT_REQUIRED" ? reason : `${reason}; Kunden-Brief ${g.status}${g.changes.length ? ` (${g.changes.length} bestätigte Inhaltsänderung(en))` : ""}`, t);
+    saveOrder(store, order); return true;
+  };
   // TF-044: Host-Key-Fehler der SSH/SFTP-Transporte nie als «normaler» Fehler schlucken – bis zum Schritt durchreichen.
   const hostKeyStop = (e) => { if (HOST_KEY_STOP_CODES.has(e?.code)) throw e; return e; };
   const audit = (website) => fullSiteAudit(website, { auditor, now });
@@ -669,7 +711,12 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       const caps = Array.isArray(acc.capabilities) ? onlyCapabilities(acc.capabilities) : (router?.capabilitiesOf?.(order.route?.adapter || order.stack.type) || null);
       order.access = { connector: acc.connector || order.stack.type, ok: true, checked_at: t.toISOString(), ...(caps ? { capabilities: caps } : {}) }; // nie mehr Felder übernehmen (keine Secrets)
       if (caps && !hasCapabilities(caps, ["BACKUP", "ROLLBACK"])) { manual(order, "Zugang ohne zuverlässiges Backup/Rollback – keine automatische Reparatur."); return false; }
-      transition(order, "BACKUP", "Zugang geprüft", t); saveOrder(store, order); return true;
+      return toBackup(order, "Zugang geprüft", t);
+    }
+
+    if (order.state === "WAITING_FOR_CUSTOMER_BRIEF") {
+      // TF-066: wartet auf den Kunden-Brief (Dialog im Mail-Worker). Je Lauf neu geprüft; nichts wird verändert.
+      return toBackup(order, "Zugang geprüft", t);
     }
 
     if (order.state === "ACCESS_REQUESTED") {
@@ -684,10 +731,15 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
           block(order, "BLOCKED_NO_ACCESS", "Keine automatische Zugangs-Anfrage möglich (Kundenadresse, sicherer Link oder Versandweg fehlt) – Zugangsdaten werden nie erraten."); return false;
         }
         // Send-Idempotenz: ein früherer Versuch ohne gesicherten Ausgang wird NIE blind wiederholt (Chris prüft «Gesendet»).
-        const r = await sendLinkMail(order, "access_request", { build: (x) => buildAccessRequestMail(order, x),
+        // TF-066: erste Anfrage = Onboarding-Start (Zugang + Inhaltsfrage); automatische Neu-Ausstellung nur nach abgelaufenem Link.
+        const re = order.access_reissue || null;
+        const r = await sendLinkMail(order, "access_request", {
+          build: (x) => (re ? buildReissueMail(order, { ...x, reason: re.reason }) : (onboardingDir && (order.onboarding_required = true), buildAccessRequestMail(order, { ...x, onboarding: !!onboardingDir }))),
+          meta: re ? { purpose: "reissue", seq: re.seq } : { purpose: "first" },
           events: { unclear: "repair_access_request_unclear", deferred: "repair_access_request_deferred", sent: "repair_access_requested" } });
         if (r === "deferred") return false;
         if (r?.error) { block(order, "BLOCKED_NO_ACCESS", `Automatische Zugangs-Anfrage fehlgeschlagen: ${r.error}`); return false; }
+        if (re && r === "sent") { order.onboarding_reissues = { ...(order.onboarding_reissues || {}), [re.seq]: "sent" }; order.access_reissue = null; saveOrder(store, order); }
       }
       // Sicherer Zugang + Freigabe über das Formular eingegangen → Zugangsprüfung (Domain-Bindung wird dort erneut geprüft).
       if (intakeReceived(order)) {
@@ -700,7 +752,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         const acc = await a.checkAccess(order, accessCtx(order)).catch((e) => { hostKeyStop(e); return { ok: false }; });
         if (acc?.ok === true) {
           order.access = { connector: acc.connector || order.stack.type, ok: true, checked_at: t.toISOString() }; // nie Secrets
-          transition(order, "BACKUP", "Sicherer Zugang erhalten und geprüft", t); saveOrder(store, order); return true;
+          return toBackup(order, "Sicherer Zugang erhalten und geprüft", t);
         }
       }
       return false; // wartet auf sicheren Zugang (+ Freigabe)
@@ -748,7 +800,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       }
       if (!order.host_key_request?.sent_at && !order.host_key_request?.failed_at && canRequestAccess(order) && ap.host_key_candidate) {
         const r = await sendLinkMail(order, "host_key_request", { register: { purpose: "host_key_confirmation", host_key_candidate: ap.host_key_candidate },
-          build: (x) => buildHostKeyConfirmationMail(order, x), extra: { host_key_candidate: ap.host_key_candidate },
+          build: (x) => buildHostKeyConfirmationMail(order, x), extra: { host_key_candidate: ap.host_key_candidate }, meta: { purpose: "host_key" },
           events: { unclear: "repair_host_key_request_unclear", deferred: "repair_host_key_request_deferred", sent: "repair_host_key_requested" } });
         if (r?.error) {
           order.host_key_request = { ...(order.host_key_request || {}), failed_at: t.toISOString() };
@@ -785,13 +837,26 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     }
 
     if (order.state === "REPAIR_PLAN") {
+      // TF-066: vom Kunden bestätigte Inhaltsänderungen = zusätzliche, ausdrücklich autorisierte Plan-Einträge. Gleiche Sicherheit wie
+      // jeder Fix: lokalisieren (nur sichtbarer Text, eindeutig), Backup, Minimaländerung, Validierung, Browser, Regression, Retest,
+      // Rollback. Nicht eindeutig/geschützt/nicht unterstützt → manueller Punkt (nie raten, nie global ersetzen).
+      for (const [n, c] of (order.customer_brief?.changes || []).entries()) {
+        const id = `customer-${n + 1}`;
+        if (order.issues[id]) continue;
+        order.issues[id] = { issue_id: id, type: "customer_content_change", page: order.website, url: order.website, severity: "low", repairable: true,
+          repair_status: "open", customer_change: { kind: c.kind, page: c.page || null, section: c.section || null, old_text: c.old_text || null, new_text: c.new_text || null, address: c.address || null },
+          customer_text: `Inhaltsänderung nach Ihrem Wunsch – ${changeText(c)}`, customer_text_vi: `Thay đổi nội dung theo yêu cầu – ${changeText(c, true)}`,
+          evidence: "Vom Kunden im Auftragsdialog bestätigt" };
+      }
       const repairables = Object.values(order.issues).filter((i) => i.repairable);
       for (const i of Object.values(order.issues)) if (i.protected) order.manual_review.push({ at: t.toISOString(), reason: `Befund ${i.issue_id} liegt auf einer geschützten Seite (${i.page}) – nur mit zusätzlicher expliziter Freigabe.`, issue_id: i.issue_id });
       const plan = [];
       for (const i of repairables) {
         const loc = await adapter.locate(i, order, accessCtx(order)).catch((e) => { hostKeyStop(e); return null; });
         const review = (reason) => { order.issues[i.issue_id].repair_status = "needs_review"; order.manual_review.push({ at: t.toISOString(), reason, issue_id: i.issue_id }); };
-        if (!loc || !loc.target || !loc.cause) { review(`Ursache für ${i.type} (${i.page}) nicht eindeutig – keine automatische Reparatur.`); continue; } // nie raten
+        if (!loc || !loc.target || !loc.cause) { review(i.type === "customer_content_change" ? `Bestätigte Inhaltsänderung ${i.issue_id} auf der Website nicht eindeutig auffindbar (oder geschützte Seite/zu viele Stellen) – manuell.`
+          : `Ursache für ${i.type} (${i.page}) nicht eindeutig – keine automatische Reparatur.`); continue; } // nie raten
+        if (i.type === "customer_content_change" && typeof loc.fix?.page_url === "string" && normDomain(loc.fix.page_url) === normDomain(order.domain)) order.issues[i.issue_id].page = loc.fix.page_url;
         const caps = order.access?.capabilities || null;
         const need = Array.isArray(loc.required_capabilities) ? loc.required_capabilities : [];
         const adapterName = order.route?.adapter || order.stack.type;
@@ -965,8 +1030,40 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     return block(order, "BLOCKED_HOST_KEY_CHANGED", `SSH-Host-Key oder Host-Key-Algorithmus hat sich geändert – STOP, keine Zugangsdaten gesendet, kein Write${changed ? "; Website war bereits verändert – Chris prüft manuell" : ""}.`);
   }
 
+  // TF-066: Bitten des Mail-Workers um einen NEUEN sicheren Link (Reminder, Passwort per Mail, Kundenfrage). Nur nach bestehenden
+  // Tokenregeln: nur wartender FIX-Auftrag (ACCESS_REQUESTED, kein Zugang erhalten), nur wenn der bisherige Link ABGELAUFEN ist,
+  // Zahlungsschwelle erfüllt, höchstens MAX_AUTO_REISSUES automatisch (danach Chris). Der alte Link wird nie reaktiviert – die
+  // Registrierung des neuen Links entwertet ihn (access-intake-api: höchstens ein gültiger Link je Auftrag). Quittung je Anfrage.
+  async function processReissues() {
+    if (!onboardingDir) return 0;
+    const reqs = listReissueRequests(onboardingDir);
+    let n = 0;
+    for (const rq of reqs) {
+      const order = store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders?.[rq.order_id];
+      if (!order || order.onboarding_reissues?.[rq.seq] || order.access_reissue) continue;
+      const t = now();
+      const mark = (status, why) => { order.onboarding_reissues = { ...(order.onboarding_reissues || {}), [rq.seq]: status }; order.updated_at = t.toISOString();
+        order.state_history.push({ at: t.toISOString(), from: order.state, to: order.state, reason: why }); saveOrder(store, order); };
+      const sent = Object.values(order.onboarding_reissues || {}).filter((s) => s === "sent").length;
+      const expired = !!order.access_request?.sent_at && Date.parse(order.access_request.expires_at || 0) <= +t;
+      if (!order.onboarding_required || order.state !== "ACCESS_REQUESTED" || intakeReceived(order) || !expired) { mark("skipped", "Neuer sicherer Link nicht nötig (Link noch gültig, Zugang erhalten oder Auftrag nicht wartend)."); continue; }
+      if (sent >= MAX_AUTO_REISSUES) { mark("skipped", `Automatische Link-Neuausstellung ausgeschöpft (${MAX_AUTO_REISSUES}) – Chris entscheidet.`); await informChris(order, "reissue_limit", "Sicherer Link mehrfach abgelaufen"); saveOrder(store, order); continue; }
+      if (!paymentGateForOrder(store, order).satisfied || !canRequestAccess(order)) { mark("skipped", "Neuer Link nicht möglich (Zahlungsschwelle/Versandweg)."); continue; }
+      order.access_request_history = [...(order.access_request_history || []), { sent_at: order.access_request?.sent_at || null, expires_at: order.access_request?.expires_at || null,
+        reissued_at: t.toISOString(), reason: `automatisch (${rq.reason})` }];
+      order.access_request = null;
+      order.access_reissue = { seq: rq.seq, reason: rq.reason, at: t.toISOString() };
+      order.state_history.push({ at: t.toISOString(), from: order.state, to: order.state, reason: `Neuer sicherer Link (abgelaufen, ${rq.reason}) – alter Link bleibt ungültig` });
+      order.updated_at = t.toISOString();
+      saveOrder(store, order); n++;
+      log("info", "repair_access_reissue", { order_id: order.order_id, seq: rq.seq, reason: rq.reason });
+    }
+    return n;
+  }
+
   // Alle offenen Aufträge weiterarbeiten – nach Neustart exakt am gespeicherten Zustand. Ein Fehler stoppt nie die anderen.
   async function processAll() {
+    try { await processReissues(); } catch (e) { log("error", "repair_access_reissue_failed", { error: String(e.message).slice(0, 160) }); }
     const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
     const open = Object.values(data.orders || {}).filter((o) => !TERMINAL.has(o.state));
     let advanced = 0;
@@ -992,9 +1089,36 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
 // Kundenadresse, genau einmal. SICHERER Zugang: Einladung/temporärer Benutzer mit minimalen Rechten, übermittelt über den
 // auftragsgebundenen One-Time-Link – Passwörter werden NIE per E-Mail erfragt oder angenommen. Keine Werbung, keine internen
 // IDs, keine Fachbegriffe. Ohne Link gibt es keine Mail (der Workflow sendet nur mit registriertem Link).
-export function buildAccessRequestMail(order, { link = null, expires_at = null } = {}) {
-  if (isVnOrder(order)) return { ...buildVnAccessRequestMail(order, { link, expires_at }), message_class: ACCESS_REQUEST_CLASS }; // TF-064: VN vollständig Vietnamesisch
+export function buildAccessRequestMail(order, { link = null, expires_at = null, onboarding = false } = {}) {
+  if (isVnOrder(order)) return { ...buildVnAccessRequestMail(order, { link, expires_at, onboarding }), message_class: ACCESS_REQUEST_CLASS }; // TF-064: VN vollständig Vietnamesisch
   const until = expires_at ? new Intl.DateTimeFormat("de-CH", { dateStyle: "long", timeStyle: "short", timeZone: "Europe/Zurich" }).format(new Date(expires_at)) : null;
+  if (onboarding) {
+    // TF-066: Onboarding-Start (§13) – sicherer Zugang (nur über den Link) + Frage nach kundenabhängigen Inhaltsänderungen.
+    const [q, ...rest] = contentQuestionLines("de-CH");
+    const body = [
+      order.contact_name ? `Guten Tag ${order.contact_name}` : "Guten Tag",
+      "",
+      "vielen Dank – die erste Teilzahlung für Ihren Auftrag «Check & Reparatur» ist eingegangen, die Zahlungsschwelle ist damit erreicht.",
+      "",
+      `Damit ich die Reparatur Ihrer Website ${order.domain} sauber durchführen kann, brauche ich noch zwei Dinge:`,
+      "",
+      "1. Einen temporären, sicheren Zugang über Ihren persönlichen, nur für diesen Auftrag gültigen Link" + (until ? ` (gültig bis ${until}, nur einmal verwendbar):` : " (nur einmal verwendbar):"),
+      link || "(Link folgt separat)",
+      "",
+      "Bitte senden Sie keine Passwörter oder Zugangsdaten per E-Mail. Verwenden Sie dafür ausschliesslich den sicheren Link.",
+      "Am sichersten: eine Einladung als Mitarbeiter oder ein temporärer Benutzer mit nur den nötigen Rechten (kein Haupt-Passwort). Im Formular bestätigen Sie ausserdem die vereinbarte Reparatur.",
+      "",
+      `2. ${q}`,
+      ...rest,
+      "",
+      "Vor der ersten Änderung erstelle ich eine vollständige Sicherung Ihrer Website; zum Abschluss erhalten Sie einen verständlichen Bericht.",
+      "",
+      "Freundliche Grüsse",
+      "Chris",
+      "Helvetic Webdesign",
+    ].join("\n");
+    return { subject: `Ihre Website-Reparatur ${order.domain} – sicherer Zugang und Ihre Wünsche`, body, message_class: ACCESS_REQUEST_CLASS };
+  }
   const body = [
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
     "",
@@ -1059,9 +1183,9 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
   const issues = Object.values(order.issues || {});
   const fixed = issues.filter((i) => i.repair_status === "repaired");
   const openForReview = issues.filter((i) => ["needs_review", "repair_failed", "still_broken"].includes(i.repair_status) || (i.repair_status === "open" && !i.repairable));
-  const relevant = issues.filter((i) => RELEVANT.has(i.severity) || i.customer_text);
+  const relevant = issues.filter((i) => i.type !== "customer_content_change" && (RELEVANT.has(i.severity) || i.customer_text));
   const manualOpen = manualItems(order).length;
-  const line = (i) => `• ${i.customer_text || "Ein technischer Punkt auf " + (i.page || "Ihrer Website")}`;
+  const line = (i) => `• ${i.customer_text || "Ein technischer Punkt auf " + (i.page || "Ihrer Website")}`; // TF-066: Inhaltsänderungen mit eigenem Kundentext
   if (isVnOrder(order)) return { subject: vnReportSubject(order), body: buildVnRepairReport(order, { now, fixed, openForReview, relevant: relevant.length, manualOpen }), created_at: new Date().toISOString() };
   const body = [
     `Webseiten-Check – Abschlussbericht «Check & Reparatur» (CHF ${OFFERS[REPAIR_OFFER].price})`,
@@ -1149,7 +1273,7 @@ export function repairOrdersStatus(dir = WORKER_DIR) {
 
 // Kundenphase fürs Dashboard (TF-041) – feste Wörter, aus Zustand + Zahlung + Zugang abgeleitet.
 export const REPAIR_PHASES = Object.freeze(["WAITING_FOR_DEPOSIT", "WAITING_FOR_ACCESS", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED",
-  "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "BACKUP", "REPAIRING",
+  "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION", "WAITING_FOR_ACCESS_PROFILE", "WAITING_FOR_CUSTOMER_BRIEF", "BACKUP", "REPAIRING",
   "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "MANUAL_REVIEW", "PAYMENT_REVIEW_REQUIRED", "CANCELLED", "BLOCKED"]);
 export function repairPhase(o, pay) {
   if (o.state === "COMPLETED") return "COMPLETED";
@@ -1166,6 +1290,7 @@ export function repairPhase(o, pay) {
   if (o.state === "ACCESS_PROFILE_PREFLIGHT") return "ACCESS_PROFILE_PREFLIGHT";
   if (o.state === "HOST_KEY_CONFIRMATION_REQUIRED") return "HOST_KEY_CONFIRMATION";
   if (o.state === "WAITING_FOR_ACCESS_PROFILE") return "WAITING_FOR_ACCESS_PROFILE";
+  if (o.state === "WAITING_FOR_CUSTOMER_BRIEF") return "WAITING_FOR_CUSTOMER_BRIEF";
   if (!["DEPOSIT_MET", "PAID_FULL"].includes(pay.payment_status)) return "WAITING_FOR_DEPOSIT";
   if (o.access_intake?.status === "RECEIVED") return "ACCESS_RECEIVED";
   if (o.access_request?.sent_at && Date.parse(o.access_request.expires_at || 0) > Date.now()) return "ACCESS_REQUEST_SENT";
@@ -1270,7 +1395,7 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
 // TF-046: autoDeliver = true – nach bestandenem Abschluss-Gate geht der Bericht genau einmal an den Kunden (CUSTOMER_ORDER_FULFILLMENT).
 // auditor/alert nur für isolierte Tests (Lab-Auditor, Chris-Hinweis-Attrappe); im Produktivbetrieb null = Standard.
 export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, browserValidator = null, requireBrowser = true,
-  autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
+  autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, onboardingDir = null, log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
@@ -1288,7 +1413,7 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
     const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => (o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED")
       || (o.state === "HOST_KEY_CONFIRMATION_REQUIRED" && o.host_key_request?.sent_at && !o.host_key_request.received_at));
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
-    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, log });
+    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, onboardingDir, log });
     return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }
@@ -1307,7 +1432,7 @@ export function repairFindingsExport(dir = WORKER_DIR, { now = new Date() } = {}
     const d = normDomain(o.domain);
     if (!d || !at) continue;
     const remaining = Array.isArray(o.validation?.open_keys) ? new Set(o.validation.open_keys) : null;
-    const findings = rankFindings(dedupeFindings(Object.values(o.issues || {}).map((i) => {
+    const findings = rankFindings(dedupeFindings(Object.values(o.issues || {}).filter((i) => i?.type !== "customer_content_change").map((i) => {
       const gone = i.repair_status === "repaired" || (!!remaining && !remaining.has(issueKey(i)));
       return normalizeIssue(i, { verified_at: at, source: "repair", status: gone ? "RESOLVED" : "OPEN", manual: !gone });
     }).filter(Boolean)));
