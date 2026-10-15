@@ -2,7 +2,54 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-15 (TF-064)
+Letzte Aktualisierung: 2026-10-15 (TF-065)
+
+## TF-065 – LIVEKIT OUTBOUND CALLING AGENT (2026-10-15, Code 3363fcb, Netlify LIVE, Dienst jarvis-calling LIVE (NOT_CONFIGURED, DRY_RUN), Mail/Repair/CRM/Contacts/VN NICHT neu gestartet)
+- **Architektur** wie CRM/VN: Netlify `/api/calling` (`calling-api.js`) prüft und plant, der VPS-Dienst `jarvis-calling` (`calling/service.js`) holt ausgehend ab
+  (Schlüssel x-jarvis-calling = HMAC(JARVIS_SERVER_CONTROL_TOKEN, "jarvis-calling-agent-v1"), abgeleitet beim Deploy), wählt über LiveKit und meldet strukturierte
+  Ergebnisse. Gemeinsamer Kern ohne Abhängigkeiten `calling-core.js`. Blobs `jarvis-calling`: control (Kampagnen, aktive Anrufe, Dienststatus, Limits), history
+  (abgeschlossene Anrufe, Nummer nur maskiert), consents (Rückrufe, Zustimmungen, Anruf-DNC). Atomar (ETag), Schema 1, UUID-Call-IDs.
+- **LiveKit** (Node, `@livekit/agents` 1.9.3, `livekit-server-sdk` 2.19.1, eigenes `calling/package.json`): je Anruf eigener Room `jc-<call_id>`, Agent `jarvis-caller`
+  nur explizit dispatcht (Metadaten nur call_id + Einmal-Token; Lead-Kontext über 127.0.0.1 vom Orchestrator), SIP-Teilnehmer über GESPEICHERTEN Outbound-Trunk
+  je Markt (LIVEKIT_SIP_TRUNK_CH/VN, nie neuer Trunk je Anruf), Caller-ID nur aus LIVEKIT_CALLER_ID_CH/VN (sonst Trunk-Standard, kein Spoofing), waitUntilAnswered,
+  Status dialing/ringing/active/hangup + SIP-Fehler gemappt (486 BUSY, 408/480/487 NO_ANSWER, 404/484… FAILED/UNREACHABLE, Rate-/Concurrency-Limit → RETRY_LATER mit
+  Backoff 1–15 min ohne Versuchsverlust), Room danach gelöscht. AMD (voice.AMD): Combox → VOICEMAIL, KEINE Nachricht. Warm Transfer (workflows.createWarmTransferTask)
+  nur mit JARVIS_TRANSFER_CH/VN_NUMBER (Server-Umgebung), sonst TRANSFER_NOT_CONFIGURED + Rückruf.
+- **Voice** (LiveKit Inference): STT assemblyai/universal-3-6-pro (CH de-CH, VN vi; Fallback cartesia/ink-whisper gleiche Sprache), TTS cartesia/sonic-3.5
+  (CH de, VN vi; Fallback sonic-3 gleiche Sprache – sonic-3.6 ist im SDK 1.9.3 nicht gelistet), LLM google/gemini-3.1-flash-lite (Fallback openai/gpt-4.1-mini).
+  Überschreiben per CALLING_*_MODEL nur innerhalb der Allowlist; Sprache fest am Markt. **Aufnahme AUS** (session.start record:false, kein Egress, keine Audiodateien).
+- **Zugang**: nur OWNER (Chris: CH+VN) und SALES_AGENT_VN (Lap: nur eigene VN-Leads, 0 CH-Daten). Giuliano/Mario/Damiano 403 (UI unsichtbar), ohne Sitzung 401.
+  Browser sendet nur lead_id/Markt/Modus/Parallelität; phone/caller_id/trunk_id/room/agent_name/force → 400. Kein «force», auch nicht für den Owner.
+- **Berechtigung**: CH nur CONSENT / EXISTING_CUSTOMER / REQUESTED_CALLBACK; Kaltakquise → CALL_REVIEW_REQUIRED (Verzeichnis unbekannt/Stern/nicht eingetragen →
+  BLOCKED_DIRECTORY). VN nur explizite Zustimmung / Bestandskunde mit erlaubtem Telefonkontakt / erbetener Rückruf, nicht DNC/Opt-out/Do-Not-Advertise; öffentliche
+  Nummer, Website-Fehler, Lap-Klick, Chris-Freigabe reichen nicht. Fenster VN 08:00–17:00 Asia/Ho_Chi_Minh (sonst QUEUE_WAITING_FOR_WINDOW), CH konservativ Mo–Fr
+  08:00–18:00 Europe/Zurich. Prüfung bei Vorschau, Start UND beim Abholen jedes Anrufs. **Stand: es gibt noch keine erfassten Zustimmungen** → praktisch nur
+  CH-Bestandskunden zulässig, VN 0.
+- **Modi**: EINZELN (CRM-Lead-Detail «AGENT ANRUFEN»), SEQUENZ (20 s Pause), PARALLEL (1…Server-Maximum). CALLING_DEFAULT_CONCURRENCY=1, CALLING_MAX_CONCURRENCY=5,
+  harte Obergrenze 5, optional CALLING_PROVIDER_MAX_CONCURRENCY (kleineres Limit gewinnt). Kein Lead / keine Nummer doppelt aktiv. Owner-Limits daily_call_cap 50,
+  max_campaign_size 50 (nur Chris änderbar). Vorschau mit allen Kategorien + geplante maximale Calls, Start nur mit Bestätigungsdialog. PAUSE/RESUME, STOP (aktive
+  laufen zu Ende), separat AKTIVE ANRUFE BEENDEN; call.cancel. Wiederholung höchstens 1× (NO_ANSWER/BUSY/VOICEMAIL, frühestens 4 h später im Fenster).
+- **DNC**: Tool mark_do_not_call + Transkript-Sicherheitsnetz (DE/VI/EN) → bestätigen, beenden, DO_NOT_CALL, offene Positionen entfernt, Anruf-DNC dauerhaft,
+  CRM crm.addCall + crm.setDoNotContact (damit greift die bestehende Mail-DNC-Sperre). **CRM**: Ergebnisse über die bestehende crm.*-Allowlist in die CRM-/VN-Queue
+  (Akteur system:calling, TTL 24 h; INTERESTED → «Rückruf / Auftrag mit Kunde bestätigen» / «Xác nhận lại đơn hàng với khách hàng», Rückruf mit follow_up_at).
+  Dry Run schreibt nie ins CRM. Lead-Detail: Letzter Anruf, Status, Ergebnis, Dauer, nächster Rückruf, Versuche, Kurzzusammenfassung, Berechtigung.
+- **Agent**: offenbart sich als automatisierter Telefonassistent von Helvetic Webdesign (fester Eröffnungstext, nicht LLM), fragt nach 30 s; nur verifizierte
+  Befunde; CH CHF 150/480, VN 990.000/3.900.000 đồng; keine Zahlung/Bank/Passwörter/Rabatte/Verträge. Lead-/Website-/CRM-Text nur als UNTRUSTED-Datenblock.
+  Tools: get_lead_context, mark_interested, request_callback(datetime), mark_not_interested, mark_do_not_call, request_human_transfer, finish_call.
+- **Crash-Recovery**: aktive Anrufe in /data/calling/calling_state.json (atomar); nach Neustart nie neu gewählt – Room beendet, CALL_STATE_REVIEW_REQUIRED.
+- **UI**: Owner-HUD «CALLING AGENT» (LiveKit/SIP CH/SIP VN, Dry Run, Aufnahme AUS, Zähler, Vorschau, Kampagnen, aktive/letzte Gespräche, Limits); Lap-App
+  «TRỢ LÝ GỌI ĐIỆN» komplett Vietnamesisch; START gesperrt ohne LiveKit/SIP («LiveKit/SIP noch nicht eingerichtet» / «LiveKit/SIP chưa được cấu hình»).
+- **Deploy**: Netlify via Push 3363fcb (/api/calling probe configured, ohne Sitzung 401, falscher Dienst-Schlüssel 401). VPS `deploy/vps/deploy-calling.sh fiverr
+  build|start|status`: Compose-Projekt jarvis-calling (/opt/jarvis-calling, nur eigenes data, kein Docker-Socket, keine Ports, read-only, unless-stopped,
+  Healthcheck), Start 18:52:01 UTC, healthy, restarts 0, Abholen gegen Netlify ok, aktiv 0, Queue 0. `.env` 600: abgeleiteter Schlüssel + CALLING_DRY_RUN=true,
+  bestehende LIVEKIT_*-Zeilen bleiben bei späteren Deploys erhalten. Mail 17:46:23, Repair 17:45:26, CRM, Contacts, VN-Discovery: StartedAt/Restarts unverändert.
+- **Konfiguration fehlt** (nur Namen): LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_TRUNK_CH, LIVEKIT_SIP_TRUNK_VN; optional LIVEKIT_CALLER_ID_CH/VN,
+  JARVIS_TRANSFER_CH/VN_NUMBER. Danach Dienst neu starten (start), Status prüfen; erst nach ausdrücklicher Testnummer von Chris CALLING_DRY_RUN=false.
+- TF-058-Recheck: vor 1062 erledigt / 10284 offen, danach 1074 / 10272 (nicht zurückgesetzt/beschleunigt).
+- **Tests**: calling-065 (20: Auth, Scope, Berechtigung, Vorschau/Gate, Parallel 3/2 + 1/2/3/5, API-Kampagne, Stop/Ende, DNC, Rückruf/Retry/Tageslimit, VN-Fenster,
+  Dry-Run-Dienst + Recovery, Agent DE/VI, Modelle, Konfiguration ohne Werte, SIP-Mapping, Allowlist, keine Aufnahme, Lead-Detail) + calling-browser-065 (Chromium,
+  Lap vi-VN, Giuliano unsichtbar/403); `npm run test:tf065` 21/21. Gesamtsuite sequenziell 867 / 855 pass / 0 fail / 12 skip. Secret-Scan 0 Treffer.
+- 0 echte Anrufe, 0 Mails, 0 echte Entwürfe, 0 Aufträge/Zahlungen, 0 Kundenwebsites verändert. workspace/memory/chris.md und /opt/fiverr nicht angefasst.
 
 ## TF-064 – VIETNAM MAIL PROFILE + VND PRICING + VN ORDER FLOW (2026-10-15, Code a9d84c0, Netlify LIVE, Repair LIVE, Mail LIVE, CRM/Contacts/VN NICHT neu gestartet)
 - **Zentrale Preisquelle** `pricing.js` (ohne Abhängigkeiten): CH unverändert REPAIR_CHECK_150 CHF 150 / REPAIR_FIX_500 CHF 480 (CA150-/RF480-IDs bleiben);
