@@ -2,7 +2,47 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-14
+Letzte Aktualisierung: 2026-10-15
+
+## TF-059 – SMART MODEL ROUTING + REPAIR ZIP + KONKRETE CRM-FEHLER (2026-10-15, Code ebc4788, Repair + CRM + Netlify LIVE, Mail/Contacts NICHT neu gestartet)
+- **Modellwahl** (`model-router.js`, server.js `/api/ask`): vorher statisch `JARVIS_MODEL` für jeden Auftrag (lokale .env: claude-opus-5-5).
+  Jetzt deterministisch je Auftrag, keine Zusatz-KI-Abfrage: **LIGHT haiku** (Status, Zahlen, einfache Suche/Zusammenfassung, Tippfehler),
+  **STANDARD sonnet = Default** (Coding, Debugging, CRM/Website, alles Unklare), **STRONG fable** nur bei Security, Architektur,
+  Produktionsfehler, schwer reproduzierbarem Bug, riskanter Migration oder „Standard reicht nicht“. LIGHT nie für destruktive/produktive/
+  versendende Aufträge (auch nicht per Override). Override erste Zeile `MODELL: LIGHT|STANDARD|STRONG`. Aliasse mit Claude Code 2.1.296
+  geprüft (haiku/sonnet/opus/fable laufen, unbekannt → `unrecognized_model`); .env-Werte ausserhalb dieser Aliasse → Standard der Stufe;
+  Laufzeitfehler „Modell nicht verfügbar“ → genau ein Retry mit STANDARD. `/api/status` + HUD: `lastJob` = Stufe · Alias · Stichwort
+  (nie Prompt-Inhalte), SSE-Ereignis `model`. Kein dauerhaftes Hochstufen. Lokaler Core NICHT neu gestartet (Router-Tests als Unit-Tests;
+  aktiv ab dem nächsten Core-Neustart; die alte .env-Angabe claude-opus-5-5 ist kein Alias → STANDARD = sonnet).
+- **Repair-Website-Paket** (`repair-package.js`): erst NACH bestandenem Abschluss-Gate (Retest + Regression + Browser + Live-Retest)
+  read-only Webroot-Export (SFTP/SSH `exportWebroot`, Symlinks nie gefolgt, verbotene Ordner gar nicht gelesen) → genau ein ZIP unter
+  `/opt/jarvis-repair/artifacts/<ORDER_ID>/` (700/600, Container `/data/artifacts`) + `artifact.json` (order_id, domain, type, created_at,
+  sha256, size, file_count, netlify_ready, Prüfwerte; keine Zugangsdaten/Pfade). **NETLIFY_READY** (`website-netlify-ready.zip`) nur für
+  statische Websites nach Selbstprüfung: entpackt, index.html im Root, keine verbotenen Dateien, keine lokalen absoluten Pfade, keine
+  fehlenden internen Assets, lokal serviert + Chromium Desktop 1440×900 / Mobile 390×844 (Laden, Bilder, Navigation, reparierte Links,
+  0 JS-Fehler, kein Overflow > 40 px). Sonst **FULL_BACKUP_ONLY** (PHP/WordPress/ohne index.html) bzw. **PACKAGE_VALIDATION_FAILED** →
+  `website-repaired-backup.zip` „NICHT DIREKT AUF NETLIFY DEPLOYBAR“; **EXPORT_NOT_AVAILABLE** (WordPress-REST, GitHub+Netlify, Fehler,
+  zu gross) – Auftrag bleibt erfolgreich. Ausgeschlossen: .env*, .git/, Keys/Zertifikate, Credentials/Secrets, Sessions, DB-Config/-Dumps,
+  Backups/Logs, node_modules, Jarvis-Temp, Inhalte mit Key-/Token-Mustern oder dem Zugangswert des Auftrags (Bridge).
+  Dashboard „WEBSITE-PAKET“: Status, Dateiname, Grösse, SHA256 gekürzt, „Mit Download-Skript auf diesen PC holen“ (keine VPS-Pfade).
+- **Download**: `.\scripts\download-repair-package.ps1 -OrderId RF480-…` – SSH-Alias fiverr (BatchMode), strikte Order-ID, nur
+  artifact.json + die darin genannte ZIP, SHA-256-Prüfung (Abweichung → verworfen), Ziel `exports\repair-packages\<ORDER_ID>\`.
+  E2E auf dem VPS mit synthetischem Artifact (RF480-20991231-000000): Download OK, SHA OK, manipulierte SHA abgelehnt, ungültige ID
+  abgelehnt; Artifact danach gelöscht (artifacts/ leer).
+- **CRM konkrete Top 2** (nur intern; Cold-Mail-Text unverändert): `issueLines`/`issueFacts` (public/crm-model.js) → `crm_title`
+  „Startseite → «Kontakt»“ + `crm_detail` „/kontakt/ → HTTP 404“. Fakten nur aus Evidence (Linktext, HTTP-Status nur bei Link/Bild,
+  Bereich, Viewport); fehlt der Status → „Zielseite nicht erreichbar“, fehlt der Linktext → „Link zu /pfad/“, fehlt die Seite →
+  „Seite unbekannt“; gleiche Domain nur Pfad ohne Query. Detail zeigt Quellseite/Element/Ziel/Beobachtet/HTTP-Status. Ranking, Badges
+  HISTORISCHER FUND/ERNEUT VERIFIZIERT, Findings-Allowlist unverändert. Live (1340 Leads): 1612 Top-Einträge, alle mit konkreter Zeile,
+  527 mit belegtem HTTP-Status, 398 Altbestände ehrlich „Zielseite nicht erreichbar“.
+- **Deploys**: Repair 6d7fac8e2a83 → neu (ebc4788) via `deploy-repair.sh fiverr`, healthy, 0 Aufträge, READY FOR FIRST CUSTOMER,
+  Paket-Probe im Produktions-Image NETLIFY_READY (Desktop/Mobile PASS), MAIL_WORKER_UNTOUCHED=YES. CRM 32939647e90f → a83f13203334
+  (ebc4788) via `deploy-crm.sh build|start`, healthy, MAIL/CONTACTS_WORKER_UNTOUCHED=YES. TF-058-Recheck: Checkpoint erhalten
+  (vorher 480 erledigt / 10866 offen → danach 481 / 10865, läuft weiter, nicht zurückgesetzt/beschleunigt). Netlify live nach Push.
+  Mail-Image-Dockerfile enthält repair-package.js (wirksam erst beim nächsten, separat freizugebenden Mail-Deploy).
+- **Tests** (sequenziell): Unit 782/770/0/12 (`--test-concurrency=1`), Repair 18/18, Browser 10/10, Full-Order 8/8, Repair-Quality 5/5,
+  neu: model-router-059 (8), repair-package-059 (12, echter Chromium), crm-detail-059 (10, A–J), Secret-Scan 0 Treffer, Lab-Cleanup 0.
+- Keine Mail gesendet, keine Entwürfe verändert, keine Kundenwebsite verändert.
 
 ## TF-058 – HISTORISCHE WEBSITE-FEHLER-LEADS + REQUALIFIKATION ALTER QUALIFIED-LEADS (2026-10-14, Code c6fa079, CRM + Netlify LIVE, Mail-Worker NICHT neu gestartet)
 - **Vorher**: CRM 759 (Report 756 kurz davor), Registry 1113 (699 QUALIFIED ohne Entwurf, davon 342 mit Kundentext-Befund), discovered.json
