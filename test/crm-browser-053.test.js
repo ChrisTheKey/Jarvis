@@ -144,8 +144,9 @@ test("K: Desktop (1440×900) – Fehler-Spalte (genau vs. „≥“), Top 2 sepa
     assert.match(await cell("firma-023.ch", errCol), /1 \(veraltet\)/);
     assert.match(await cell("firma-022.ch", errCol), /^0\s/);
     assert.match(await cell("firma-024.ch", errCol), /^2\s/, "nach Reparatur: nur offene (manuelle) Punkte");
-    const top = await page.locator(`#crmMain tr[data-id="firma-021.ch"] td:nth-child(${topCol}) li`).allTextContents();
-    assert.deepEqual(top, ["Kontaktseite führt auf eine Fehlerseite", "Browser zeigt beim Öffnen eine Warnmeldung"]);
+    // TF-059: konkret Quellseite → Element (darunter Ziel → Ergebnis) statt nur Kurztext.
+    const top = await page.locator(`#crmMain tr[data-id="firma-021.ch"] td:nth-child(${topCol}) li .it`).allTextContents();
+    assert.deepEqual(top, ["Startseite → Link zu /kontakt", "Startseite → Website-Aufruf"]);
     assert.match(await cell("firma-022.ch", topCol), /Keine aktuell verifizierten Fehler/);
     // Zähler
     const card = async (label) => Number(await page.locator(`#crmErrCards .crm-card:has-text("${label}") b`).textContent());
@@ -174,7 +175,7 @@ test("K: Desktop (1440×900) – Fehler-Spalte (genau vs. „≥“), Top 2 sepa
     await page.click('#crmMain tr[data-id="firma-021.ch"]');
     await page.waitForSelector("#crmDrawer:not([hidden])");
     const d = await page.locator("#crmDrawer").innerText();
-    for (const s of ["WEBSITE-ZUSTAND", "7 Fehler (verifiziert)", "Vollständig", "Zuletzt geprüft", "WICHTIGSTE FEHLER", "#1", "#2", "Betroffene Seite", "Schweregrad: hoch", "ALLE VERIFIZIERTEN FEHLER (7)"]) assert.ok(d.toUpperCase().includes(s.toUpperCase()), s);
+    for (const s of ["WEBSITE-ZUSTAND", "7 Fehler (verifiziert)", "Vollständig", "Zuletzt geprüft", "WICHTIGSTE FEHLER", "#1", "#2", "Quellseite: Startseite", "Schweregrad: hoch", "ALLE VERIFIZIERTEN FEHLER (7)"]) assert.ok(d.toUpperCase().includes(s.toUpperCase()), s);
     assert.equal(await page.locator("#crmDrawer .crm-topd li").count(), 2);
     assert.equal(await page.locator("#crmDrawer .crm-topd + h5 + ul li").count(), 7, "alle verifizierten Fehler");
     await shot(page, "crm055-desktop-detail.png");
@@ -203,7 +204,7 @@ test("L: Mobile (390×844) – Karte FEHLER + WICHTIGSTE 2 + Ansprechpartner/Tel
     assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 390 });
     const card = page.locator('#crmMain li[data-id="firma-021.ch"]');
     const t = await card.innerText();
-    for (const s of ["Firma 21 AG", "firma-021.ch", "FEHLER:", "7", "VOLLSTÄNDIG", "WICHTIGSTE 2:", "Kontaktseite führt auf eine Fehlerseite", "Browser zeigt beim Öffnen eine Warnmeldung", "Ansprechpartner", "Telefon", "Entwurf bereit"])
+    for (const s of ["Firma 21 AG", "firma-021.ch", "FEHLER:", "7", "VOLLSTÄNDIG", "WICHTIGSTE 2:", "Startseite → Link zu /kontakt", "HTTP 404", "Startseite → Website-Aufruf", "Ansprechpartner", "Telefon", "Entwurf bereit"])
       assert.ok(t.toUpperCase().includes(s.toUpperCase()), s);
     assert.match(await page.locator('#crmMain li[data-id="firma-001.ch"] .crm-err').innerText(), /^≥2$/);
     // Nichts abgeschnitten: jedes Kartenelement passt in die Karte.

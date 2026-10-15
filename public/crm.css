@@ -58,6 +58,7 @@
 .crm-badge.au-STALE { color: var(--red); border-color: rgba(255,93,108,.45); } .crm-badge.au-NONE { color: var(--muted); }
 .crm-badge.hist-HISTORICAL { color: var(--amber); border-style: dashed; border-color: rgba(255,181,71,.45); } .crm-badge.hist-REVERIFIED { color: var(--cyan-2); border-color: rgba(0,229,255,.4); }
 .crm-top2 { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.crm-top2 .it, .crm-top2 .id { display: block; } .crm-top2 .id, .crm-find small.id { color: var(--amber); font-family: var(--mono); font-size: 12px; }
 .crm-table td.err { white-space: nowrap; } .crm-table td.top { min-width: 200px; max-width: 320px; }
 .crm-errline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .crm-lcard .lbl { color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }

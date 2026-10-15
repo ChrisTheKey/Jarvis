@@ -7,12 +7,12 @@
 FROM node:22-alpine
 RUN apk add --no-cache tzdata
 RUN apk add --no-cache chromium font-dejavu
-ENV NODE_ENV=production TZ=Europe/Zurich JARVIS_SECRETS_DIR=/data/repair JARVIS_REPAIR_OUTBOX=/data/outbox JARVIS_REPAIR_CRM_EXPORT=/data/crm-export JARVIS_WORKER_ROLE=repair JARVIS_REPAIR_POLL_SECONDS=120 JARVIS_CHROMIUM_PATH=/usr/bin/chromium
+ENV NODE_ENV=production TZ=Europe/Zurich JARVIS_SECRETS_DIR=/data/repair JARVIS_REPAIR_OUTBOX=/data/outbox JARVIS_REPAIR_CRM_EXPORT=/data/crm-export JARVIS_REPAIR_ARTIFACTS=/data/artifacts JARVIS_WORKER_ROLE=repair JARVIS_REPAIR_POLL_SECONDS=120 JARVIS_CHROMIUM_PATH=/usr/bin/chromium
 WORKDIR /app
 COPY deploy/vps/backup-public.pem ./backup-public.pem
 COPY package.json package-lock.json /app/
 RUN npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund && npm cache clean --force
-COPY repair-service.js repair-outbox.js repair-workflow.js check-150-workflow.js repair-render-test.js repair-browser-validator.js production-readiness.js mail-worker.js human-contact.js swiss-repair.js site-findings.js cloud-leads.js lead-registry.js lead-db.js lead-finder.js site-auditor.js swiss-areas.js email-permission.js sales.js payments.js access-intake.js access-intake-api.js shared-state.js local-state.js cloud-core.js backup.js backup-api.js persona-version.js persona.md ./
+COPY repair-service.js repair-outbox.js repair-workflow.js repair-package.js check-150-workflow.js repair-render-test.js repair-browser-validator.js production-readiness.js mail-worker.js human-contact.js swiss-repair.js site-findings.js cloud-leads.js lead-registry.js lead-db.js lead-finder.js site-auditor.js swiss-areas.js email-permission.js sales.js payments.js access-intake.js access-intake-api.js shared-state.js local-state.js cloud-core.js backup.js backup-api.js persona-version.js persona.md ./
 COPY repair-adapters ./repair-adapters
 COPY data/swiss-municipalities.json ./data/swiss-municipalities.json
 USER node

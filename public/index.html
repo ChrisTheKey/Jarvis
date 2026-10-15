@@ -972,6 +972,11 @@ async function run(text, { typed = false } = {}) {
           $("say").scrollTop = $("say").scrollHeight;
           log("JARVIS", ev.text.trim(), "green");
           speak(ev.text);
+        } else if (ev.type === "model") {
+          if (mode === "local" && /^(LIGHT|STANDARD|STRONG)$/.test(ev.tier) && /^[a-z0-9-]{2,40}$/.test(ev.model || "")) {
+            status.lastJob = { tier: ev.tier, model: ev.model };
+            $("kModel").textContent = `${ev.tier} · ${ev.model}`;
+          }
         } else if (ev.type === "tool") {
           log(TOOL_NAMES[ev.name] || ev.name.toUpperCase(), ev.detail, "amber");
         } else if (ev.type === "tool_error") {
@@ -1455,7 +1460,8 @@ async function probeCloud() {
 function renderMode() {
   if (mode !== "local") status = {};
   $("kCore").textContent = mode === "local" ? (status.claude ? "Claude Code " + status.claude.split(" ")[0] : "Claude Code fehlt") : mode === "cloud" ? "Cloud" : "offline";
-  $("kModel").textContent = status.model || (mode === "cloud" ? "Cloud" : "–");
+  // TF-059: adaptive Modellwahl – letzter Auftrag „STANDARD · sonnet“, sonst „AUTO · <Standard>“ (nur Stufe/Alias, nie Prompt-Inhalte).
+  $("kModel").textContent = status.lastJob ? `${status.lastJob.tier} · ${status.lastJob.model}` : status.model ? `AUTO · ${status.model}` : (mode === "cloud" ? "Cloud" : "–");
   $("kAccess").textContent = mode === "local" ? (status.fullAccess ? "VOLL" : "Standard") : "kein PC-Zugriff";
   $("kMode").textContent = mode === "local" ? "LOCAL" : mode === "cloud" ? "CLOUD" : "OFFLINE";
   $("kLocal").textContent = mode === "local" ? "ONLINE" : "OFFLINE";
@@ -1625,7 +1631,13 @@ function renderRepair(rep) {
     li.className = o.state === "CANCELLED" ? "" : ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : o.state === "COMPLETED_WITH_MANUAL_ITEMS" ? "wait" : /FAILED|BLOCKED|MANUAL|REVIEW/.test(o.state || "") ? "bad" : "wait";
     const yn = (v) => (v === true ? "JA" : v === false ? "NEIN" : "–");
     const prod = o.production === "DEPLOYED" ? "LIVE" : o.production === "BRANCH_ONLY" ? "NUR BRANCH" : "UNVERÄNDERT";
-    li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span><span class="why adp"></span><span class="why pay"></span><span class="why brw"></span>`;
+    li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span><span class="why adp"></span><span class="why pay"></span><span class="why brw"></span><span class="why pkg"></span>`;
+    // TF-059: WEBSITE-PAKET – nur Status, Dateiname, Grösse, gekürzte SHA256; Download nur per Skript auf diesen PC (keine VPS-Pfade, kein Link).
+    const pk = o.package;
+    const PKG = { NETLIFY_READY: "NETLIFY READY", FULL_BACKUP_ONLY: "BACKUP – NICHT NETLIFY READY", PACKAGE_VALIDATION_FAILED: "BACKUP – NICHT NETLIFY READY (Prüfung nicht bestanden)", EXPORT_NOT_AVAILABLE: "NICHT VERFÜGBAR" };
+    const mb = (b) => (Number.isFinite(b) ? (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`) : "–");
+    li.querySelector(".pkg").textContent = pk && PKG[pk.status]
+      ? `WEBSITE-PAKET: ${PKG[pk.status]}${pk.file ? ` · ${pk.file} · ${mb(pk.size)} · SHA256 ${pk.sha256_short || "–"}… · Mit Download-Skript auf diesen PC holen` : ""}` : "";
     li.querySelector(".st").textContent = `${REPAIR_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 480}`;
     li.querySelector(".pay").textContent = payLine(o, 480, 240) + (o.access_requested ? ` · Zugang ${o.access_received ? "ERHALTEN" : "ANGEFRAGT"}${o.access_type ? ` (${o.access_type})` : ""}` : "")
       + (o.profile_status ? ` · Profil ${PROFILE_LABELS[o.profile_status] || "–"}` : "")

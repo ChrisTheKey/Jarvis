@@ -47,8 +47,11 @@ const SEVERITIES = ["critical", "high", "medium", "low"];
 // Bereits normalisierter Befund (site-findings.js) – nur gezählte Typen, nur bekannte Felder.
 const cleanFinding = (f) => (f && COUNTED_TYPES.includes(f.type) && str(f.text, 140) && str(f.key, 200) ? { key: str(f.key, 200), type: f.type,
   category: ISSUE_CATEGORIES.includes(f.category) ? f.category : "other", text: str(f.text, 140), page: httpUrl(f.page), target: httpUrl(f.target),
-  severity: SEVERITIES.includes(f.severity) ? f.severity : "medium", verified_at: iso(f.verified_at), status: "OPEN", source: "cold", manual: false } : null);
-const slim = (f) => ({ key: f.key, type: f.type, category: f.category, text: f.text, page: f.page, target: f.target, severity: f.severity, verified_at: f.verified_at });
+  severity: SEVERITIES.includes(f.severity) ? f.severity : "medium", verified_at: iso(f.verified_at), status: "OPEN", source: "cold", manual: false, ...facts(f) } : null);
+// TF-059: belegte CRM-Fakten (Linktext, HTTP-Status, Bereich, Viewport) mitführen – nur wenn vorhanden, sonst null (nie erfunden).
+const facts = (f) => ({ label: str(f.label, 40), http_status: Number.isInteger(f.http_status) && f.http_status >= 100 && f.http_status <= 599 ? f.http_status : null,
+  location: str(f.location, 60), viewport: Number.isInteger(f.viewport) ? f.viewport : null });
+const slim = (f) => ({ key: f.key, type: f.type, category: f.category, text: f.text, page: f.page, target: f.target, severity: f.severity, verified_at: f.verified_at, ...facts(f) });
 export const isStale = (h, now = new Date()) => !iso(h?.last_verified_at) || +now - Date.parse(h.last_verified_at) > FULL_AUDIT_MAX_AGE_MS;
 
 // ---------- Ein Discovery-Ergebnis (discovered.json, auch aus einem Backup) → Historien-Eintrag oder Grund ----------

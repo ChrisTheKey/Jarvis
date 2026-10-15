@@ -172,7 +172,9 @@ test("Cloud-Allowlist: nur Zahl/Audit/Zeit/Kurztexte – keine Evidence; Zahl ei
   const s = svc({ siteFindings: { schema: 1, domains: { "firma-021.ch": { domain: "firma-021.ch", full: full7() } } } });
   const c = cleanCrmLead(lead(s, "firma-021.ch"));
   assert.equal(c.errors.count, 7); assert.equal(c.errors.audit, "FULL"); assert.equal(c.errors.top.length, 2); assert.equal(c.errors.items.length, 7);
-  assert.ok(!JSON.stringify(c.errors).includes("HTTP 404"), "keine Evidence");
+  // TF-059: der belegte Status erscheint nur als abgeleitetes Feld (http_status / crm_detail „… → HTTP 404“) – nie der Evidence-Text selbst.
+  assert.ok(!JSON.stringify(c.errors).includes('"evidence"') && !JSON.stringify(c.errors).includes("verlinkt auf"), "keine Evidence");
+  assert.ok(c.errors.items.every((f) => f.http_status === null || f.crm_detail?.includes(`HTTP ${f.http_status}`)));
   assert.ok(c.findings.every((f) => !("type" in f) && !("target" in f)), "interne Felder der alten Liste nicht in der Cloud");
   const forged = cleanCrmLead({ ...lead(s, "firma-001.ch"), errors: { audit: "PARTIAL", exact: true, count: 3, items: [{ text: "<script>", category: "x", evidence: "geheim" }] } });
   assert.equal(forged.errors.exact, false); assert.equal(forged.errors.items[0].category, "other"); assert.ok(!("evidence" in forged.errors.items[0]));

@@ -179,6 +179,15 @@ export function bridgeAdapter(key, contract, { profileFor = () => null } = {}) {
     deployProduction: (order, ctx) => call(order, ctx, (c) => contract.deployProduction(order, c)),
     rollback: (order, ctx) => call(order, ctx, (c) => contract.rollback(order, order.backup, c)),
     cleanup: (order, ctx) => call(order, ctx, (c) => contract.cleanup(order, c)),
+    // TF-059: Webroot-Export (nur Adapter mit vollständigem Dateizugriff). Dateien, die einen Zugangswert des Auftrags enthalten,
+    // gehen nie an den Packer weiter (onFile(rel, null, { credential_match: true })). Ergebnis nur ok/complete/reason/Zähler.
+    ...(typeof contract.exportWebroot === "function" ? {
+      exportWebroot: (order, ctx, { onFile, shouldSkip } = {}) => call(order, ctx, (c) => {
+        if (!c) return { ok: false, reason: "no_credentials" };
+        const secrets = [...c.secrets].filter((s) => typeof s === "string" && s.length >= 6);
+        return contract.exportWebroot(order, c, { shouldSkip, onFile: (rel, data, meta = {}) => (secrets.some((s) => data.includes(s)) ? onFile(rel, null, { ...meta, credential_match: true }) : onFile(rel, data, meta)) });
+      }, { raw: true }),
+    } : {}),
   };
 }
 

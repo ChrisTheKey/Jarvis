@@ -73,6 +73,60 @@ export function errorLong(l) {
 export const errorBucket = (l) => { const n = errorCount(l); return n == null ? null : n === 0 ? "0" : n <= 2 ? "1-2" : n <= 5 ? "3-5" : "6+"; };
 export const ERROR_BUCKETS = Object.freeze(["0", "1-2", "3-5", "6+"]);
 export const topIssues = (l) => (Array.isArray(errs(l).top) ? errs(l).top : []).slice(0, 2);
+
+// ---------- TF-059: konkrete CRM-Fehlerzeile (NUR intern für Chris – der Cold-Mail-Kundentext bleibt kurz und natürlich) ----------
+// QUELLSEITE → ELEMENT, darunter ZIEL → TATSÄCHLICH BEOBACHTET. Nur belegte Werte: unbekannter HTTP-Status → „Zielseite nicht
+// erreichbar“, unbekannter Linktext → „Link zu /pfad/“, unbekannte Seite → „Seite unbekannt“. Gleiche Domain → nur Pfad (ohne Query).
+const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const urlOf = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x : null; } catch { return null; } };
+const hostOf = (x) => x.hostname.toLowerCase().replace(/^www\./, "");
+const pathText = (x) => { let p = x.pathname || "/"; try { p = decodeURI(p); } catch {} return cut(p, 60); };
+export function issueFacts(f = {}) {
+  const page = urlOf(f.page), target = urlOf(f.target);
+  const source = page ? (page.pathname === "/" ? "Startseite" : pathText(page)) : "Seite unbekannt";
+  // Externe Ziele bereinigt und gekürzt (Host + Pfad, nie Query/Fragment); gleiche Domain → nur Pfad.
+  const tgt = target ? (page && hostOf(target) === hostOf(page) ? pathText(target) : cut(`${hostOf(target)}${target.pathname === "/" ? "" : pathText(target)}`, 60)) : null;
+  const status = Number.isInteger(f.http_status) && f.http_status >= 100 && f.http_status <= 599 ? f.http_status : null;
+  const label = typeof f.label === "string" && f.label.trim() ? cut(f.label.trim(), 40) : null;
+  const loc = typeof f.location === "string" && f.location.trim() ? cut(f.location.trim(), 40) : null;
+  const vp = Number.isInteger(f.viewport) ? f.viewport : null;
+  const file = target ? cut((() => { const s = target.pathname.split("/").filter(Boolean).pop() || ""; try { return decodeURIComponent(s); } catch { return s; } })(), 40) : null;
+  const base = { source, target: tgt, http_status: status, label, location: loc, viewport: vp };
+  switch (f.type) {
+    case "broken_link": case "contact_page_broken":
+      return { ...base, element: label ? `«${label}»` : tgt ? `Link zu ${tgt}` : f.type === "contact_page_broken" ? "Link zur Kontaktseite" : "Link", result: status ? `HTTP ${status}` : "Zielseite nicht erreichbar" };
+    case "broken_image":
+      return { ...base, element: file ? `Bild «${file}»` : "Bild", result: status ? `lädt nicht / HTTP ${status}` : "lädt nicht" };
+    case "broken_mailto":
+      return { ...base, element: "E-Mail-Link", target: null, result: "ungültige E-Mail-Adresse im Link" };
+    case "contact_form_broken":
+      return { ...base, element: loc ? `Kontaktformular · «${loc}»` : "Kontaktformular", target: null, result: "Absenden reproduzierbar fehlgeschlagen" };
+    case "button_broken":
+      return { ...base, element: loc ? `Button «${loc}»` : "Button", target: null, result: "funktioniert nicht" };
+    case "mobile_text_overlap": case "mobile_content_cut_off":
+      return { ...base, source: `Mobile / ${source}`, element: loc ? `«${loc}»` : "Bereich unbekannt", target: null,
+        result: `${f.type === "mobile_text_overlap" ? "überlappt Inhalt" : "abgeschnitten"}${vp ? ` bei ${vp} px` : ""}` };
+    case "no_mobile_viewport":
+      return { ...base, source: `Mobile / ${source}`, element: "Seitendarstellung", target: null, result: "Desktop-Breite, verkleinert" };
+    case "visible_layout_error":
+      return { ...base, element: loc ? `«${loc}»` : "Bereich unbekannt", target: null, result: "verschoben dargestellt" };
+    case "redirect_loop":
+      return { ...base, element: "Website-Aufruf", target: null, result: "Weiterleitungsschleife – lädt nicht" };
+    case "https_certificate":
+      return { ...base, element: "Website-Aufruf", target: null, result: "Browser zeigt Zertifikatswarnung" };
+    default: // z. B. historischer Fund ohne Typ: ehrlich reduziert – nur der vorhandene Kurztext
+      return { ...base, element: null, result: null };
+  }
+}
+// Kompakt (Top 2, 2 Zeilen): title „Startseite → «Kontakt»“, detail „/kontakt/ → HTTP 404“.
+export function issueLines(f = {}) {
+  const x = issueFacts(f);
+  const text = typeof f.text === "string" ? f.text : "";
+  if (!x.element) return { title: x.source === "Seite unbekannt" ? text || "Fehler" : `${x.source} → ${text || "Fehler"}`, detail: null };
+  // Ziel steht schon im Element („Link zu /kontakt/“) → nicht doppelt.
+  const tgt = x.target && !x.element.includes(x.target) ? x.target : null;
+  return { title: `${x.source} → ${x.element}`, detail: [tgt, x.result].filter(Boolean).join(" → ") || null };
+}
 // Reparatur-Stand (nach CHF-480): „Automatisch repariert + 2 manuelle Punkte offen“.
 export function repairLine(l) {
   const r = errs(l).repair;

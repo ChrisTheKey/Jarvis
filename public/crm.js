@@ -3,7 +3,7 @@
 // kein Senden, kein Anruf, keine SMS/WhatsApp. Alle Inhalte per textContent (nie innerHTML mit Daten).
 import { SALES_STAGES, STAGE_LABEL, CALL_STATUSES, CALL_LABEL, CONTACT_STATUSES, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, CARDS,
   SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
-  ERROR_CARDS, PIPELINE_CARDS, AUDIT_LABEL, ISSUE_CATEGORIES, ISSUE_LABEL, SEVERITY_LABEL, errorCount, errorShort, errorLong, topIssues, repairLine, HISTORY_LABEL } from "./crm-model.js";
+  ERROR_CARDS, PIPELINE_CARDS, AUDIT_LABEL, ISSUE_CATEGORIES, ISSUE_LABEL, SEVERITY_LABEL, errorCount, errorShort, errorLong, topIssues, repairLine, HISTORY_LABEL, issueLines, issueFacts } from "./crm-model.js";
 
 const $ = (id) => document.getElementById(id);
 const MOBILE = matchMedia("(max-width: 860px)");
@@ -35,7 +35,13 @@ const auditOf = (l) => l.errors?.audit || "NONE";
 const auditBadge = (l) => badge(`au-${auditOf(l)}`, AUDIT_LABEL[auditOf(l)]);
 const errNum = (l) => el("span", { class: `crm-err${errorCount(l) ? "" : " zero"}${auditOf(l) === "FULL" ? "" : " approx"}`, title: errorLong(l) }, errorShort(l));
 const noTop = (l) => (auditOf(l) === "NONE" ? "Noch nicht geprüft" : "Keine aktuell verifizierten Fehler");
-const top2 = (l) => { const t = topIssues(l); return t.length ? el("ol", { class: "crm-top2" }, t.map((f) => el("li", {}, f.text))) : el("small", {}, noTop(l)); };
+// TF-059: konkret „Startseite → «Kontakt»“ / „/kontakt/ → HTTP 404“ (crm_title/crm_detail vom Dienst, sonst lokal abgeleitet).
+const lines = (f) => (f.crm_title ? { title: f.crm_title, detail: f.crm_detail || null } : issueLines(f));
+const issueLi = (f) => { const x = lines(f); return el("li", { title: f.text || "" }, el("span", { class: "it" }, x.title), x.detail ? el("span", { class: "id" }, x.detail) : ""); };
+const top2 = (l) => { const t = topIssues(l); return t.length ? el("ol", { class: "crm-top2" }, t.map((f) => issueLi(f))) : el("small", {}, noTop(l)); };
+// Detail: alle vorhandenen Fakten (nur belegte – fehlende Werte werden weggelassen bzw. ehrlich als unbekannt benannt).
+const factLine = (f) => { const x = issueFacts(f); return [["Quellseite", x.source], ["Element", x.element], ["Ziel", x.target], ["Beobachtet", x.result],
+  ["HTTP-Status", x.http_status ? String(x.http_status) : null]].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · "); };
 const pageText = (f) => (f.page ? f.page.replace(/^https?:\/\//, "") : "–");
 // TF-058: historischer Discovery-Fund (nur Anzeige – daraus entsteht nie ein Entwurf).
 const histBadge = (l) => (HISTORY_LABEL[l.history_badge] ? badge(`hist-${l.history_badge}`, HISTORY_LABEL[l.history_badge]) : "");
@@ -173,8 +179,8 @@ function renderDrawer() {
   // TF-055 Website-Zustand: Zahl + Audit-Art + Zeitpunkt, die zwei wichtigsten Fehler, danach ALLE aktuell verifizierten Fehler.
   const e = l.errors || { audit: "NONE", top: [], items: [] };
   const sev = (f) => SEVERITY_LABEL[f.severity] || "–";
-  const findItem = (f) => el("li", { class: f.manual ? "manual" : "" }, f.text,
-    el("small", {}, `Seite: ${pageText(f)} · ${ISSUE_LABEL[f.category] || "Andere"} · Schweregrad ${sev(f)}${f.manual ? " · manueller Punkt" : ""} · verifiziert ${fmt(f.verified_at)}`));
+  const findItem = (f) => { const x = lines(f); return el("li", { class: f.manual ? "manual" : "" }, el("b", {}, x.title), x.detail ? el("small", { class: "id" }, x.detail) : "",
+    el("small", {}, `${ISSUE_LABEL[f.category] || "Andere"} · Schweregrad ${sev(f)}${f.manual ? " · manueller Punkt" : ""} · verifiziert ${fmt(f.verified_at)}`)); };
   const findings = [
     kv([["Verifizierte Fehler", errorLong(l)], ["Audit", `${AUDIT_LABEL[e.audit]}${e.scope ? ` – ${e.scope}` : ""}`], ["Zuletzt geprüft", fmt(e.checked_at)],
       ...(e.audit === "STALE" ? [["Hinweis", e.full_checked_at ? "Letzte vollständige Prüfung veraltet – Zahl nicht mehr garantiert aktuell, Neuprüfung ist eingeplant."
@@ -182,8 +188,9 @@ function renderDrawer() {
       ...(e.audit === "PARTIAL" ? [["Hinweis", "Nur Teilprüfung – es können weitere Fehler vorhanden sein."]] : []),
       ...(repairLine(l) ? [["Reparatur", repairLine(l)]] : [])]),
     el("h5", {}, "Wichtigste Fehler"),
-    e.top?.length ? el("ol", { class: "crm-find crm-topd" }, e.top.map((f, i) => el("li", {}, el("b", {}, `#${i + 1} `), f.text,
-      el("small", {}, `Betroffene Seite: ${pageText(f)}`), el("small", {}, `Schweregrad: ${sev(f)} · ${ISSUE_LABEL[f.category] || "Andere"}`))))
+    e.top?.length ? el("ol", { class: "crm-find crm-topd" }, e.top.map((f, i) => { const x = lines(f); return el("li", {}, el("b", {}, `#${i + 1} ${x.title}`),
+      x.detail ? el("small", { class: "id" }, x.detail) : "", el("small", {}, factLine(f) || `Betroffene Seite: ${pageText(f)}`),
+      el("small", {}, `Schweregrad: ${sev(f)} · ${ISSUE_LABEL[f.category] || "Andere"} · verifiziert ${fmt(f.verified_at)}`)); }))
       : el("p", {}, noTop(l)),
     ...(e.items?.length ? [el("h5", {}, `Alle verifizierten Fehler (${e.items.length}${e.audit === "FULL" ? "" : ", Mindestzahl"})`), el("ul", { class: "crm-find" }, e.items.map(findItem))] : []),
   ];

@@ -14,8 +14,8 @@
 //
 // Nichts hier sendet, ruft an oder erstellt Entwürfe. Do Not Contact wirkt sofort im CRM (keine Anruf-Empfehlung, kein Follow-up,
 // keine Outreach-Queue) und – über lead-registry.js registryBlock – auf neue Cold-Entwürfe des Mail-Workers.
-import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended } from "./public/crm-model.js";
-import { siteHealth, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES } from "./site-findings.js";
+import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines } from "./public/crm-model.js";
+import { siteHealth, httpStatusOf, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES } from "./site-findings.js";
 import { buildIndex, findId, normCompany } from "./lead-db.js";
 
 export const CRM_FILE = "lead_crm.json";
@@ -52,7 +52,9 @@ const VISIBLE_EXTRA = { broken_link: "Ein Link führt auf eine Fehlerseite", bro
   https_certificate: "Der Browser zeigt beim Öffnen eine Warnmeldung", redirect_loop: "Die Website lädt beim Aufruf nicht" };
 const SEVERITIES = ["critical", "high", "medium", "low"];
 const pageOfEvidence = (e) => (typeof e?.evidence === "string" ? e.evidence.match(/\((?:verlinkt|eingebunden) auf (https?:\/\/[^\s)]+)\)/)?.[1] : null) || null;
-const refKey = (t, u) => `${t}|${String(u || "").replace(/#.*$/, "").replace(/\/+$/, "")}`;
+// TF-059: belegte Fakten aus der Audit-Evidence (Linktext, HTTP-Status, Bereich) – kein Evidence-Text selbst.
+const evidenceFacts = (e) => (e ? { label: str(e.label, 40), http_status: httpStatusOf(e), location: str(e.location, 60), viewport: Number.isInteger(e.viewport) ? e.viewport : null } : {});
+const refKey = (t, u) =>`${t}|${String(u || "").replace(/#.*$/, "").replace(/\/+$/, "")}`;
 export function findingsOf(review, regLead) {
   const out = [];
   if (review) {
@@ -67,13 +69,13 @@ export function findingsOf(review, regLead) {
       if (!t) continue;
       out.push({ key: str(f.key, 80), text: t, page: httpUrl(pageOfEvidence(e) || (["broken_link", "broken_image", "broken_mailto"].includes(refs[0]?.issue_type) ? null : refs[0]?.url) || null),
         status: "BESTÄTIGT", confirmed: true, severity: oneOf(f.severity || e?.severity, SEVERITIES), verified_at: iso(review.updated_at) || iso(e?.observed_at),
-        type: str(refs[0]?.issue_type, 40), target: httpUrl(refs[0]?.url) }); // type/target nur intern (Fehlerzahl, TF-055) – nicht in der Cloud-Allowlist
+        type: str(refs[0]?.issue_type, 40), target: httpUrl(refs[0]?.url), ...evidenceFacts(e) }); // type/target/Fakten nur intern (Fehlerzahl TF-055, Detail TF-059) – nicht in der Findings-Allowlist
     }
     for (const e of ev) {
       if (!e || !VISIBLE_EXTRA[e.issue_type] || covered.has(refKey(e.issue_type, e.url)) || e.reproducible === false || e.severity === "low") continue;
       covered.add(refKey(e.issue_type, e.url));
       out.push({ key: `${e.issue_type}`, text: VISIBLE_EXTRA[e.issue_type], page: httpUrl(pageOfEvidence(e) || (e.issue_type.startsWith("broken_") ? null : e.url)),
-        status: "AUDIT", confirmed: false, severity: oneOf(e.severity, SEVERITIES), verified_at: iso(e.observed_at), type: e.issue_type, target: httpUrl(e.url) });
+        status: "AUDIT", confirmed: false, severity: oneOf(e.severity, SEVERITIES), verified_at: iso(e.observed_at), type: e.issue_type, target: httpUrl(e.url), ...evidenceFacts(e) });
     }
     return out;
   }
@@ -196,7 +198,8 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   let findings = findingsOf(rv, reg);
   // Ohne Cold-/Registry-Befund: die belegten historischen Befunde (Status AUDIT, nicht „bestätigt“ – nie Grundlage für einen Entwurf).
   if (!findings.length && hist) findings = hist.verified_findings.filter((f) => str(f?.text, 240)).map((f) => ({ key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
-    status: "AUDIT", confirmed: false, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) || iso(hist.last_verified_at), type: str(f.type, 40), target: httpUrl(f.target) }));
+    status: "AUDIT", confirmed: false, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) || iso(hist.last_verified_at), type: str(f.type, 40), target: httpUrl(f.target),
+    label: str(f.label, 40), http_status: httpStatusOf(f), location: str(f.location, 60), viewport: Number.isInteger(f.viewport) ? f.viewport : null }));
   // TF-055: Website-Zustand – vollständiger Audit (passiv bzw. nach Reparatur) oder nur Teilprüfung („mindestens“). Je Domain.
   const sf = domain ? src.siteFindings?.domains?.[domain] : null;
   const errors = siteHealth({ full: sf?.full || null, incomplete: sf?.partial || null, repair: domain ? src.repairFindings?.orders?.[domain] || null : null,
@@ -382,9 +385,18 @@ export function applyCrmAction(state, req, { now = new Date(), lookup } = {}) {
 // ---------- Allowlist für die Cloud-Kopie (Netlify speichert nur das) ----------
 // TF-055 Website-Zustand: nur Zahl, Audit-Art, Zeitpunkte und je Befund Typ/Kategorie/Kurztext/Seite/Schweregrad – nie Evidence.
 export const MAX_ERROR_ITEMS = 40;
-const cleanErrorItem = (f) => (f && typeof f === "object" && str(f.text, 140) ? { key: str(f.key, 200), type: typeof f.type === "string" && /^[a-z_]{3,40}$/.test(f.type) ? f.type : null,
-  category: oneOf(f.category, ISSUE_CATEGORIES, "other"), text: str(f.text, 140), page: httpUrl(f.page), target: httpUrl(f.target), severity: oneOf(f.severity, SEVERITIES),
-  verified_at: iso(f.verified_at), source: oneOf(f.source, FINDING_SOURCES), manual: f.manual === true } : null);
+// TF-059: zusätzlich CRM-interne Fakten (Linktext, HTTP-Status, Bereich, Viewport) und die daraus abgeleitete konkrete Zeile
+// crm_title/crm_detail (issueLines). text bleibt der kurze, natürliche Text – der Cold-Mail-Kundentext wird hier nie verändert.
+const cleanErrorItem = (f) => {
+  if (!f || typeof f !== "object" || !str(f.text, 140)) return null;
+  const x = { key: str(f.key, 200), type: typeof f.type === "string" && /^[a-z_]{3,40}$/.test(f.type) ? f.type : null,
+    category: oneOf(f.category, ISSUE_CATEGORIES, "other"), text: str(f.text, 140), page: httpUrl(f.page), target: httpUrl(f.target), severity: oneOf(f.severity, SEVERITIES),
+    verified_at: iso(f.verified_at), source: oneOf(f.source, FINDING_SOURCES), manual: f.manual === true,
+    label: str(f.label, 40), http_status: Number.isInteger(f.http_status) && f.http_status >= 100 && f.http_status <= 599 ? f.http_status : null,
+    location: str(f.location, 60), viewport: Number.isInteger(f.viewport) && f.viewport >= 200 && f.viewport <= 4000 ? f.viewport : null };
+  const lines = issueLines(x);
+  return { ...x, crm_title: lines.title, crm_detail: lines.detail };
+};
 export function cleanErrors(e) {
   const x = e && typeof e === "object" ? e : {};
   const audit = oneOf(x.audit, AUDIT_STATES, "NONE");

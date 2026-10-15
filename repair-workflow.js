@@ -49,6 +49,9 @@
 //     reparierbaren Probleme wurden behoben. Weitere Punkte erfordern eine manuelle Prüfung.» – nie «vollständig repariert».
 //   - CRM-SYNC (TF-055): nach bestandenem Retest schreibt writeRepairFindingsExport den Stand je Domain (behoben = RESOLVED, offen =
 //     manuell) als repair_findings.json für das CRM – nur normalisierte Befunde, keine Kundendaten, Referenzen oder Secrets.
+//   - WEBSITE-PAKET (TF-059): erst NACH bestandenem Abschluss-Gate (Retest + Regression + Browser + Live-Retest) liest der Adapter
+//     den autorisierten Webroot read-only und repair-package.js erzeugt genau ein ZIP (NETLIFY_READY nur nach Selbstprüfung, sonst
+//     Backup bzw. EXPORT_NOT_AVAILABLE). Das Paket ist nie ein Abbruchgrund – der Auftrag bleibt erfolgreich.
 //   - BESTÄTIGTER AUFTRAG (TF-046): createConfirmedRepairOrder erfasst Direktverkauf (sales.json) + Auftrag in einem Schritt. Ein
 //     stornierter (voided) CHF-480-Verkauf stoppt den Auftrag sofort: keine Zugangs-Anfrage, keine Reparatur, keine Lieferung.
 import crypto from "node:crypto";
@@ -67,6 +70,7 @@ import { createAuditor } from "./site-auditor.js";
 import { MAX_AUTO_FIXES_PER_ORDER, hasCapabilities, onlyCapabilities } from "./repair-adapters/common.js";
 import { combineDecisions, rollbackMatchesBaseline, safeSnapshot, browserRuntimeStatus } from "./repair-browser-validator.js";
 import { REPAIR_FINDINGS_FILE, normalizeIssue, dedupeFindings, rankFindings } from "./site-findings.js";
+import { PACKAGE_STATES, packageSummary } from "./repair-package.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 export const REPAIR_OFFER = "REPAIR_FIX_500"; // Kundenbezeichnung „Check & Reparatur“, Preis aus OFFERS (CHF 480). Keine dritte Preisstufe.
@@ -350,7 +354,7 @@ function destroyOrderSecret(store, order, now) {
 // Zugangsprofil automatisch (ACCESS_PROFILE_PREFLIGHT). Ohne preflight bleibt alles wie in TF-042 (Profil von Chris).
 export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir), adapters = {}, auditor = null, retester = null,
   gmail = null, intake = null, router = null, preflight = null, alert = null, browserValidator = null, requireBrowser = false, autoDeliver = false,
-  now = () => new Date(), log = () => {} } = {}) {
+  packager = null, now = () => new Date(), log = () => {} } = {}) {
 
   const adapterOf = (order) => (order.stack ? adapters[order.route?.adapter || order.stack.type] || null : null);
   const block = (order, state, reason) => {
@@ -406,6 +410,20 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
   const domainBound = (order) => authorizationOk(order) && (!order.access_intake || normDomain(order.access_intake.access_domain) === normDomain(order.domain));
   // Zugangsdaten nur auf Abruf im Speicher entschlüsseln (Adapter) – nie speichern, nie loggen.
   const accessCtx = (order) => (intakeReceived(order) ? { connector_type: order.access_intake.connector_type, credential: () => openAccessCredential(store.dir, order.order_id) } : {});
+  // TF-059: Website-Paket nach bestandenem Abschluss-Gate. Jeder Fehler → EXPORT_NOT_AVAILABLE (nie ein Abbruch des Auftrags).
+  const packageWebsite = async (order, adapter, t) => {
+    const na = (reason) => ({ status: "EXPORT_NOT_AVAILABLE", reason, file: null, sha256: null, size: null, file_count: 0, netlify_ready: false, created_at: t.toISOString() });
+    if (!packager || typeof packager.create !== "function") return na("packager_unavailable");
+    const can = typeof adapter?.exportWebroot === "function";
+    try {
+      const r = await packager.create({ order, now: t, exportFiles: can ? (onFile, opts = {}) => adapter.exportWebroot(order, accessCtx(order), { ...opts, onFile }) : null });
+      log("info", "repair_package", { order_id: order.order_id, status: r?.status, file_count: r?.file_count ?? 0 });
+      return PACKAGE_STATES.includes(r?.status) ? r : na("packager_failed");
+    } catch (e) {
+      log("warn", "repair_package_failed", { order_id: order.order_id, error: String(e?.code || e?.message || e).slice(0, 80) });
+      return na("export_failed");
+    }
+  };
   // TF-041: Zahlungsschwelle ist an dieser Stelle bereits erfüllt. Fehlt der sichere Zugangsweg, bittet Jarvis den Kunden
   // automatisch über den sicheren Link um Zugang (ACCESS_REQUESTED) – aber NUR mit verifizierter Kundenadresse, Intake und
   // Versandweg; sonst bleibt es beim bisherigen fail closed (BLOCKED_NO_ACCESS, Zugangsdaten werden nie erraten).
@@ -929,6 +947,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       }
       const gate = completionGate(order);
       if (!gate.ok) { manual(order, `Abschluss-Gate nicht erfüllt (${gate.missing.join(", ")}) – kein Abschluss.`); return false; }
+      order.package = await packageWebsite(order, adapter, t); // TF-059: erst nach dem Gate, Ergebnis ändert den Erfolg nie
       const open = manualItems(order).length;
       order.completion = { kind: open ? "WITH_MANUAL_ITEMS" : "FULL", manual_items: open, repaired: Object.values(order.issues || {}).filter((i) => i.repair_status === "repaired").length, at: t.toISOString() };
       order.report = buildCustomerReport(order);
@@ -1160,7 +1179,7 @@ export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domai
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
   "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified",
-  "browser_desktop", "browser_mobile", "browser_regression", "authorized", "delivery_status", "manual_items_open", "created_at", "updated_at"]);
+  "browser_desktop", "browser_mobile", "browser_regression", "authorized", "delivery_status", "manual_items_open", "package", "created_at", "updated_at"]);
 // TF-045: Browser-Gate fürs Dashboard – nur feste Wörter (nie URLs, Screenshots, Logs, Codes oder Requests).
 const gateWord = (v) => (v === "JA" || v === "NEIN" ? v : "WARTET");
 const regressionWord = (g) => (["KEINE", "GEFUNDEN", "ROLLBACK"].includes(g.regression) ? g.regression : null);
@@ -1205,6 +1224,8 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         authorized: authorizationOk(o), delivery_status: DELIVERY_STATUSES.includes(o.delivery?.status) ? o.delivery.status : "none",
         // TF-055: offene manuelle Punkte (nur Zahl) – sobald der Auftrag den Retest bestanden hat.
         manual_items_open: ["READY_FOR_DELIVERY", ...COMPLETED_STATES].includes(o.state) ? manualItems(o).length : null,
+        // TF-059: Website-Paket – nur Status, Dateiname, Grösse, Anzahl, gekürzte SHA (nie Pfade auf dem VPS, nie Inhalte).
+        package: ["READY_FOR_DELIVERY", ...COMPLETED_STATES].includes(o.state) ? packageSummary(o.package) : null,
         created_at: o.created_at, updated_at: o.updated_at,
       };
     });
@@ -1235,7 +1256,14 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
   // TF-045: echter Browser-Validator (Chromium). Nicht ladbar → null; der Produktivlauf ist dann fail closed (requireBrowser).
   let browserValidator = null;
   try { browserValidator = await (await import("./repair-browser-validator.js")).loadBrowserValidator(); } catch {}
-  return { adapters, retester, router, preflight, browserValidator };
+  // TF-059: Website-Paket (ZIP) – Ablage JARVIS_REPAIR_ARTIFACTS (VPS: /opt/jarvis-repair/artifacts), Browser-Selbstprüfung mit Chromium.
+  let packager = null;
+  try {
+    const pkg = await import("./repair-package.js"), bv = await import("./repair-browser-validator.js");
+    const browserCheck = browserValidator ? pkg.createPackageBrowserCheck({ launch: bv.chromiumLauncher() }) : null;
+    packager = pkg.createPackager({ artifactsDir: process.env.JARVIS_REPAIR_ARTIFACTS || path.join(dir, "repair_artifacts"), browserCheck });
+  } catch {}
+  return { adapters, retester, router, preflight, browserValidator, packager };
 }
 
 // ---------- Worker-Hook (eigenes Lock, nie zwei Läufe; ohne explizite Deps werden die Standard-Deps geladen) ----------
@@ -1247,7 +1275,7 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
 // TF-046: autoDeliver = true – nach bestandenem Abschluss-Gate geht der Bericht genau einmal an den Kunden (CUSTOMER_ORDER_FULFILLMENT).
 // auditor/alert nur für isolierte Tests (Lab-Auditor, Chris-Hinweis-Attrappe); im Produktivbetrieb null = Standard.
 export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, browserValidator = null, requireBrowser = true,
-  autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
+  packager = null, autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
@@ -1259,13 +1287,14 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
       router = router || defaults.router;
       preflight = preflight || defaults.preflight;
       browserValidator = browserValidator || defaults.browserValidator;
+      packager = packager || defaults.packager;
     }
     const store = createStore(dir);
     let access = null;
     const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => (o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED")
       || (o.state === "HOST_KEY_CONFIRMATION_REQUIRED" && o.host_key_request?.sent_at && !o.host_key_request.received_at));
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
-    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, log });
+    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, packager, auditor, alert, gmail, intake, log });
     return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }

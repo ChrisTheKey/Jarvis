@@ -25,6 +25,9 @@ services:
       # CRM-Export (TF-055): repair_findings.json – nur normalisierte Befunde (Typ/Seite/Status), keine Kundendaten/Secrets.
       # Der CRM-Dienst mountet dieses Verzeichnis read-only.
       - ./crm-export:/data/crm-export
+      # TF-059: Website-Pakete nach der Reparatur (<ORDER_ID>/website-*.zip + artifact.json) – Verzeichnisse 700, Dateien 600.
+      # Nur Chris holt sie per scripts/download-repair-package.ps1 (SSH) – nie öffentlich, kein anderer Container mountet sie.
+      - ./artifacts:/data/artifacts
     read_only: true
     tmpfs:
       - /tmp

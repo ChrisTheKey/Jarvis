@@ -38,6 +38,16 @@ const targetKey = (u) => { try { const x = new URL(u); return `${x.host.toLowerC
 const pathOf = (u) => { try { return new URL(u).pathname || "/"; } catch { return null; } };
 const pageOfEvidence = (e) => (typeof e === "string" ? e.match(/\((?:verlinkt|eingebunden) auf (https?:\/\/[^\s)]+)\)/)?.[1] : null) || null;
 const label40 = (l) => (typeof l === "string" && l.trim() && l.trim().length <= 40 && !/https?:|www\.|[<>{}«»]/i.test(l) ? l.trim() : null);
+// TF-059: HTTP-Status nur, wenn belegt (Feld oder Audit-Evidence „HTTP 404 …“ / „Bild liefert HTTP 404 …“) – nie geraten.
+// Nur für Link-/Bild-Befunde (dort IST der Status der beobachtete Fehler); andere Typen tragen nie einen HTTP-Status.
+const STATUS_TYPES = new Set(["broken_link", "contact_page_broken", "broken_image"]);
+export const httpStatusOf = (i) => {
+  const t = i?.type || i?.issue_type;
+  if (t && !STATUS_TYPES.has(t)) return null;
+  const s = Number.isInteger(i?.http_status) ? i.http_status : Number(typeof i?.evidence === "string" ? i.evidence.match(/\bHTTP (\d{3})\b/)?.[1] : NaN);
+  return Number.isInteger(s) && s >= 100 && s <= 599 ? s : null;
+};
+const viewportOf = (v) => (Number.isInteger(v) && v >= 200 && v <= 4000 ? v : null);
 const pageName = (u) => {
   const p = pathOf(u); if (p == null) return null;
   let seg = p.split("/").filter(Boolean).pop() || "";
@@ -92,6 +102,8 @@ export function normalizeIssue(i, { verified_at = null, source = "full_audit", s
   return {
     key: `${def.family}|${where}`, type: i.type, category, text: short(i.customer_text_short || def.text(i, page), 140),
     page, target, severity: SEVERITIES.includes(i.severity) ? i.severity : "medium",
+    // TF-059: CRM-interne Fakten (nur wenn belegt): Linktext, HTTP-Status, Bereich/Element, Viewport-Breite. Nie Seiteninhalt.
+    label: label40(i.label), http_status: httpStatusOf(i), location: VISUAL.has(i.type) ? short(i.location, 60) : null, viewport: viewportOf(i.viewport),
     verified_at: iso(verified_at) || iso(i.detectedAt) || iso(i.verified_at) || null, status: status === "RESOLVED" ? "RESOLVED" : "OPEN",
     source: FINDING_SOURCES.includes(source) ? source : "full_audit", manual: manual === true,
   };
@@ -106,6 +118,7 @@ export function dedupeFindings(list = []) {
     if (!prev) { out.set(f.key, { ...f }); continue; }
     const better = compareFindings(f, prev) < 0;
     const merged = better ? { ...f } : { ...prev };
+    for (const k of ["label", "http_status", "location", "viewport"]) merged[k] ??= (better ? prev : f)[k] ?? null; // belegte Fakten nicht verlieren
     merged.status = prev.status === "OPEN" || f.status === "OPEN" ? "OPEN" : "RESOLVED";
     merged.manual = (prev.status === "OPEN" && prev.manual) || (f.status === "OPEN" && f.manual) || false;
     merged.verified_at = maxIso(prev.verified_at, f.verified_at);
@@ -140,6 +153,7 @@ export function partialFindings(list = []) {
   return rankFindings(dedupeFindings((Array.isArray(list) ? list : []).map((f) => {
     if (!f?.text) return null;
     const n = f.type && TYPES[f.type] ? normalizeIssue({ type: f.type, url: f.target || f.page, page: f.page || null, severity: f.severity, label: f.label, location: f.location,
+      http_status: f.http_status, viewport: f.viewport,
       reproducible: VISUAL.has(f.type) ? true : undefined, detectedAt: f.verified_at, customer_text_short: f.text }, { verified_at: f.verified_at, source: "cold" }) : null;
     if (n) return n;
     if (f.type && !TYPES[f.type]) return null; // bekannter, aber nicht gezählter Typ

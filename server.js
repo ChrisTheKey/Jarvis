@@ -47,7 +47,11 @@ async function mailServiceStatus(now = Date.now()) {
 }
 
 const PORT = Number(process.env.PORT || 3000);
-const MODEL = process.env.JARVIS_MODEL || "sonnet";
+// TF-059: Modell je Auftrag (model-router.js) – Standard-Stufe als Default, STRONG nur bei klaren Signalen oder „MODELL: STRONG“.
+const { selectModelForJob, tierModels, isUnsupportedModelError, DEFAULT_TIER } = await import("./model-router.js");
+const MODELS = tierModels(process.env);
+const MODEL = MODELS[DEFAULT_TIER];
+let lastJob = null; // { tier, model, reason, at } – nur Stufe/Alias/Stichwort, nie Prompt-Inhalte
 const FULL_ACCESS = process.env.JARVIS_FULL_ACCESS === "1";
 const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVEN_VOICE = process.env.ELEVENLABS_VOICE_ID || "JBFqnCBsd6RMkjVDRZzb";
@@ -111,9 +115,14 @@ function describeTool(name, input = {}) {
   return String(v ?? JSON.stringify(input)).replace(/\s+/g, " ").slice(0, 140);
 }
 
-function ask(text, res, retried = false) {
+// job: Ergebnis von selectModelForJob; fallback=true → zweiter Versuch mit der Standard-Stufe (nicht verfügbares Modell, genau einmal).
+function ask(text, res, retried = false, job = null, fallback = false) {
   stopChild(current);
-  const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", MODEL, "--append-system-prompt-file", PERSONA];
+  const choice = job || selectModelForJob(text);
+  text = choice.text;
+  lastJob = { tier: choice.tier, model: choice.model, reason: choice.reason, at: new Date().toISOString() };
+  if (!res.writableEnded) res.write(`data: ${JSON.stringify({ type: "model", tier: choice.tier, model: choice.model, reason: choice.reason })}\n\n`);
+  const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", choice.model, "--append-system-prompt-file", PERSONA];
   if (sessionId) args.push("--resume", sessionId);
   if (FULL_ACCESS) args.push("--dangerously-skip-permissions");
 
@@ -121,7 +130,7 @@ function ask(text, res, retried = false) {
   current = child;
   let said = "";
   const send = (ev) => { if (ev.type === "text") said += (said ? "\n" : "") + ev.text; if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`); };
-  let buf = "", stderr = "", gotOutput = false, finished = false;
+  let buf = "", stderr = "", gotOutput = false, finished = false, modelFailed = false;
 
   // Was Chris inzwischen im Cloud-Jarvis besprochen hat, kommt einmalig als gekennzeichneter Kontext mit.
   let context = "";
@@ -155,6 +164,8 @@ function ask(text, res, retried = false) {
           }
         }
       } else if (ev.type === "result") {
+        // Modell nicht verfügbar → nicht als Fehler melden, sondern unten genau einmal mit der Standard-Stufe wiederholen.
+        if (ev.is_error && !fallback && choice.model !== MODEL && isUnsupportedModelError(ev.result)) { modelFailed = true; continue; }
         finished = true;
         send({ type: "done", error: ev.is_error ? String(ev.result || ev.subtype || "Fehler") : null });
       }
@@ -173,7 +184,10 @@ function ask(text, res, retried = false) {
     // Alte Sitzung nicht mehr vorhanden? Einmal mit frischer Sitzung neu versuchen.
     if (!gotOutput && code !== 0 && sessionId && !retried && /session|conversation/i.test(stderr)) {
       saveSession(null);
-      return ask(text, res, true);
+      return ask(text, res, true, choice);
+    }
+    if (modelFailed || (!finished && !fallback && choice.model !== MODEL && isUnsupportedModelError(stderr))) {
+      return ask(text, res, retried, { ...choice, tier: DEFAULT_TIER, model: MODEL, reason: "model_unavailable_fallback" }, true);
     }
     if (!finished) {
       const hint = /log ?in|auth|api key|credential/i.test(stderr) ? " Bitte einmal im Terminal `claude` starten und anmelden." : "";
@@ -248,7 +262,7 @@ const server = http.createServer(async (req, res) => {
       return fs.createReadStream(path.join(ROOT, "public", url.pathname.slice(1))).pipe(res);
     }
     if (req.method === "GET" && url.pathname === "/api/status") {
-      return json(res, 200, { claude: claudeVersion, model: MODEL, fullAccess: FULL_ACCESS, tts: ELEVEN_KEY ? "elevenlabs" : "browser", session: Boolean(sessionId) });
+      return json(res, 200, { claude: claudeVersion, model: MODEL, models: MODELS, lastJob, fullAccess: FULL_ACCESS, tts: ELEVEN_KEY ? "elevenlabs" : "browser", session: Boolean(sessionId) });
     }
     if (req.method === "GET" && url.pathname === "/api/system") {
       const mem = 1 - os.freemem() / os.totalmem();
@@ -358,7 +372,7 @@ server.listen(PORT, "127.0.0.1", () => {
   refreshSales().finally(syncSoon);
   setInterval(() => refreshSales().finally(() => syncWithCloud({ local }).catch(() => {})), 120_000).unref();
   console.log(`\n  J.A.R.V.I.S. ist online:  http://localhost:${PORT}\n`);
-  console.log(`  Modell: ${MODEL} · Zugriff: ${FULL_ACCESS ? "VOLLZUGRIFF" : "Standard"} · Stimme: ${ELEVEN_KEY ? "ElevenLabs" : "Browser"}`);
+  console.log(`  Modell: adaptiv (LIGHT ${MODELS.LIGHT} · STANDARD ${MODELS.STANDARD} · STRONG ${MODELS.STRONG}, Standard ${DEFAULT_TIER}) · Zugriff: ${FULL_ACCESS ? "VOLLZUGRIFF" : "Standard"} · Stimme: ${ELEVEN_KEY ? "ElevenLabs" : "Browser"}`);
   if (WEB_ORIGINS.size) console.log(`  Freigegebene Web-Oberfläche: ${[...WEB_ORIGINS].join(", ")}`);
   console.log(`  Öffne die Adresse in Chrome oder Edge. Beenden mit Strg+C.\n`);
 });
