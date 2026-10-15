@@ -2,7 +2,29 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-15 (TF-061)
+Letzte Aktualisierung: 2026-10-15 (TF-062)
+
+## TF-062 – POST-REPAIR-ZIP / WEBSITE-PAKET ENTFERNT (2026-10-15, Code 3c60b40, Repair LIVE, Netlify via Push, Mail/CRM/Contacts NICHT neu gestartet)
+- **Entscheidung Chris**: die Dienstleistung ist Sichern → Reparieren → Validieren → Desktop + Mobile → Regression → reparierte Website
+  bleibt live → Abschlussbericht. Kein Übergabe-ZIP, kein Netlify-Paket, keine automatische Zusatzdatei.
+- **Entfernt** (TF-059-Paketfunktion): `repair-package.js`, `scripts/download-repair-package.ps1`, TF-059-Pakettests,
+  `packageWebsite`/`order.package`, Packager in `loadDefaultRepairDeps`/`runRepairOrders`/`createRepairEngine`, `exportWebroot`
+  (SFTP/SSH/Bridge), Statusfeld `package` (PUBLIC_REPAIR_FIELDS, cleanRepair), Dashboard „WEBSITE-PAKET“, `JARVIS_REPAIR_ARTIFACTS`,
+  Artifact-Mount (Repair-Compose, repair-remote.sh), `repair-package.js` aus Repair- UND Mail-Dockerfile (Mail-Image NICHT neu gebaut).
+- **Ablauf**: nach bestandenem Abschluss-Gate direkt completion → Bericht → READY_FOR_DELIVERY → COMPLETED / COMPLETED_WITH_MANUAL_ITEMS.
+- **Ausdrücklich erhalten**: Backup VOR der ersten Änderung, Rollback-Punkt, Reparatur-Branch, Regression-Rollback, Browser-Gate
+  (BrowserValidator bleibt in den Repair-Deps), Abschlussbericht, CUSTOMER_ORDER_FULFILLMENT-Lieferung (ohne Anhang).
+- **Legacy**: alte Aufträge mit historischem `package`-Feld bleiben lesbar; Feld wird ignoriert/nicht angezeigt, keine Migration.
+- VPS `/opt/jarvis-repair/artifacts`: 0 Dateien (leeres Verzeichnis bleibt bestehen, nichts gelöscht).
+- **Deploy**: Repair 7147f9a1c91f (ebc4788) → c84e16083363 (3c60b40) via `deploy-repair.sh fiverr`, healthy, restarts 0,
+  MAIL_WORKER_UNTOUCHED=YES, READY FOR FIRST CUSTOMER; Container ohne /data/artifacts-Mount. Mail/CRM/Contacts: ID/StartedAt/Restarts
+  unverändert. Netlify via Push (Dashboard ohne WEBSITE-PAKET).
+- TF-058-Recheck: Checkpoint erhalten – vor Deploy 686 erledigt / 10660 offen, danach 705 / 10641 (nicht zurückgesetzt).
+- TF-061 unverändert (CRM-Branchen, LIGHT haiku · STANDARD sonnet · STRONG fable, Fallback fable → opus → sonnet, Local-Core-Fix).
+- Tests (sequenziell): Unit 792 / 779 pass / 1 fail / 12 skip – Fehlschlag = bekannter CRM-Browser-Timeout (crm-detail-059 I, page.click
+  im Gesamtlauf), separat 10/10 grün. Neu: repair-no-package-062 (A–M) 8/8. repair-integration 18/18, browser-integration 10/10,
+  full-order-integration 8/8, repair-quality-integration 5/5. Secret-Scan 0 Treffer, Lab-Cleanup 0.
+- Keine Mail gesendet, keine Entwürfe verändert, keine Kundenwebsite verändert.
 
 ## TF-061 – LESBARE CRM-BRANCHEN + VERIFIZIERTE MODELLSTUFEN (2026-10-15, Local Core neu gestartet, Netlify via Push, CRM/Mail/Repair/Contacts NICHT neu gestartet)
 - **Gemeinsame Branchen-Taxonomie** `category-labels.js` (rein: keine Imports, kein Netz, keine Seiteneffekte): `CATEGORY_LABELS` (die
@@ -74,7 +96,7 @@ Letzte Aktualisierung: 2026-10-15 (TF-061)
   Laufzeitfehler „Modell nicht verfügbar“ → genau ein Retry mit STANDARD. `/api/status` + HUD: `lastJob` = Stufe · Alias · Stichwort
   (nie Prompt-Inhalte), SSE-Ereignis `model`. Kein dauerhaftes Hochstufen. Lokaler Core NICHT neu gestartet (Router-Tests als Unit-Tests;
   aktiv ab dem nächsten Core-Neustart; die alte .env-Angabe claude-opus-5-5 ist kein Alias → STANDARD = sonnet).
-- **Repair-Website-Paket** (`repair-package.js`): erst NACH bestandenem Abschluss-Gate (Retest + Regression + Browser + Live-Retest)
+- **Repair-Website-Paket** (`repair-package.js`) – **Seit TF-062 deaktiviert/entfernt** (kein ZIP, kein Download-Skript, kein Dashboard-Bereich mehr): erst NACH bestandenem Abschluss-Gate (Retest + Regression + Browser + Live-Retest)
   read-only Webroot-Export (SFTP/SSH `exportWebroot`, Symlinks nie gefolgt, verbotene Ordner gar nicht gelesen) → genau ein ZIP unter
   `/opt/jarvis-repair/artifacts/<ORDER_ID>/` (700/600, Container `/data/artifacts`) + `artifact.json` (order_id, domain, type, created_at,
   sha256, size, file_count, netlify_ready, Prüfwerte; keine Zugangsdaten/Pfade). **NETLIFY_READY** (`website-netlify-ready.zip`) nur für
@@ -85,7 +107,7 @@ Letzte Aktualisierung: 2026-10-15 (TF-061)
   zu gross) – Auftrag bleibt erfolgreich. Ausgeschlossen: .env*, .git/, Keys/Zertifikate, Credentials/Secrets, Sessions, DB-Config/-Dumps,
   Backups/Logs, node_modules, Jarvis-Temp, Inhalte mit Key-/Token-Mustern oder dem Zugangswert des Auftrags (Bridge).
   Dashboard „WEBSITE-PAKET“: Status, Dateiname, Grösse, SHA256 gekürzt, „Mit Download-Skript auf diesen PC holen“ (keine VPS-Pfade).
-- **Download**: `.\scripts\download-repair-package.ps1 -OrderId RF480-…` – SSH-Alias fiverr (BatchMode), strikte Order-ID, nur
+- **Download** (seit TF-062 entfernt): `.\scripts\download-repair-package.ps1 -OrderId RF480-…` – SSH-Alias fiverr (BatchMode), strikte Order-ID, nur
   artifact.json + die darin genannte ZIP, SHA-256-Prüfung (Abweichung → verworfen), Ziel `exports\repair-packages\<ORDER_ID>\`.
   E2E auf dem VPS mit synthetischem Artifact (RF480-20991231-000000): Download OK, SHA OK, manipulierte SHA abgelehnt, ungültige ID
   abgelehnt; Artifact danach gelöscht (artifacts/ leer).
