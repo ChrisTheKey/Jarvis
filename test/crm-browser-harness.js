@@ -6,6 +6,7 @@ import http from "node:http";
 import path from "node:path";
 import { makeSources, writeSources } from "./crm-fixture.js";
 import { createCrmHandler, crmAgentToken } from "../crm-api.js";
+import { createCallingHandler } from "../calling-api.js";
 import { createCrmAgent, createSourceReader } from "../crm-service.js";
 import { memoryStore, createStateHandler } from "../shared-state.js";
 import { createAuthHandler } from "../auth-api.js";
@@ -39,6 +40,7 @@ export async function startServer({ n = 387, prepare = null, vnLeads = null, sel
   const ra = (req) => resolveActor(req, { env, getAuthStore });
   const apis = { "/api/crm": handler, "/api/sales": createSalesHandler({ env, data, getSalesStore, getAuthStore }),
     "/api/state": createStateHandler({ env, getStore: async () => memoryStore(), resolveActor: ra, getUserStore: async (u) => (userMem[u] ||= memoryStore()) }),
+    "/api/calling": createCallingHandler({ env, getCallingStore: async (k) => (salesMem[`__calling_${k}`] ||= memoryStore()), getAuthStore, getViewStore: async () => vs, getVnViewStore: async () => vnv, getSalesStore, getCrmQueueStore: async () => qs, getVnQueueStore: async () => vnq }),
     "/api/mail-requests": createMailRequestHandler({ env, getStore: async () => (salesMem.__mail ||= memoryStore()), resolveActor: ra, resolveLead: async (a, id) => (await data()).resolveLead(a, id) }) };
   const agent = createCrmAgent({ dataDir: dirs.data, sources, url: "http://local.test", token: crmAgentToken(control), fetchFn: (u, init) => handler(new Request(u, init)) });
   await agent.pollOnce();

@@ -1,6 +1,7 @@
 // TF-063 Owner-Bereich „ZUGÄNGE“: Verkäufer-Zugänge (Passwort setzen/zurücksetzen, Sessions abmelden, aktiv/inaktiv), Provisionen aller
 // Verkäufer und Lead-Zuweisungen. Nur Anzeige + Aufrufe der Owner-APIs – jede Berechtigung prüft der Server (Verkäufer erhalten 403).
 // Passwörter werden nur einmal an den Server geschickt (HTTPS) und nie angezeigt, gespeichert oder protokolliert.
+import { mountCalling } from "./calling-ui.js";
 const $ = (id) => document.getElementById(id);
 function el(tag, attrs = {}, ...kids) {
   const x = document.createElement(tag);
@@ -96,3 +97,6 @@ async function load() {
 }
 $("accessBtn")?.addEventListener("click", () => { $("ownerAdmin").hidden = false; render(); load(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("ownerAdmin").hidden) $("ownerAdmin").hidden = true; });
+// TF-065: Calling Agent (Owner) – Status, Vorschau, Kampagnen, aktive Anrufe. Der Server prüft Rolle, Scope und Berechtigung.
+$("callingBtn")?.addEventListener("click", () => { const b = $("callingAgent"); b.hidden = false; mountCalling(b, { locale: "de-CH", onClose: () => { b.hidden = true; } }); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("callingAgent") && !$("callingAgent").hidden) $("callingAgent").hidden = true; });

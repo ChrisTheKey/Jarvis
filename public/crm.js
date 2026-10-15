@@ -6,6 +6,7 @@
 import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, CARDS, SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
   ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts } from "./crm-model.js";
 import { createI18n } from "./i18n.js";
+import { callingTexts, leadCallBox } from "./calling-ui.js";
 
 const $ = (id) => document.getElementById(id);
 const MOBILE = matchMedia("(max-width: 860px)");
@@ -247,6 +248,8 @@ function renderDrawer() {
     l.notes.length ? el("ul", { class: "crm-hist" }, [...l.notes].reverse().map((n) => el("li", {}, el("time", {}, fmt(n.at)), n.text))) : el("p", { class: "crm-note" }, t("noNotes")),
     ...(l.market === "VN" ? [el("h4", {}, t("sec.draft")), draftForm(l, blocked)] : []),
     ...(l.market === "VN" && ["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) ? [el("h4", {}, t("sec.order")), orderBox(l, blocked)] : []),
+    // TF-065: Calling-Agent-Sektion (letzter Anruf, Ergebnis, Dauer, Rückruf, Versuche, Zusammenfassung) – nur Chris und Lap, Server prüft den Scope.
+    ...(["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) && (S.actor?.role === "OWNER" || l.market === "VN") ? [el("h4", {}, callingTexts(I.locale).lead.h), leadCallBox(l, I.locale)] : []),
     el("h4", {}, t("sec.admin")),
     el("div", { class: "crm-qa" },
       l.do_not_contact && l.dnc_source !== "crm" ? el("span", { class: "crm-note" }, t("dncLocked"))

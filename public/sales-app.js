@@ -93,6 +93,8 @@ async function start() {
   if (location.hash === "#crm") window.JarvisCrm.open();
   $("aLogout").addEventListener("click", async () => { try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch {} toLogin(); });
   $("aChatForm").addEventListener("submit", (e) => { e.preventDefault(); const v = $("aChatIn").value.trim(); if (!v) return; $("aChatIn").value = ""; ask(v); });
+  // TF-065: Trợ lý gọi điện – nur Lap (VN). Giuliano/Mario/Damiano sehen den Bereich nicht (und erhalten serverseitig 403).
+  if (me.role === "SALES_AGENT_VN") { const { mountCalling } = await import("./calling-ui.js"); $("aCalling").hidden = false; mountCalling($("aCalling"), { locale: me.locale }); }
   await Promise.all([loadSummary(), loadChat()]);
 }
 start().catch(() => { $("aMsg").textContent = I.t("app.unreachable"); });
