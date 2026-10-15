@@ -2,7 +2,63 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-15 (TF-065)
+Letzte Aktualisierung: 2026-10-15 (TF-066)
+
+## TF-066 – AUTOMATISCHER KUNDEN-ONBOARDING-DIALOG (2026-10-15, Code d943487, Mail LIVE, Repair LIVE, Netlify via Push, CRM/Contacts/Calling/VN NICHT neu gestartet)
+- **Start** nur bei bestätigtem Auftrag UND erfüllter Zahlungsschwelle (CH 75/240 CHF, VN 495000/1950000 VND, payments.js). Kaufzusage ohne
+  Zahlung/Teilzahlung → nichts. FIX: die bestehende Zugangs-Anfrage (CUSTOMER_ACCESS_REQUEST) ist die Startnachricht – sicherer One-Time-Link,
+  «Bitte senden Sie keine Passwörter oder Zugangsdaten per E-Mail. Verwenden Sie dafür ausschliesslich den sicheren Link.» + Inhaltsfrage
+  (VN vollständig vietnamesisch). CHECK: kurze Startnachricht (neue Klasse CUSTOMER_ONBOARDING_DIALOGUE), kein Zugang, blockiert den Check nie;
+  die Liefermail wartet nur, bis diese zugestellt ist (max. 6 h).
+- **Architektur**: `onboarding-core.js` (rein: Zustandsautomat, customer_brief, Texte DE/VI, Erkennung, Schema), `onboarding-dialogue.js`
+  (Mail-Worker = einzige Sender Authority), `onboarding-store.js` (Datei-Protokoll in /opt/jarvis-repair/outbox/onboarding, je Datei ein
+  Schreiber: orders.json Repair, briefs/<id>.json Mail, requests/ Mail), `onboarding-repair.js` (Export). Repair sendet nie selbst.
+  orders.json entsteht erst mit dem ersten Auftrag (0 Aufträge → nichts zu schreiben).
+- **Thread-Bindung**: die erste Auftrags-Mail eröffnet den Jarvis-eigenen Thread; nach dem Versand order_id ↔ Kundenadresse ↔ thread_id ↔
+  Klasse ↔ Markt ↔ Verkäufer (onboarding.json). Alle weiteren Mails (Antworten, Reminder, neuer Link, Host-Key) nur in diesem Thread
+  (In-Reply-To/References, gmail.replyDraftInThread mit festem Empfänger). Thread/Order nicht eindeutig → MANUAL_REVIEW_REQUIRED, nie neuer
+  Thread. Gebundene Threads sind aus dem allgemeinen Antwort-Scan ausgenommen; ungebundene Zugangs-/Onboarding-Threads → nur Chris;
+  Service-Threads nie Follow-up-Funnel.
+- **Je Kundennachricht** (genau eine Antwort, Claim creating→drafted→sending→sent; unklar → nie wiederholen): Absender == bestätigte
+  Adresse (sonst blockiert + Chris), nur neuer Text, dann deterministisch: Zugangsdaten → nichts übernehmen/an KI/loggen, Hinweis auf den
+  sicheren Link (+ Passwort ändern), abgelaufener Link → neuer Link über den Repair-Service (bestehende Tokenregeln, alter ungültig, max. 3
+  automatisch); Storno → CANCELLATION_REVIEW_REQUIRED; «keine Nachrichten» → CUSTOMER_STOP_REQUESTED; Rabatt/Refund/Bank/Rechnung/Vertrag/
+  Recht/Rechtstext formulieren → MANUAL_REVIEW_REQUIRED; Prompt-Injection → MANUAL_REVIEW_REQUIRED; reine Preisfrage → fester Preis aus
+  pricing.js; «Nein, sonst nichts» / «Ja, genau so» deterministisch. Sonst KI-Extraktion (Anthropic, JARVIS_ONBOARDING_MODEL ||
+  JARVIS_MAIL_MODEL), Kundenmail als UNTRUSTED DATA, Schema streng (ungültig → manuell, nichts gesendet), jeder Wert muss wörtlich in der Mail
+  stehen (sonst verworfen → Rückfrage), Privatdaten (Bank, Geburtsdatum, AHV/Ausweis) nie im Brief. Fragen nur zu fehlenden Angaben,
+  Antworttexte nur feste Vorlagen. KI weg → ONBOARDING_AI_PAUSED, Nachricht bleibt unbearbeitet.
+- **Brief** (strukturiert, keine Rohmails): Telefon, E-Mail, Adresse (Strasse/PLZ/Ort/Land), Öffnungszeiten, Textersatz, Schreibkorrektur,
+  Entfernen, Ergänzen, Sonstiges; Status OPEN → CLARIFICATION_NEEDED → WAITING_FOR_CONFIRMATION (Zusammenfassung) → CONFIRMED bzw.
+  NO_CONTENT_CHANGES. Zustände WAITING_FOR_ACCESS/CUSTOMER_INFO/CLARIFICATION/CONFIRMATION, ONBOARDING_COMPLETE, WAITING_CUSTOMER_MANUAL_REVIEW …
+- **Reminder** (nur FIX, nur wenn auf den Kunden gewartet wird): 24 h, +48 h, +96 h, danach WAITING_CUSTOMER_MANUAL_REVIEW (Chris), kein Spam;
+  Kundenantwort nimmt den Dialog wieder auf. Abgelaufener Link → der neue Link ist die Erinnerung.
+- **Repair-Gate**: neuer Zustand WAITING_FOR_CUSTOMER_BRIEF vor dem Backup (FIX mit Onboarding): weiter nur mit Zahlung + Freigabe +
+  PROFILE_READY + Brief CONFIRMED/NO_CONTENT_CHANGES; completionGate prüft zusätzlich customer_brief. Bestätigte Änderungen werden beim Übergang
+  eingefroren und als Plan-Einträge `customer_content_change` behandelt (Fix-Matrix replace_text): nur sichtbarer Text (patchVisibleText –
+  nie Attribute/Skripte/Meta/Dateinamen/DB; tel:/mailto: nur bei Telefon/E-Mail), ≤ 3 Stellen, ≤ 3 Dateien/Objekte, alte Telefon-/E-Mail-
+  Angabe nur wenn auf der Website eindeutig, Adresse nur mit exaktem alten Text, geschützte Seiten (Impressum/Datenschutz/AGB …) → manuell;
+  danach Backup, Minimaländerung, Live-Validierung, Browser, Regression, Retest, Rollback wie jeder Fix (SFTP/SSH/WordPress; GitHub+Netlify →
+  manuell). Bericht nennt die Inhaltsänderungen. Ohne Onboarding (ältere Aufträge) Verhalten unverändert.
+- **CRM**: Lead-Detail «Kunden-Onboarding» / «Tiếp nhận khách hàng» (Zahlungsschwelle, Zugang, Inhaltsänderungen, wartet auf, letzte
+  Antworten, offene Punkte, bestätigte Website-Angaben) + Übersicht KUNDEN-ONBOARDING mit Filtern (offen, wartet auf Kunde/Zugang/Bestätigung,
+  manuelle Prüfung, bereit). `/api/sales?view=onboarding` serverseitig gescoped (Chris alle, Verkäufer nur eigene Leads/Markt). Snapshot-
+  Allowlist cleanOnboarding (nie Secrets/Links/Token/Kunden-E-Mail). Neue Phase/State im HUD.
+- **Chris-Befehle** (Mail-Container): `node onboarding-dialogue.js status|show <id>|no-content-changes <id> --reason …|resume <id> --reason …`.
+  Notschalter `JARVIS_ONBOARDING=off` (Mail + Repair).
+- **Deploy**: Push d943487 (origin = HEAD). Mail bedf15f75c1c (17:46:23) → **9f011e39f1ec** (deploy.sh, Start 20:14:01 UTC, healthy, restarts 0,
+  genau ein Mail-Worker, Authority vps). Vorher/nachher: Queue 0/0 → 0/0, eigene Entwürfe 765 → 769 (normales Cold-Pacing, keiner verloren),
+  heute gesendet 0 → 0. Repair ca12979b2461 → **eee1b40c4d11** (deploy-repair.sh, MAIL_WORKER_UNTOUCHED=YES, READY FOR FIRST CUSTOMER,
+  Onboarding-Module ladbar, enabled). CRM a83f13203334, Contacts 338a201c89c9, Calling 1fabaac422d8, VN b671eefab7ee unverändert.
+- TF-058-Recheck: vor TF-066 1132 erledigt / 10214 offen, danach 1162 / 10184 (nicht zurückgesetzt).
+- **Tests**: neu onboarding-066 (18: Start, Zugang FIX/CHECK, Inhalte + Grounding + PII, Multi-Fakt, keine Änderungen, FIX-E2E mit Bestätigung,
+  CHECK-E2E, Thread-Sicherheit, Injection/Preis/Stopp/Storno, Sprache, Reminder, sensible Daten, KI-Ausfall/Schema/Neustart, patchVisibleText,
+  SFTP- und WordPress-Adapter, CRM-Scope) + onboarding-browser-066 (Chromium, Lap vi-VN, Chris Filter); `npm run test:tf066`. Angepasst
+  (Anforderung geändert): payments-041 (3 Service-Klassen), repair-480-035 (neuer Zustand), service-separation-047 + gmail-oauth-049
+  (Outbox-Aufruf mit Onboarding-Hook). Gesamtlauf sequenziell 886 / 870 pass / 4 fail (genau diese, danach grün) / 12 skip; Labs
+  repair-integration 18/18, full-order 8/8, separation 8/8, Cleanup ok. Secret-Scan 0 Treffer.
+- 0 Mails an echte Kunden, 0 echte Entwürfe durch TF-066, 0 Aufträge/Zahlungen, 0 Kundenwebsites verändert (VPS hat 0 Aufträge).
+  workspace/memory/chris.md und /opt/fiverr nicht angefasst.
 
 ## TF-065 – LIVEKIT OUTBOUND CALLING AGENT (2026-10-15, Code 3363fcb, Netlify LIVE, Dienst jarvis-calling LIVE (NOT_CONFIGURED, DRY_RUN), Mail/Repair/CRM/Contacts/VN NICHT neu gestartet)
 - **Architektur** wie CRM/VN: Netlify `/api/calling` (`calling-api.js`) prüft und plant, der VPS-Dienst `jarvis-calling` (`calling/service.js`) holt ausgehend ab
