@@ -55,20 +55,26 @@ const errs = (l) => (l?.errors && typeof l.errors === "object" ? l.errors : { au
 // Zahl für Zähler/Filter: nur geprüfte Leads (FULL/STALE: Zahl, PARTIAL: Mindestzahl), sonst null.
 export const errorCount = (l) => { const e = errs(l); return e.audit === "NONE" || !Number.isInteger(e.count) ? null : e.count; };
 // Kurz (Tabelle/Karte): „7“, „≥3“, „7 (veraltet)“, „–“. Nie eine Teilmenge als genaue Zahl.
-export function errorShort(l) {
+// TF-063: Texte über ein Wörterbuch (Standard Deutsch, unverändert; Vietnamesisch in i18n.js) – die Logik bleibt identisch.
+export const ERR_WORDS_DE = Object.freeze({ staleFull: (n) => `${n} (veraltet)`, staleMin: (n) => `≥${n} · veraltet`, partialZero: "0 (Teilprüfung)",
+  notChecked: "Nicht geprüft", fullN: (n) => `${n} Fehler (verifiziert)`, noneVerified: "Keine aktuell verifizierten Fehler",
+  staleFullLong: (n) => `Letzte vollständige Prüfung veraltet – damals ${n} Fehler`, staleMinLong: (n) => `Letzte Teilprüfung veraltet – damals mindestens ${n} Fehler`,
+  minN: (n) => `Mindestens ${n} verifizierte Fehler`, noneVerifiedPartial: "Keine aktuell verifizierten Fehler (nur Teilprüfung)",
+  repairManual: (r, m) => `Automatisch repariert (${r}) + ${m} manuelle${m === 1 ? "r Punkt" : " Punkte"} offen`, repairDone: (r) => `Automatisch repariert (${r}) – keine geplanten reparierbaren Punkte offen` });
+export function errorShort(l, w = ERR_WORDS_DE) {
   const e = errs(l), n = errorCount(l);
   if (n == null) return "–";
   if (e.audit === "FULL") return String(n);
-  if (e.audit === "STALE") return e.full_checked_at ? `${n} (veraltet)` : `≥${n} · veraltet`; // TF-058: alte Teilprüfung bleibt „mindestens“
-  return n ? `≥${n}` : "0 (Teilprüfung)";
+  if (e.audit === "STALE") return e.full_checked_at ? w.staleFull(n) : w.staleMin(n); // TF-058: alte Teilprüfung bleibt „mindestens“
+  return n ? `≥${n}` : w.partialZero;
 }
 // Lang (Detail): „7 Fehler“, „Mindestens 3 Fehler“, „Keine aktuell verifizierten Fehler“, „Letzte vollständige Prüfung veraltet …“.
-export function errorLong(l) {
+export function errorLong(l, w = ERR_WORDS_DE) {
   const e = errs(l), n = errorCount(l);
-  if (n == null) return "Nicht geprüft";
-  if (e.audit === "FULL") return n ? `${n} Fehler (verifiziert)` : "Keine aktuell verifizierten Fehler";
-  if (e.audit === "STALE") return e.full_checked_at ? `Letzte vollständige Prüfung veraltet – damals ${n} Fehler` : `Letzte Teilprüfung veraltet – damals mindestens ${n} Fehler`;
-  return n ? `Mindestens ${n} verifizierte Fehler` : "Keine aktuell verifizierten Fehler (nur Teilprüfung)";
+  if (n == null) return w.notChecked;
+  if (e.audit === "FULL") return n ? w.fullN(n) : w.noneVerified;
+  if (e.audit === "STALE") return e.full_checked_at ? w.staleFullLong(n) : w.staleMinLong(n);
+  return n ? w.minN(n) : w.noneVerifiedPartial;
 }
 export const errorBucket = (l) => { const n = errorCount(l); return n == null ? null : n === 0 ? "0" : n <= 2 ? "1-2" : n <= 5 ? "3-5" : "6+"; };
 export const ERROR_BUCKETS = Object.freeze(["0", "1-2", "3-5", "6+"]);
@@ -81,9 +87,15 @@ const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const urlOf = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x : null; } catch { return null; } };
 const hostOf = (x) => x.hostname.toLowerCase().replace(/^www\./, "");
 const pathText = (x) => { let p = x.pathname || "/"; try { p = decodeURI(p); } catch {} return cut(p, 60); };
-export function issueFacts(f = {}) {
+export const ISSUE_WORDS_DE = Object.freeze({ home: "Startseite", unknownPage: "Seite unbekannt", linkTo: (t) => `Link zu ${t}`, contactLink: "Link zur Kontaktseite", link: "Link",
+  http: (s) => `HTTP ${s}`, unreachable: "Zielseite nicht erreichbar", image: (f) => (f ? `Bild «${f}»` : "Bild"), imgFail: (s) => (s ? `lädt nicht / HTTP ${s}` : "lädt nicht"),
+  mailLink: "E-Mail-Link", mailBad: "ungültige E-Mail-Adresse im Link", form: (l) => (l ? `Kontaktformular · «${l}»` : "Kontaktformular"), formFail: "Absenden reproduzierbar fehlgeschlagen",
+  button: (l) => (l ? `Button «${l}»` : "Button"), buttonFail: "funktioniert nicht", mobile: (s) => `Mobile / ${s}`, areaUnknown: "Bereich unbekannt",
+  overlap: "überlappt Inhalt", cut: "abgeschnitten", atPx: (v) => ` bei ${v} px`, pageRender: "Seitendarstellung", desktopWidth: "Desktop-Breite, verkleinert",
+  shifted: "verschoben dargestellt", siteCall: "Website-Aufruf", loop: "Weiterleitungsschleife – lädt nicht", cert: "Browser zeigt Zertifikatswarnung", error: "Fehler" });
+export function issueFacts(f = {}, w = ISSUE_WORDS_DE) {
   const page = urlOf(f.page), target = urlOf(f.target);
-  const source = page ? (page.pathname === "/" ? "Startseite" : pathText(page)) : "Seite unbekannt";
+  const source = page ? (page.pathname === "/" ? w.home : pathText(page)) : w.unknownPage;
   // Externe Ziele bereinigt und gekürzt (Host + Pfad, nie Query/Fragment); gleiche Domain → nur Pfad.
   const tgt = target ? (page && hostOf(target) === hostOf(page) ? pathText(target) : cut(`${hostOf(target)}${target.pathname === "/" ? "" : pathText(target)}`, 60)) : null;
   const status = Number.isInteger(f.http_status) && f.http_status >= 100 && f.http_status <= 599 ? f.http_status : null;
@@ -94,45 +106,44 @@ export function issueFacts(f = {}) {
   const base = { source, target: tgt, http_status: status, label, location: loc, viewport: vp };
   switch (f.type) {
     case "broken_link": case "contact_page_broken":
-      return { ...base, element: label ? `«${label}»` : tgt ? `Link zu ${tgt}` : f.type === "contact_page_broken" ? "Link zur Kontaktseite" : "Link", result: status ? `HTTP ${status}` : "Zielseite nicht erreichbar" };
+      return { ...base, element: label ? `«${label}»` : tgt ? w.linkTo(tgt) : f.type === "contact_page_broken" ? w.contactLink : w.link, result: status ? w.http(status) : w.unreachable };
     case "broken_image":
-      return { ...base, element: file ? `Bild «${file}»` : "Bild", result: status ? `lädt nicht / HTTP ${status}` : "lädt nicht" };
+      return { ...base, element: w.image(file), result: w.imgFail(status) };
     case "broken_mailto":
-      return { ...base, element: "E-Mail-Link", target: null, result: "ungültige E-Mail-Adresse im Link" };
+      return { ...base, element: w.mailLink, target: null, result: w.mailBad };
     case "contact_form_broken":
-      return { ...base, element: loc ? `Kontaktformular · «${loc}»` : "Kontaktformular", target: null, result: "Absenden reproduzierbar fehlgeschlagen" };
+      return { ...base, element: w.form(loc), target: null, result: w.formFail };
     case "button_broken":
-      return { ...base, element: loc ? `Button «${loc}»` : "Button", target: null, result: "funktioniert nicht" };
+      return { ...base, element: w.button(loc), target: null, result: w.buttonFail };
     case "mobile_text_overlap": case "mobile_content_cut_off":
-      return { ...base, source: `Mobile / ${source}`, element: loc ? `«${loc}»` : "Bereich unbekannt", target: null,
-        result: `${f.type === "mobile_text_overlap" ? "überlappt Inhalt" : "abgeschnitten"}${vp ? ` bei ${vp} px` : ""}` };
+      return { ...base, source: w.mobile(source), element: loc ? `«${loc}»` : w.areaUnknown, target: null,
+        result: `${f.type === "mobile_text_overlap" ? w.overlap : w.cut}${vp ? w.atPx(vp) : ""}` };
     case "no_mobile_viewport":
-      return { ...base, source: `Mobile / ${source}`, element: "Seitendarstellung", target: null, result: "Desktop-Breite, verkleinert" };
+      return { ...base, source: w.mobile(source), element: w.pageRender, target: null, result: w.desktopWidth };
     case "visible_layout_error":
-      return { ...base, element: loc ? `«${loc}»` : "Bereich unbekannt", target: null, result: "verschoben dargestellt" };
+      return { ...base, element: loc ? `«${loc}»` : w.areaUnknown, target: null, result: w.shifted };
     case "redirect_loop":
-      return { ...base, element: "Website-Aufruf", target: null, result: "Weiterleitungsschleife – lädt nicht" };
+      return { ...base, element: w.siteCall, target: null, result: w.loop };
     case "https_certificate":
-      return { ...base, element: "Website-Aufruf", target: null, result: "Browser zeigt Zertifikatswarnung" };
+      return { ...base, element: w.siteCall, target: null, result: w.cert };
     default: // z. B. historischer Fund ohne Typ: ehrlich reduziert – nur der vorhandene Kurztext
       return { ...base, element: null, result: null };
   }
 }
 // Kompakt (Top 2, 2 Zeilen): title „Startseite → «Kontakt»“, detail „/kontakt/ → HTTP 404“.
-export function issueLines(f = {}) {
-  const x = issueFacts(f);
-  const text = typeof f.text === "string" ? f.text : "";
-  if (!x.element) return { title: x.source === "Seite unbekannt" ? text || "Fehler" : `${x.source} → ${text || "Fehler"}`, detail: null };
+export function issueLines(f = {}, w = ISSUE_WORDS_DE, text = typeof f.text === "string" ? f.text : "") {
+  const x = issueFacts(f, w);
+  if (!x.element) return { title: x.source === w.unknownPage ? text || w.error : `${x.source} → ${text || w.error}`, detail: null };
   // Ziel steht schon im Element („Link zu /kontakt/“) → nicht doppelt.
   const tgt = x.target && !x.element.includes(x.target) ? x.target : null;
   return { title: `${x.source} → ${x.element}`, detail: [tgt, x.result].filter(Boolean).join(" → ") || null };
 }
 // Reparatur-Stand (nach CHF-480): „Automatisch repariert + 2 manuelle Punkte offen“.
-export function repairLine(l) {
+export function repairLine(l, w = ERR_WORDS_DE) {
   const r = errs(l).repair;
   if (!r) return null;
-  if (r.state === "COMPLETED_WITH_MANUAL_ITEMS" || r.manual_open) return `Automatisch repariert (${r.repaired}) + ${r.manual_open} manuelle${r.manual_open === 1 ? "r Punkt" : " Punkte"} offen`;
-  return `Automatisch repariert (${r.repaired}) – keine geplanten reparierbaren Punkte offen`;
+  if (r.state === "COMPLETED_WITH_MANUAL_ITEMS" || r.manual_open) return w.repairManual(r.repaired, r.manual_open);
+  return w.repairDone(r.repaired);
 }
 // Übersicht Website-Fehler (nur Anzeige/Schnellfilter – nie eine Outreach-Automatik).
 export const ERROR_CARDS = Object.freeze({
@@ -186,13 +197,13 @@ export const callRecommended = (l) => !!l?.phone && !l.do_not_contact && !l.arch
 export const inOutreachQueue = (l) => !!l && !l.do_not_contact && !l.archived && ["NEW", "DRAFT_READY", "TO_CONTACT", "FOLLOW_UP"].includes(l.sales_stage);
 
 // ---------- Suche, Filter, Sortierung ----------
-export const FILTER_KEYS = Object.freeze(["q", "stage", "canton", "category", "phone", "person", "draft", "problems", "errors", "audit", "issue", "contact", "call", "followup", "dnc", "archived", "card"]);
+export const FILTER_KEYS = Object.freeze(["q", "stage", "canton", "region", "category", "phone", "person", "draft", "problems", "errors", "audit", "issue", "contact", "call", "followup", "dnc", "archived", "card"]);
 const has = (hay, needle) => String(hay || "").toLowerCase().includes(String(needle).toLowerCase());
 const digits = (s) => String(s || "").replace(/\D+/g, "");
 export function searchMatch(l, q) {
   const s = String(q || "").trim();
   if (!s) return true;
-  if ([l.company, l.domain, l.email, l.first_name, l.last_name, l.municipality, l.category, `${l.first_name || ""} ${l.last_name || ""}`].some((v) => has(v, s))) return true;
+  if ([l.company, l.domain, l.email, l.first_name, l.last_name, l.municipality, l.region, l.category, `${l.first_name || ""} ${l.last_name || ""}`].some((v) => has(v, s))) return true;
   const d = digits(s);
   if (d.length >= 3) { const p = digits(l.phone); if (p.includes(d) || p.replace(/^41/, "0").includes(d)) return true; }
   return false;
@@ -225,6 +236,7 @@ export function filterLeads(list = [], f = {}, now = new Date()) {
     if (!searchMatch(l, f.q)) return false;
     if (f.stage && l.sales_stage !== f.stage) return false;
     if (f.canton && l.canton !== f.canton) return false;
+    if (f.region && l.region !== f.region) return false; // TF-063: VN-Verwaltungseinheit
     if (f.category && l.category !== f.category) return false;
     if (yes(f.phone) && !l.phone) return false; if (no(f.phone) && l.phone) return false;
     const person = !!(l.first_name && l.last_name);
@@ -291,7 +303,10 @@ const cell = (v) => {
   if (/^[=+\-@\t]/.test(s)) s = "'" + s; // keine Formel-Injection; „+41 …“ bleibt Text
   return /[;"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
-export function crmToCsv(list = []) {
-  const rows = [CSV_COLUMNS.map(([h]) => h).join(";"), ...list.map((l) => CSV_COLUMNS.map(([, f]) => cell(f(l))).join(";"))];
+// TF-063: labels (optional, i18n.js csvLabelsFor) übersetzen Kopfzeile und Statuswörter – die Daten selbst bleiben unverändert.
+export function crmToCsv(list = [], labels = null) {
+  const cols = labels ? CSV_COLUMNS.map(([h, f], i) => [labels.headers?.[i] || h, i === 9 ? (l) => labels.stage?.[l.sales_stage] || l.sales_stage
+    : i === 10 ? (l) => labels.call?.[l.call_status] || l.call_status : i === 14 ? (l) => (f(l) === "ja" ? labels.yes : labels.no) : f]) : CSV_COLUMNS;
+  const rows = [cols.map(([h]) => h).join(";"), ...list.map((l) => cols.map(([, f]) => cell(f(l))).join(";"))];
   return "﻿" + rows.join("\r\n") + "\r\n";
 }

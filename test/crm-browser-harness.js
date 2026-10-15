@@ -7,7 +7,12 @@ import path from "node:path";
 import { makeSources, writeSources } from "./crm-fixture.js";
 import { createCrmHandler, crmAgentToken } from "../crm-api.js";
 import { createCrmAgent, createSourceReader } from "../crm-service.js";
-import { memoryStore } from "../shared-state.js";
+import { memoryStore, createStateHandler } from "../shared-state.js";
+import { createAuthHandler } from "../auth-api.js";
+import { authStoreFrom, resolveActor } from "../auth-core.js";
+import { createSalesHandler } from "../sales-api.js";
+import { createSalesData } from "../sales-data.js";
+import { createMailRequestHandler } from "../mail-requests.js";
 
 export const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
 const BROWSERS = [process.env.CHROME_PATH, "C:/Program Files/Google/Chrome/Application/chrome.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
@@ -15,23 +20,36 @@ const BROWSERS = [process.env.CHROME_PATH, "C:/Program Files/Google/Chrome/Appli
 export const exe = BROWSERS.find((p) => fs.existsSync(p));
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json" };
 
-export async function startServer({ n = 387, prepare = null } = {}) {
+// TF-063: Anmeldung wie in Produktion (Session-Cookie über /api/auth/*); vnLeads = optionale VN-Sicht, seller = Verkäufer-Passwörter.
+export async function startServer({ n = 387, prepare = null, vnLeads = null, sellers = null } = {}) {
   const src = makeSources(n), dirs = writeSources(src);
   const repairDir = path.join(dirs.base, "repair-export"); fs.mkdirSync(repairDir);
   if (prepare) prepare({ ...dirs, repairDir });
   const sources = createSourceReader({ dataDir: dirs.data, mailDir: dirs.mail, repairDir });
   const control = "k".repeat(48), password = "pw-browser";
-  const handler = createCrmHandler({ getQueueStore: async () => qs, getViewStore: async () => vs, env: (k) => ({ JARVIS_SERVER_CONTROL_TOKEN: control, JARVIS_PASSWORD: password })[k] });
+  const env = (k) => ({ JARVIS_SERVER_CONTROL_TOKEN: control, JARVIS_PASSWORD: password })[k];
+  const authMem = {}, salesMem = {}, userMem = {};
+  const authStore = authStoreFrom((k) => (authMem[k] ||= memoryStore()));
+  const getAuthStore = async () => authStore, getSalesStore = async (k) => (salesMem[k] ||= memoryStore());
+  const vnq = memoryStore(), vnv = memoryStore(vnLeads ? { leads: vnLeads, generated_at: new Date().toISOString() } : null);
+  const handler = createCrmHandler({ getQueueStore: async () => qs, getViewStore: async () => vs, getVnQueueStore: async () => vnq, getVnViewStore: async () => vnv, getSalesStore, getAuthStore, env });
   const qs = memoryStore(), vs = memoryStore();
+  const auth = createAuthHandler({ env, getStore: getAuthStore });
+  const data = async () => createSalesData({ getViewStore: async () => vs, getVnViewStore: async () => vnv, getSalesStore });
+  const ra = (req) => resolveActor(req, { env, getAuthStore });
+  const apis = { "/api/crm": handler, "/api/sales": createSalesHandler({ env, data, getSalesStore, getAuthStore }),
+    "/api/state": createStateHandler({ env, getStore: async () => memoryStore(), resolveActor: ra, getUserStore: async (u) => (userMem[u] ||= memoryStore()) }),
+    "/api/mail-requests": createMailRequestHandler({ env, getStore: async () => (salesMem.__mail ||= memoryStore()), resolveActor: ra, resolveLead: async (a, id) => (await data()).resolveLead(a, id) }) };
   const agent = createCrmAgent({ dataDir: dirs.data, sources, url: "http://local.test", token: crmAgentToken(control), fetchFn: (u, init) => handler(new Request(u, init)) });
   await agent.pollOnce();
   let stop = false;
   (async () => { while (!stop) { await agent.pollOnce().catch(() => {}); await new Promise((r) => setTimeout(r, 300)); } })();
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, "http://127.0.0.1");
-    if (u.pathname === "/api/crm") {
+    const api = apis[u.pathname] || (u.pathname.startsWith("/api/auth/") ? auth : null);
+    if (api) {
       const body = await new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)).on("end", () => r(b)); });
-      const out = await handler(new Request("http://127.0.0.1" + req.url, { method: req.method, headers: req.headers, ...(req.method === "POST" ? { body } : {}) }));
+      const out = await api(new Request(`http://${req.headers.host}` + req.url, { method: req.method, headers: req.headers, ...(req.method === "POST" ? { body } : {}) }));
       res.writeHead(out.status, Object.fromEntries(out.headers)); res.end(Buffer.from(await out.arrayBuffer())); return;
     }
     if (u.pathname.startsWith("/api/")) { res.writeHead(404, { "content-type": "application/json" }); res.end("{}"); return; }
@@ -40,11 +58,22 @@ export async function startServer({ n = 387, prepare = null } = {}) {
     res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream" }); res.end(fs.readFileSync(file));
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  return { url: `http://127.0.0.1:${server.address().port}`, dirs, password, close: () => { stop = true; server.close(); } };
+  const url = `http://127.0.0.1:${server.address().port}`;
+  // Owner-Bootstrap + Verkäufer-Passwörter über die echte Owner-API (nie im Browser gespeichert).
+  if (sellers) {
+    const login = await auth(new Request(url + "/api/auth/login", { method: "POST", headers: { origin: url, "content-type": "application/json" }, body: JSON.stringify({ username: "chris", password }) }));
+    const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
+    for (const [user_id, pw] of Object.entries(sellers)) await auth(new Request(url + "/api/auth/admin/password", { method: "POST", headers: { origin: url, cookie, "content-type": "application/json" }, body: JSON.stringify({ user_id, password: pw }) }));
+  }
+  return { url, dirs, password, close: () => { stop = true; server.close(); } };
+}
+export async function loginAs(ctx, srv, username = "chris", password = srv.password) {
+  const r = await ctx.request.post(srv.url + "/api/auth/login", { headers: { origin: srv.url }, data: { username, password } });
+  if (!r.ok()) throw new Error("Login fehlgeschlagen: " + r.status());
 }
 export async function openCrm(browser, srv, ctxOpts) {
   const ctx = await browser.newContext(ctxOpts);
-  await ctx.addInitScript((pw) => { localStorage.setItem("jarvis.cloudKey", JSON.stringify(pw)); }, srv.password);
+  await loginAs(ctx, srv); // TF-063: Session-Cookie statt Passwort im localStorage
   const page = await ctx.newPage();
   const errors = [], external = [], posts = [];
   page.on("pageerror", (e) => errors.push(String(e)));

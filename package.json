@@ -28,7 +28,9 @@
     "test:release-047": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration && npm run test:separation-integration && node scripts/secret-scan.mjs && node scripts/lab-cleanup.mjs",
     "test:repair-quality-integration": "node scripts/test-repair-integration.mjs --quality",
     "test:release-054": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration && npm run test:repair-quality-integration && node scripts/secret-scan.mjs && node scripts/lab-cleanup.mjs",
-    "test:release-049": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration && npm run test:separation-integration && node scripts/secret-scan.mjs && node scripts/lab-cleanup.mjs"
+    "test:release-049": "npm test && npm run test:repair-integration && npm run test:browser-integration && npm run test:full-order-integration && npm run test:separation-integration && node scripts/secret-scan.mjs && node scripts/lab-cleanup.mjs",
+    "test:tf063": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/auth-063.test.js test/scope-063.test.js test/commission-063.test.js test/vn-063.test.js test/lap-vi-browser-063.test.js",
+    "vn-report": "node vn-discovery.js --report"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",

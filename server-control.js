@@ -329,7 +329,8 @@ function expire(requests, now) {
   return out;
 }
 
-export function createServerControlHandler({ getStore, getLeadDbStore = null, env, now = () => new Date(), newId = () => crypto.randomUUID() }) {
+// TF-063: resolveActor (auth-core.js) – Server Control ist OWNER ONLY. Verkäufer: GET und POST → 403 (Backend, nicht nur Button).
+export function createServerControlHandler({ getStore, getLeadDbStore = null, env, now = () => new Date(), newId = () => crypto.randomUUID(), resolveActor = null }) {
   async function mutate(fn) {
     const store = await getStore();
     for (let i = 0; i < 6; i++) {
@@ -367,7 +368,15 @@ export function createServerControlHandler({ getStore, getLeadDbStore = null, en
     if (req.method === "GET" && new URL(req.url).searchParams.has("probe")) return reply(200, { configured: controlToken.length >= 32, length: controlToken.length });
     // Getrennte Credentials: Worker-/Sync-Token gelten hier nicht. Fehlt der eigene Token in Netlify → alles gesperrt.
     const isAgent = !!controlToken && controlToken.length >= 32 && safeEqual(req.headers.get("x-jarvis-control"), controlToken);
-    const isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
+    let isUser = false;
+    if (!isAgent) {
+      if (resolveActor) {
+        const a = await resolveActor(req);
+        if (!a.actor) return reply(a.status || 401, { error: a.error || "Nicht berechtigt.", ...(a.code ? { code: a.code } : {}) });
+        if (a.actor.role !== "OWNER") return reply(403, { error: "Server Control ist nur für den Owner.", code: "FORBIDDEN" });
+        isUser = true;
+      } else isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
+    }
     if (!isAgent && !isUser) return reply(401, { error: "Nicht berechtigt." });
     if (!controlToken || controlToken.length < 32) return reply(503, { configured: false, error: "Server Control nicht konfiguriert (JARVIS_SERVER_CONTROL_TOKEN fehlt in Netlify)." });
     if (!["GET", "POST"].includes(req.method)) return reply(405, { error: "Nur GET oder POST." });

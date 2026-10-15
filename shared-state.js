@@ -239,16 +239,27 @@ const reply = (status, body) => new Response(JSON.stringify(body), { status, hea
 
 // Zwei Berechtigungen: x-jarvis-sync (JARVIS_SYNC_TOKEN, nur der lokale Kern) darf alles Erlaubte schreiben;
 // x-jarvis-key (JARVIS_PASSWORD, Chris im Browser) darf nur lesen, als gelesen/erledigt markieren, Gesprächsverlauf und Modus setzen.
-export function createStateHandler({ getStore, env, now = () => new Date() }) {
+// TF-063: Browser-Benutzer über resolveActor (auth-core.js, Session-Cookie bzw. Legacy-Key = Chris). Nur der OWNER sieht den gemeinsamen
+// Zustand (Chris' Notizen, Gesprächsverlauf, Meldungen, Business-Status). Verkäufer bekommen ausschliesslich ihren EIGENEN Gesprächsverlauf
+// (getUserStore(user_id)) – nie Chris' Kontext, nie fremde Meldungen. Alle anderen Operationen → 403.
+export function createStateHandler({ getStore, env, now = () => new Date(), resolveActor = null, getUserStore = null }) {
   return async (req) => {
     const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD"), workerToken = env("JARVIS_MAIL_WORKER_TOKEN");
     // Der VPS-Mail-Worker synchronisiert mit seinem eigenen Token (gleiche Rechte wie der lokale Kern).
     const isCore = !!workerToken && safeEqual(req.headers.get("x-jarvis-sync"), workerToken);
     const isLocal = (!!syncToken && safeEqual(req.headers.get("x-jarvis-sync"), syncToken)) || isCore;
-    const isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
     if (req.method === "GET" && new URL(req.url).searchParams.has("probe")) return reply(200, { configured: !!syncToken });
-    if (!isLocal && !isUser) return reply(401, { error: "Nicht berechtigt." });
+    let isUser = false, actor = null;
+    if (!isLocal) {
+      if (resolveActor) {
+        const r = await resolveActor(req);
+        if (!r.actor) return reply(r.status || 401, { error: r.error || "Nicht berechtigt.", ...(r.code ? { code: r.code } : {}) });
+        actor = r.actor; isUser = actor.role === "OWNER";
+      } else isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
+      if (!isUser && !actor) return reply(401, { error: "Nicht berechtigt." });
+    }
     if (!["GET", "POST"].includes(req.method)) return reply(405, { error: "Nur GET oder POST." });
+    if (actor && !isUser) return sellerState(req, actor);
     const store = await getStore();
     if (req.method === "GET") return reply(200, sanitizeState((await store.get()).state || emptyState()));
 
@@ -289,4 +300,25 @@ export function createStateHandler({ getStore, env, now = () => new Date() }) {
     }
     return reply(409, { error: "Gleichzeitige Änderung – bitte erneut versuchen." });
   };
+
+  // Verkäufer: nur eigener Gesprächsverlauf (user-scoped), sonst nichts aus dem gemeinsamen Zustand.
+  async function sellerState(req, actor) {
+    if (!getUserStore) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
+    const store = await getUserStore(actor.user_id);
+    const view = (s) => ({ user_id: actor.user_id, conversation: sanitizeState({ conversation: s?.conversation }).conversation });
+    if (req.method === "GET") return reply(200, view((await store.get()).state));
+    let body;
+    try { body = JSON.parse((await req.text()).slice(0, LIMITS.bodyBytes) || "{}"); } catch { return reply(400, { error: "Ungültiges JSON." }); }
+    if (body?.op !== "conversation") return reply(403, { error: "Keine Berechtigung für diese Aktion.", code: "FORBIDDEN" });
+    if (findSensitiveKeys(body).length) return reply(400, { error: "Sensible Felder sind nicht erlaubt." });
+    const t = now().toISOString();
+    const turns = (Array.isArray(body.turns) ? body.turns : []).slice(0, LIMITS.turnsPerWrite).map((x, i) => ({ role: x?.role, content: x?.content, at: new Date(Date.parse(t) + i).toISOString(), source: "cloud" }));
+    const conv = sanitizeState({ conversation: { turns, updatedAt: t, resetAt: body.reset === true ? t : null } }).conversation;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const { state, etag } = await store.get();
+      const next = { user_id: actor.user_id, conversation: mergeConversation(sanitizeState({ conversation: state?.conversation }).conversation, conv) };
+      if (await store.set(next, etag)) return reply(200, view(next));
+    }
+    return reply(409, { error: "Gleichzeitige Änderung – bitte erneut versuchen." });
+  }
 }

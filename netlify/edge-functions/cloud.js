@@ -6,6 +6,9 @@
 import { PERSONA, PERSONA_VERSION } from "../shared/persona.generated.js";
 import { createMailQueue, publicView } from "../../mail-requests.js";
 import { netlifyBlobStore } from "../../shared-state.js";
+import { resolveActor as resolveSession, netlifyAuthStore } from "../../auth-core.js";
+import { netlifySalesData } from "../../sales-data.js";
+import { summarize } from "../../commission-ledger.js";
 
 const CLOUD_MODE = `Du bist gerade im Cloud-Modus und läufst auf dem Jarvis-Server (VPS, rund um die Uhr) – das ist der normale Betrieb; der PC von Chris ist nur ein optionaler Client und darf aus sein. Du kannst sprechen, planen, Texte formulieren und Mails als Gmail-Entwurf anlegen (Werkzeug mail_request), aber keine Befehle auf dem Computer von Chris ausführen, keine Dateien lesen und Gmail nur über das Werkzeug mail_request erreichen. Wird so etwas verlangt, sag kurz, dass dafür Jarvis auf dem Computer gestartet sein muss. Server-Status und die festen Server-Aktionen sieht Chris im HUD unter „Server“; du selbst führst keine Server-Befehle aus.
 Mailaufträge: Verlangt Chris ausdrücklich, eine Mail zu senden, und sind Empfänger, Betreff und Text mit ihm geklärt, rufe das Werkzeug mail_request auf. Das ist nur ein Auftrag an den Mail-Worker auf dem Server, keine Freigabe: Er prüft Versandgrundlage, Abmeldungen, Duplikate und Limits und sendet einen erlaubten Auftrag von Chris zeitnah – auch wenn der PC aus ist. Ist der Mail-Service offline, bleibt der Auftrag wartend. Behaupte nie, eine Mail sei schon gesendet. Keine Anhänge.
@@ -66,14 +69,36 @@ const enqueueMail = async (input) => (await mailQueue()).create(input, "chris-cl
 
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-export function createCloudHandler({ env, fetchFn = fetch, loadState = loadSharedState, enqueue = enqueueMail }) {
+// TF-063: Verkäufer-Kontext – NIE Chris' Persona, Notizen, Gesprächsverlauf, Meldungen oder Server-Status. Nur Name, Sprache, Rolle,
+// eigene Lead-Kennzahlen und eigene Provision. Kein Mail-Werkzeug (Entwürfe nur über das CRM, Empfänger serverseitig aus dem Lead).
+export function sellerSystem(actor, ctx = {}) {
+  const vi = actor.locale === "vi-VN";
+  const c = ctx.commission || null, n = ctx.leads || null;
+  return vi
+    ? `Bạn là Jarvis, trợ lý bán hàng của Helvetic Webdesign. Bạn đang nói chuyện với ${actor.name} (nhân viên kinh doanh, thị trường Việt Nam). Luôn trả lời bằng tiếng Việt, ngắn gọn và thân thiện.
+Bạn chỉ biết thông tin dưới đây về phạm vi của ${actor.name}. Không có quyền truy cập máy chủ, email, dữ liệu của người khác hay thông tin cá nhân của chủ sở hữu. Bạn không gửi email và không gọi điện; bản nháp email chỉ được tạo trong danh sách khách hàng tiềm năng. Không bịa giá – giá dịch vụ tại Việt Nam chưa được cấu hình.
+Khách hàng tiềm năng trong phạm vi: ${n ? `${n.total} (có điện thoại ${n.with_phone}, có email ${n.with_email})` : "không rõ"}.
+Hoa hồng (${(c?.rate_bps ?? 3500) / 100} %, chỉ khi đơn hàng hoàn thành VÀ đã thanh toán đủ): đang chờ ${c?.pending ?? "0.00"}, có thể thanh toán ${c?.payable ?? "0.00"}, đã hủy ${c?.reversed ?? "0.00"} (CHF).`
+    : `Du bist Jarvis, der Vertriebsassistent von Helvetic Webdesign. Du sprichst mit ${actor.name} (${actor.role === "SALES_MANAGER_CH" ? "Vertriebsleitung Schweiz" : "Vertrieb Schweiz"}). Antworte auf Deutsch (Schweiz), kurz und freundlich, per Sie.
+Du kennst nur die Angaben unten zum Bereich von ${actor.name}. Kein Zugriff auf Server, Mails, Daten anderer Verkäufer oder private Informationen des Inhabers. Du sendest keine Mails und rufst nicht an.
+Leads im eigenen Bereich: ${n ? `${n.total} (mit Telefon ${n.with_phone}, mit E-Mail ${n.with_email})` : "unbekannt"}.
+Provision (${(c?.rate_bps ?? 3500) / 100} %, erst wenn Auftrag abgeschlossen UND vollständig bezahlt): ausstehend CHF ${c?.pending ?? "0.00"}, auszahlbar CHF ${c?.payable ?? "0.00"}, storniert CHF ${c?.reversed ?? "0.00"}.`;
+}
+
+export function createCloudHandler({ env, fetchFn = fetch, loadState = loadSharedState, enqueue = enqueueMail, resolveActor = null, sellerContext = async () => ({}) }) {
   return async (req) => {
   const password = env("JARVIS_PASSWORD");
   const apiKey = env("ANTHROPIC_API_KEY");
-  if (req.method === "GET") return json(200, { configured: Boolean(password && apiKey), personaVersion: PERSONA_VERSION });
+  if (req.method === "GET") return json(200, { configured: Boolean((password || resolveActor) && apiKey), personaVersion: PERSONA_VERSION });
   if (req.method !== "POST") return json(405, { error: "Nur POST." });
-  if (!password || !apiKey) return json(503, { error: "Cloud-Modus ist nicht eingerichtet." });
-  if (req.headers.get("x-jarvis-key") !== password) return json(401, { error: "Falsches Passwort." });
+  if (!apiKey || (!password && !resolveActor)) return json(503, { error: "Cloud-Modus ist nicht eingerichtet." });
+  let actor = null;
+  if (resolveActor) {
+    const a = await resolveActor(req);
+    if (!a.actor) return json(a.status || 401, { error: a.error || "Nicht berechtigt." });
+    actor = a.actor;
+  } else if (req.headers.get("x-jarvis-key") !== password) return json(401, { error: "Falsches Passwort." });
+  const seller = actor && actor.role !== "OWNER";
 
   let body;
   try { body = await req.json(); } catch { return json(400, { error: "Ungültige Anfrage." }); }
@@ -84,7 +109,10 @@ export function createCloudHandler({ env, fetchFn = fetch, loadState = loadShare
   while (messages.length && messages[0].role !== "user") messages.shift();
   if (!messages.length || messages.at(-1).role !== "user") return json(400, { error: "Kein Befehl." });
 
-  const shared = await loadState();
+  // Verkäufer: eigener Kontext, kein gemeinsamer Zustand, keine Werkzeuge.
+  const system = seller
+    ? [{ type: "text", text: sellerSystem(actor, await sellerContext(actor).catch(() => ({}))) }]
+    : [{ type: "text", text: PERSONA, cache_control: { type: "ephemeral" } }, { type: "text", text: CLOUD_MODE + "\n\n" + statusBlock(await loadState()) }];
   const upstream = await fetchFn("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
@@ -92,11 +120,8 @@ export function createCloudHandler({ env, fetchFn = fetch, loadState = loadShare
       model: env("JARVIS_MODEL") || "claude-sonnet-5-5",
       max_tokens: 800,
       stream: true,
-      system: [
-        { type: "text", text: PERSONA, cache_control: { type: "ephemeral" } },
-        { type: "text", text: CLOUD_MODE + "\n\n" + statusBlock(shared) },
-      ],
-      tools: [MAIL_TOOL],
+      system,
+      ...(seller ? {} : { tools: [MAIL_TOOL] }),
       messages,
     }),
   });
@@ -150,4 +175,17 @@ export function createCloudHandler({ env, fetchFn = fetch, loadState = loadShare
 };
 }
 
-export default createCloudHandler({ env: (k) => Netlify.env.get(k) });
+// Verkäufer-Kennzahlen: nur eigener Scope + eigenes Provisionsbuch (gespeicherter Stand, hier nur gelesen).
+async function sellerContext(actor) {
+  const d = await netlifySalesData();
+  const leads = await d.scoped(actor);
+  const { getStore } = await import("@netlify/blobs");
+  const ledger = await getStore({ name: "jarvis-sales", consistency: "strong" }).get("commissions", { type: "json" }).catch(() => null);
+  return { leads: { total: leads.length, with_phone: leads.filter((l) => l.phone).length, with_email: leads.filter((l) => l.email).length }, commission: summarize(ledger, [actor.user_id])[0] };
+}
+const edgeEnv = (k) => Netlify.env.get(k);
+export default createCloudHandler({
+  env: edgeEnv,
+  resolveActor: (req) => resolveSession(req, { env: edgeEnv, getAuthStore: netlifyAuthStore }),
+  sellerContext,
+});

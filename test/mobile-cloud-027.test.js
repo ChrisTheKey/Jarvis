@@ -58,7 +58,9 @@ test("Cloud-Modus ist vollwertig: kein Desktop-/Terminal-Wording, kein „ohne P
   assert.match(html, /"CLOUD \(VPS – PC OPTIONAL\)"/);
   assert.match(html, /mode === "cloud" \? "Keine Verbindung zur Cloud\. Bitte Internetverbindung prüfen und erneut senden\." : "Keine Verbindung zum Jarvis-Server\. Läuft das Terminal-Fenster noch\?"/, "Terminal-Hinweis nur im LOCAL-Modus");
   assert.match(html, /HOSTED \? "Weder die Cloud noch der Local Core sind erreichbar\." : "Der Jarvis-Kern auf dem Computer ist nicht erreichbar\."/);
-  assert.match(html, /Cloud-Modus: Jarvis läuft auf dem VPS – Chat, Gmail-Entwürfe, Status und Server Control funktionieren ohne PC\./);
+  // TF-063: kein Cloud-Passwortformular mehr im HUD – Anmeldung über /login.html (Session-Cookie), kein Passwort im localStorage.
+  assert.match(html, /location\.replace\("\/login\.html"\)/);
+  assert.doesNotMatch(html, /id="pwForm"|store\.set\("cloudKey"/);
   // Modus-Erkennung unverändert: LOCAL nur wenn der Local Core antwortet, sonst CLOUD (nie OFFLINE, solange /api/cloud konfiguriert ist).
   assert.match(html, /createModeDetector\(\{ probeLocal, probeCloud, onChange: applyMode, isBusy: \(\) => busy, intervalMs: 20_000 \}\)/);
   const cloud = read("netlify/edge-functions/cloud.js");

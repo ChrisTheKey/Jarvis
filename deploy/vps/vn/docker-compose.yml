@@ -1,0 +1,42 @@
+# Jarvis Vietnam-Discovery (TF-063) – EIGENES Compose-Projekt «jarvis-vn» unter /opt/jarvis-vn, getrennt von «jarvis-mail», «jarvis-repair»,
+# «jarvis-crm» und «jarvis-contacts». Genau ein Service, keine depends_on, eigenes Image, kein Docker-Socket, KEIN Mount von Mail-/CRM-Daten.
+#   Deploy nur über deploy/vps/deploy-vn.sh (prüft Mail, Repair, CRM und Kontaktdienst vorher/nachher).
+# Daten: /opt/jarvis-vn/data (vn_state/vn_index/vn_leads/vn_crm/vn_health, 600) – einziger Schreiber: dieser Dienst.
+name: jarvis-vn
+services:
+  vn-discovery:
+    container_name: jarvis-vn-discovery
+    build:
+      context: ./app
+      dockerfile: deploy/vps/Dockerfile.vn
+      args:
+        JARVIS_COMMIT: ${JARVIS_COMMIT:-unknown}
+    image: jarvis-vn-discovery:latest
+    restart: unless-stopped
+    # Nur JARVIS_VN_AGENT_TOKEN (abgeleitet, gilt allein für die VN-Operationen von /api/crm) und JARVIS_VN_URL. Datei 600 (vn-remote.sh).
+    env_file: ./.env
+    environment:
+      VN_DAILY_WEBSITE_AUDITS: "1000"
+      VN_CONCURRENCY: "2"
+      VN_PACE_MS: "60000"
+    volumes:
+      - /opt/jarvis-vn/data:/data/vn
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    cpus: 0.75
+    healthcheck:
+      test: ["CMD", "node", "vn-discovery.js", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

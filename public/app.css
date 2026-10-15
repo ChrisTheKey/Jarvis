@@ -1,0 +1,53 @@
+/* TF-063: Login- und Verkäufer-Oberfläche im bestehenden Jarvis-HUD-Stil (gleiche Farben/Schriften wie index.html). Mobile-first. */
+:root {
+  --bg: #02070d; --bg2: #061423; --cyan: #3fd8ff; --cyan-2: #9ff1ff; --line: rgba(63, 216, 255, .28);
+  --glass: rgba(6, 26, 44, .55); --text: #d3f3ff; --muted: #6c97ad; --amber: #ffb547; --red: #ff5d6c; --green: #5cffb0;
+  --display: "Orbitron", "Segoe UI", system-ui, sans-serif; --ui: "Rajdhani", "Segoe UI", system-ui, sans-serif; --mono: "Share Tech Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { min-height: 100%; margin: 0; }
+body { background: radial-gradient(ellipse at 50% 30%, var(--bg2) 0%, var(--bg) 70%); color: var(--text); font: 500 16px/1.45 var(--ui); }
+[hidden] { display: none !important; }
+.logo { font: 900 clamp(22px, 6vw, 34px) var(--display); letter-spacing: .3em; color: var(--cyan-2); text-shadow: 0 0 18px rgba(63,216,255,.7); }
+.sub { font: 12px var(--mono); color: var(--muted); letter-spacing: .2em; text-transform: uppercase; }
+.panel { background: var(--glass); border: 1px solid var(--line); padding: 16px; clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px)); }
+.panel h2 { margin: 0 0 10px; font: 700 13px var(--display); letter-spacing: .24em; color: var(--cyan); text-transform: uppercase; }
+.btn { font: 700 13px var(--display); letter-spacing: .2em; color: var(--bg); background: var(--cyan); border: 0; padding: 14px 18px; cursor: pointer; min-height: 48px; box-shadow: 0 0 22px rgba(63,216,255,.35); }
+.btn.ghost { background: none; color: var(--cyan); border: 1px solid var(--line); box-shadow: none; }
+.btn:disabled { opacity: .5; cursor: wait; }
+input, textarea, select { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); font: 16px var(--ui); padding: 12px; min-height: 48px; } /* 16 px: kein iOS-Zoom */
+label { display: grid; gap: 6px; font: 12px var(--mono); color: var(--muted); letter-spacing: .1em; text-transform: uppercase; }
+.msg { min-height: 1.4em; font: 13px var(--mono); }
+.msg.bad { color: var(--red); } .msg.ok { color: var(--green); }
+
+/* Login */
+.login { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+.login .panel { width: min(420px, 100%); display: grid; gap: 14px; }
+.login header { text-align: center; display: grid; gap: 6px; margin-bottom: 6px; }
+.langs { display: flex; gap: 8px; justify-content: center; }
+.langs button { font: 12px var(--mono); background: none; color: var(--muted); border: 1px solid var(--line); padding: 6px 10px; cursor: pointer; min-height: 36px; }
+.langs button[aria-pressed="true"] { color: var(--cyan-2); border-color: var(--cyan); }
+.hint { font: 12px var(--mono); color: var(--muted); text-align: center; }
+
+/* Verkäufer-App */
+.app { max-width: 1100px; margin: 0 auto; padding: 14px 14px max(20px, env(safe-area-inset-bottom)); display: grid; gap: 14px; }
+.app header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.app header .who { margin-left: auto; text-align: right; font: 13px var(--mono); color: var(--muted); }
+.app header .who b { color: var(--text); display: block; font: 600 16px var(--ui); }
+.grid { display: grid; gap: 14px; grid-template-columns: 1fr; }
+@media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } .grid .wide { grid-column: 1 / -1; } }
+.stat { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.stat div { border: 1px solid var(--line); padding: 10px; }
+.stat b { display: block; font: 700 22px var(--ui); color: var(--text); }
+.stat span { font: 11px var(--mono); color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+.stat .ok b { color: var(--green); } .stat .warn b { color: var(--amber); } .stat .bad b { color: var(--red); }
+.orders { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; font: 13px var(--mono); }
+.orders li { border-left: 2px solid var(--line); padding: 4px 8px; }
+.note { font: 12px var(--mono); color: var(--muted); }
+.chat { display: grid; gap: 8px; }
+.chat ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 45vh; overflow: auto; }
+.chat li { padding: 8px 10px; border: 1px solid var(--line); white-space: pre-wrap; }
+.chat li.user { border-color: var(--cyan); color: var(--cyan-2); }
+.chat form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.chat textarea { min-height: 48px; resize: vertical; }

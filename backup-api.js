@@ -11,11 +11,20 @@ const KEY_RE = /^daily\/\d{4}-\d{2}-\d{2}$/;
 const READ_KEY_RE = /^(daily|crm)\/\d{4}-\d{2}-\d{2}$/;
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
-export function createBackupHandler({ getStore, env }) {
+// TF-063: resolveActor (auth-core.js) – Backups sind OWNER ONLY; Verkäufer → 403.
+export function createBackupHandler({ getStore, env, resolveActor = null }) {
   return async (req) => {
     const workerToken = env("JARVIS_MAIL_WORKER_TOKEN"), password = env("JARVIS_PASSWORD");
     const isWorker = !!workerToken && safeEqual(req.headers.get("x-jarvis-worker"), workerToken);
-    const isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
+    let isUser = false;
+    if (!isWorker) {
+      if (resolveActor) {
+        const a = await resolveActor(req);
+        if (!a.actor) return reply(a.status || 401, { error: a.error || "Nicht berechtigt." });
+        if (a.actor.role !== "OWNER") return reply(403, { error: "Backups sind nur für den Owner.", code: "FORBIDDEN" });
+        isUser = true;
+      } else isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
+    }
     if (!isWorker && !isUser) return reply(401, { error: "Nicht berechtigt." });
     const store = await getStore();
     const url = new URL(req.url);

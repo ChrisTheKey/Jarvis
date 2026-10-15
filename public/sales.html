@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="de" data-locale="de-CH" data-defer-crm="1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>J.A.R.V.I.S.</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="crm.css">
+</head>
+<body>
+<!-- TF-063 Verkäufer-Oberfläche (Giuliano, Mario, Damiano, Lap): gleiche Module wie das Owner-HUD (crm.js, crm-model.js, i18n.js),
+     Daten kommen bereits serverseitig auf den eigenen Bereich gefiltert. Texte setzt sales-app.js je Sprache (de-CH / vi-VN). -->
+<div class="app" id="app" hidden>
+  <header>
+    <div><div class="logo">J.A.R.V.I.S.</div><div class="sub" id="aRole"></div></div>
+    <div class="who"><b id="aName"></b><span id="aMarket"></span></div>
+    <button class="btn ghost" type="button" id="aLogout"></button>
+  </header>
+  <div class="grid">
+    <section class="panel">
+      <h2 id="aLeadsH"></h2>
+      <p id="aLeadsText" class="note"></p>
+      <button class="btn" type="button" id="crmBtn"></button>
+    </section>
+    <section class="panel">
+      <h2 id="aComH"></h2>
+      <div class="stat" id="aComStats"></div>
+      <p class="note" id="aComRule"></p>
+      <ul class="orders" id="aComOrders"></ul>
+    </section>
+    <section class="panel wide chat">
+      <h2 id="aChatH"></h2>
+      <ol id="aChatLog" aria-live="polite"></ol>
+      <form id="aChatForm"><textarea id="aChatIn" maxlength="2000" rows="2"></textarea><button class="btn" type="submit" id="aChatSend"></button></form>
+      <p class="msg" id="aChatMsg"></p>
+    </section>
+  </div>
+  <p class="msg" id="aMsg" aria-live="polite"></p>
+</div>
+<div class="crm" id="crm" hidden role="dialog" aria-modal="true" aria-labelledby="crmTitle"></div>
+<aside class="crm-drawer" id="crmDrawer" hidden></aside>
+<script type="module" src="sales-app.js"></script>
+</body>
+</html>

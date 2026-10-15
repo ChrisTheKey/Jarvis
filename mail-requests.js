@@ -230,15 +230,34 @@ const reply = (status, body) => new Response(JSON.stringify(body), { status, hea
 // send_authority: Ist JARVIS_MAIL_WORKER_TOKEN gesetzt, ist allein der VPS-Worker (x-jarvis-worker) Sender – er übernimmt Aufträge
 // (Lease), setzt Send-Locks, meldet Ergebnisse und Heartbeat. Der Windows-Worker (x-jarvis-sync) bekommt dann nichts zum Senden.
 // Ohne JARVIS_MAIL_WORKER_TOKEN bleibt der lokale Worker (x-jarvis-sync) wie bisher der einzige Sender.
-export function createMailRequestHandler({ getStore, env, now = () => new Date() }) {
+//
+// TF-063 (resolveActor/resolveLead): Browser-Benutzer per Session. Nur der OWNER legt freie Mailaufträge an und sieht die Warteschlange.
+// Verkäufer: ausschliesslich op "lead_draft" { lead_id, subject, body } für einen VN-Lead IM EIGENEN SCOPE – der Empfänger wird
+// serverseitig aus diesem Lead aufgelöst (ein mitgeschickter recipient wird abgelehnt), immer delivery "draft" (COLD_LEAD_DRAFT_ONLY,
+// nie Versand). DNC/Opt-out/Suppression → abgelehnt (der Mail-Worker prüft Suppression zusätzlich). GET: nur eigene Entwurfsaufträge.
+export const LEAD_DRAFT_FIELDS = Object.freeze(["op", "lead_id", "subject", "body"]);
+export function createMailRequestHandler({ getStore, env, now = () => new Date(), resolveActor = null, resolveLead = null }) {
   return async (req) => {
     const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD"), workerToken = env("JARVIS_MAIL_WORKER_TOKEN");
     const dedicated = !!workerToken;
     const isWorker = dedicated && safeEqual(req.headers.get("x-jarvis-worker"), workerToken);
     const isLocal = !!syncToken && safeEqual(req.headers.get("x-jarvis-sync"), syncToken);
-    const isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
-    if (!isWorker && !isLocal && !isUser) return reply(401, { error: "Nicht berechtigt." });
+    let isUser = false, actor = null;
+    if (!isWorker && !isLocal) {
+      if (resolveActor) {
+        const a = await resolveActor(req);
+        if (!a.actor) return reply(a.status || 401, { error: a.error || "Nicht berechtigt.", ...(a.code ? { code: a.code } : {}) });
+        actor = a.actor; isUser = actor.role === "OWNER";
+      } else isUser = !!password && safeEqual(req.headers.get("x-jarvis-key"), password);
+    }
+    if (!isWorker && !isLocal && !isUser && !actor) return reply(401, { error: "Nicht berechtigt." });
     if (!["GET", "POST"].includes(req.method)) return reply(405, { error: "Nur GET oder POST." });
+    if (actor && !isUser) return sellerRequest(req, actor);
+    if (isUser && req.method === "POST" && actor) {
+      // OWNER darf ebenfalls lead_draft für VN-Leads nutzen (gleiche serverseitige Empfänger-Auflösung).
+      const peek = await req.clone().json().catch(() => null);
+      if (peek?.op === "lead_draft") return sellerRequest(req, actor);
+    }
     // Genau ein Sender: der VPS-Worker, wenn eingerichtet – sonst der lokale Worker.
     const owner = isWorker ? "vps" : isLocal && !dedicated ? "local" : null;
     const authority = { dedicated, holder: dedicated ? "vps" : "local", self: !!owner };
@@ -284,6 +303,24 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     r = await queue.heartbeat(owner, body);
     return r.status >= 400 ? reply(r.status, { error: r.error }) : reply(200, { ok: true, authority });
   };
+
+  async function sellerRequest(req, actor) {
+    const queue = createMailQueue(await getStore(), { now, dedicated: !!env("JARVIS_MAIL_WORKER_TOKEN") });
+    if (req.method === "GET") return reply(200, { requests: (await queue.list()).filter((r) => r.requested_by === actor.user_id).map(publicView).slice(-20) });
+    let body;
+    try { body = JSON.parse((await req.text()).slice(0, MAIL_REQUEST_LIMITS.bodyBytes) || "{}"); } catch { return reply(400, { error: "Ungültiges JSON." }); }
+    if (body?.op !== "lead_draft") return reply(403, { error: "Keine Berechtigung für diese Aktion.", code: "FORBIDDEN" });
+    if (Object.keys(body).some((k) => !LEAD_DRAFT_FIELDS.includes(k))) return reply(400, { error: "Nur lead_id, subject und body sind erlaubt (kein Empfänger).", code: "BAD_PARAMS" });
+    if (!resolveLead) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
+    const found = await resolveLead(actor, body.lead_id);
+    if (!found?.lead) return reply(found?.status || 403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: found?.code || "OUT_OF_SCOPE" });
+    const lead = found.lead;
+    if (lead.market !== "VN") return reply(403, { error: "Entwürfe über diesen Weg nur für Vietnam-Leads.", code: "FORBIDDEN" });
+    if (lead.do_not_contact) return reply(409, { error: "Do Not Contact – kein Entwurf.", code: "DO_NOT_CONTACT" });
+    if (!lead.email) return reply(400, { error: "Keine E-Mail-Adresse für diesen Lead.", code: "NO_EMAIL" });
+    const r = await queue.create({ recipient: lead.email, subject: body.subject, body: body.body, intent: "sales", delivery: "draft" }, actor.user_id);
+    return r.status >= 400 ? reply(r.status, { error: r.error, code: "BAD_PARAMS" }) : reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "draft", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
+  }
 }
 
 // ---------- Mail-Worker (VPS oder lokal): abholen, Locks, Ergebnisse, Heartbeat (wirft nie) ----------

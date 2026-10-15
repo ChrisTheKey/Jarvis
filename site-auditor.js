@@ -44,8 +44,10 @@ export function parseRobots(body = "") {
   };
 }
 
+// contactRe (TF-063): Erkennung der Kontaktseite – Standard unverändert (CH); die Vietnam-Discovery ergänzt „liên hệ“/„lien-he“.
+export const CONTACT_RE_DEFAULT = /kontakt|contact|contatto/i;
 export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, timeoutMs = 15_000, totalMs = 90_000, maxLinks = 10, maxImages = 6, now = () => new Date(),
-  sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)), contactRe = CONTACT_RE_DEFAULT } = {}) {
 
   async function audit(website) {
     let requests = 0, last = 0;
@@ -184,7 +186,7 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
       if (!a) return null;
       try { return new URL(attr(a, "href"), page.url).href; } catch { return null; }
     })();
-    const contactUrl = near(/kontakt|contact|contatto/i);
+    const contactUrl = near(contactRe);
     const impressumUrl = near(/impressum|imprint|mentions-l[ée]gales|colophon|note-legali/i);
     const teamUrl = near(/\bteam\b|ueber-uns|über-uns|uber-uns|about-us|qui-sommes|chi-siamo/i);
     const pages = { home: html };

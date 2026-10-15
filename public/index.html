@@ -259,6 +259,8 @@ form.cmd button.stop { color: var(--red); }
     <div class="pill" id="state">Bereit</div>
     <div class="pill mode" id="modePill" title="Wo Jarvis gerade läuft">–</div>
     <button type="button" class="pill nav" id="crmBtn" title="Lead-CRM: alle Leads, Probleme, Kontakt, Status, Anrufe, Notizen, Follow-ups">CRM</button>
+    <button type="button" class="pill nav" id="accessBtn" title="Zugänge der Verkäufer, Provisionen und Lead-Zuweisungen (nur Owner)">ZUGÄNGE</button>
+    <button type="button" class="pill nav" id="logoutBtn" title="Sitzung beenden">ABMELDEN</button>
   </header>
   <section class="panel quick" id="quick" aria-label="Cloud-Status">
     <div class="q">
@@ -526,17 +528,15 @@ form.cmd button.stop { color: var(--red); }
 <div class="crm" id="crm" hidden role="dialog" aria-modal="true" aria-labelledby="crmTitle"></div>
 <aside class="crm-drawer" id="crmDrawer" hidden aria-label="Lead-Details"></aside>
 
+<!-- TF-063: Zugänge / Provision / Zuweisungen (nur Owner) – Inhalt baut owner-admin.js; alle Rechte prüft der Server. -->
+<div class="crm" id="ownerAdmin" hidden role="dialog" aria-modal="true" aria-labelledby="oaTitle"></div>
+
 <div class="boot" id="boot">
   <div class="boot-in">
     <h1>J.A.R.V.I.S.</h1>
     <p>Just A Rather Very Intelligent System</p>
     <pre id="bootLog"></pre>
     <p class="hint" id="bootHint" hidden></p>
-    <form class="pw" id="pwForm" hidden>
-      <label for="pw">Cloud-Passwort</label>
-      <input id="pw" type="password" autocomplete="current-password" required>
-      <button type="submit">Entsperren</button>
-    </form>
     <button type="button" id="bootBtn">Jarvis starten</button>
   </div>
 </div>
@@ -546,6 +546,7 @@ form.cmd button.stop { color: var(--red); }
 <script src="server-status.js"></script>
 <script src="composer.js"></script>
 <script type="module" src="crm.js"></script>
+<script type="module" src="owner-admin.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -559,10 +560,26 @@ if (qCore) store.set("core", qCore);
 const CORE = HOSTED ? String(store.get("core", "http://localhost:3000")).replace(/\/+$/, "") : "";
 let mode = "offline"; // local | cloud | offline – bestimmt die automatische Erkennung (mode-detect.js)
 let booted = false;
-// Einmal-Link https://…/?key=PASSWORT speichert das Passwort auf diesem Gerät; danach öffnet sich Jarvis ohne Abfrage.
-const qKey = new URLSearchParams(location.search).get("key");
-if (qKey) { store.set("cloudKey", qKey); history.replaceState(null, "", location.pathname); }
-let cloudKey = store.get("cloudKey", "");
+// TF-063: Anmeldung über /login.html (Benutzername + Passwort → HttpOnly-Session-Cookie). Kein Passwort im Browser-Speicher, kein ?key= in URLs.
+// Alte Geräte-Einträge (Cloud-Passwort im localStorage) werden entfernt. cloudKey = "1", sobald eine OWNER-Sitzung bestätigt ist.
+try { localStorage.removeItem("jarvis.cloudKey"); } catch {}
+if (new URLSearchParams(location.search).has("key")) history.replaceState(null, "", location.pathname);
+let cloudKey = "";
+let session = null;
+// Owner-Sitzung prüfen: nicht angemeldet → Login; Verkäufer → eigene Oberfläche (sales.html). Lokal (localhost) ohne Cloud-Sitzung weiter wie bisher.
+async function checkSession() {
+  try {
+    const r = await fetch("/api/auth/me", { cache: "no-store", credentials: "same-origin" });
+    if (r.status === 200) { session = (await r.json()).user; if (session?.role !== "OWNER") { location.replace("/sales.html"); return false; } cloudKey = "1"; return true; }
+    if (HOSTED && (r.status === 401 || r.status === 403)) { location.replace("/login.html"); return false; }
+  } catch {}
+  return true;
+}
+const sessionReady = checkSession();
+async function logout() {
+  try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch {}
+  location.replace("/login.html");
+}
 let cloudTurns = store.get("cloudTurns", []);
 const api = (p, body) => fetch(CORE + p, { method: "POST", headers: { "content-type": "application/json", "x-jarvis": "1" }, body: JSON.stringify(body || {}) });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -950,9 +967,9 @@ async function run(text, { typed = false } = {}) {
   try {
     if (mode === "offline") throw new Error(HOSTED ? "Weder die Cloud noch der Local Core sind erreichbar." : "Der Jarvis-Kern auf dem Computer ist nicht erreichbar.");
     const res = mode === "cloud"
-      ? await fetch("/api/cloud", { method: "POST", headers: { "content-type": "application/json", "x-jarvis-key": cloudKey }, body: JSON.stringify({ messages: [...cloudTurns, { role: "user", content: text }] }) })
+      ? await fetch("/api/cloud", { method: "POST", headers: { "content-type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ messages: [...cloudTurns, { role: "user", content: text }] }) })
       : await api("/api/ask", { text });
-    if (mode === "cloud" && res.status === 401) { cloudKey = ""; store.set("cloudKey", ""); $("boot").hidden = false; boot(); throw new Error("Falsches Cloud-Passwort."); }
+    if (mode === "cloud" && res.status === 401) { cloudKey = ""; location.replace("/login.html"); throw new Error("Sitzung abgelaufen – bitte neu anmelden."); }
     if (!res.ok || !res.body) throw new Error((await res.json().catch(() => ({}))).error || "Server antwortet nicht.");
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = "";
@@ -1043,8 +1060,8 @@ $("reset").addEventListener("click", async () => {
 let shared = null;
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString("de-CH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "–");
 const cloudState = (body) => fetch("/api/state", body
-  ? { method: "POST", headers: { "content-type": "application/json", "x-jarvis-key": cloudKey }, body: JSON.stringify(body) }
-  : { headers: { "x-jarvis-key": cloudKey } });
+  ? { method: "POST", headers: { "content-type": "application/json" }, credentials: "same-origin", body: JSON.stringify(body) }
+  : { credentials: "same-origin" });
 async function loadShared() {
   try {
     if (mode === "local") { shared = await (await fetch(CORE + "/api/shared")).json(); loadMailService(); }
@@ -1185,7 +1202,7 @@ async function loadMailService() {
 async function loadMailRequests({ serviceToo = true } = {}) {
   if (!HOSTED || !cloudKey) return;
   try {
-    const r = await fetch("/api/mail-requests", { headers: { "x-jarvis-key": cloudKey }, cache: "no-store" });
+    const r = await fetch("/api/mail-requests", { credentials: "same-origin", cache: "no-store" });
     if (!r.ok) return;
     const j = await r.json();
     if (serviceToo) renderMailService(j.service);
@@ -1480,7 +1497,7 @@ async function applyMode(next, prev) {
   log("SYSTEM", next === "local" ? "Local Core erreichbar – LOCAL-Modus mit PC-Zugriff." : next === "cloud" ? "CLOUD-Modus: Jarvis läuft auf dem VPS, der PC ist optional." : "Weder Local Core noch Cloud erreichbar.", next === "local" ? "green" : "amber");
   if (next !== "local") $("leads").hidden = true;
   if (next === "local") poll();
-  if (next === "cloud") { if (!cloudKey) { $("boot").hidden = false; booted = false; return boot(); } await loadCloudConversation(); }
+  if (next === "cloud") { if (!cloudKey) { location.replace("/login.html"); return; } await loadCloudConversation(); }
   loadShared();
 }
 const detector = JarvisModeDetect.createModeDetector({ probeLocal, probeCloud, onChange: applyMode, isBusy: () => busy, intervalMs: 20_000 });
@@ -1489,13 +1506,13 @@ async function loadStatus() {
   renderMode();
   loadVoices();
 }
-loadStatus().finally(() => detector.start());
+sessionReady.then((ok) => { if (ok) loadStatus().finally(() => detector.start()); });
 
 let micReady = null;
 async function boot() {
   // Browser-Benachrichtigungen für Kundenalarme – Abfrage direkt beim Klick auf „Jarvis starten“
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().then(() => renderShared()).catch(() => {});
-  $("bootBtn").hidden = true; $("bootHint").hidden = true; $("pwForm").hidden = true;
+  $("bootBtn").hidden = true; $("bootHint").hidden = true;
   const out = $("bootLog");
   out.textContent = "";
   const line = async (t, ms = 240) => { out.textContent += t + "\n"; await sleep(ms); };
@@ -1513,12 +1530,7 @@ async function boot() {
     $("bootBtn").textContent = "Erneut verbinden"; $("bootBtn").hidden = false;
     return;
   }
-  if (mode === "cloud" && !cloudKey) {
-    $("bootHint").textContent = "Cloud-Modus: Jarvis läuft auf dem VPS – Chat, Gmail-Entwürfe, Status und Server Control funktionieren ohne PC. Bitte Cloud-Passwort eingeben.";
-    $("bootHint").hidden = false; $("pwForm").hidden = false; $("pw").focus();
-    $("bootBtn").textContent = "Erneut prüfen"; $("bootBtn").hidden = false;
-    return;
-  }
+  if (mode === "cloud" && !cloudKey) { location.replace("/login.html"); return; }
   await line("> Audio-Sensorik ....................... " + (micReady ? "OK" : "KEIN MIKROFON"));
   await line("> Spracherkennung ...................... " + (SR ? "OK" : "NICHT VERFÜGBAR"));
   await line("> Stimme ............................... " + (status.tts === "elevenlabs" ? "ELEVENLABS" : "BROWSER"));
@@ -1551,7 +1563,7 @@ async function boot() {
 // ---------- SERVER: Status und feste Aktionen des Jarvis-VPS über /api/server-control (nur Action-IDs, keine Befehle) ----------
 async function serverFetch(opts = {}, query = "") {
   if (!HOSTED || !cloudKey) return { status: 0, body: null };
-  const r = await fetch("/api/server-control" + query, { cache: "no-store", ...opts, headers: { "x-jarvis-key": cloudKey, ...(opts.body ? { "content-type": "application/json" } : {}) } });
+  const r = await fetch("/api/server-control" + query, { cache: "no-store", credentials: "same-origin", ...opts, headers: { ...(opts.body ? { "content-type": "application/json" } : {}) } });
   return { status: r.status, body: await r.json().catch(() => null) };
 }
 function renderServer(data, note = "") {
@@ -1849,7 +1861,7 @@ async function exportLeadDb(fmt) {
   const p = ldbParams(); p.set("leaddb", fmt); p.delete("page"); p.delete("page_size");
   $("ldbNote").textContent = "Export wird erstellt …";
   try {
-    const r = await fetch("/api/server-control?" + p.toString(), { cache: "no-store", headers: { "x-jarvis-key": cloudKey } });
+    const r = await fetch("/api/server-control?" + p.toString(), { cache: "no-store", credentials: "same-origin" });
     if (!r.ok) throw new Error("Fehler " + r.status);
     const url = URL.createObjectURL(await r.blob());
     const a = document.createElement("a"); a.href = url; a.download = `jarvis-leads-${new Date().toISOString().slice(0, 10)}.${fmt}`; document.body.append(a); a.click(); a.remove();
@@ -1880,11 +1892,7 @@ for (const id of ["statusPanel", "serverPanel", "soldPanel", "salesPanel", "logP
 if (MOBILE.matches) $("cmdInput").placeholder = "Befehl an Jarvis …"; // kurz, damit das Feld einzeilig bleibt
 
 $("bootBtn").addEventListener("click", boot);
-$("pwForm").addEventListener("submit", (e) => {
-  e.preventDefault();
-  cloudKey = $("pw").value; store.set("cloudKey", cloudKey); $("pw").value = "";
-  boot();
-});
+$("logoutBtn").addEventListener("click", logout);
 </script>
 </body>
 </html>

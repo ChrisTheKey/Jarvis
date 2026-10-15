@@ -43,6 +43,8 @@ const maxIso = (...xs) => xs.filter((x) => typeof x === "string" && x).sort().at
 const normDomain = (u = "") => { try { return new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; } };
 const httpUrl = (u, n = 300) => { if (typeof u !== "string" || u.length > n) return null; try { const x = new URL(u); return ["http:", "https:"].includes(x.protocol) && !/[<>"'\s]/.test(u) ? x.href : null; } catch { return null; } };
 export const telHref = (normalized) => (typeof normalized === "string" && /^\+41\d{9}$/.test(normalized) ? `tel:${normalized}` : null);
+// TF-063: Vietnam-Nummern (+84, 9–10 Ziffern nach der Landesvorwahl) – nur für VN-Leads.
+export const telHrefVn = (normalized) => (typeof normalized === "string" && /^\+84\d{9,10}$/.test(normalized) ? `tel:${normalized}` : null);
 export const draftUrl = (messageId) => (typeof messageId === "string" && HEX_RE.test(messageId) ? `https://mail.google.com/mail/u/0/#drafts?compose=${messageId}` : null);
 
 // ---------- Befunde ----------
@@ -418,9 +420,11 @@ export function cleanCrmLead(l) {
     lead_id: l.lead_id, company: str(l.company, 120), domain: str(l.domain, 120) && /^[a-z0-9.-]{3,253}$/.test(l.domain) ? l.domain : null, website: httpUrl(l.website),
     email: typeof l.email === "string" && EMAIL_RE.test(l.email) && l.email.length <= 200 ? l.email : null,
     phone: typeof l.phone === "string" && /^[+0-9 ()\/.-]{6,30}$/.test(l.phone) ? l.phone : null,
-    phone_tel: typeof l.phone_tel === "string" && /^tel:\+41\d{9}$/.test(l.phone_tel) ? l.phone_tel : null, phone_confidence: oneOf(l.phone_confidence, ["high", "medium"]),
+    phone_tel: typeof l.phone_tel === "string" && (/^tel:\+41\d{9}$/.test(l.phone_tel) || (l.market === "VN" && /^tel:\+84\d{9,10}$/.test(l.phone_tel))) ? l.phone_tel : null, phone_confidence: oneOf(l.phone_confidence, ["high", "medium"]),
     first_name: str(l.first_name, 60), last_name: str(l.last_name, 60), role: str(l.role, 60),
-    canton: typeof l.canton === "string" && /^[A-Z]{2}$/.test(l.canton) ? l.canton : null, municipality: str(l.municipality, 60), category: str(displayCategory(l.category), 40), language: oneOf(l.language, ["de", "fr", "it", "rm"]),
+    // TF-063: Markt (CH Standard, VN nur von der Vietnam-Discovery) + VN-Region (Verwaltungseinheit auf Provinzebene, Stand 2025).
+    market: oneOf(l.market, ["CH", "VN"], "CH"), region: l.market === "VN" ? str(l.region, 60) : null, region_code: l.market === "VN" && typeof l.region_code === "string" && /^VN-[A-Z0-9-]{2,24}$/.test(l.region_code) ? l.region_code : null,
+    canton: l.market !== "VN" && typeof l.canton === "string" && /^[A-Z]{2}$/.test(l.canton) ? l.canton : null, municipality: str(l.municipality, 60), category: str(displayCategory(l.category), 40), language: oneOf(l.language, ["de", "fr", "it", "rm", "vi", "en"]),
     website_reachable: typeof l.website_reachable === "boolean" ? l.website_reachable : null, website_checked_at: iso(l.website_checked_at),
     findings: (Array.isArray(l.findings) ? l.findings : []).slice(0, 30).map((f) => (f && typeof f === "object" ? { key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
       status: oneOf(f.status, ["BESTÄTIGT", "AUDIT"]), confirmed: f.confirmed === true, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) } : null)).filter((f) => f?.text),

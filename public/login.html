@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="de" data-locale="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>J.A.R.V.I.S. – Anmelden</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<main class="login">
+  <form class="panel" id="loginForm" autocomplete="on" novalidate>
+    <header>
+      <div class="logo">J.A.R.V.I.S.</div>
+      <div class="sub" id="lTitle">Anmelden</div>
+    </header>
+    <div class="langs" role="group" aria-label="Sprache / Ngôn ngữ">
+      <button type="button" data-loc="de-CH" aria-pressed="true">Deutsch</button>
+      <button type="button" data-loc="vi-VN" aria-pressed="false">Tiếng Việt</button>
+    </div>
+    <label><span id="lUser">Benutzername</span><input id="user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="40"></label>
+    <label><span id="lPass">Passwort</span><input id="pass" name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+    <button class="btn" type="submit" id="lSubmit">Anmelden</button>
+    <p class="msg" id="lMsg" aria-live="polite"></p>
+    <p class="hint" id="lHint">Persönlicher Zugang. Das Passwort wird nie gespeichert oder angezeigt.</p>
+  </form>
+</main>
+<script type="module" src="login.js"></script>
+</body>
+</html>

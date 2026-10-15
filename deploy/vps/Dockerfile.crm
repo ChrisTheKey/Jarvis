@@ -9,8 +9,9 @@ WORKDIR /app
 # TF-058: discovery-history.js (historische Website-Fehler-Leads, passiver Recheck der Index-Domains – nur GET)
 # TF-057: lead-db.js (Dedupe Domain/E-Mail/Firma wie die Lead-Datenbank, ohne Abhängigkeiten)
 # TF-055: site-findings.js (Fehlerinventar) + site-auditor.js/site-backfill.js (passiver Hintergrund-Audit, nur GET, robots.txt)
-COPY package.json crm-service.js crm-api.js lead-crm.js category-labels.js shared-state.js backup.js site-findings.js site-auditor.js site-backfill.js lead-db.js discovery-history.js ./
-COPY public/crm-model.js ./public/
+# TF-063: auth-core.js, sales-scope.js, public/i18n.js – Importe von crm-api.js (Scope/Auth laufen in der Netlify-Funktion)
+COPY package.json crm-service.js crm-api.js lead-crm.js category-labels.js shared-state.js backup.js site-findings.js site-auditor.js site-backfill.js lead-db.js discovery-history.js auth-core.js sales-scope.js ./
+COPY public/crm-model.js public/i18n.js ./public/
 COPY deploy/vps/backup-public.pem ./
 COPY deploy/vps/crm-derive-token.mjs ./deploy/vps/
 USER node
