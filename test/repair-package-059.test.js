@@ -42,7 +42,7 @@ function staticSite(extra = {}) {
   w("js/app.js", "document.documentElement.dataset.ok='1';");
   w("assets/img/lab-logo.svg", SVG); w("assets/team.png", PNG);
   // verboten:
-  w(".env", "DB_PASSWORD=supersecret123\n"); w(".env.production", "X=1"); w(".git/config", "[core]"); w(".git/HEAD", "ref"); w("id_rsa", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n");
+  w(".env", "DB_PASSWORD=supersecret123\n"); w(".env.production", "X=1"); w(".git/config", "[core]"); w(".git/HEAD", "ref"); w("id_rsa", `-----BEGIN ${"OPENSSH"} PRIVATE KEY-----\nabc\n`); // Attrappe, zur Laufzeit zusammengesetzt (Secret-Scan)
   w("node_modules/x/index.js", "module.exports=1"); w("config/keys.js", `const k="${SECRET}";`); w("backup-2026.sql", "INSERT"); w("error.log", "boom");
   w(".jarvis-probe-abc.tmp", "a"); w("secrets/api.txt", "token"); w(".htpasswd", "u:p"); w("server.pem", "-----BEGIN CERTIFICATE-----");
   for (const [rel, data] of Object.entries(extra)) w(rel, data);
