@@ -177,13 +177,13 @@ test("TF-060 Branche: historischer Lead mit category → angezeigt/suchbar/filte
   const s = crmScenario();
   await s.migrate({ importData: { records: [withCat, noCat] } });
   const by = s.by();
-  assert.equal(by["hist-cat.ch"].category, "craft", "hist.category übernommen");
-  assert.equal(cleanCrmLead(by["hist-cat.ch"]).category, "craft", "Cloud-Allowlist");
+  assert.equal(by["hist-cat.ch"].category, "Handwerk", "hist.category übernommen, TF-061 lesbar (craft → Handwerk)");
+  assert.equal(cleanCrmLead(by["hist-cat.ch"]).category, "Handwerk", "Cloud-Allowlist");
   assert.equal(by["treuhand-ohne.ch"].category, null, "keine Branche aus dem Firmennamen geraten");
   const leads = s.view().leads;
   assert.ok(leads.filter((l) => l.lead_id.startsWith("firma-")).every((l) => ["Treuhand", "Restaurant"].includes(l.category)), "Registry: category_label");
   // Freie Suche findet die Branche; Branchenfilter bleibt exakt
-  assert.ok(searchMatch(by["hist-cat.ch"], "craft") && searchMatch(by["firma-001.ch"], "treuhand"));
+  assert.ok(searchMatch(by["hist-cat.ch"], "handwerk") && searchMatch(by["firma-001.ch"], "treuhand"));
   assert.ok(!searchMatch(by["firma-002.ch"], "treuhand"));
   const q = filterLeads(leads, { q: "Treuhand" }).map((l) => l.lead_id);
   assert.ok(q.includes("firma-001.ch") && !q.includes("firma-002.ch"));

@@ -17,6 +17,7 @@
 import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines } from "./public/crm-model.js";
 import { siteHealth, httpStatusOf, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES } from "./site-findings.js";
 import { buildIndex, findId, normCompany } from "./lead-db.js";
+import { displayCategory } from "./category-labels.js";
 
 export const CRM_FILE = "lead_crm.json";
 export const CRM_AUDIT_FILE = "crm_audit.jsonl";
@@ -218,7 +219,7 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     email: [dir?.email, reg?.business_email, rv?.recipient, hist?.business_email].map((e) => String(e || "").trim().toLowerCase()).find((e) => EMAIL_RE.test(e)) || null,
     phone: str(dir?.phone, 30), phone_tel: telHref(dir?.phone_normalized), phone_confidence: oneOf(dir?.phone_confidence, ["high", "medium"]),
     first_name: str(dir?.first_name, 60), last_name: str(dir?.last_name, 60), role: str(dir?.role, 60),
-    canton: str(reg?.canton || hist?.canton, 2), municipality: str(reg?.municipality || hist?.municipality, 60), category: str(reg?.category_label || reg?.category || hist?.category, 40), language: str(reg?.language, 2),
+    canton: str(reg?.canton || hist?.canton, 2), municipality: str(reg?.municipality || hist?.municipality, 60), category: str(displayCategory(reg?.category_label || reg?.category || hist?.category), 40), language: str(reg?.language, 2),
     website_reachable: dir?.enrichment?.status === "done" ? true : dir?.enrichment?.status === "failed" ? false : null,
     website_checked_at: maxIso(iso(reg?.last_audited_at), iso(dir?.enrichment?.last_attempt_at), iso(hist?.last_verified_at)),
     findings, findings_total: findings.length, findings_confirmed: findings.filter((f) => f.confirmed).length, errors,
@@ -419,7 +420,7 @@ export function cleanCrmLead(l) {
     phone: typeof l.phone === "string" && /^[+0-9 ()\/.-]{6,30}$/.test(l.phone) ? l.phone : null,
     phone_tel: typeof l.phone_tel === "string" && /^tel:\+41\d{9}$/.test(l.phone_tel) ? l.phone_tel : null, phone_confidence: oneOf(l.phone_confidence, ["high", "medium"]),
     first_name: str(l.first_name, 60), last_name: str(l.last_name, 60), role: str(l.role, 60),
-    canton: typeof l.canton === "string" && /^[A-Z]{2}$/.test(l.canton) ? l.canton : null, municipality: str(l.municipality, 60), category: str(l.category, 40), language: oneOf(l.language, ["de", "fr", "it", "rm"]),
+    canton: typeof l.canton === "string" && /^[A-Z]{2}$/.test(l.canton) ? l.canton : null, municipality: str(l.municipality, 60), category: str(displayCategory(l.category), 40), language: oneOf(l.language, ["de", "fr", "it", "rm"]),
     website_reachable: typeof l.website_reachable === "boolean" ? l.website_reachable : null, website_checked_at: iso(l.website_checked_at),
     findings: (Array.isArray(l.findings) ? l.findings : []).slice(0, 30).map((f) => (f && typeof f === "object" ? { key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
       status: oneOf(f.status, ["BESTÄTIGT", "AUDIT"]), confirmed: f.confirmed === true, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) } : null)).filter((f) => f?.text),

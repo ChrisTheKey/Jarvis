@@ -23,7 +23,13 @@ test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links,
     for (const h of ["Firma", "Branche", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"]) assert.ok(heads.includes(h), h);
     assert.deepEqual(heads.slice(0, 3), ["Firma", "Branche", "Website"], "TF-060: Branche direkt nach Firma");
     assert.equal(await page.locator('#crmMain tr[data-id="firma-021.ch"] td:nth-child(2)').innerText(), "Treuhand");
-    assert.equal(await page.locator('#crmMain tr[data-id="firma-022.ch"] td:nth-child(2)').innerText(), "Restaurant");
+    assert.equal(await page.locator('#crmMain tr[data-id="firma-022.ch"] td:nth-child(2)').innerText(), "Restaurant", "TF-061: amenity=restaurant → Restaurant");
+    assert.equal(await page.locator('#crmMain tr[data-id="firma-023.ch"] td:nth-child(2)').innerText(), "Treuhand", "TF-061: office=accountant → Treuhand");
+    const cats = await page.locator("#crmMain tbody tr td:nth-child(2)").allTextContents();
+    assert.ok(!cats.some((t) => /=|^(shop|amenity|office)$/.test(t)), "TF-061: keine OSM-Rohwerte in der Spalte Branche");
+    const opts = (await page.locator("#crmF_category option").allTextContents()).filter((t) => t.trim());
+    assert.equal(opts.filter((t) => /^Restaurant \(/.test(t)).length, 1, "TF-061: genau ein Filterwert Restaurant");
+    assert.ok(!opts.some((t) => t.includes("=")), "TF-061: keine Rohwerte im Branchenfilter");
     const tels = await page.locator('#crmMain a[href^="tel:"]').evaluateAll((as) => as.map((a) => a.getAttribute("href")));
     assert.ok(tels.length > 200 && tels.every((h) => /^tel:\+41\d{9}$/.test(h)));
     const mails = await page.locator('#crmMain a[href^="mailto:"]').evaluateAll((as) => as.map((a) => a.getAttribute("href")));
@@ -42,7 +48,15 @@ test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links,
     await page.selectOption("#crmF_category", "Restaurant");
     const rest = await page.locator("#crmMain tbody tr td:nth-child(2)").allTextContents();
     assert.ok(rest.length > 100 && rest.every((t) => t === "Restaurant"));
+    assert.equal(await page.locator('#crmMain tr[data-id="firma-022.ch"]').count(), 1, "TF-061: Filter Restaurant enthält amenity=restaurant");
     await page.selectOption("#crmF_category", "");
+    // TF-061: Detail eines Rohwert-Leads zeigt die lesbare Branche
+    await page.click('#crmMain tr[data-id="firma-023.ch"]');
+    await page.waitForSelector("#crmDrawer:not([hidden])");
+    assert.match(await page.locator("#crmDrawer .kv").first().innerText(), /Branche\s+Treuhand/);
+    assert.doesNotMatch(await page.locator("#crmDrawer").innerText(), /office=accountant/);
+    await page.keyboard.press("Escape");
+    await page.waitForSelector("#crmDrawer", { state: "hidden" });
     await page.click(".crm-card:has-text('Kunden')");
     assert.equal(await page.locator("#crmMain tbody tr").count(), 1);
     await page.click(".crm-card:has-text('Alle Leads')");
@@ -94,6 +108,9 @@ test("M: Mobile-Rendering (390×844) – Karten, grosse ANRUFEN/WEBSITE/ENTWURF-
     const text = await card.textContent();
     for (const s of ["Firma 21 AG", "Fehler", "Wichtigste 2", "Telefon", "Ansprechpartner", "Entwurf bereit"]) assert.ok(text.includes(s), s);
     assert.match(await card.locator(".crm-cat").innerText(), /^Branche:\s+Treuhand$/i, "TF-060: Branche auf der Karte");
+    assert.match(await page.locator('#crmMain li[data-id="firma-022.ch"] .crm-cat').innerText(), /^Branche:\s+Restaurant$/i, "TF-061: Rohwert-Lead mobil lesbar");
+    const mcats = await page.locator("#crmMain .crm-cat").allTextContents();
+    assert.ok(!mcats.some((t) => t.includes("=")), "TF-061: keine Rohwerte auf Karten");
     const call = card.locator('a:has-text("ANRUFEN")');
     assert.equal(await call.getAttribute("href"), "tel:+41311234567");
     const box = await call.boundingBox();

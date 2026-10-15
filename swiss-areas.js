@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { categoryKey } from "./category-labels.js";
 
 const DATA_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "data", "swiss-municipalities.json");
 export const GEO_FILE = "discovery_geo.json";
@@ -46,16 +47,8 @@ export function findMunicipality(name = "") {
   return loose.length === 1 ? loose[0] : null;
 }
 
-// Branchen-Bezeichnung für Lead-Datenbank, Filter und Export (Deutsch).
-const CATEGORY_LABELS = {
-  craft: "Handwerk", shop: "Geschäft", "office=company": "Firma / Büro", "office=estate_agent": "Immobilien", "amenity=restaurant": "Restaurant", "amenity=dentist": "Zahnarzt",
-  "healthcare=physiotherapist": "Physiotherapie", "tourism=hotel": "Hotel", "office=accountant": "Treuhand", "shop=hairdresser": "Coiffeur", "office=lawyer": "Anwalt",
-  "office=architect": "Architekt", "office=insurance": "Versicherung", "office=tax_advisor": "Steuerberatung", "office=it": "IT", "office=consulting": "Beratung",
-  "amenity=cafe": "Café", "amenity=doctors": "Arztpraxis", "amenity=veterinary": "Tierarzt", "leisure=fitness_centre": "Fitness", "tourism=guest_house": "Gästehaus",
-  "shop=car_repair": "Autogarage", "shop=beauty": "Kosmetik", "healthcare=doctor": "Arzt",
-};
-export const categoryKey = (c) => (c?.value ? `${c.key}=${c.value}` : String(c?.key || ""));
-export const categoryLabel = (k) => CATEGORY_LABELS[k] || CATEGORY_LABELS[String(k).split("=")[0]] || (k ? String(k) : null);
+// Branchen-Bezeichnung für Lead-Datenbank, Filter und Export (Deutsch) – gemeinsame Taxonomie in category-labels.js (TF-061).
+export { CATEGORY_LABELS, categoryKey, categoryLabel } from "./category-labels.js";
 // Branche eines OSM-Treffers: die spezifischste passende Kategorie (shop=hairdresser vor shop).
 export function matchCategory(tags = {}, categories = []) {
   const specific = categories.filter((c) => c.value && tags[c.key] === c.value);

@@ -11,7 +11,8 @@ export function makeSources(n = 387, { now = new Date("2026-10-14T10:00:00Z") } 
   for (let i = 0; i < n; i++) {
     const domain = `firma-${String(i).padStart(3, "0")}.ch`, id = domain, did = `r-${i}`;
     const manual = i < 7, customer = i === 10, dnc = i === 11;
-    registry.leads[id] = { lead_id: id, domain, company: `Firma ${i} AG`, canton: i % 3 ? "BE" : "ZH", municipality: i % 3 ? "Bern" : "Zürich", category: "accountant", category_label: i % 2 ? "Treuhand" : "Restaurant",
+    registry.leads[id] = { lead_id: id, domain, company: `Firma ${i} AG`, canton: i % 3 ? "BE" : "ZH", municipality: i % 3 ? "Bern" : "Zürich", // TF-061: jeder 4. Lead nur mit OSM-Rohwert (ohne category_label) – das CRM zeigt trotzdem „Treuhand“/„Restaurant“.
+      ...(i % 4 >= 2 ? { category: i % 2 ? "office=accountant" : "amenity=restaurant" } : { category: "accountant", category_label: i % 2 ? "Treuhand" : "Restaurant" }),
       language: "de", status: manual ? "MANUALLY_SENT" : "DRAFT_CREATED", gmail_draft_status: manual ? "manually_sent" : "draft_created", customer_status: customer ? "customer" : "none",
       reply_status: "none", do_not_contact: dnc, opt_out: false, suppressed: false, manual_send_detected: manual, last_audited_at: "2026-10-10T08:00:00Z", last_updated_at: "2026-10-12T08:00:00Z",
       customer_visible_findings: ["Ein Link führt auf eine Fehlerseite"] };

@@ -61,7 +61,7 @@ test("Nicht unterstütztes Modell → sicherer Fallback, keine Crash-Schleife", 
   assert.equal(pick("Wie viele Leads?", bad).model, "haiku");
   assert.equal(pick("MODELL: STRONG\nx", bad).model, "fable");
   assert.ok(Object.values(tierModels(bad)).every((m) => SUPPORTED_MODELS.includes(m)));
-  // Claude Code meldet „unrecognized_model“ → server.js fällt genau einmal auf STANDARD zurück.
+  // Claude Code meldet „unrecognized_model“ → server.js nimmt das nächste Modell der Kette (TF-061, model-router-061).
   assert.ok(isUnsupportedModelError('[claude-code:unrecognized_model] {"model":"bogus-model-x"}'));
   assert.ok(!isUnsupportedModelError("Rate limit exceeded"));
   // .env darf die Stufen auf andere unterstützte Aliasse setzen.

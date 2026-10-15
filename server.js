@@ -48,8 +48,9 @@ async function mailServiceStatus(now = Date.now()) {
 
 const PORT = Number(process.env.PORT || 3000);
 // TF-059: Modell je Auftrag (model-router.js) – Standard-Stufe als Default, STRONG nur bei klaren Signalen oder „MODELL: STRONG“.
-const { selectModelForJob, tierModels, isUnsupportedModelError, DEFAULT_TIER } = await import("./model-router.js");
+const { selectModelForJob, tierModels, fallbackChains, nextModelJob, isUnsupportedModelError, DEFAULT_TIER } = await import("./model-router.js");
 const MODELS = tierModels(process.env);
+const FALLBACKS = fallbackChains(process.env); // TF-061: LIGHT haiku→sonnet · STANDARD sonnet→opus · STRONG fable→opus→sonnet
 const MODEL = MODELS[DEFAULT_TIER];
 let lastJob = null; // { tier, model, reason, at } – nur Stufe/Alias/Stichwort, nie Prompt-Inhalte
 const FULL_ACCESS = process.env.JARVIS_FULL_ACCESS === "1";
@@ -115,8 +116,9 @@ function describeTool(name, input = {}) {
   return String(v ?? JSON.stringify(input)).replace(/\s+/g, " ").slice(0, 140);
 }
 
-// job: Ergebnis von selectModelForJob; fallback=true → zweiter Versuch mit der Standard-Stufe (nicht verfügbares Modell, genau einmal).
-function ask(text, res, retried = false, job = null, fallback = false) {
+// job: Ergebnis von selectModelForJob (mit chain/tried). Nicht verfügbares Modell → nächstes Modell der Kette (nextModelJob),
+// jedes Modell höchstens einmal; andere Fehler wechseln das Modell nie.
+function ask(text, res, retried = false, job = null) {
   stopChild(current);
   const choice = job || selectModelForJob(text);
   text = choice.text;
@@ -164,8 +166,8 @@ function ask(text, res, retried = false, job = null, fallback = false) {
           }
         }
       } else if (ev.type === "result") {
-        // Modell nicht verfügbar → nicht als Fehler melden, sondern unten genau einmal mit der Standard-Stufe wiederholen.
-        if (ev.is_error && !fallback && choice.model !== MODEL && isUnsupportedModelError(ev.result)) { modelFailed = true; continue; }
+        // Modell nicht verfügbar und die Kette hat noch ein Modell → nicht als Fehler melden, sondern unten damit wiederholen.
+        if (ev.is_error && isUnsupportedModelError(ev.result) && nextModelJob(choice)) { modelFailed = true; continue; }
         finished = true;
         send({ type: "done", error: ev.is_error ? String(ev.result || ev.subtype || "Fehler") : null });
       }
@@ -186,9 +188,8 @@ function ask(text, res, retried = false, job = null, fallback = false) {
       saveSession(null);
       return ask(text, res, true, choice);
     }
-    if (modelFailed || (!finished && !fallback && choice.model !== MODEL && isUnsupportedModelError(stderr))) {
-      return ask(text, res, retried, { ...choice, tier: DEFAULT_TIER, model: MODEL, reason: "model_unavailable_fallback" }, true);
-    }
+    const nextJob = modelFailed || (!finished && isUnsupportedModelError(stderr)) ? nextModelJob(choice) : null;
+    if (nextJob) return ask(text, res, retried, nextJob);
     if (!finished) {
       const hint = /log ?in|auth|api key|credential/i.test(stderr) ? " Bitte einmal im Terminal `claude` starten und anmelden." : "";
       send({ type: "error", message: (stderr.trim().split("\n").pop() || `Claude Code wurde beendet (Code ${code}).`) + hint });
@@ -262,7 +263,7 @@ const server = http.createServer(async (req, res) => {
       return fs.createReadStream(path.join(ROOT, "public", url.pathname.slice(1))).pipe(res);
     }
     if (req.method === "GET" && url.pathname === "/api/status") {
-      return json(res, 200, { claude: claudeVersion, model: MODEL, models: MODELS, adaptive: true, defaultTier: DEFAULT_TIER, lastJob, fullAccess: FULL_ACCESS, tts: ELEVEN_KEY ? "elevenlabs" : "browser", session: Boolean(sessionId) });
+      return json(res, 200, { claude: claudeVersion, model: MODEL, models: MODELS, fallbacks: FALLBACKS, adaptive: true, defaultTier: DEFAULT_TIER, lastJob, fullAccess: FULL_ACCESS, tts: ELEVEN_KEY ? "elevenlabs" : "browser", session: Boolean(sessionId) });
     }
     if (req.method === "GET" && url.pathname === "/api/system") {
       const mem = 1 - os.freemem() / os.totalmem();

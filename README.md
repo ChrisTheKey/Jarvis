@@ -61,7 +61,7 @@ Vollzugriff heißt: Ein falsch verstandener Satz kann echte Dateien löschen. Sc
 - **Gedächtnis:** `workspace/memory/chris.md` – Jarvis schreibt selbst hinein, du kannst es auch.
 - **Ergebnisse:** Längere Texte, Pläne und Recherchen legt Jarvis in `workspace/ergebnisse/` ab.
 - **Film-Stimme:** ElevenLabs-Schlüssel in `.env` eintragen; die Browser-Stimme ist kostenlos, klingt aber roboterhafter. In Edge klingen „Conrad“ und „Killian“ am besten.
-- **Modell (TF-059):** adaptiv je Auftrag – LIGHT `haiku` (Status, Zahlen, einfache Suche), STANDARD `sonnet` (Default, normale Coding-Aufgaben), STRONG `fable` (nur Security, Architektur, Produktionsfehler, schwer reproduzierbare Bugs, riskante Migrationen). Override als erste Zeile: `MODELL: LIGHT|STANDARD|STRONG`. Stufen per `.env` änderbar (`JARVIS_MODEL`, `JARVIS_MODEL_LIGHT`, `JARVIS_MODEL_STRONG`).
+- **Modell (TF-059):** adaptiv je Auftrag – LIGHT `haiku` (Status, Zahlen, einfache Suche), STANDARD `sonnet` (Default, normale Coding-Aufgaben), STRONG `fable` (nur Security, Architektur, Produktionsfehler, schwer reproduzierbare Bugs, riskante Migrationen). Override als erste Zeile: `MODELL: LIGHT|STANDARD|STRONG`. Stufen per `.env` änderbar (`JARVIS_MODEL`, `JARVIS_MODEL_LIGHT`, `JARVIS_MODEL_STRONG`). Modell nicht verfügbar (TF-061) → nächstes der Kette, jedes höchstens einmal: LIGHT haiku → sonnet, STANDARD sonnet → opus, STRONG fable → opus → sonnet.
 
 ## Gmail
 
