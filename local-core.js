@@ -75,8 +75,16 @@ export function releaseSupervisorLock(dir = CORE_DIR, pid = process.pid) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Startet server.js und hält ihn am Leben. Kehrt nur zurück, wenn schon ein Aufpasser läuft (Rückgabe EXIT_BUSY).
-export async function supervise({ dir = CORE_DIR, server = path.join(ROOT, "server.js"), log = createCoreLogger(dir), busyWaitMs = 60_000 } = {}) {
-  if (!acquireSupervisorLock(dir)) { log("info", "supervisor_already_running"); return EXIT_BUSY; }
+// Neustart per „schtasks /End“ + „/Run“: /End beendet nur conhost, der alte Aufpasser merkt das erst nach bis zu 5 s
+// (Parent-Watch). Deshalb wartet ein neuer Aufpasser bis lockWaitMs, ob der alte abtritt, statt sofort aufzugeben.
+const LOCK_WAIT_MS = Number(process.env.JARVIS_CORE_LOCK_WAIT_MS) || 15_000;
+export async function supervise({ dir = CORE_DIR, server = path.join(ROOT, "server.js"), log = createCoreLogger(dir), busyWaitMs = 60_000, lockWaitMs = LOCK_WAIT_MS } = {}) {
+  let waited = false;
+  for (const end = Date.now() + lockWaitMs; !acquireSupervisorLock(dir); waited = true) {
+    if (Date.now() >= end) { log("info", "supervisor_already_running"); return EXIT_BUSY; }
+    await sleep(500);
+  }
+  if (waited) { log("info", "supervisor_took_over"); await sleep(2_000); } // Port des alten Kerns freigeben lassen
   const release = () => releaseSupervisorLock(dir);
   process.on("exit", release);
   for (const sig of ["SIGINT", "SIGTERM", "SIGBREAK"]) process.on(sig, () => process.exit(0));

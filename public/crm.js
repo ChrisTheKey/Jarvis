@@ -124,10 +124,11 @@ function nextCell(l) {
   return el("div", {}, l.next_action || (l.next_action_at ? "" : "–"), l.next_action_at ? el("small", {}, fmt(l.next_action_at), " ", fu ? badge(`fu-${fu}`, FOLLOW_UP_LABEL[fu]) : "") : "");
 }
 function tableView(list) {
-  const head = ["Firma", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"];
+  const head = ["Firma", "Branche", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"];
   const rows = list.map((l) => el("tr", { class: `${l.do_not_contact ? "dnc" : ""}${S.sel === l.lead_id ? " sel" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
     el("td", { class: "co" }, el("b", {}, l.company || l.domain || l.lead_id), el("small", {}, [l.municipality, l.canton].filter(Boolean).join(" · ") || ""), badge(l.priority?.level || "LOW", `${l.priority?.level || "LOW"} ${l.priority?.score ?? 0}`), histBadge(l)),
+    el("td", { class: "cat" }, l.category || "–"),
     el("td", {}, link(l.website, l.domain || "Website")),
     el("td", { class: "err" }, errorsCell(l)),
     el("td", { class: "top" }, top2(l)),
@@ -145,6 +146,7 @@ function cardsView(list) {
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
     el("div", { class: "row" }, el("h3", {}, l.company || l.domain || l.lead_id), stageBadge(l)),
     l.domain ? el("small", { class: "dom" }, l.domain) : "", histBadge(l),
+    el("div", { class: "crm-cat" }, el("span", { class: "lbl" }, "Branche:"), " ", l.category || "–"),
     el("div", { class: "crm-errline" }, el("span", { class: "lbl" }, "Fehler:"), errNum(l), auditBadge(l)),
     el("div", { class: "crm-top2wrap" }, el("span", { class: "lbl" }, "Wichtigste 2:"), top2(l)),
     el("div", {}, "Ansprechpartner: ", person(l) ? `${person(l)}${l.role ? ` · ${l.role}` : ""}` : "–"),
@@ -207,7 +209,7 @@ function renderDrawer() {
     qa, status,
     el("h4", {}, "A · Kontakt"),
     kv([["E-Mail", mailLink(l)], ["Telefon", telLink(l)], ["Vorname", l.first_name], ["Nachname", l.last_name], ["Rolle", l.role],
-      ["Ort", [l.municipality, l.canton].filter(Boolean).join(" · ") || "–"], ["Branche", l.category]]),
+      ["Ort", [l.municipality, l.canton].filter(Boolean).join(" · ") || "–"], ["Branche", l.category || "–"]]),
     el("h4", {}, "B · Website"),
     kv([["Website", link(l.website, l.website || "–")], ["Erreichbar", l.website_reachable === true ? "ja" : l.website_reachable === false ? "nein / umgeleitet" : "nicht geprüft"],
       ["Letzte Prüfung", fmt(l.website_checked_at)], ["Erstprüfung (Cold)", `${l.findings_confirmed || 0} bestätigt${(l.findings_total || 0) - (l.findings_confirmed || 0) ? ` · ${(l.findings_total || 0) - (l.findings_confirmed || 0)} weitere` : ""}`],

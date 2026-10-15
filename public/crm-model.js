@@ -192,7 +192,7 @@ const digits = (s) => String(s || "").replace(/\D+/g, "");
 export function searchMatch(l, q) {
   const s = String(q || "").trim();
   if (!s) return true;
-  if ([l.company, l.domain, l.email, l.first_name, l.last_name, l.municipality, `${l.first_name || ""} ${l.last_name || ""}`].some((v) => has(v, s))) return true;
+  if ([l.company, l.domain, l.email, l.first_name, l.last_name, l.municipality, l.category, `${l.first_name || ""} ${l.last_name || ""}`].some((v) => has(v, s))) return true;
   const d = digits(s);
   if (d.length >= 3) { const p = digits(l.phone); if (p.includes(d) || p.replace(/^41/, "0").includes(d)) return true; }
   return false;

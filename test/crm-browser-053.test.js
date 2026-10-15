@@ -20,18 +20,29 @@ test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links,
     assert.equal(await page.locator("#crmCards .crm-card").count(), 13); // TF-058: + „Historische Funde“
     assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 1440 });
     const heads = await page.locator(".crm-table th").allTextContents();
-    for (const h of ["Firma", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"]) assert.ok(heads.includes(h), h);
+    for (const h of ["Firma", "Branche", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "E-Mail", "Draft", "Status", "Telefonstatus", "Nächster Schritt"]) assert.ok(heads.includes(h), h);
+    assert.deepEqual(heads.slice(0, 3), ["Firma", "Branche", "Website"], "TF-060: Branche direkt nach Firma");
+    assert.equal(await page.locator('#crmMain tr[data-id="firma-021.ch"] td:nth-child(2)').innerText(), "Treuhand");
+    assert.equal(await page.locator('#crmMain tr[data-id="firma-022.ch"] td:nth-child(2)').innerText(), "Restaurant");
     const tels = await page.locator('#crmMain a[href^="tel:"]').evaluateAll((as) => as.map((a) => a.getAttribute("href")));
     assert.ok(tels.length > 200 && tels.every((h) => /^tel:\+41\d{9}$/.test(h)));
     const mails = await page.locator('#crmMain a[href^="mailto:"]').evaluateAll((as) => as.map((a) => a.getAttribute("href")));
     assert.ok(mails.length > 300 && mails.every((h) => /^mailto:[^?&]+$/.test(h)), "mailto ohne Betreff/Text");
-    const sites = await page.locator("#crmMain td:nth-child(2) a").evaluateAll((as) => as.map((a) => [a.getAttribute("href"), a.target, a.rel]));
+    const sites = await page.locator("#crmMain td:nth-child(3) a").evaluateAll((as) => as.map((a) => [a.getAttribute("href"), a.target, a.rel]));
     assert.ok(sites.every(([h, t, r]) => /^https:\/\//.test(h) && t === "_blank" && /noopener/.test(r)));
     await shot(page, "crm-desktop.png");
     // Suche + Kartenfilter
     await page.fill("#crmF_q", "firma-007");
     assert.equal(await page.locator("#crmMain tbody tr").count(), 1);
+    // TF-060: freie Suche findet die Branche, Branchenfilter bleibt
+    await page.fill("#crmF_q", "Treuhand");
+    const treu = await page.locator("#crmMain tbody tr td:nth-child(2)").allTextContents();
+    assert.ok(treu.length > 100 && treu.every((t) => t === "Treuhand"));
     await page.fill("#crmF_q", "");
+    await page.selectOption("#crmF_category", "Restaurant");
+    const rest = await page.locator("#crmMain tbody tr td:nth-child(2)").allTextContents();
+    assert.ok(rest.length > 100 && rest.every((t) => t === "Restaurant"));
+    await page.selectOption("#crmF_category", "");
     await page.click(".crm-card:has-text('Kunden')");
     assert.equal(await page.locator("#crmMain tbody tr").count(), 1);
     await page.click(".crm-card:has-text('Alle Leads')");
@@ -40,6 +51,7 @@ test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links,
     await page.waitForSelector("#crmDrawer:not([hidden])");
     const h4 = await page.locator("#crmDrawer h4").allTextContents();
     for (const s of ["A · Kontakt", "B · Website", "C · Website-Zustand", "D · Outreach", "E · Telefon", "F · Notizen"]) assert.ok(h4.includes(s), s);
+    assert.match(await page.locator("#crmDrawer .kv").first().innerText(), /Branche\s+Treuhand/);
     assert.equal(await page.locator('#crmDrawer a:has-text("ANRUFEN")').getAttribute("href"), "tel:+41311234567");
     assert.ok(await page.locator('#crmDrawer a:has-text("GMAIL-ENTWURF ÖFFNEN")').count());
     await shot(page, "crm-desktop-detail.png");
@@ -81,6 +93,7 @@ test("M: Mobile-Rendering (390×844) – Karten, grosse ANRUFEN/WEBSITE/ENTWURF-
     const card = page.locator('#crmMain li[data-id="firma-021.ch"]');
     const text = await card.textContent();
     for (const s of ["Firma 21 AG", "Fehler", "Wichtigste 2", "Telefon", "Ansprechpartner", "Entwurf bereit"]) assert.ok(text.includes(s), s);
+    assert.match(await card.locator(".crm-cat").innerText(), /^Branche:\s+Treuhand$/i, "TF-060: Branche auf der Karte");
     const call = card.locator('a:has-text("ANRUFEN")');
     assert.equal(await call.getAttribute("href"), "tel:+41311234567");
     const box = await call.boundingBox();

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { makeSources, writeSources } from "./crm-fixture.js";
 import { buildCrmView, crmUniverse, cleanCrmLead } from "../lead-crm.js";
 import { createSourceReader, loadCrm } from "../crm-service.js";
-import { errorShort, errorLong, crmStats, HISTORY_LABEL } from "../public/crm-model.js";
+import { errorShort, errorLong, crmStats, HISTORY_LABEL, filterLeads, searchMatch } from "../public/crm-model.js";
 import { historyRecord, upsertHistory, emptyHistory, ingestDiscovered, migrateHistory, recheckStep, refreshRecheckQueue, readHistory, readRecheck, writeRecheck,
   knownDomainFn, HISTORY_FILE, RECHECK_FILE } from "../discovery-history.js";
 import { fullAuditEntry, SITE_FINDINGS_FILE } from "../site-findings.js";
@@ -168,6 +168,29 @@ test("E/F/G/H: low_score + no_contact mit belegtem Fehler → CRM (ohne Entwurf)
   assert.equal(crmStats(s.view().leads, NOW).history, 2);
   const again = await s.migrate();
   assert.equal(again.history_added, 0); assert.equal(again.would_add_to_crm, 0, "idempotent");
+});
+
+test("TF-060 Branche: historischer Lead mit category → angezeigt/suchbar/filterbar; ohne category → nichts erfunden", async () => {
+  const at = ago(1);
+  const withCat = historyRecord(disc("hist-cat.ch", "low_score", [LINK("hist-cat.ch", at)])).record;
+  const noCat = { ...historyRecord(disc("treuhand-ohne.ch", "low_score", [LINK("treuhand-ohne.ch", at)], { company: "Treuhand Ohne AG" })).record, category: null };
+  const s = crmScenario();
+  await s.migrate({ importData: { records: [withCat, noCat] } });
+  const by = s.by();
+  assert.equal(by["hist-cat.ch"].category, "craft", "hist.category übernommen");
+  assert.equal(cleanCrmLead(by["hist-cat.ch"]).category, "craft", "Cloud-Allowlist");
+  assert.equal(by["treuhand-ohne.ch"].category, null, "keine Branche aus dem Firmennamen geraten");
+  const leads = s.view().leads;
+  assert.ok(leads.filter((l) => l.lead_id.startsWith("firma-")).every((l) => ["Treuhand", "Restaurant"].includes(l.category)), "Registry: category_label");
+  // Freie Suche findet die Branche; Branchenfilter bleibt exakt
+  assert.ok(searchMatch(by["hist-cat.ch"], "craft") && searchMatch(by["firma-001.ch"], "treuhand"));
+  assert.ok(!searchMatch(by["firma-002.ch"], "treuhand"));
+  const q = filterLeads(leads, { q: "Treuhand" }).map((l) => l.lead_id);
+  assert.ok(q.includes("firma-001.ch") && !q.includes("firma-002.ch"));
+  assert.ok(q.includes("treuhand-ohne.ch"), "Firmenname-Treffer bleibt Suche, nicht Branche");
+  const f = filterLeads(leads, { category: "Treuhand" });
+  assert.ok(f.length && f.every((l) => l.category === "Treuhand"));
+  assert.ok(!f.some((l) => l.lead_id === "treuhand-ohne.ch"));
 });
 
 test("I: alter Backup-Fund → CRM STALE („≥2 · veraltet“), Top 2 als historisch", async () => {

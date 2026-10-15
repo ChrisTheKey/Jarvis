@@ -29,9 +29,9 @@ function get(port, p, host = "127.0.0.1") {
     r.on("error", (e) => resolve({ error: e.code || e.message }));
   });
 }
-function startCore(port, { args = [], secrets = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-core-")) } = {}) {
+function startCore(port, { args = [], secrets = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-core-")), env = {} } = {}) {
   const p = spawn(process.execPath, [SERVER, ...args], { cwd: ROOT, windowsHide: true,
-    env: { ...process.env, PORT: String(port), JARVIS_SECRETS_DIR: secrets, JARVIS_SYNC_TOKEN: "", JARVIS_SYNC_URL: "http://127.0.0.1:9/api/state", JARVIS_CORE_SUPERVISED: "" } });
+    env: { ...process.env, PORT: String(port), JARVIS_SECRETS_DIR: secrets, JARVIS_SYNC_TOKEN: "", JARVIS_SYNC_URL: "http://127.0.0.1:9/api/state", JARVIS_CORE_SUPERVISED: "", JARVIS_CORE_LOCK_WAIT_MS: "1000", ...env } });
   procs.add(p);
   p.out = ""; p.stdout.on("data", (c) => (p.out += c)); p.stderr.on("data", (c) => (p.out += c));
   p.exited = new Promise((r) => p.on("exit", (code) => r(code)));
@@ -110,7 +110,7 @@ test("Aufpasser: startet server.js, verhindert zweiten Aufpasser, startet nach A
   assert.equal(h1.supervised, true);
   assert.notEqual(h1.pid, sup.pid, "Server läuft als Kindprozess des Aufpassers");
   const sup2 = startCore(port, { args: ["--supervise"], secrets: sup.secrets });
-  assert.equal(await sup2.exited, EXIT_BUSY, "zweiter Aufpasser beendet sich sofort");
+  assert.equal(await sup2.exited, EXIT_BUSY, "zweiter Aufpasser beendet sich nach kurzer Wartezeit");
   process.kill(h1.pid); // Absturz simulieren
   await sleep(500);
   const h2 = await waitHealthy(port, 20_000);
@@ -121,6 +121,26 @@ test("Aufpasser: startet server.js, verhindert zweiten Aufpasser, startet nach A
   const log = fs.readFileSync(path.join(sup.secrets, "local_core", "core.log"), "utf8");
   assert.match(log, /supervisor_started/);
   assert.match(log, /core_exited/);
+});
+
+test("TF-060 Task-Neustart (/End + /Run): neuer Aufpasser wartet, bis der alte abtritt, und übernimmt", { timeout: 60_000 }, async () => {
+  const port = await freePort();
+  const secrets = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-core-"));
+  const dir = path.join(secrets, "local_core");
+  // Alter Aufpasser lebt noch ein paar Sekunden (Parent-Watch-Verzögerung) und hält ein frisches Lock
+  const old = spawn(process.execPath, ["-e", "setTimeout(() => {}, 3000)"], { windowsHide: true });
+  procs.add(old);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "core.lock"), JSON.stringify({ pid: old.pid, beat: Date.now() }));
+  const sup = startCore(port, { args: ["--supervise"], secrets, env: { JARVIS_CORE_LOCK_WAIT_MS: "15000" } });
+  old.on("exit", () => fs.rmSync(path.join(dir, "core.lock"), { force: true })); // alter Aufpasser räumt beim Ende auf
+  const h = await waitHealthy(port, 30_000);
+  assert.ok(h, sup.out);
+  assert.equal(h.supervised, true);
+  const log = fs.readFileSync(path.join(dir, "core.log"), "utf8");
+  assert.match(log, /supervisor_took_over/);
+  assert.doesNotMatch(log, /supervisor_already_running/);
+  sup.kill();
 });
 
 test("Supervisor-Lock und Log: begrenzt, geschwärzt", () => {

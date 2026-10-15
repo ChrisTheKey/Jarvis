@@ -2,7 +2,29 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-15
+Letzte Aktualisierung: 2026-10-15 (TF-060)
+
+## TF-060 – LOCAL CORE START FIX + CRM BRANCHE SICHTBAR (2026-10-15, Local Core neu gestartet, Netlify via Push, CRM/Mail/Repair/Contacts NICHT neu gestartet)
+- **Ursache Local-Core-Ausfall**: Race beim Neustart per `schtasks /End` + `/Run`. /End beendet nur conhost; der alte Aufpasser merkt das
+  erst über die Parent-Watch (bis 5 s). Der sofort gestartete neue Aufpasser fand das noch gültige `core.lock`, loggte
+  `supervisor_already_running` und beendete sich (Task danach Ready, LastResult 0); 2,5 s später endete der alte (`supervisor_parent_gone`)
+  → niemand auf 127.0.0.1:3000. Task-Konfiguration korrekt (conhost --headless, absolute Pfade node.exe/server.js, --supervise,
+  WorkingDirectory, IgnoreNew, Limited) → **nicht geändert**. Parent-Watch selbst ist korrekt (Task-Ende ⇒ Core-Ende) und bleibt.
+- **Fix** (`local-core.js`): neuer Aufpasser wartet bis 15 s (`JARVIS_CORE_LOCK_WAIT_MS`), ob der Lock-Besitzer abtritt, loggt dann
+  `supervisor_took_over`, wartet 2 s (Port frei) und startet den Kern; läuft der alte weiter → wie bisher EXIT_BUSY (kein Doppel-Core).
+  Stale-Lock-Logik (PID tot / Herzschlag > 2 min) unverändert. `/api/status` zusätzlich `adaptive: true`, `defaultTier`.
+- **Live-Beweis**: /End + sofort /Run → `supervisor_parent_gone` → `supervisor_took_over` → `core_started`; Task Running, Port 3000 LISTEN
+  (1 Aufpasser + 1 Kern), /api/health 200 nach 15/30/60 s, /api/status: LIGHT haiku · STANDARD sonnet · STRONG fable, Default STANDARD
+  (altes statisches claude-opus-5-5 nicht mehr aktiv).
+- **CRM Branche** (nur Frontend, Feld bleibt `category` aus reg.category_label/reg.category/hist.category): Desktop-Spalte „Branche“ direkt
+  nach Firma, Mobile-Karte „Branche: …“, Detail „Branche“ (A · Kontakt), fehlend → „–“ (nie aus Firmennamen geraten). Freie Suche findet
+  die Branche, Branchenfilter unverändert. Live-Zahlen (CRM-Worker, nur gelesen): CRM_TOTAL 1360, mit Branche 1296, ohne 64,
+  41 verschiedene; historische Leads 311 mit / 64 ohne Branche. Top: Geschäft 346, Restaurant 265, shop 109, amenity=restaurant 104,
+  Handwerk 74, Hotel 66, Firma / Büro 48, Café 31, Autogarage 27, Coiffeur 23 (Rohwerte aus historischen Funden werden wie vorhanden angezeigt).
+- TF-058-Recheck: Checkpoint erhalten (572 erledigt / 10774 offen), nicht zurückgesetzt.
+- Tests: `node --test` 784 / 772 pass / 0 fail / 12 skip, neu: local-core TF-060-Takeover, history-058 Branche (M/N, Suche/Filter),
+  crm-browser-053 Desktop-Spalte/Suche/Filter/Detail/Mobile. Secret-Scan 0 Treffer.
+- Keine Mail gesendet, keine Entwürfe verändert, keine Kundenwebsite verändert.
 
 ## TF-059 – SMART MODEL ROUTING + REPAIR ZIP + KONKRETE CRM-FEHLER (2026-10-15, Code ebc4788, Repair + CRM + Netlify LIVE, Mail/Contacts NICHT neu gestartet)
 - **Modellwahl** (`model-router.js`, server.js `/api/ask`): vorher statisch `JARVIS_MODEL` für jeden Auftrag (lokale .env: claude-opus-5-5).

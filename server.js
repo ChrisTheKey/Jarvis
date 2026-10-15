@@ -262,7 +262,7 @@ const server = http.createServer(async (req, res) => {
       return fs.createReadStream(path.join(ROOT, "public", url.pathname.slice(1))).pipe(res);
     }
     if (req.method === "GET" && url.pathname === "/api/status") {
-      return json(res, 200, { claude: claudeVersion, model: MODEL, models: MODELS, lastJob, fullAccess: FULL_ACCESS, tts: ELEVEN_KEY ? "elevenlabs" : "browser", session: Boolean(sessionId) });
+      return json(res, 200, { claude: claudeVersion, model: MODEL, models: MODELS, adaptive: true, defaultTier: DEFAULT_TIER, lastJob, fullAccess: FULL_ACCESS, tts: ELEVEN_KEY ? "elevenlabs" : "browser", session: Boolean(sessionId) });
     }
     if (req.method === "GET" && url.pathname === "/api/system") {
       const mem = 1 - os.freemem() / os.totalmem();
