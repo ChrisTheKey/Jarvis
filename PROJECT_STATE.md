@@ -2,7 +2,45 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-15 (TF-060)
+Letzte Aktualisierung: 2026-10-15 (TF-061)
+
+## TF-061 – LESBARE CRM-BRANCHEN + VERIFIZIERTE MODELLSTUFEN (2026-10-15, Local Core neu gestartet, Netlify via Push, CRM/Mail/Repair/Contacts NICHT neu gestartet)
+- **Gemeinsame Branchen-Taxonomie** `category-labels.js` (rein: keine Imports, kein Netz, keine Seiteneffekte): `CATEGORY_LABELS` (die
+  bestehenden 24 Einträge, unverändert), `categoryKey`, `categoryLabel` (Discovery-Verhalten identisch), neu `displayCategory` für das CRM.
+  `swiss-areas.js` importiert/re-exportiert daraus (lead-finder/lead-registry unverändert). Mail-/Repair-/CRM-Dockerfile kopieren die Datei
+  mit (wirksam erst beim nächsten, separat freizugebenden Deploy des jeweiligen Dienstes).
+- **Rohdaten unverändert**: keine Migration, Registry/Historie/Backups behalten z. B. `amenity=restaurant`. Nur die CRM-Sicht übersetzt:
+  Rohwert wie bisher aus reg.category_label → reg.category → hist.category, dann `displayCategory`: bekannter OSM-Schlüssel → deutsche
+  Bezeichnung (shop → Geschäft, amenity=restaurant → Restaurant, office=accountant → Treuhand, shop=car_repair → Autogarage; Oberbegriff
+  shop=… → Geschäft, craft=… → Handwerk wie bisher in der Discovery); bereits lesbarer Wert bleibt (nur Schreibweise bekannter Bezeichnungen
+  vereinheitlicht); unbekannter Rohwert bleibt wie vorhanden (nie geraten, keine KI). Angewendet in `buildCrmLead` (VPS) UND `cleanCrmLead`
+  (Cloud-Allowlist, Netlify-Funktion) → die Cloud normalisiert jede Ansicht, die der (noch alte) CRM-Dienst schickt; der CRM-Dienst
+  wurde deshalb NICHT neu gestartet (TF-058-Recheck läuft im CRM-Container weiter).
+- Desktop-Spalte, Mobile-Karte, Detail, Branchenfilter und freie Suche arbeiten auf dem normalisierten Wert → ein Filterwert „Restaurant“
+  statt „Restaurant“ + „amenity=restaurant“; Suche „Treuhand“ findet office=accountant. Lead-Dedupe unverändert.
+- Live-Zahlen (CRM-Dienst, nur gelesen, Taxonomie eingebettet): CRM_TOTAL 1374, mit Branche 1309, ohne 65; verschiedene Rohwerte 41 →
+  lesbare 23, danach 0 OSM-Rohwerte sichtbar. Top 10 nach Normalisierung: Geschäft 458 (vorher Geschäft 348 + shop 110), Restaurant 376
+  (Restaurant 270 + amenity=restaurant 106), Handwerk 91, Hotel 81, Firma / Büro 57, Café 38, Coiffeur 34, Autogarage 31, Arztpraxis 23, IT 20.
+- **Modellstufen**: LIGHT haiku · STANDARD sonnet (Default) · STRONG fable. Fable ist die STRONG-Stufe für die schwierigsten und
+  langlaufenden Claude-Code-Aufgaben; der lokale Alias wurde zusätzlich erfolgreich getestet (Claude Code 2.1.296). Router-Regeln unverändert
+  (einfach → LIGHT, normal → STANDARD, Security/Architektur/Produktionsincident/riskante Migration/schwer reproduzierbar → STRONG,
+  unklar → STANDARD, Override `MODELL: …`, LIGHT für destruktiv/produktiv weiter verweigert).
+- **Fallback-Ketten** (`FALLBACK_MODELS`, `nextModelJob`): LIGHT haiku → sonnet · STANDARD sonnet → opus (nur wenn sonnet nicht verfügbar)
+  · STRONG fable → opus → sonnet (vorher fiel fable direkt auf sonnet). Jedes Modell höchstens einmal, kein Retry-Loop; weiter nur bei
+  eindeutig unrecognized_model / model not found / model not available / invalid model – Tool-/Code-/Netz-/Rate-Limit-Fehler wechseln nie
+  das Modell. Die Stufe bleibt (STRONG auf opus bleibt STRONG, reason `model_unavailable_fallback`). `/api/status` zusätzlich `fallbacks`.
+- **Verifikation Fable**: `claude -p --model fable` → success; unbekannter Alias → `unrecognized_model` (löst den nächsten Kettenschritt aus).
+- **Deploy** (Code 96c9592): Netlify via Push (Seite 200, /api/crm-Probe 200). Local Core per `schtasks /End` + `/Run` neu gestartet
+  (TF-060-Takeover): Task Running, ein Listener 127.0.0.1:3000, /api/health + /api/status 200, nach 30 s erneut 200; Status zeigt
+  LIGHT haiku · STANDARD sonnet · STRONG fable, Default STANDARD, adaptive true, fallbacks. Mail/Repair/Contacts/CRM NICHT neu gestartet
+  (Startzeiten unverändert, 0 Restarts). `buildCrmLead`-Normalisierung im CRM-Dienst wirkt erst beim nächsten CRM-Deploy (bis dahin
+  normalisiert die Cloud-Allowlist).
+- TF-058-Recheck: Checkpoint erhalten – vor Deploy 644 erledigt / 10702 offen, danach 673 / 10673 (läuft weiter, nicht zurückgesetzt/beschleunigt).
+- Tests (sequenziell, `--test-concurrency=1`): Unit 796 / 781 pass / 1 fail / 2 cancelled / 12 skip – die Fehlschläge sind die
+  CRM-Browsertests (crm-browser-053 N/M, crm-detail-059 K: `page.goto`-Timeout im 28-min-Gesamtlauf); separat sequenziell
+  crm-browser-053 + crm-detail-059 14/14 grün. Neu: category-061 (A–F, G/H/L/M, Modul rein, Discovery unverändert), model-router-061
+  (A–K, Ketten, server.js), crm-browser-053 Desktop/Mobile/Detail mit Rohwert-Leads. Secret-Scan 0 Treffer, Lab-Cleanup 0.
+- Keine Mail gesendet, keine Entwürfe verändert, keine Kundenwebsite verändert.
 
 ## TF-060 – LOCAL CORE START FIX + CRM BRANCHE SICHTBAR (2026-10-15, Local Core neu gestartet, Netlify via Push, CRM/Mail/Repair/Contacts NICHT neu gestartet)
 - **Ursache Local-Core-Ausfall**: Race beim Neustart per `schtasks /End` + `/Run`. /End beendet nur conhost; der alte Aufpasser merkt das
