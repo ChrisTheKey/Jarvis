@@ -1,28 +1,32 @@
-// Jarvis Payment Ledger (TF-041) – VERKAUF != ZAHLUNG. Ein sale / direct-sale / create-confirmed / ORDER_CONFIRMED ist nur
-// die Auftragsbestätigung und bedeutet NIE automatisch «Geld eingegangen». Dieses Modul führt das persistente Zahlungsbuch
-// (.secrets/mail_worker/payments.json, atomar über createStore, liegt im verschlüsselten Backup) und berechnet je Auftrag
-// die kumulativ tatsächlich eingegangene Zahlung. Ein bestätigter Auftrag kann mit paid_chf = 0 existieren und muss warten.
+// Jarvis Payment Ledger (TF-041, währungsfähig seit TF-064) – VERKAUF != ZAHLUNG. Ein sale / direct-sale / create-confirmed /
+// ORDER_CONFIRMED ist nur die Auftragsbestätigung und bedeutet NIE automatisch «Geld eingegangen». Dieses Modul führt das persistente
+// Zahlungsbuch (.secrets/mail_worker/payments.json, atomar über createStore, liegt im verschlüsselten Backup) und berechnet je Auftrag
+// die kumulativ tatsächlich eingegangene Zahlung. Ein bestätigter Auftrag kann mit 0 bezahlt existieren und muss warten.
 //
-// Zahlungsschwelle (erste Hälfte des Festpreises aus OFFERS – keine eigene Preisliste):
-//   REPAIR_CHECK_150 → CHF 75    erst ab der Schwelle: bezahlter Check, Anleitung, Kundenbericht, automatische Service-Mail
-//   REPAIR_FIX_500   → CHF 240   erst ab der Schwelle: Kunde um sicheren Zugang bitten, danach der CHF-480-Reparaturworkflow
+// Zahlungsschwelle (erste Hälfte des Festpreises aus pricing.js – keine eigene Preisliste):
+//   REPAIR_CHECK_150 → CHF 75         VN_REPAIR_CHECK → 495000 VND     erst ab der Schwelle: bezahlter Check, Anleitung, Bericht, Service-Mail
+//   REPAIR_FIX_500   → CHF 240        VN_REPAIR_FIX   → 1950000 VND    erst ab der Schwelle: sicherer Zugang, danach der Reparaturworkflow
 // Die Gates prüfen die Workflows selbst (check-150-workflow.js / repair-workflow.js) über paymentGateForOrder.
 //
 // Harte Regeln (fail closed):
-//   - Jede Zahlung ist primär an eine ORDER_ID gebunden (CA150-… oder RF480-…), nie nur an eine Domain – mehrere Aufträge
+//   - Jede Zahlung ist primär an eine ORDER_ID gebunden (CA150-/RF480-/VNCHECK-/VNFIX-…), nie nur an eine Domain – mehrere Aufträge
 //     derselben Firma bleiben sicher getrennt. Unbekannte order_id → Fehler, nichts wird erraten oder angelegt.
+//   - TF-064: Zahlung ist an ORDER_ID + AUFTRAGSWÄHRUNG gebunden (CH → CHF, VN → VND). Eine VND-Zahlung wird nie auf einen
+//     CHF-Auftrag gebucht und umgekehrt; keine Umrechnung, kein Wechselkurs. VND hat keine Unterteilung (ganze Beträge).
 //   - Zahlungseinträge werden NIE gelöscht: Korrekturen nur als Status-Markierung (VOIDED/REFUNDED) mit Pflicht-Grund;
 //     alle Originaldaten bleiben erhalten. Nur Status RECEIVED zählt zur kumulativen Zahlung.
-//   - Nur CHF (keine stillen Fremdwährungs-Umrechnungen); Betrag > 0, auf Rappen gerundet, mit Obergrenze.
-//   - Duplikatschutz: dieselbe Zahlungsreferenz (normalisiert: Gross/Klein und Leerzeichen egal) zählt nie doppelt – eine
-//     zweite Buchung mit einer Referenz, die schon an einer nicht stornierten Zahlung hängt, wird abgelehnt (Korrektur: void).
+//   - Duplikatschutz: dieselbe Zahlungsreferenz (normalisiert: Gross/Klein und Leerzeichen egal) zählt nie doppelt.
 //   - Keine Secrets: nur Betrag/Quelle/Referenztext – nie Kontodaten, IBAN-Listen oder Tokens in diesem Modul.
+//   - Nur Chris (CLI auf dem VPS) verbucht – es gibt keine Cloud-/Verkäufer-Schnittstelle zum Erfassen, Ändern oder Erstatten.
 //
-// Abgeleiteter Zahlungsstatus je Auftrag (paymentSummary, Preis/Deposit aus OFFERS, nie gespeichert):
+// Gespeichertes Format: CHF-Einträge wie bisher mit amount_chf (+ amount/currency), VND-Einträge mit amount + currency "VND".
+// Leser verstehen beide Formate (Legacy-Eintrag ohne currency/amount = CHF/amount_chf).
+//
+// Abgeleiteter Zahlungsstatus je Auftrag (paymentSummary, Preis/Deposit aus pricing.js, nie gespeichert):
 //   UNPAID · PARTIAL (unter Deposit) · DEPOSIT_MET (≥ Deposit) · PAID_FULL (≥ Festpreis) · REFUNDED (alles zurückerstattet)
 //   · PAYMENT_REVIEW_REQUIRED (Zahlung fiel unter die Schwelle, nachdem die Website schon verändert wurde – Chris entscheidet)
 //
-//   node payments.js record <order_id> --amount 75 --reference "<ref>" [--currency CHF] [--source manual_bank_confirmation] [--date JJJJ-MM-TT]
+//   node payments.js record <order_id> --amount 75 --reference "<ref>" [--currency CHF|VND] [--source manual_bank_confirmation] [--date JJJJ-MM-TT]
 //   node payments.js list [order_id]          alle bzw. die Zahlungen eines Auftrags
 //   node payments.js show <order_id>          kumulative Zahlung + Zahlungsstatus + Gate des Auftrags (Alias: status)
 //   node payments.js void <payment_id> --reason "<grund>"      Fehlbuchung markieren (nie löschen)
@@ -31,42 +35,55 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore } from "./mail-worker.js";
-import { OFFERS, isOfferClass } from "./sales.js";
+import { ORDER_ID_RE, CURRENCIES, offerInfo, offerOfOrderId, orderMoney, toMinor, fromMinor, formatMoney } from "./pricing.js";
 
 export const PAYMENTS_FILE = "payments.json";
 export const PAYMENT_STATUS = Object.freeze(["RECEIVED", "VOIDED", "REFUNDED"]);
 export const ORDER_PAYMENT_STATES = Object.freeze(["UNPAID", "PARTIAL", "DEPOSIT_MET", "PAID_FULL", "REFUNDED", "PAYMENT_REVIEW_REQUIRED"]);
-// Erste Hälfte des Festpreises – immer aus OFFERS abgeleitet, nie eine dritte Preisquelle.
-export const paymentThresholdChf = (offer_class) => (isOfferClass(offer_class) ? OFFERS[offer_class].price / 2 : null);
+// Erste Hälfte des Festpreises – immer aus der zentralen Preisquelle, nie eine dritte Preisquelle.
+// paymentThreshold: in der Währung des Angebots; paymentThresholdChf bleibt für Schweizer Angebote (CHF 75 / 240).
+export const paymentThreshold = (offer_class) => offerInfo(offer_class)?.deposit ?? null;
+export const paymentThresholdChf = (offer_class) => (offerInfo(offer_class)?.currency === "CHF" ? offerInfo(offer_class).deposit : null);
 
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
-const ORDER_ID_RE = /^(CA150|RF480)-\d{8}-[0-9a-f]{6}$/;
-const MAX_AMOUNT_CHF = 10_000; // weit über beiden Festpreisen – Tippfehler-Schutz, keine Preisstufe
 const SOURCE_RE = /^[a-z0-9_-]{2,40}$/;
 const normRef = (r) => String(r || "").replace(/\s+/g, " ").trim().toLowerCase();
-const round2 = (n) => Math.round(n * 100) / 100;
+const roundTo = (n, currency) => fromMinor(toMinor(n, currency), currency);
+// Gespeicherte Zahlung lesen – beide Formate (Legacy CHF: amount_chf ohne currency).
+export const paymentCurrency = (p) => (p?.currency === "VND" ? "VND" : "CHF");
+export const paymentAmount = (p) => (Number.isFinite(p?.amount) ? p.amount : Number.isFinite(p?.amount_chf) ? p.amount_chf : 0);
+// Betrag kurz für Texte: CHF wie bisher «CHF 75», VND «495.000 ₫».
+export const amountText = (v, currency = "CHF") => (currency === "VND" ? formatMoney(v, "VND") : `CHF ${v}`);
 
 // Auftrag zu einer order_id – Dateinamen bewusst lokal (wie collectDomainOrders in sales.js), damit kein Import-Zyklus
 // entsteht (check-150-workflow.js und repair-workflow.js importieren beide aus payments.js). Exakter Treffer oder null.
 export function findPayableOrder(store, orderId) {
   const id = String(orderId || "").trim();
   if (!ORDER_ID_RE.test(id)) return null;
-  const file = id.startsWith("CA150-") ? "check150_orders.json" : "repair_orders.json";
+  const file = offerOfOrderId(id).orders_file;
   const o = store.read(file, { orders: {} }).orders?.[id];
   if (!o) return null;
-  return { order_id: o.order_id, domain: o.domain || null, offer_class: o.offer_class, state: o.state, file };
+  const money = orderMoney(o);
+  return { order_id: o.order_id, domain: o.domain || null, offer_class: o.offer_class, state: o.state, file,
+    market: money?.market || null, currency: money?.currency || null };
 }
 
 function readLedger(store) { return store.read(PAYMENTS_FILE, { schema: 1, payments: {} }); }
 function writeLedger(store, data) { store.write(PAYMENTS_FILE, data); }
 
-// Zahlung als eingegangen verbuchen – nur gegen einen existierenden Auftrag (fail closed), nie löschen, nie überschreiben.
-export function recordPayment(store, { order_id, amount_chf, currency = "CHF", source = "bank_transfer", reference = null, received_at = null, now = new Date() } = {}) {
+// Zahlung als eingegangen verbuchen – nur gegen einen existierenden Auftrag (fail closed), nur in dessen Währung, nie löschen, nie überschreiben.
+// amount (neu) oder amount_chf (Legacy-Aufrufe) – beide meinen den Betrag in der angegebenen Währung.
+export function recordPayment(store, { order_id, amount = undefined, amount_chf = undefined, currency = undefined, source = "bank_transfer", reference = null, received_at = null, now = new Date() } = {}) {
   const order = findPayableOrder(store, order_id);
-  if (!order) throw new Error(`Kein Auftrag mit order_id "${order_id}" vorhanden (CA150-…/RF480-…) – Zahlungen werden nur gegen echte Aufträge verbucht.`);
-  const amount = round2(Number(amount_chf));
-  if (!Number.isFinite(amount) || amount <= 0 || amount > MAX_AMOUNT_CHF) throw new Error(`Ungültiger Betrag "${amount_chf}" – erlaubt sind 0.01 bis ${MAX_AMOUNT_CHF} CHF.`);
-  if (String(currency).toUpperCase() !== "CHF") throw new Error("Nur CHF wird verbucht – keine stillen Fremdwährungs-Umrechnungen.");
+  if (!order) throw new Error(`Kein Auftrag mit order_id "${order_id}" vorhanden (CA150-…/RF480-…/VNCHECK-…/VNFIX-…) – Zahlungen werden nur gegen echte Aufträge verbucht.`);
+  if (!order.currency) throw new Error(`Auftrag ${order.order_id} hat keinen gültigen Markt/keine gültige Währung – nichts verbucht.`);
+  const cur = String(currency || order.currency).toUpperCase();
+  if (cur !== order.currency) throw new Error(`Nur ${order.currency} wird für diesen Auftrag verbucht (Auftragswährung) – keine stillen Fremdwährungs-Umrechnungen.`);
+  const raw = amount !== undefined ? amount : amount_chf;
+  const max = CURRENCIES[cur].max, step = fromMinor(1, cur);
+  const value = roundTo(Number(raw), cur);
+  if (!Number.isFinite(Number(raw)) || !Number.isFinite(value) || value <= 0 || value > max
+    || (cur === "VND" && !Number.isInteger(Number(raw)))) throw new Error(`Ungültiger Betrag "${raw}" – erlaubt sind ${step} bis ${max} ${cur}${cur === "VND" ? " (ganze Dong)" : ""}.`);
   const src = String(source || "").trim().toLowerCase();
   if (!SOURCE_RE.test(src)) throw new Error("Ungültige Quelle (--source): Kleinbuchstaben/Ziffern/_- wie bank_transfer, manual_bank_confirmation, twint, cash.");
   const at = received_at || now.toISOString();
@@ -79,11 +96,11 @@ export function recordPayment(store, { order_id, amount_chf, currency = "CHF", s
     if (dup) throw new Error(`Doppelte Zahlungsreferenz – bereits verbucht als ${dup.payment_id} (${dup.order_id}). Nichts verbucht.`);
   }
   let payment_id;
-  do { payment_id = `PAY-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(order.order_id + amount + at + crypto.randomUUID()).slice(0, 8)}`; }
+  do { payment_id = `PAY-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(order.order_id + value + at + crypto.randomUUID()).slice(0, 8)}`; }
   while (data.payments[payment_id]);
   const entry = {
     payment_id, order_id: order.order_id, domain: order.domain, offer_class: order.offer_class,
-    amount_chf: amount, currency: "CHF", received_at: new Date(at).toISOString(),
+    ...(cur === "CHF" ? { amount_chf: value } : {}), amount: value, currency: cur, market: order.market, received_at: new Date(at).toISOString(),
     source: src, reference: reference ? String(reference).replace(/\s+/g, " ").trim().slice(0, 200) : null,
     status: "RECEIVED", created_at: now.toISOString(),
   };
@@ -113,45 +130,59 @@ export function paymentsForOrder(store, orderId) {
     .filter((p) => p && p.order_id === orderId)
     .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 }
-// Kumulativ tatsächlich eingegangen (nur RECEIVED, nur CHF) – primär an die ORDER_ID gebunden, nie an die Domain.
-export function paidChf(store, orderId) {
-  const sum = paymentsForOrder(store, orderId).filter((p) => p.status === "RECEIVED" && p.currency === "CHF")
-    .reduce((a, p) => a + (Number.isFinite(p.amount_chf) ? p.amount_chf : 0), 0);
-  return round2(sum);
+// Kumulativ tatsächlich eingegangen in einer Währung (nur RECEIVED) – primär an die ORDER_ID gebunden, nie an die Domain.
+export function paidAmount(store, orderId, currency = "CHF") {
+  const minor = paymentsForOrder(store, orderId).filter((p) => p.status === "RECEIVED" && paymentCurrency(p) === currency)
+    .reduce((a, p) => a + toMinor(paymentAmount(p), currency), 0);
+  return fromMinor(minor, currency);
 }
+export const paidChf = (store, orderId) => paidAmount(store, orderId, "CHF");
 
-// Zahlungs-Gate eines Auftrags: erfüllt erst, wenn kumulativ mindestens die erste Hälfte des Festpreises eingegangen ist.
-// Unbekanntes Angebot → nie erfüllt (fail closed).
+// Zahlungs-Gate eines Auftrags: erfüllt erst, wenn kumulativ mindestens die erste Hälfte des Festpreises in der
+// Auftragswährung eingegangen ist. Unbekanntes Angebot/fehlende VN-Währung → nie erfüllt (fail closed).
 export function paymentGateForOrder(store, order = {}) {
-  const required = paymentThresholdChf(order.offer_class);
-  const paid = order.order_id ? paidChf(store, order.order_id) : 0;
-  return { order_id: order.order_id || null, offer_class: order.offer_class || null,
-    required_chf: required, paid_chf: paid, satisfied: required != null && paid >= required };
+  const m = orderMoney(order);
+  const currency = m?.currency || null;
+  const required = m ? m.deposit : null;
+  const paid = order.order_id && currency ? paidAmount(store, order.order_id, currency) : 0;
+  // CH: exakt das bisherige Format (required_chf/paid_chf). VN: currency + required/paid in VND (nie *_chf).
+  if (currency === "VND") return { order_id: order.order_id || null, offer_class: order.offer_class || null, currency, required, paid, satisfied: required != null && paid >= required };
+  return { order_id: order.order_id || null, offer_class: order.offer_class || null, required_chf: required, paid_chf: paid, satisfied: required != null && paid >= required };
 }
+// Gate-Stand lesen (CH: paid_chf/required_chf, VN: paid/required + currency).
+export const gatePaid = (g) => (Number.isFinite(g?.paid) ? g.paid : Number.isFinite(g?.paid_chf) ? g.paid_chf : null);
+export const gateRequired = (g) => (Number.isFinite(g?.required) ? g.required : Number.isFinite(g?.required_chf) ? g.required_chf : null);
+export const gateText = (g) => `${amountText(gatePaid(g), g.currency || "CHF")} von mind. ${amountText(gateRequired(g), g.currency || "CHF")}`;
 
 // Zahlungsstatus eines Auftrags (Dashboard/CLI): nur Zahlen + festes Zustandswort – nie Referenzen oder payment_ids.
+// Felder *_chf nur für CHF-Aufträge (Legacy-Dashboard); market/currency/*_amount für alle.
 export function paymentSummary(store, order = {}) {
-  const price = isOfferClass(order.offer_class) ? OFFERS[order.offer_class].price : null;
-  const deposit = paymentThresholdChf(order.offer_class);
+  const m = orderMoney(order);
+  const currency = m?.currency || null;
+  const price = m ? m.price : null, deposit = m ? m.deposit : null;
   const list = order.order_id ? paymentsForOrder(store, order.order_id) : [];
-  const paid = order.order_id ? paidChf(store, order.order_id) : 0;
+  const paid = order.order_id && currency ? paidAmount(store, order.order_id, currency) : 0;
   let status = "UNPAID";
   if (order.state === "PAYMENT_REVIEW_REQUIRED") status = "PAYMENT_REVIEW_REQUIRED";
   else if (price != null && paid >= price) status = "PAID_FULL";
   else if (deposit != null && paid >= deposit) status = "DEPOSIT_MET";
   else if (paid > 0) status = "PARTIAL";
   else if (list.some((p) => p.status === "REFUNDED")) status = "REFUNDED";
-  return { price_chf: price, deposit_chf: deposit, paid_chf: paid,
-    rest_to_deposit_chf: deposit == null ? null : round2(Math.max(0, deposit - paid)), payment_status: status };
+  const rest = deposit == null ? null : fromMinor(Math.max(0, toMinor(deposit, currency) - toMinor(paid, currency)), currency);
+  const restTotal = price == null ? null : fromMinor(Math.max(0, toMinor(price, currency) - toMinor(paid, currency)), currency);
+  return { market: m?.market || null, currency, price_amount: price, deposit_amount: deposit, paid_amount: paid, rest_to_deposit_amount: rest, rest_amount: restTotal,
+    ...(currency === "CHF" || !currency ? { price_chf: price, deposit_chf: deposit, paid_chf: paid, rest_to_deposit_chf: rest } : {}), payment_status: status };
 }
 
-// Zähler/Summen fürs Dashboard – keine Referenzen, keine Einzelbeträge fremder Sicht nötig; sicher für Cloud/HUD.
+// Zähler/Summen fürs Dashboard – keine Referenzen; Summen je Währung getrennt (nie CHF und VND addieren).
 export function paymentsStatus(dir = WORKER_DIR) {
   const list = Object.values(createStore(dir).read(PAYMENTS_FILE, { payments: {} }).payments || {});
-  const by = (s) => list.filter((p) => p.status === s);
-  const sum = (xs) => round2(xs.reduce((a, p) => a + (Number.isFinite(p.amount_chf) ? p.amount_chf : 0), 0));
-  return { total: list.length, received: by("RECEIVED").length, voided: by("VOIDED").length, refunded: by("REFUNDED").length,
-    received_chf: sum(by("RECEIVED")), refunded_chf: sum(by("REFUNDED")) };
+  const by = (s, cur) => list.filter((p) => p.status === s && paymentCurrency(p) === cur);
+  const sum = (xs, cur) => fromMinor(xs.reduce((a, p) => a + toMinor(paymentAmount(p), cur), 0), cur);
+  const all = (s) => list.filter((p) => p.status === s);
+  return { total: list.length, received: all("RECEIVED").length, voided: all("VOIDED").length, refunded: all("REFUNDED").length,
+    received_chf: sum(by("RECEIVED", "CHF"), "CHF"), refunded_chf: sum(by("REFUNDED", "CHF"), "CHF"),
+    received_vnd: sum(by("RECEIVED", "VND"), "VND"), refunded_vnd: sum(by("REFUNDED", "VND"), "VND") };
 }
 
 // ---------- Kommandozeile ----------
@@ -160,14 +191,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const opt = (n) => { const i = process.argv.indexOf("--" + n); return i > 0 ? process.argv[i + 1] : undefined; };
   const store = createStore(WORKER_DIR);
   const gateLine = (o) => {
-    const g = paymentGateForOrder(store, o), s = paymentSummary(store, o);
-    return `${g.order_id}: CHF ${g.paid_chf} von mind. CHF ${g.required_chf} eingegangen (Festpreis CHF ${s.price_chf}, Status ${s.payment_status}) → ${g.satisfied ? "SCHWELLE ERFÜLLT" : `WARTET AUF ZAHLUNG (noch CHF ${s.rest_to_deposit_chf})`}`;
+    const g = paymentGateForOrder(store, o), s = paymentSummary(store, o), c = g.currency || "CHF";
+    return `${g.order_id}: ${amountText(gatePaid(g), c)} von mind. ${amountText(gateRequired(g), c)} eingegangen (Festpreis ${amountText(s.price_amount, c)}, Status ${s.payment_status}) → ${g.satisfied ? "SCHWELLE ERFÜLLT" : `WARTET AUF ZAHLUNG (noch ${amountText(s.rest_to_deposit_amount, c)})`}`;
   };
   try {
     if (cmd === "record") {
       if (!opt("reference")) throw new Error('Referenz ist Pflicht: --reference "<Bank-/Zahlungsreferenz>" (Duplikatschutz).');
-      const p = recordPayment(store, { order_id: key, amount_chf: opt("amount"), currency: opt("currency") || "CHF", source: opt("source") || "bank_transfer", reference: opt("reference"), received_at: opt("date") });
-      console.log(`Zahlung verbucht: ${p.payment_id} → ${p.order_id} (${p.domain}) CHF ${p.amount_chf} [${p.source}]`);
+      const p = recordPayment(store, { order_id: key, amount: opt("amount"), currency: opt("currency"), source: opt("source") || "bank_transfer", reference: opt("reference"), received_at: opt("date") });
+      console.log(`Zahlung verbucht: ${p.payment_id} → ${p.order_id} (${p.domain}) ${amountText(p.amount, p.currency)} [${p.source}]`);
       console.log(gateLine(findPayableOrder(store, p.order_id)));
     } else if (cmd === "list") {
       const list = key ? paymentsForOrder(store, key) : Object.values(store.read(PAYMENTS_FILE, { payments: {} }).payments || {});
@@ -176,12 +207,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const o = findPayableOrder(store, key);
       if (!o) throw new Error(`Kein Auftrag mit order_id "${key}".`);
       console.log(gateLine(o));
-      console.log(JSON.stringify(paymentsForOrder(store, key).map(({ payment_id, amount_chf, status, received_at, source }) => ({ payment_id, amount_chf, status, received_at, source })), null, 2));
+      console.log(JSON.stringify(paymentsForOrder(store, key).map((p) => ({ payment_id: p.payment_id, amount: paymentAmount(p), currency: paymentCurrency(p), status: p.status, received_at: p.received_at, source: p.source })), null, 2));
     } else if (cmd === "void" || cmd === "refund") {
       const p = (cmd === "void" ? voidPayment : refundPayment)(store, key, { reason: opt("reason") });
       console.log(`Zahlung ${p.payment_id} → ${p.status}. Eintrag bleibt gespeichert (nie löschen). ${gateLine(findPayableOrder(store, p.order_id) || { order_id: p.order_id, offer_class: p.offer_class })}`);
     } else {
-      console.log('Befehle: record <order_id> --amount <chf> --reference "<ref>" [--currency CHF] [--source manual_bank_confirmation] [--date JJJJ-MM-TT] | list [order_id] | show <order_id> | void <payment_id> --reason "<grund>" | refund <payment_id> --reason "<grund>"');
+      console.log('Befehle: record <order_id> --amount <betrag> --reference "<ref>" [--currency CHF|VND] [--source manual_bank_confirmation] [--date JJJJ-MM-TT] | list [order_id] | show <order_id> | void <payment_id> --reason "<grund>" | refund <payment_id> --reason "<grund>"');
       process.exit(1);
     }
   } catch (e) { console.error("Fehler: " + e.message); process.exit(1); }

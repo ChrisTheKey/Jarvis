@@ -23,11 +23,13 @@ async function loadSummary() {
   const c = body.commission, t = I.t;
   $("aLeadsText").textContent = t("app.leads_text", body.leads?.total ?? 0);
   const stat = (cls, v, label) => { const d = document.createElement("div"); d.className = cls; const b = document.createElement("b"); b.textContent = v; const s = document.createElement("span"); s.textContent = label; d.append(b, s); return d; };
-  $("aComStats").replaceChildren(stat("warn", `${c.currency} ${c.pending}`, t("com.pending")), stat("ok", `${c.currency} ${c.payable}`, t("com.payable")),
-    stat("bad", `${c.currency} ${c.reversed}`, t("com.reversed")), stat("", String(c.paid_completed_orders), t("com.orders")),
+  // TF-064: Beträge in der Währung des Verkäufers (Lap: VND «346.500 ₫», CH: «CHF 52.50») – nie gemischt.
+  const m = (v, cur = c.currency) => I.money(Number(v), cur);
+  $("aComStats").replaceChildren(stat("warn", m(c.pending), t("com.pending")), stat("ok", m(c.payable), t("com.payable")),
+    stat("bad", m(c.reversed), t("com.reversed")), stat("", String(c.paid_completed_orders), t("com.orders")),
     stat("", t("com.rate", c.rate_bps / 100), t("com.title")));
   $("aComOrders").replaceChildren(...(c.orders.length ? c.orders.map((o) => { const li = document.createElement("li");
-    li.textContent = `${t("com.order")} ${o.order_id} · ${t(`com.st.${o.status}`)} · ${t("com.price")} ${o.currency} ${o.price} · ${t("com.amount")} ${o.currency} ${o.commission}`; return li; })
+    li.textContent = `${t("com.order")} ${o.order_id} · ${t(`com.st.${o.status}`)} · ${t("com.price")} ${m(o.price, o.currency)} · ${t("com.amount")} ${m(o.commission, o.currency)}`; return li; })
     : [Object.assign(document.createElement("li"), { textContent: t("com.none") })]));
 }
 // ---------- Chat (eigener Verlauf über /api/state – nie Chris' Kontext) ----------

@@ -139,13 +139,13 @@ test("TF-063 Cloud-Jarvis: Verkäufer ohne Chris-Persona, ohne Shared State, ohn
   const h = createCloudHandler({ env: (k) => ({ ANTHROPIC_API_KEY: "sk-test", JARVIS_PASSWORD: "pw" })[k],
     fetchFn: async (u, init) => { sent = JSON.parse(init.body); return new Response("data: {\"type\":\"message_stop\"}\n\n", { status: 200 }); },
     loadState: async () => { loaded++; return { profile: { notes: "GEHEIM Chris" } }; },
-    resolveActor: async () => ({ actor: actorFor("lap") }), sellerContext: async () => ({ leads: { total: 20, with_phone: 20, with_email: 10 }, commission: { rate_bps: 3500, pending: "0.00", payable: "52.50", reversed: "0.00" } }) });
+    resolveActor: async () => ({ actor: actorFor("lap") }), sellerContext: async () => ({ leads: { total: 20, with_phone: 20, with_email: 10 }, commission: { rate_bps: 3500, currency: "VND", pending: "0", payable: "346500", reversed: "0" } }) });
   const r = await h(new Request("https://jarvis.test/api/cloud", { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: "Xin chào" }] }) }));
   await r.text();
   assert.equal(loaded, 0, "kein Shared State geladen");
   assert.equal(sent.tools, undefined, "kein Mail-Werkzeug");
   const sys = sent.system.map((x) => x.text).join("\n");
   assert.ok(!sys.includes("Chris") && !sys.includes("GEHEIM"), "kein Chris-Kontext");
-  assert.ok(sys.includes("Lap") && sys.includes("tiếng Việt") && sys.includes("52.50"));
+  assert.ok(sys.includes("Lap") && sys.includes("tiếng Việt") && sys.includes("346.500 ₫") && !sys.includes("CHF"));
   assert.ok(sellerSystem(actorFor("mario"), {}).includes("Deutsch"));
 });

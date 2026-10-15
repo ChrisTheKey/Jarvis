@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore } from "./mail-worker.js";
 import { paymentGateForOrder } from "./payments.js";
 import { safeEqual } from "./shared-state.js";
-import { ACCESS_TYPES, ACCESS_ENVELOPE_ALG, INTAKE_TTL_MS, ORDER_ID_RE, REPAIR_SCOPE, INTAKE_PURPOSES, normDomain, tokenHash, consentText,
+import { ACCESS_TYPES, ACCESS_ENVELOPE_ALG, INTAKE_TTL_MS, ORDER_ID_RE, repairScope, INTAKE_PURPOSES, normDomain, tokenHash, consentText,
   hostKeyConfirmText, validEnvelope } from "./access-intake-api.js";
 
 export { ACCESS_TYPES, INTAKE_TTL_MS, INTAKE_PURPOSES, tokenHash, consentText, hostKeyConfirmText };
@@ -60,7 +60,8 @@ export function newIntakeToken({ now = new Date(), ttlMs = INTAKE_TTL_MS } = {})
 }
 // Token im URL-FRAGMENT (#…): Browser senden Fragmente nie an Server – der Token landet in keinem Zugriffs-Log.
 // Der Link enthält NUR den Token (keine Auftrags-ID, keine internen Daten); die Cloud findet den Eintrag über sha256(token).
-export const accessLink = (origin, token) => `${String(origin).replace(/\/+$/, "")}/access.html#t=${encodeURIComponent(token)}`;
+// TF-064: VN-Aufträge bekommen zusätzlich &l=vi (Formular sofort auf Vietnamesisch; kein Bezug zum Token).
+export const accessLink = (origin, token, locale = "de-CH") => `${String(origin).replace(/\/+$/, "")}/access.html#t=${encodeURIComponent(token)}${locale === "vi-VN" ? "&l=vi" : ""}`;
 
 // ---------- Cloud-Client (nur ausgehend, Worker-Token) ----------
 export function intakeClient({ config, fetchFn = globalThis.fetch } = {}) {
@@ -155,7 +156,8 @@ export function applyAccessSubmission(store, s, { workerDir = store.dir, now = n
   if (!ar.token_hash || !safeEqual(ar.token_hash, s.token_hash)) return deny("Token passt nicht zum Auftrag");
   if (!Date.parse(sub.submitted_at) || Date.parse(sub.submitted_at) > Date.parse(ar.expires_at)) return deny("Link war abgelaufen");
   if (normDomain(s.domain) !== order.domain || normDomain(sub.access_domain) !== order.domain) return deny("Domain stimmt nicht mit dem Auftrag überein");
-  if (sub.consent !== true || sub.consent_text !== consentText(order.domain)) return deny("Reparaturfreigabe fehlt");
+  const loc = order.market === "VN" ? "vi-VN" : "de-CH"; // TF-064: Freigabetext in der Sprache des Auftrags
+  if (sub.consent !== true || sub.consent_text !== consentText(order.domain, loc)) return deny("Reparaturfreigabe fehlt");
   if (!ACCESS_TYPES.includes(sub.access_type)) return deny("Zugangsart unbekannt");
   if (!paymentGateForOrder(store, order).satisfied) return deny("Zahlungsschwelle nicht erfüllt");
   try { openEnvelope(sub.envelope, accessKeys(workerDir).privateKeyPem); } // nur Prüfung – Klartext wird sofort verworfen
@@ -165,8 +167,8 @@ export function applyAccessSubmission(store, s, { workerDir = store.dir, now = n
   order.access_intake = { status: "RECEIVED", connector_type: sub.access_type, access_domain: order.domain, received_at: at, destroyed_at: null, revoked_required: true };
   // Reparaturfreigabe aus dem Formular – getrennt von der Zahlung, nur mit ausdrücklicher Zustimmung. Keine Zugangsdaten hier.
   order.customer_authorized_repair = true;
-  order.authorization = { authorized_domain: order.domain, source: ACCESS_AUTH_SOURCE, reference: `Sicheres Auftragsformular ${sub.submitted_at.slice(0, 10)}`, granted_at: sub.submitted_at, scope: REPAIR_SCOPE };
-  Object.assign(order, { authorization_at: sub.submitted_at, authorization_source: ACCESS_AUTH_SOURCE, authorized_domain: order.domain, scope: REPAIR_SCOPE });
+  order.authorization = { authorized_domain: order.domain, source: ACCESS_AUTH_SOURCE, reference: `Sicheres Auftragsformular ${sub.submitted_at.slice(0, 10)}`, granted_at: sub.submitted_at, scope: repairScope(loc) };
+  Object.assign(order, { authorization_at: sub.submitted_at, authorization_source: ACCESS_AUTH_SOURCE, authorized_domain: order.domain, scope: repairScope(loc) });
   order.updated_at = at;
   data.orders[order.order_id] = order;
   store.write(REPAIR_ORDERS_FILE, data);
@@ -196,7 +198,7 @@ export function applyHostKeyConfirmation(store, s, { now = new Date() } = {}) {
   const candidate = order.access_profile?.host_key_candidate;
   if (!candidate || hr.host_key_candidate !== candidate || sub.host_key !== candidate) return deny("Fingerprint passt nicht zum gespeicherten Kandidaten");
   if (!["confirm", "reject"].includes(sub.decision)) return deny("Entscheidung fehlt");
-  if (sub.decision === "confirm" && (sub.consent !== true || sub.confirm_text !== hostKeyConfirmText(order.domain))) return deny("Bestätigung fehlt");
+  if (sub.decision === "confirm" && (sub.consent !== true || sub.confirm_text !== hostKeyConfirmText(order.domain, order.market === "VN" ? "vi-VN" : "de-CH"))) return deny("Bestätigung fehlt");
   if (!paymentGateForOrder(store, order).satisfied) return deny("Zahlungsschwelle nicht erfüllt");
   const at = now.toISOString();
   order.host_key_request = { ...hr, received_at: at, decision: sub.decision };

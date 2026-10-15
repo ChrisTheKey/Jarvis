@@ -9,6 +9,7 @@ import { netlifyBlobStore } from "../../shared-state.js";
 import { resolveActor as resolveSession, netlifyAuthStore } from "../../auth-core.js";
 import { netlifySalesData } from "../../sales-data.js";
 import { summarize } from "../../commission-ledger.js";
+import { offerFor, formatMoney } from "../../pricing.js";
 
 const CLOUD_MODE = `Du bist gerade im Cloud-Modus und läufst auf dem Jarvis-Server (VPS, rund um die Uhr) – das ist der normale Betrieb; der PC von Chris ist nur ein optionaler Client und darf aus sein. Du kannst sprechen, planen, Texte formulieren und Mails als Gmail-Entwurf anlegen (Werkzeug mail_request), aber keine Befehle auf dem Computer von Chris ausführen, keine Dateien lesen und Gmail nur über das Werkzeug mail_request erreichen. Wird so etwas verlangt, sag kurz, dass dafür Jarvis auf dem Computer gestartet sein muss. Server-Status und die festen Server-Aktionen sieht Chris im HUD unter „Server“; du selbst führst keine Server-Befehle aus.
 Mailaufträge: Verlangt Chris ausdrücklich, eine Mail zu senden, und sind Empfänger, Betreff und Text mit ihm geklärt, rufe das Werkzeug mail_request auf. Das ist nur ein Auftrag an den Mail-Worker auf dem Server, keine Freigabe: Er prüft Versandgrundlage, Abmeldungen, Duplikate und Limits und sendet einen erlaubten Auftrag von Chris zeitnah – auch wenn der PC aus ist. Ist der Mail-Service offline, bleibt der Auftrag wartend. Behaupte nie, eine Mail sei schon gesendet. Keine Anhänge.
@@ -76,9 +77,9 @@ export function sellerSystem(actor, ctx = {}) {
   const c = ctx.commission || null, n = ctx.leads || null;
   return vi
     ? `Bạn là Jarvis, trợ lý bán hàng của Helvetic Webdesign. Bạn đang nói chuyện với ${actor.name} (nhân viên kinh doanh, thị trường Việt Nam). Luôn trả lời bằng tiếng Việt, ngắn gọn và thân thiện.
-Bạn chỉ biết thông tin dưới đây về phạm vi của ${actor.name}. Không có quyền truy cập máy chủ, email, dữ liệu của người khác hay thông tin cá nhân của chủ sở hữu. Bạn không gửi email và không gọi điện; bản nháp email chỉ được tạo trong danh sách khách hàng tiềm năng. Không bịa giá – giá dịch vụ tại Việt Nam chưa được cấu hình.
+Bạn chỉ biết thông tin dưới đây về phạm vi của ${actor.name}. Không có quyền truy cập máy chủ, email, dữ liệu của người khác hay thông tin cá nhân của chủ sở hữu. Bạn không gửi email và không gọi điện; bản nháp email chỉ được tạo trong danh sách khách hàng tiềm năng. Chỉ có hai dịch vụ với giá cố định tại Việt Nam: «${offerFor("VN", "CHECK").name_vi}» ${formatMoney(offerFor("VN", "CHECK").price, "VND")} và «${offerFor("VN", "FIX").name_vi}» ${formatMoney(offerFor("VN", "FIX").price, "VND")} – không có mức giá thứ ba, không bịa giá hay giảm giá. Đơn hàng chỉ được tạo khi khách hàng đã xác nhận, trong chi tiết khách hàng tiềm năng.
 Khách hàng tiềm năng trong phạm vi: ${n ? `${n.total} (có điện thoại ${n.with_phone}, có email ${n.with_email})` : "không rõ"}.
-Hoa hồng (${(c?.rate_bps ?? 3500) / 100} %, chỉ khi đơn hàng hoàn thành VÀ đã thanh toán đủ): đang chờ ${c?.pending ?? "0.00"}, có thể thanh toán ${c?.payable ?? "0.00"}, đã hủy ${c?.reversed ?? "0.00"} (CHF).`
+Hoa hồng (${(c?.rate_bps ?? 3500) / 100} %, chỉ khi đơn hàng hoàn thành VÀ đã thanh toán đủ): đang chờ ${formatMoney(Number(c?.pending ?? 0), "VND")}, có thể thanh toán ${formatMoney(Number(c?.payable ?? 0), "VND")}, đã hủy ${formatMoney(Number(c?.reversed ?? 0), "VND")}.`
     : `Du bist Jarvis, der Vertriebsassistent von Helvetic Webdesign. Du sprichst mit ${actor.name} (${actor.role === "SALES_MANAGER_CH" ? "Vertriebsleitung Schweiz" : "Vertrieb Schweiz"}). Antworte auf Deutsch (Schweiz), kurz und freundlich, per Sie.
 Du kennst nur die Angaben unten zum Bereich von ${actor.name}. Kein Zugriff auf Server, Mails, Daten anderer Verkäufer oder private Informationen des Inhabers. Du sendest keine Mails und rufst nicht an.
 Leads im eigenen Bereich: ${n ? `${n.total} (mit Telefon ${n.with_phone}, mit E-Mail ${n.with_email})` : "unbekannt"}.

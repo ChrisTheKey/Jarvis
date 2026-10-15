@@ -32,10 +32,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, legalBasis, normEmail } from "./mail-worker.js";
 import { qualifyRepairLead, COLD_DRAFTS_FILE, FREEMAIL_RE } from "./swiss-repair.js";
+import { MARKET_PRICES, offerInfo } from "./pricing.js";
 
+// Schweizer Angebote – Preise aus der zentralen Preisquelle (pricing.js, TF-064). Vietnam-Angebote (VN_REPAIR_CHECK/VN_REPAIR_FIX)
+// liegen nur dort und zählen nie in die Schweizer Kennzahlen/Klassifizierung.
+const CH = MARKET_PRICES.CH.offers;
 export const OFFERS = Object.freeze({
-  REPAIR_CHECK_150: Object.freeze({ price: 150, currency: "CHF", label: "Check & Anleitung für CHF 150", scope: "Ich prüfe Ihre Website auf Fehler, erkläre jedes gefundene Problem verständlich und liefere eine Schritt-für-Schritt-Anleitung, mit der Sie die Reparatur selbst durchführen können. Festpreis." }),
-  REPAIR_FIX_500: Object.freeze({ price: 480, currency: "CHF", label: "Check & Reparatur für CHF 480", scope: "Kompletter Check der gesamten Website, alle gefundenen Fehler werden behoben und auf Desktop und Smartphone getestet. Festpreis, Rechnung erst nach Ihrer Abnahme – kein Fix, keine Rechnung." }),
+  REPAIR_CHECK_150: Object.freeze({ price: CH.CHECK.price, currency: "CHF", label: "Check & Anleitung für CHF 150", scope: "Ich prüfe Ihre Website auf Fehler, erkläre jedes gefundene Problem verständlich und liefere eine Schritt-für-Schritt-Anleitung, mit der Sie die Reparatur selbst durchführen können. Festpreis." }),
+  REPAIR_FIX_500: Object.freeze({ price: CH.FIX.price, currency: "CHF", label: "Check & Reparatur für CHF 480", scope: "Kompletter Check der gesamten Website, alle gefundenen Fehler werden behoben und auf Desktop und Smartphone getestet. Festpreis, Rechnung erst nach Ihrer Abnahme – kein Fix, keine Rechnung." }),
 });
 export const OFFER_CLASSES = Object.freeze(Object.keys(OFFERS));
 // Landingpage von Chris mit beiden Angeboten und Anfrageformular – wird in Werbemails verlinkt.
@@ -98,8 +102,10 @@ export function classifyOffer(lead = {}) {
 const keyOf = (l = {}) => l.domain || (l.website ? safeDomain(l.website) : "") || normEmail(l.email || "");
 function safeDomain(u) { try { return new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; } }
 
-export function recordSale(records, key, { offer, date, work_status = "open", lead = {}, now = new Date() } = {}) {
-  if (!isOfferClass(offer)) throw new Error(`Unbekanntes Angebot "${offer}". Erlaubt sind nur: ${OFFER_CLASSES.join(", ")}.`);
+export function recordSale(records, key, { offer, date, work_status = "open", lead = {}, now = new Date(), extra = null } = {}) {
+  // TF-064: VN-Angebote nur mit ihrem festen VND-Preis aus pricing.js (bestätigte VN-Order-Aktion, nie CLI-Freitext).
+  const vn = offerInfo(offer)?.market === "VN" ? offerInfo(offer) : null;
+  if (!isOfferClass(offer) && !vn) throw new Error(`Unbekanntes Angebot "${offer}". Erlaubt sind nur: ${OFFER_CLASSES.join(", ")}.`);
   if (!WORK_STATUS.includes(work_status)) throw new Error(`Ungültiger work_status. Erlaubt: ${WORK_STATUS.join(", ")}.`);
   const sale_date = date || now.toISOString().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(sale_date) || Number.isNaN(Date.parse(sale_date))) throw new Error("sale_date muss JJJJ-MM-TT sein.");
@@ -107,7 +113,8 @@ export function recordSale(records, key, { offer, date, work_status = "open", le
   const c = classifyOffer(lead);
   const evidence = c.offer_class === offer ? c.evidence : observedEvidence(lead.websiteIssues);
   const rec = { ...(records[key] || {}) };
-  rec.sale = { selected_offer: offer, sale_date, sale_value: OFFERS[offer].price, currency: "CHF", customer_status: "customer", work_status, evidence };
+  rec.sale = vn ? { selected_offer: offer, sale_date, sale_value: vn.price, currency: vn.currency, market: "VN", customer_status: "customer", work_status, evidence: [], ...(extra || {}) }
+    : { selected_offer: offer, sale_date, sale_value: OFFERS[offer].price, currency: "CHF", customer_status: "customer", work_status, evidence };
   rec.status = "customer";
   rec.statusAt = now.toISOString();
   return { ...records, [key]: rec };

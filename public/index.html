@@ -1604,7 +1604,11 @@ const PROFILE_LABELS = { PROFILE_READY: "PROFILE READY", HOST_KEY_CONFIRMATION_R
   MANUAL_REVIEW_REQUIRED: "MANUELL", BLOCKED_UNSAFE_ACCESS: "UNSICHER", BLOCKED_NO_ACCESS: "KEIN ZUGANG", PREFLIGHT_RETRY: "NEUER VERSUCH" };
 const ADAPTER_LABELS = { GITHUB_NETLIFY: "GitHub+Netlify", WORDPRESS: "WordPress", SFTP: "SFTP", SSH: "SSH", UNSUPPORTED: "Unsupported" };
 const PAY_LABELS = { UNPAID: "UNBEZAHLT", PARTIAL: "TEILZAHLUNG", DEPOSIT_MET: "DEPOSIT ERREICHT", PAID_FULL: "VOLL BEZAHLT", REFUNDED: "RÜCKERSTATTET", PAYMENT_REVIEW_REQUIRED: "PRÜFUNG NÖTIG" };
-const payLine = (o, price, deposit) => o.paid_chf == null ? "" : `Phase ${PHASE_LABELS[o.phase] || "–"} · Preis CHF ${o.price_chf ?? price} · bezahlt CHF ${o.paid_chf} · Deposit CHF ${o.payment_required_chf ?? deposit} · Rest bis Deposit CHF ${o.rest_to_deposit_chf ?? "–"} · Zahlung ${PAY_LABELS[o.payment_status] || (o.payment_ok ? "OK" : "AUSSTEHEND")}`;
+// TF-064: VN-Aufträge in VND (Markt/Währung aus dem Snapshot) – CH-Zeile unverändert.
+const vnd = (v) => (Number.isFinite(v) ? `${String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ".")} ₫` : "–");
+const orderPrice = (o, chfFallback) => (o.currency === "VND" ? `VN · ${vnd(o.price_amount)}` : `CHF ${o.price_chf ?? chfFallback}`);
+const payLine = (o, price, deposit) => o.currency === "VND" ? (o.paid_amount == null ? "" : `Phase ${PHASE_LABELS[o.phase] || "–"} · Preis ${vnd(o.price_amount)} · bezahlt ${vnd(o.paid_amount)} · Deposit ${vnd(o.payment_required_amount)} · Rest bis Deposit ${vnd(o.rest_to_deposit_amount)} · Zahlung ${PAY_LABELS[o.payment_status] || (o.payment_ok ? "OK" : "AUSSTEHEND")}`)
+  : o.paid_chf == null ? "" : `Phase ${PHASE_LABELS[o.phase] || "–"} · Preis CHF ${o.price_chf ?? price} · bezahlt CHF ${o.paid_chf} · Deposit CHF ${o.payment_required_chf ?? deposit} · Rest bis Deposit CHF ${o.rest_to_deposit_chf ?? "–"} · Zahlung ${PAY_LABELS[o.payment_status] || (o.payment_ok ? "OK" : "AUSSTEHEND")}`;
 function renderPayments(p) {
   const el = $("payWorker");
   if (!p) { el.textContent = "–"; el.className = ""; return; }
@@ -1644,7 +1648,7 @@ function renderRepair(rep) {
     const yn = (v) => (v === true ? "JA" : v === false ? "NEIN" : "–");
     const prod = o.production === "DEPLOYED" ? "LIVE" : o.production === "BRANCH_ONLY" ? "NUR BRANCH" : "UNVERÄNDERT";
     li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span><span class="why adp"></span><span class="why pay"></span><span class="why brw"></span>`;
-    li.querySelector(".st").textContent = `${REPAIR_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 480}`;
+    li.querySelector(".st").textContent = `${REPAIR_LABELS[o.state] || o.state || "–"} · ${orderPrice(o, 480)}`;
     li.querySelector(".pay").textContent = payLine(o, 480, 240) + (o.access_requested ? ` · Zugang ${o.access_received ? "ERHALTEN" : "ANGEFRAGT"}${o.access_type ? ` (${o.access_type})` : ""}` : "")
       + (o.profile_status ? ` · Profil ${PROFILE_LABELS[o.profile_status] || "–"}` : "")
       + (typeof o.host_key_verified === "boolean" ? ` · HOST KEY VERIFIED ${yn(o.host_key_verified)}` : "") // TF-044: nur JA/NEIN
@@ -1723,7 +1727,7 @@ function renderCheck150(rep) {
     const li = document.createElement("li");
     li.className = o.state === "CANCELLED" ? "" : ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|MANUAL/.test(o.state || "") ? "bad" : "wait";
     li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span><span class="why pay"></span>`;
-    li.querySelector(".st").textContent = `${C150_LABELS[o.state] || o.state || "–"} · CHF ${o.price_chf ?? 150}`;
+    li.querySelector(".st").textContent = `${C150_LABELS[o.state] || o.state || "–"} · ${orderPrice(o, 150)}`;
     li.querySelector(".pay").textContent = payLine(o, 150, 75);
     li.querySelector(".sub").textContent = ` ${[o.company, o.domain, C150_SOURCE[o.source]].filter(Boolean).join(" · ")}`;
     const sev = o.findings == null ? "Befunde –" : `Befunde ${o.findings} (kritisch ${o.critical ?? 0} · hoch ${o.high ?? 0} · mittel ${o.medium ?? 0} · gering ${o.low ?? 0})`;

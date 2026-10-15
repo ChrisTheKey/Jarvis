@@ -11,7 +11,7 @@ WORKDIR /app
 COPY deploy/vps/backup-public.pem ./backup-public.pem
 COPY package.json package-lock.json /app/
 RUN npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund && npm cache clean --force
-COPY mail-worker.js gmail.js mail-requests.js shared-state.js local-state.js human-contact.js lead-finder.js site-auditor.js sales.js payments.js access-intake.js access-intake-api.js swiss-repair.js site-findings.js repair-workflow.js check-150-workflow.js repair-render-test.js repair-browser-validator.js production-readiness.js repair-outbox.js repair-service.js email-permission.js cloud-core.js backup.js backup-api.js server-control.js server-agent.js cloud-leads.js lead-db.js lead-registry.js swiss-areas.js category-labels.js persona-version.js persona.md mail-writer.md ./
+COPY mail-worker.js gmail.js mail-requests.js shared-state.js local-state.js human-contact.js lead-finder.js site-auditor.js sales.js payments.js access-intake.js access-intake-api.js swiss-repair.js site-findings.js repair-workflow.js check-150-workflow.js repair-render-test.js repair-browser-validator.js production-readiness.js repair-outbox.js repair-service.js email-permission.js cloud-core.js backup.js backup-api.js server-control.js server-agent.js cloud-leads.js lead-db.js lead-registry.js swiss-areas.js category-labels.js pricing.js sender-profiles.js vn-customer-texts.js order-intake.js persona-version.js persona.md mail-writer.md ./
 # Versionierter Schweiz-Gebietsindex (BFS-Gemeindeverzeichnis) – wird zur Laufzeit nur gelesen, nie heruntergeladen.
 COPY repair-adapters ./repair-adapters
 COPY data/swiss-municipalities.json ./data/swiss-municipalities.json

@@ -28,6 +28,7 @@ import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend, ensureColdDra
 import { publicLeads } from "./cloud-leads.js";
 import { loadRegistry, registryBlock, reconcileRegistry, publicRegistry, registryStatus, CRM_UNAVAILABLE } from "./lead-registry.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
+import { senderProfileFor } from "./sender-profiles.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -98,7 +99,8 @@ const ALLOW_ALL = { acquire: async () => ({ ok: true }), done: async () => {} };
 const AUTO_SUBJECT_RE = /(automatische antwort|abwesenheit|out of office|automatic reply|auto-?reply|réponse automatique|risposta automatica)/i;
 const BOUNCE_RE = /mailer-daemon|postmaster/i;
 const AI_RE = /\b(KI|AI|Claude|Jarvis|ChatGPT|künstliche Intelligenz|language model|Sprachmodell)\b/;
-const UNSUB_RE = /abmelden|unsubscribe|désinscri|disiscriv/i;
+// TF-064: + vietnamesische Begriffe (hủy/huỷ đăng ký, không muốn nhận thêm email, không liên hệ) – DE/EN/FR/IT unverändert.
+const UNSUB_RE = /abmelden|unsubscribe|désinscri|disiscriv|h[uủ]y đăng ký|huỷ đăng ký|không muốn nhận thêm email|không liên hệ/i;
 // Behauptete Website-Mängel – ohne dokumentierte websiteIssues darf eine Erstmail so etwas nicht enthalten.
 export const CLAIM_RE = /(fehler|defekt|kaputt|funktioniert nicht|nicht erreichbar|nicht mehr erreichbar|404|zertifikat|veraltet|langsam|unsicher|broken|not working|outdated|slow|certificate|erreur|cass[ée]|errore|non funziona)/i;
 
@@ -125,12 +127,26 @@ export const UNSUB_LINE = {
   en: "If you'd prefer not to hear from me again, simply reply with \"unsubscribe\".",
   fr: "Si vous ne souhaitez plus recevoir de messages de ma part, répondez simplement « désinscrire ».",
   it: "Se non desidera ricevere altri messaggi da parte mia, risponda semplicemente «disiscrivi».",
+  vi: "Nếu anh/chị không muốn nhận thêm email từ chúng tôi, chỉ cần trả lời “Hủy đăng ký”.",
 };
 export function finalizeCommercial(body, sender = {}, lang = "de") {
   let out = String(body || "").trim();
   const signature = sender.signature?.trim() || [sender.name, sender.company, sender.email].filter(Boolean).join("\n");
   if (sender.name && !out.includes(sender.name)) out += "\n\n" + signature;
   if (!UNSUB_RE.test(out)) out += "\n\n" + (UNSUB_LINE[String(lang || "de").slice(0, 2).toLowerCase()] || UNSUB_LINE.de);
+  return out;
+}
+// TF-064: werblicher Entwurf nach Absenderprofil. CH → finalizeCommercial exakt wie bisher (cfg.sender, Sprache des Leads).
+// VN (actor lap oder market VN) → feste vietnamesische Lap-Signatur + vietnamesische Abmeldezeile, nie Chris' Schweizer Signatur.
+// Eine bereits vorhandene Grussformel «Trân trọng, Lap» am Ende wird durch die vollständige Signatur ersetzt (keine Doppelung).
+export function finalizeForProfile(body, profile, lang = "de") {
+  if (profile?.id !== "vn") return finalizeCommercial(body, profile?.sender || {}, lang);
+  let out = String(body || "").normalize("NFC").trim();
+  if (!out.includes(profile.signature)) {
+    out = out.replace(/\n*\s*Trân trọng,?\s*(\n\s*Lap\s*)?$/u, "").trim();
+    out += "\n\n" + profile.signature;
+  }
+  if (!UNSUB_RE.test(out)) out += "\n\n" + UNSUB_LINE.vi;
   return out;
 }
 const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i;
@@ -610,13 +626,16 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
             if (!threadId) { cloudSet(id, "blocked", "Thread unbekannt oder nicht von Jarvis begonnen."); continue; }
           }
           const lang = (Array.isArray(leads) ? leads : []).find((l) => normEmail(l?.email) === to)?.language || "de";
-          const body = finalizeCommercial(rq.body, cfg.sender, lang);
+          // TF-064: Absenderprofil aus den serverseitig gebundenen Metadaten (actor/market) – VN: Lap-Signatur + vi-Abmeldezeile.
+          const body = finalizeForProfile(rq.body, senderProfileFor(rq.meta, cfg.sender), lang);
           const d = threadId ? await gmail.replyToThread(threadId, { body, mode: COLD_MODE }) : await gmail.createDraft({ to, subject: rq.subject, body, mode: COLD_MODE });
           state.cloudDrafts[key] = { draftId: d.draftId, threadId: d.threadId, at: t.toISOString() };
           save();
           cloudSet(id, "drafted", "Entwurf liegt in Gmail – senden nur durch Chris.");
           continue;
         }
+        // TF-064: VN-/Verkäufer-Aufträge sind immer COLD_LEAD_DRAFT_ONLY – nie ein Versand, keine Versandgrundlage aus Metadaten.
+        if (rq.meta) { cloudSet(id, "blocked", "Verkäufer-/VN-Auftrag: nur Entwurf (COLD_LEAD_DRAFT_ONLY), nie Versand."); continue; }
         if (!auto) { cloudSet(id, "blocked", "Automatischer Versand ist lokal nicht aktiv (sendMode/dryRun/sender)."); continue; }
         if (text.length > 6000 || ESCALATE_RE.test(text) || AI_RE.test(text)) {
           cloudSet(id, "blocked", "Inhalt braucht persönliche Prüfung (Vertrag, Zahlung, Preis, KI-Hinweis o. ä.) – bitte lokal schreiben."); continue;

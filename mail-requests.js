@@ -25,6 +25,17 @@ const FIELDS = ["request_id", "recipient", "subject", "body", "optional_thread_r
 const ID_RE = /^[a-z0-9][a-z0-9-]{7,63}$/;
 const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i;
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+// TF-064: serverseitig gebundene Metadaten eines Verkäufer-Entwurfs (aus Session + autorisiertem Lead – nie aus dem Browser).
+// Der Mail-Worker wählt damit Absenderprofil, Signatur und Abmeldezeile (sender-profiles.js).
+const META_LEAD_RE = /^[a-z0-9][a-z0-9.@_+-]{2,252}$/;
+export function cleanMeta(m) {
+  if (!m || typeof m !== "object") return null;
+  const actor = typeof m.actor_user_id === "string" && /^[a-z]{2,20}$/.test(m.actor_user_id) ? m.actor_user_id : null;
+  const market = ["CH", "VN"].includes(m.market) ? m.market : null;
+  const locale = ["de-CH", "vi-VN"].includes(m.locale) ? m.locale : null;
+  const lead_id = typeof m.lead_id === "string" && META_LEAD_RE.test(m.lead_id) ? m.lead_id : null;
+  return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id } : null;
+}
 
 // Kurzer, nicht-kryptografischer Fingerabdruck (FNV-1a) für den Duplikat-Schutz.
 function fingerprint(...parts) {
@@ -35,7 +46,7 @@ function fingerprint(...parts) {
 const newId = () => "mr-" + (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
 // Baut einen Auftrag ausschliesslich aus erlaubten Feldern. Liefert { request } oder { error }.
-export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "chris" } = {}) {
+export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "chris", meta = null } = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { error: "Ungültiger Auftrag." };
   if ("attachments" in input || "attachment" in input) return { error: "Anhänge sind nicht erlaubt." };
   const unknown = Object.keys(input).filter((k) => !FIELDS.includes(k) && k !== "op");
@@ -62,7 +73,7 @@ export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "ch
       requested_by: requestedBy, recipient, subject, body, optional_thread_reference: ref,
       intent: INTENTS.includes(input.intent) ? input.intent : "sales", status: "pending", reason: null, updated_at: created,
       fingerprint: fingerprint(recipient, subject.toLowerCase(), body, ...(delivery === "draft" ? ["draft"] : [])), mail_class: "manual_chris_mail", delivery,
-      lease_owner: null, lease_expires_at: null, attempts: 0,
+      lease_owner: null, lease_expires_at: null, attempts: 0, ...(cleanMeta(meta) ? { meta: cleanMeta(meta) } : {}),
     },
   };
 }
@@ -78,6 +89,7 @@ function clean(r) {
     intent: INTENTS.includes(r.intent) ? r.intent : "sales", status: REQUEST_STATUSES.includes(r.status) ? r.status : "pending",
     reason: s(r.reason, MAIL_REQUEST_LIMITS.reasonChars), updated_at: s(r.updated_at, 40), fingerprint: s(r.fingerprint, 16),
     mail_class: "manual_chris_mail", delivery: r.delivery === "draft" ? "draft" : "send", lease_owner: s(r.lease_owner, 20), lease_expires_at: s(r.lease_expires_at, 40), attempts: Number.isFinite(r.attempts) ? r.attempts : 0,
+    ...(cleanMeta(r.meta) ? { meta: cleanMeta(r.meta) } : {}),
   };
 }
 export const cleanList = (list) => (Array.isArray(list) ? list : []).map(clean).filter(Boolean);
@@ -96,8 +108,8 @@ function trim(list) {
 }
 
 // Reine Logik für „Auftrag anlegen“ – genutzt vom HTTP-Endpunkt und von der Edge Function.
-export function addRequest(list, input, { now = new Date(), requestedBy } = {}) {
-  const { request, error } = sanitizeMailRequest(input, { now, requestedBy });
+export function addRequest(list, input, { now = new Date(), requestedBy, meta = null } = {}) {
+  const { request, error } = sanitizeMailRequest(input, { now, requestedBy, meta });
   if (error) return { status: 400, error };
   const current = expireRequests(cleanList(list), now);
   const same = current.find((r) => r.request_id === request.request_id);
@@ -212,7 +224,7 @@ export function createMailQueue(store, { now = () => new Date(), dedicated = fal
     return { status: 409, error: "Gleichzeitige Änderung – bitte erneut versuchen." };
   }
   return {
-    create: (input, requestedBy = "chris") => mutate(({ requests }) => addRequest(requests, input, { now: now(), requestedBy })),
+    create: (input, requestedBy = "chris", meta = null) => mutate(({ requests }) => addRequest(requests, input, { now: now(), requestedBy, meta })),
     result: (res) => mutate(({ requests }) => applyResult(expireRequests(requests, now()), res, now())),
     claim: (owner) => mutate(({ requests }) => claimRequests(expireRequests(requests, now()), owner, now())),
     lock: (x) => mutate(({ locks }) => acquireSendLock(locks, x, now())),
@@ -318,7 +330,9 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (lead.market !== "VN") return reply(403, { error: "Entwürfe über diesen Weg nur für Vietnam-Leads.", code: "FORBIDDEN" });
     if (lead.do_not_contact) return reply(409, { error: "Do Not Contact – kein Entwurf.", code: "DO_NOT_CONTACT" });
     if (!lead.email) return reply(400, { error: "Keine E-Mail-Adresse für diesen Lead.", code: "NO_EMAIL" });
-    const r = await queue.create({ recipient: lead.email, subject: body.subject, body: body.body, intent: "sales", delivery: "draft" }, actor.user_id);
+    // TF-064: Metadaten nur aus Session (actor) + autorisiertem Lead (market, lead_id) – der Mail-Worker wählt damit das VN-Profil.
+    const meta = { actor_user_id: actor.user_id, market: lead.market === "VN" ? "VN" : "CH", locale: lead.market === "VN" ? "vi-VN" : actor.locale, lead_id: lead.lead_id };
+    const r = await queue.create({ recipient: lead.email, subject: body.subject, body: body.body, intent: "sales", delivery: "draft" }, actor.user_id, meta);
     return r.status >= 400 ? reply(r.status, { error: r.error, code: "BAD_PARAMS" }) : reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "draft", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
   }
 }

@@ -10,101 +10,101 @@
 </head>
 <body>
 <main>
-  <h1>Sicherer Website-Zugang</h1>
-  <p class="lead">Auftrag «Check &amp; Reparatur» · Helvetic Webdesign</p>
+  <h1 data-t="h1">Sicherer Website-Zugang</h1>
+  <p class="lead" data-t="lead">Auftrag «Check &amp; Reparatur» · Helvetic Webdesign</p>
 
-  <section id="loading"><p>Link wird geprüft …</p></section>
-  <section id="invalid" hidden><p class="err" id="invalidMsg">Link ungültig, bereits verwendet oder abgelaufen. Bitte melden Sie sich bei uns.</p></section>
-  <section id="hkDone" hidden><p class="ok" id="hkDoneMsg">Vielen Dank – Ihre Rückmeldung ist bei uns eingegangen. Dieser Link ist jetzt ungültig.</p></section>
+  <section id="loading"><p data-t="loading">Link wird geprüft …</p></section>
+  <section id="invalid" hidden><p class="err" id="invalidMsg" data-t="invalid">Link ungültig, bereits verwendet oder abgelaufen. Bitte melden Sie sich bei uns.</p></section>
+  <section id="hkDone" hidden><p class="ok" id="hkDoneMsg" data-t="hkDone">Vielen Dank – Ihre Rückmeldung ist bei uns eingegangen. Dieser Link ist jetzt ungültig.</p></section>
   <section id="done" hidden>
-    <p class="ok">Vielen Dank – Ihr Zugang wurde verschlüsselt übermittelt. Dieser Link ist jetzt ungültig.</p>
-    <p>Wir erstellen zuerst eine vollständige Sicherung Ihrer Website und beginnen danach mit der vereinbarten Reparatur.
+    <p class="ok" data-t="done1">Vielen Dank – Ihr Zugang wurde verschlüsselt übermittelt. Dieser Link ist jetzt ungültig.</p>
+    <p data-t="done2">Wir erstellen zuerst eine vollständige Sicherung Ihrer Website und beginnen danach mit der vereinbarten Reparatur.
        Nach Abschluss bitten wir Sie, den temporären Zugang wieder zu entfernen.</p>
   </section>
 
   <form id="form" hidden autocomplete="off" novalidate>
-    <p>Website: <b id="domain"></b> · Link gültig bis <span id="expires"></span></p>
+    <p><span data-t="site">Website:</span> <b id="domain"></b> · <span data-t="validUntil">Link gültig bis</span> <span id="expires"></span></p>
     <div class="note">
-      <b>Bitte so wenig wie möglich freigeben – in dieser Reihenfolge:</b>
+      <b data-t="noteH">Bitte so wenig wie möglich freigeben – in dieser Reihenfolge:</b>
       <ol>
-        <li>Uns als Mitarbeiter/Collaborator einladen (z. B. GitHub, Netlify, Ihr Website-System) – dann ist kein Passwort nötig.</li>
-        <li>Einen temporären Benutzer im Website-System (CMS) mit nur den nötigen Rechten anlegen.</li>
-        <li>Einen temporären SFTP/SSH-Benutzer nur für das Website-Verzeichnis anlegen.</li>
-        <li>Nur wenn nichts davon möglich ist: Zugangsdaten hier eingeben.</li>
+        <li data-t="n1">Uns als Mitarbeiter/Collaborator einladen (z. B. GitHub, Netlify, Ihr Website-System) – dann ist kein Passwort nötig.</li>
+        <li data-t="n2">Einen temporären Benutzer im Website-System (CMS) mit nur den nötigen Rechten anlegen.</li>
+        <li data-t="n3">Einen temporären SFTP/SSH-Benutzer nur für das Website-Verzeichnis anlegen.</li>
+        <li data-t="n4">Nur wenn nichts davon möglich ist: Zugangsdaten hier eingeben.</li>
       </ol>
-      Bitte <b>keine</b> Haupt- oder Master-Passwörter und keine Passwörter per E-Mail. Ihre Angaben werden in Ihrem Browser
-      verschlüsselt, bevor sie gesendet werden.
+      <span data-t="noteA">Bitte</span> <b data-t="noteB">keine</b> <span data-t="noteC">Haupt- oder Master-Passwörter und keine Passwörter per E-Mail. Ihre Angaben werden in Ihrem Browser
+      verschlüsselt, bevor sie gesendet werden.</span>
     </div>
 
-    <label for="type">Zugangsart</label>
+    <label for="type" data-t="lblType">Zugangsart</label>
     <select id="type" required>
-      <option value="github_netlify">GitHub / Netlify (Einladung als Collaborator)</option>
-      <option value="wordpress_cms">WordPress / Website-System (CMS)</option>
+      <option value="github_netlify" data-t="optGh">GitHub / Netlify (Einladung als Collaborator)</option>
+      <option value="wordpress_cms" data-t="optWp">WordPress / Website-System (CMS)</option>
       <option value="sftp">SFTP</option>
       <option value="ssh">SSH</option>
-      <option value="hosting">Hosting-Konto (Zugriffsberechtigung)</option>
-      <option value="other">Andere</option>
+      <option value="hosting" data-t="optHosting">Hosting-Konto (Zugriffsberechtigung)</option>
+      <option value="other" data-t="optOther">Andere</option>
     </select>
     <p class="hint" id="typeHint"></p>
 
-    <label for="host">Login-Adresse / Server / Repository (optional)</label>
+    <label for="host" data-t="lblHost">Login-Adresse / Server / Repository (optional)</label>
     <input id="host" type="text" maxlength="300" spellcheck="false" autocapitalize="off">
-    <label for="user">Benutzername / eingeladener Benutzer (optional)</label>
+    <label for="user" data-t="lblUser">Benutzername / eingeladener Benutzer (optional)</label>
     <input id="user" type="text" maxlength="200" spellcheck="false" autocapitalize="off">
-    <label for="secret">Temporäres Passwort / Token / Einladungscode (optional)</label>
+    <label for="secret" data-t="lblSecret">Temporäres Passwort / Token / Einladungscode (optional)</label>
     <input id="secret" type="password" maxlength="2000" autocomplete="new-password">
 
     <fieldset id="serverFields" hidden>
-      <legend>Server-Angaben für SFTP/SSH (alles optional – hilft uns, ohne Rückfragen sicher zu starten)</legend>
+      <legend data-t="legend">Server-Angaben für SFTP/SSH (alles optional – hilft uns, ohne Rückfragen sicher zu starten)</legend>
       <label for="port">Port</label>
       <input id="port" type="text" inputmode="numeric" maxlength="5" placeholder="22" spellcheck="false" autocapitalize="off">
-      <label for="root">Website-Verzeichnis auf dem Server</label>
-      <input id="root" type="text" maxlength="500" placeholder="z. B. public_html oder /home/benutzer/www" spellcheck="false" autocapitalize="off">
-      <p class="hint">Wenn Sie es nicht wissen: leer lassen. Wir suchen es dann nur lesend und fragen nach, falls es nicht eindeutig ist.</p>
-      <label for="hostKey">Fingerprint des Servers (SSH-Host-Key, SHA256:…)</label>
+      <label for="root" data-t="lblRoot">Website-Verzeichnis auf dem Server</label>
+      <input id="root" type="text" maxlength="500" placeholder="z. B. public_html oder /home/benutzer/www" data-ph="phRoot" spellcheck="false" autocapitalize="off">
+      <p class="hint" data-t="hintRoot">Wenn Sie es nicht wissen: leer lassen. Wir suchen es dann nur lesend und fragen nach, falls es nicht eindeutig ist.</p>
+      <label for="hostKey" data-t="lblHostKey">Fingerprint des Servers (SSH-Host-Key, SHA256:…)</label>
       <input id="hostKey" type="text" maxlength="80" placeholder="SHA256:…" spellcheck="false" autocapitalize="off">
-      <p class="hint">Steht oft im Kundenbereich Ihres Hosting-Anbieters. Ohne Angabe bitten wir Sie später um eine kurze Bestätigung – vorher verbinden wir uns nicht.</p>
-      <label for="passphrase">Passphrase des Schlüssels (nur bei SSH-Schlüssel mit Passphrase)</label>
+      <p class="hint" data-t="hintHostKey">Steht oft im Kundenbereich Ihres Hosting-Anbieters. Ohne Angabe bitten wir Sie später um eine kurze Bestätigung – vorher verbinden wir uns nicht.</p>
+      <label for="passphrase" data-t="lblPass">Passphrase des Schlüssels (nur bei SSH-Schlüssel mit Passphrase)</label>
       <input id="passphrase" type="password" maxlength="500" autocomplete="new-password">
-      <label for="stack">Website-System</label>
+      <label for="stack" data-t="lblStack">Website-System</label>
       <select id="stack">
-        <option value="unknown">Weiss nicht</option>
+        <option value="unknown" data-t="stUnknown">Weiss nicht</option>
         <option value="wordpress">WordPress</option>
-        <option value="static">Einfache HTML-Website</option>
-        <option value="php">Andere PHP-Website</option>
-        <option value="other">Anderes</option>
+        <option value="static" data-t="stStatic">Einfache HTML-Website</option>
+        <option value="php" data-t="stPhp">Andere PHP-Website</option>
+        <option value="other" data-t="stOther">Anderes</option>
       </select>
-      <label for="provider">Hosting-Anbieter</label>
-      <input id="provider" type="text" maxlength="80" placeholder="z. B. Hostpoint, Infomaniak, cyon" spellcheck="false">
+      <label for="provider" data-t="lblProvider">Hosting-Anbieter</label>
+      <input id="provider" type="text" maxlength="80" placeholder="z. B. Hostpoint, Infomaniak, cyon" data-ph="phProvider" spellcheck="false">
     </fieldset>
-    <label for="notes">Hinweise (optional)</label>
+
+    <label for="notes" data-t="lblNotes">Hinweise (optional)</label>
     <textarea id="notes" maxlength="2000" rows="3"></textarea>
 
-    <label for="dom">Domain der Website (bitte bestätigen)</label>
+    <label for="dom" data-t="lblDom">Domain der Website (bitte bestätigen)</label>
     <input id="dom" type="text" maxlength="253" required spellcheck="false" autocapitalize="off">
 
     <label class="consent"><input id="consent" type="checkbox" required> <span id="consentText"></span></label>
-
     <p class="err" id="formErr" hidden></p>
-    <button id="send" type="submit">Verschlüsselt übermitteln</button>
+    <button id="send" type="submit" data-t="send">Verschlüsselt übermitteln</button>
   </form>
 
   <form id="hkForm" hidden autocomplete="off" novalidate>
-    <p>Website: <b id="hkDomain"></b> · Link gültig bis <span id="hkExpires"></span></p>
+    <p><span data-t="site">Website:</span> <b id="hkDomain"></b> · <span data-t="validUntil">Link gültig bis</span> <span id="hkExpires"></span></p>
     <div class="note">
-      Bevor wir uns mit Ihrem Server verbinden, prüfen wir sein digitales Sicherheitsmerkmal (Fingerprint). So ist sicher, dass wir
-      wirklich mit Ihrem Server sprechen. Bitte vergleichen Sie das Merkmal unten <b>Zeichen für Zeichen</b> mit der Angabe Ihres
+      <span data-t="hkNoteA">Bevor wir uns mit Ihrem Server verbinden, prüfen wir sein digitales Sicherheitsmerkmal (Fingerprint). So ist sicher, dass wir
+      wirklich mit Ihrem Server sprechen. Bitte vergleichen Sie das Merkmal unten</span> <b data-t="hkNoteB">Zeichen für Zeichen</b> <span data-t="hkNoteC">mit der Angabe Ihres
       Hosting-Anbieters (Kundenbereich unter «SSH»/«SFTP» oder beim Support erfragen). Bis zu Ihrer Bestätigung verbinden wir uns
-      nicht mit Ihren Zugangsdaten.
+      nicht mit Ihren Zugangsdaten.</span>
     </div>
-    <label>Vom Server gemeldeter Fingerprint</label>
+    <label data-t="lblFp">Vom Server gemeldeter Fingerprint</label>
     <code id="hkFingerprint" class="fp"></code>
-    <label for="hkDom">Domain der Website (bitte bestätigen)</label>
+    <label for="hkDom" data-t="lblDom">Domain der Website (bitte bestätigen)</label>
     <input id="hkDom" type="text" maxlength="253" required spellcheck="false" autocapitalize="off">
     <label class="consent"><input id="hkConsent" type="checkbox"> <span id="hkConfirmText"></span></label>
     <p class="err" id="hkErr" hidden></p>
-    <button id="hkYes" type="submit">Fingerprint stimmt überein</button>
-    <button id="hkNo" type="button" class="secondary">Stimmt NICHT überein</button>
+    <button id="hkYes" type="submit" data-t="hkYes">Fingerprint stimmt überein</button>
+    <button id="hkNo" type="button" class="secondary" data-t="hkNo">Stimmt NICHT überein</button>
   </form>
 </main>
 <script type="module" src="access.js"></script>

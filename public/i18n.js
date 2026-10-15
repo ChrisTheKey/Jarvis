@@ -5,6 +5,13 @@ import { STAGE_LABEL, CALL_LABEL, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, A
   CARDS, PIPELINE_CARDS, ERROR_CARDS, SORTS, ERR_WORDS_DE, ISSUE_WORDS_DE, CSV_COLUMNS } from "./crm-model.js";
 
 export const LOCALES = Object.freeze(["de-CH", "vi-VN"]);
+// TF-064: Anzeige von Beträgen (nur Darstellung – Preise kommen immer vom Server/pricing.js): CHF 150.00 bzw. 990.000 ₫.
+export function money(amount, currency = "CHF") {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return "–";
+  if (currency === "VND") { const v = Math.round(n); return `${v < 0 ? "-" : ""}${String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ".")} ₫`; }
+  return `${currency} ${n.toFixed(2)}`;
+}
 export const normLocale = (l) => (LOCALES.includes(l) ? l : "de-CH");
 const labelsOf = (cards) => Object.fromEntries(Object.entries(cards).map(([k, c]) => [k, c.label]));
 
@@ -137,6 +144,17 @@ const DE = {
   "code.RATE_LIMIT": "Zu viele Änderungen – bitte kurz warten.", "code.DO_NOT_CONTACT": "Do Not Contact – keine Kontaktaktion.", "code.UNKNOWN_LEAD": "Unbekannter Lead.",
   "code.BAD_PARAMS": "Ungültige Eingabe.", "code.FORBIDDEN": "Keine Berechtigung.", "code.NO_EMAIL": "Für diesen Lead ist keine E-Mail-Adresse bekannt.",
   "code.default": "Aktion fehlgeschlagen.",
+  // TF-064 Aufträge (VN-Lead, Sicht Owner)
+  "sec.order": "H · Auftrag", "ord.CHECK": "Check & Anleitung", "ord.FIX": "Check & Reparatur", "ord.confirm": "Der Kunde hat die Bestellung dieser Leistung bestätigt.",
+  "ord.create": "AUFTRAG ANLEGEN", "ord.cancel": "ABBRECHEN", "ord.choose": "Leistung wählen – der Preis ist fest und wird vom Server bestimmt.",
+  "ord.id": "Auftrags-Nr.", "ord.service": "Leistung", "ord.total": "Gesamtpreis", "ord.paid": "Bezahlt", "ord.rest": "Offen", "ord.payStatus": "Zahlungsstatus",
+  "ord.workStatus": "Arbeitsstatus", "ord.commission": "Erwartete Provision", "ord.creating": "Auftrag wird angelegt …", "ord.failed": "Auftrag nicht angelegt",
+  "ord.queued": "Auftrag bestätigt ✓ – wird auf dem VPS angelegt.", "ord.none": "Noch kein Auftrag für diesen Lead.", "ord.open": "Es besteht bereits ein offener Auftrag.",
+  "ord.payNote": "Zahlungen erfasst ausschliesslich Chris. Die Arbeit beginnt nach Eingang der ersten Hälfte (Anzahlung).", "ord.needConfirm": "Bitte die Kundenbestätigung anhaken.",
+  "pay.UNPAID": "Unbezahlt", "pay.PARTIAL": "Teilweise bezahlt", "pay.DEPOSIT_MET": "Anzahlung erhalten", "pay.PAID_FULL": "Vollständig bezahlt", "pay.REFUNDED": "Zurückerstattet",
+  "pay.PAYMENT_REVIEW_REQUIRED": "Zahlung wird geprüft",
+  "code.DUPLICATE_OPEN_ORDER": "Für diesen Lead besteht bereits ein offener Auftrag.", "code.NOT_CONFIRMED": "Kundenbestätigung fehlt.", "code.BAD_STATUS": "Lead-Status erlaubt keinen Auftrag.",
+  "code.PRICE_MISMATCH": "Preisprüfung fehlgeschlagen – nichts angelegt.", "code.CREATE_FAILED": "Auftrag konnte nicht angelegt werden.",
 };
 const VI = {
   "login.title": "Đăng nhập", "login.user": "Tên đăng nhập", "login.password": "Mật khẩu", "login.submit": "Đăng nhập", "login.busy": "Đang đăng nhập …",
@@ -204,7 +222,31 @@ const VI = {
   "code.OUT_OF_SCOPE": "Khách hàng này không thuộc phạm vi của bạn.", "code.SERVER_OFFLINE": "Dịch vụ chưa sẵn sàng – chưa lưu.",
   "code.RATE_LIMIT": "Thao tác quá nhiều – vui lòng đợi một chút.", "code.DO_NOT_CONTACT": "Không liên hệ – không thể thực hiện.", "code.UNKNOWN_LEAD": "Không tìm thấy khách hàng.",
   "code.BAD_PARAMS": "Dữ liệu nhập không hợp lệ.", "code.FORBIDDEN": "Bạn không có quyền.", "code.NO_EMAIL": "Khách hàng này chưa có địa chỉ email.", "code.default": "Thao tác thất bại.",
+  // TF-064 Đơn hàng
+  "sec.order": "H · Đơn hàng", "ord.CHECK": "Kiểm tra & hướng dẫn", "ord.FIX": "Kiểm tra & sửa lỗi", "ord.confirm": "Khách hàng đã xác nhận đặt dịch vụ này.",
+  "ord.create": "TẠO ĐƠN HÀNG", "ord.cancel": "HỦY", "ord.choose": "Chọn dịch vụ – giá cố định do hệ thống xác định.",
+  "ord.id": "Mã đơn hàng", "ord.service": "Dịch vụ", "ord.total": "Tổng giá", "ord.paid": "Đã thanh toán", "ord.rest": "Còn lại", "ord.payStatus": "Trạng thái thanh toán",
+  "ord.workStatus": "Trạng thái công việc", "ord.commission": "Hoa hồng dự kiến", "ord.creating": "Đang tạo đơn hàng …", "ord.failed": "Không tạo được đơn hàng",
+  "ord.queued": "Đã xác nhận đơn hàng ✓ – hệ thống đang tạo đơn.", "ord.none": "Chưa có đơn hàng cho khách hàng này.", "ord.open": "Khách hàng này đã có một đơn hàng đang mở.",
+  "ord.payNote": "Chỉ Chris ghi nhận thanh toán. Công việc bắt đầu sau khi nhận được một nửa giá trị (tiền đặt cọc).", "ord.needConfirm": "Vui lòng đánh dấu xác nhận của khách hàng.",
+  "pay.UNPAID": "Chưa thanh toán", "pay.PARTIAL": "Đã thanh toán một phần", "pay.DEPOSIT_MET": "Đã đủ tiền đặt cọc", "pay.PAID_FULL": "Đã thanh toán đầy đủ", "pay.REFUNDED": "Đã hoàn tiền",
+  "pay.PAYMENT_REVIEW_REQUIRED": "Đang kiểm tra thanh toán",
+  "code.DUPLICATE_OPEN_ORDER": "Khách hàng này đã có một đơn hàng đang mở.", "code.NOT_CONFIRMED": "Thiếu xác nhận của khách hàng.", "code.BAD_STATUS": "Trạng thái khách hàng không cho phép tạo đơn hàng.",
+  "code.PRICE_MISMATCH": "Kiểm tra giá thất bại – chưa tạo đơn hàng.", "code.CREATE_FAILED": "Không tạo được đơn hàng.",
 };
+// TF-064: Arbeitsstatus (Phase des Auftrags) je Sprache.
+export const PHASE_LABELS = Object.freeze({
+  "de-CH": { WAITING_FOR_CONFIRMATION: "Wartet auf Bestätigung", WAITING_FOR_DEPOSIT: "Wartet auf Anzahlung", DEPOSIT_RECEIVED: "Anzahlung erhalten", AUDITING: "Website wird geprüft",
+    REPORT: "Bericht wird erstellt", READY_FOR_DELIVERY: "Bereit zur Übergabe", SENT: "Bericht gesendet", COMPLETED: "Abgeschlossen", COMPLETED_WITH_MANUAL_ITEMS: "Abgeschlossen (manuelle Punkte offen)",
+    CANCELLED: "Storniert", BLOCKED: "Angehalten", WAITING_FOR_ACCESS: "Wartet auf Zugang", ACCESS_REQUEST_SENT: "Zugangs-Anfrage gesendet", ACCESS_RECEIVED: "Zugang erhalten",
+    ACCESS_PROFILE_PREFLIGHT: "Zugang wird geprüft", HOST_KEY_CONFIRMATION: "Wartet auf Sicherheitsbestätigung", WAITING_FOR_ACCESS_PROFILE: "Wartet auf Zugangsangaben", BACKUP: "Sicherung läuft",
+    REPAIRING: "Reparatur läuft", VALIDATING: "Ergebnis wird geprüft", LIVE_RETEST: "Erneute Prüfung", MANUAL_REVIEW: "Manuelle Prüfung nötig", PAYMENT_REVIEW_REQUIRED: "Zahlung wird geprüft" },
+  "vi-VN": { WAITING_FOR_CONFIRMATION: "Chờ xác nhận", WAITING_FOR_DEPOSIT: "Chờ tiền đặt cọc", DEPOSIT_RECEIVED: "Đã nhận tiền đặt cọc", AUDITING: "Đang kiểm tra website",
+    REPORT: "Đang soạn báo cáo", READY_FOR_DELIVERY: "Sẵn sàng bàn giao", SENT: "Đã gửi báo cáo", COMPLETED: "Hoàn thành", COMPLETED_WITH_MANUAL_ITEMS: "Hoàn thành (còn mục xử lý thủ công)",
+    CANCELLED: "Đã hủy", BLOCKED: "Tạm dừng", WAITING_FOR_ACCESS: "Chờ quyền truy cập", ACCESS_REQUEST_SENT: "Đã gửi yêu cầu truy cập", ACCESS_RECEIVED: "Đã nhận quyền truy cập",
+    ACCESS_PROFILE_PREFLIGHT: "Đang kiểm tra quyền truy cập", HOST_KEY_CONFIRMATION: "Chờ xác nhận bảo mật", WAITING_FOR_ACCESS_PROFILE: "Chờ thông tin truy cập", BACKUP: "Đang sao lưu",
+    REPAIRING: "Đang sửa lỗi", VALIDATING: "Đang kiểm tra kết quả", LIVE_RETEST: "Đang kiểm tra lại", MANUAL_REVIEW: "Cần kiểm tra thủ công", PAYMENT_REVIEW_REQUIRED: "Đang kiểm tra thanh toán" },
+});
 export const DICTS = Object.freeze({ "de-CH": DE, "vi-VN": VI });
 export const LABELS = Object.freeze({ "de-CH": DE_LABELS, "vi-VN": VI_LABELS });
 
@@ -221,6 +263,7 @@ export function createI18n(locale) {
     reason: (r) => { const m = String(r || "").match(/^([+-]?\d+)\s+(.*)$/); return m ? `${m[1]} ${L.reasons[m[2]] || m[2]}` : r; },
     // vi: Text je Befund-Typ (VN-Leads liefern ihn bereits vietnamesisch); de: der bestehende Kurztext unverändert.
     issueText: (f) => (vi && f?.type && ISSUE_TYPE_TEXT[loc][f.type]) || f?.text || "",
+    money, phase: (p) => (p ? PHASE_LABELS[loc][p] || (vi ? "–" : p) : "–"),
     codeMsg: (code, fallback) => (D[`code.${code}`] ? t(`code.${code}`) : vi ? t("code.default") : fallback || t("code.default")),
   };
 }

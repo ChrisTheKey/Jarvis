@@ -44,11 +44,16 @@ export function serviceHealthy(dir = WORKER_DIR, now = Date.now(), maxAgeMs = 5 
 }
 
 // Ein Durchlauf: CHF-480 und CHF-150 mit der Outbox als einzigem Versandweg. Fehler eines Workflows stoppen den anderen nie.
-export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR, crmExportDir = CRM_EXPORT_DIR, intake = null, log = () => {}, runRepair = null, runCheck150 = null } = {}) {
+export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR, crmExportDir = CRM_EXPORT_DIR, intake = null, orderIntake = null, log = () => {}, runRepair = null, runCheck150 = null } = {}) {
   const mailer = createOutboxMailer({ dir: outboxDir });
+  const out = {};
+  // TF-064: bestätigte VN-Aufträge (Lap/Chris über /api/sales) übernehmen – vor den Workflows, Fehler stoppen den Service nie.
+  if (orderIntake) {
+    try { out.vn_orders = await (await import("./order-intake.js")).syncOrderIntake({ dir, client: orderIntake, log }); }
+    catch (e) { out.vn_orders = { error: true }; log("error", "vn_order_intake_failed", { error: String(e.message).slice(0, 160) }); }
+  }
   runRepair ||= (await import("./repair-workflow.js")).runRepairOrders;
   runCheck150 ||= (await import("./check-150-workflow.js")).runCheck150Orders;
-  const out = {};
   try { out.repair = await runRepair({ dir, gmail: mailer, intake, log }); if (out.repair?.advanced) log("info", "repair_orders_processed", out.repair); }
   catch (e) { out.repair = { error: true }; log("error", "repair_orders_failed", { error: e.message }); }
   try { out.check150 = await runCheck150({ dir, gmail: mailer, log }); if (out.check150?.advanced) log("info", "check150_orders_processed", out.check150); }
@@ -90,12 +95,13 @@ async function loop() {
   const nap = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
   setInterval(() => heartbeat(dir, process.pid, SERVICE_LOCK), 60_000).unref();
   const { intakeClient } = await import("./access-intake.js");
+  const { orderIntakeClient } = await import("./order-intake.js");
   const { syncConfig } = await import("./local-state.js");
   log("info", "repair_service_started", { pid: process.pid, commit: process.env.JARVIS_COMMIT || null, outbox: outboxStatus(OUTBOX_DIR).exists });
   try { await backupLocal({ dir, log, first: true }); } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
   while (!stop) {
     heartbeat(dir, process.pid, SERVICE_LOCK);
-    await repairServiceIteration({ dir, intake: intakeClient({ config: syncConfig() }), log });
+    await repairServiceIteration({ dir, intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log });
     try { await backupLocal({ dir, log }); } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
     if (!stop) await nap(pollMs());
   }
@@ -114,8 +120,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const bad = isolationViolations();
       if (bad.length) { console.error("Repair-Service verweigert den Lauf:\n  - " + bad.join("\n  - ")); return 2; }
       const { intakeClient } = await import("./access-intake.js");
+      const { orderIntakeClient } = await import("./order-intake.js");
       const { syncConfig } = await import("./local-state.js");
-      console.log(JSON.stringify(await repairServiceIteration({ intake: intakeClient({ config: syncConfig() }), log: createLogger(WORKER_DIR) }), null, 2));
+      console.log(JSON.stringify(await repairServiceIteration({ intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log: createLogger(WORKER_DIR) }), null, 2));
       return 0;
     },
   }[arg] || loop;

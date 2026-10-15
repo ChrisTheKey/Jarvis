@@ -18,6 +18,7 @@
 //     Abweichung. Kein Chiffrat nötig, keine Zugangsdaten. Gleiche Regeln: Token-Hash, Ablauf, einmalig, Domain exakt.
 import crypto from "node:crypto";
 import { safeEqual } from "./shared-state.js";
+import { vnConsentText, vnHostKeyConfirmText, VN_REPAIR_SCOPE } from "./vn-customer-texts.js";
 
 export const ACCESS_TYPES = Object.freeze(["github_netlify", "wordpress_cms", "sftp", "ssh", "hosting", "other"]);
 export const INTAKE_PURPOSES = Object.freeze(["access", "host_key_confirmation"]);
@@ -27,16 +28,18 @@ export const INTAKE_TTL_MS = 72 * 3600_000;
 const MAX_TTL_MS = 7 * 24 * 3600_000;
 export const MAX_ENVELOPE_CHARS = 16_000;
 const MAX_BODY = 32_000;
-export const ORDER_ID_RE = /^RF480-\d{8}-[0-9a-f]{6}$/;
+export const ORDER_ID_RE = /^(RF480|VNFIX)-\d{8}-[0-9a-f]{6}$/; // TF-064: VN-Reparaturaufträge (VNFIX-…) gleicher Weg
+export const INTAKE_LOCALES = Object.freeze(["de-CH", "vi-VN"]);
 export const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const DOMAIN_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 export const normDomain = (d = "") => String(d).trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
 export const tokenHash = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
-export const consentText = (domain) => `Ich bestätige, dass ich berechtigt bin, diesen Zugang bereitzustellen, und erlaube Helvetic Webdesign/Jarvis, die vereinbarten Reparaturen auf ${domain} im Rahmen dieses Auftrags durchzuführen.`;
-export const hostKeyConfirmText = (domain) => `Ich habe den angezeigten Fingerprint mit der Angabe meines Hosting-Anbieters für ${domain} verglichen – er stimmt exakt überein.`;
+export const consentText = (domain, locale = "de-CH") => locale === "vi-VN" ? vnConsentText(domain) : `Ich bestätige, dass ich berechtigt bin, diesen Zugang bereitzustellen, und erlaube Helvetic Webdesign/Jarvis, die vereinbarten Reparaturen auf ${domain} im Rahmen dieses Auftrags durchzuführen.`;
+export const hostKeyConfirmText = (domain, locale = "de-CH") => locale === "vi-VN" ? vnHostKeyConfirmText(domain) : `Ich habe den angezeigten Fingerprint mit der Angabe meines Hosting-Anbieters für ${domain} verglichen – er stimmt exakt überein.`;
 export const REPAIR_SCOPE = "Vereinbarte Reparaturen im Rahmen des Auftrags «Check & Reparatur» (CHF 480) – keine Erweiterung des Umfangs.";
+export const repairScope = (locale = "de-CH") => (locale === "vi-VN" ? VN_REPAIR_SCOPE : REPAIR_SCOPE);
 
 // Chiffrat-Format prüfen (Inhalt ist absichtlich nicht lesbar). Nur exakt diese Felder, nur Base64, begrenzte Grösse.
 export function validEnvelope(e) {
@@ -78,9 +81,11 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
       if (b.op === "register") {
         const exp = Date.parse(b.expires_at);
         const purpose = b.purpose ?? "access";
+        const locale = b.locale ?? "de-CH"; // TF-064: Formularsprache (VN-Aufträge vi-VN)
         if (!ORDER_ID_RE.test(b.order_id || "") || !DOMAIN_RE.test(b.domain || "") || !HASH_RE.test(b.token_hash || "")
           || !Number.isFinite(exp) || exp <= +t || exp - +t > MAX_TTL_MS || !validPublicKey(b.public_key) || !INTAKE_PURPOSES.includes(purpose)
-          || (purpose === "host_key_confirmation" && !HOST_KEY_RE.test(b.host_key_candidate || ""))) return reply(400, { error: "Ungültige Registrierung." });
+          || (purpose === "host_key_confirmation" && !HOST_KEY_RE.test(b.host_key_candidate || "")) || !INTAKE_LOCALES.includes(locale)
+          || (String(b.order_id).startsWith("VNFIX-") !== (locale === "vi-VN"))) return reply(400, { error: "Ungültige Registrierung." });
         // Ein Auftrag hat höchstens EINEN gültigen Link: ältere, unbenutzte Registrierungen desselben Auftrags verfallen sofort.
         for (const k of await store.list("t/")) {
           const e = (await store.get(k))?.data;
@@ -89,7 +94,7 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
           if (k !== key(b.token_hash)) await store.delete(k);
         }
         await store.set(key(b.token_hash), { order_id: b.order_id, domain: b.domain, token_hash: b.token_hash, expires_at: new Date(exp).toISOString(),
-          public_key: b.public_key, registered_at: t.toISOString(), purpose, ...(purpose === "host_key_confirmation" ? { host_key_candidate: b.host_key_candidate } : {}) });
+          public_key: b.public_key, registered_at: t.toISOString(), purpose, locale, ...(purpose === "host_key_confirmation" ? { host_key_candidate: b.host_key_candidate } : {}) });
         return reply(200, { ok: true });
       }
       if (b.op === "pull") {
@@ -113,10 +118,11 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
       const e = cur?.data;
       if (!e || e.used_at || Date.parse(e.expires_at) <= +t || !safeEqual(tokenHash(b.token), e.token_hash)) return reply(404, { error: GONE });
       const purpose = e.purpose || "access";
+      const loc = INTAKE_LOCALES.includes(e.locale) ? e.locale : "de-CH";
       if (b.op === "info") {
-        if (purpose === "host_key_confirmation") return reply(200, { purpose, domain: e.domain, expires_at: e.expires_at, host_key_candidate: e.host_key_candidate, confirm_text: hostKeyConfirmText(e.domain) });
+        if (purpose === "host_key_confirmation") return reply(200, { purpose, domain: e.domain, expires_at: e.expires_at, host_key_candidate: e.host_key_candidate, confirm_text: hostKeyConfirmText(e.domain, loc), ...(loc === "vi-VN" ? { locale: loc } : {}) });
         return reply(200, { purpose, domain: e.domain, expires_at: e.expires_at, public_key: e.public_key,
-          access_types: ACCESS_TYPES, consent_text: consentText(e.domain), scope: REPAIR_SCOPE });
+          access_types: ACCESS_TYPES, consent_text: consentText(e.domain, loc), scope: repairScope(loc), ...(loc === "vi-VN" ? { locale: loc } : {}) });
       }
       if ((b.purpose ?? "access") !== purpose) return reply(400, { error: "Falsches Formular für diesen Link." });
       if (purpose === "host_key_confirmation") {
@@ -125,7 +131,7 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
         if (b.host_key !== e.host_key_candidate) return reply(400, { error: "Der Fingerprint passt nicht zu diesem Link." });
         if (b.decision === "confirm" && b.consent !== true) return reply(400, { error: "Bitte bestätigen Sie den Vergleich." });
         const next = { ...e, used_at: t.toISOString(), submission: { submitted_at: t.toISOString(), purpose, access_domain: e.domain, decision: b.decision,
-          host_key: e.host_key_candidate, consent: b.decision === "confirm", confirm_text: b.decision === "confirm" ? hostKeyConfirmText(e.domain) : null } };
+          host_key: e.host_key_candidate, consent: b.decision === "confirm", confirm_text: b.decision === "confirm" ? hostKeyConfirmText(e.domain, loc) : null } };
         if (!(await store.set(key(e.token_hash), next, { etag: cur.etag }))) return reply(404, { error: GONE });
         return reply(200, { ok: true });
       }
@@ -134,7 +140,7 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
       if (b.consent !== true) return reply(400, { error: "Die Reparaturfreigabe ist Pflicht." });
       if (!validEnvelope(b.envelope)) return reply(400, { error: "Zugangsdaten müssen verschlüsselt übermittelt werden." });
       const next = { ...e, used_at: t.toISOString(), submission: { submitted_at: t.toISOString(), access_type: b.access_type, access_domain: e.domain,
-        consent: true, consent_text: consentText(e.domain), envelope: b.envelope } };
+        consent: true, consent_text: consentText(e.domain, loc), envelope: b.envelope } };
       // Atomar: nur wenn sich der Eintrag seit dem Lesen nicht verändert hat – eine zweite (parallele) Einreichung scheitert.
       if (!(await store.set(key(e.token_hash), next, { etag: cur.etag }))) return reply(404, { error: GONE });
       return reply(200, { ok: true });

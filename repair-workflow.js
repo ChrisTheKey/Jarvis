@@ -60,7 +60,9 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale, recordDirectSale } from "./sales.js";
-import { paymentGateForOrder, paymentSummary, paymentThresholdChf } from "./payments.js";
+import { paymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText } from "./payments.js";
+import { offerInfo, isFixOffer } from "./pricing.js";
+import { isVnOrder, buildVnAccessRequestMail, buildVnHostKeyConfirmationMail, buildVnRepairReport, buildVnRepairDeliveryMail, vnReportSubject } from "./vn-customer-texts.js";
 import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIntakeToken, openAccessCredential, destroyAccessSecret,
   markSecretDestroyed, syncAccessIntake, intakeClient } from "./access-intake.js";
 import { profileRecord, profileReason, HOST_KEY_CONFIRMED_SOURCES, PROFILE_STATUSES } from "./repair-adapters/profile-builder.js";
@@ -71,6 +73,9 @@ import { combineDecisions, rollbackMatchesBaseline, safeSnapshot, browserRuntime
 import { REPAIR_FINDINGS_FILE, normalizeIssue, dedupeFindings, rankFindings } from "./site-findings.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
+// Gate-Vergleich für Zustandsgründe: CH exakt wie bisher «CHF 240 ≥ 240», VN «1.950.000 ₫ ≥ 1.950.000 ₫».
+const geText = (g) => (g.currency === "VND" ? `${amountText(g.paid, "VND")} ≥ ${amountText(g.required, "VND")}` : `CHF ${g.paid_chf} ≥ ${g.required_chf}`);
+const samePaid = (stored, gate) => gatePaid(stored) === gatePaid(gate);
 export const REPAIR_OFFER = "REPAIR_FIX_500"; // Kundenbezeichnung „Check & Reparatur“, Preis aus OFFERS (CHF 480). Keine dritte Preisstufe.
 // Nachrichtenklasse der Liefermail (TF-046): Erfüllung eines bezahlten Kundenauftrags – nie Cold-Outreach/Marketing.
 export const FULFILLMENT_CLASS = "CUSTOMER_ORDER_FULFILLMENT";
@@ -170,9 +175,13 @@ export async function fullSiteAudit(website, { auditor = null, now = () => new D
 
 // ---------- Order-Modell ----------
 const DELIVERY_EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
-export function createRepairOrder(store, { domain, website = null, lead_id = null, company = null, delivery_email = null, contact_name = null, now = new Date() } = {}) {
+// TF-064: offer_class VN_REPAIR_FIX → VN-Auftrag (VNFIX-…, market VN, currency VND, Preis/Schwelle aus pricing.js, vietnamesische
+// Kundentexte). Gleicher sicherer Workflow; CH-Aufträge bleiben exakt im bisherigen Format (RF480-…, price_chf, CHF).
+export function createRepairOrder(store, { domain, website = null, lead_id = null, company = null, delivery_email = null, contact_name = null, offer_class = REPAIR_OFFER, vn = null, now = new Date() } = {}) {
   const d = normDomain(domain);
   if (!d) throw new Error("Domain erforderlich.");
+  const info = offerInfo(offer_class);
+  if (!info || !isFixOffer(offer_class)) throw new Error(`Unbekanntes Reparatur-Angebot "${offer_class}".`);
   // Verifizierte Kundenadresse des bestätigten Auftrags (optional): nur an sie darf die automatische Zugangs-Anfrage
   // gehen (TF-041) – NIE automatisch eine alte Cold-Outreach-Adresse. Ohne Adresse gibt es keine automatische Anfrage.
   if (delivery_email != null && !DELIVERY_EMAIL_RE.test(String(delivery_email))) throw new Error("Ungültige Kunden-E-Mail (--email) – weglassen oder gültige Adresse des bestätigten Auftrags angeben.");
@@ -180,12 +189,15 @@ export function createRepairOrder(store, { domain, website = null, lead_id = nul
   // Höchstens ein offener Auftrag je Domain – ein zweiter Auftrag entsteht erst, wenn der erste abgeschlossen/blockiert ist.
   const open = Object.values(data.orders || {}).find((o) => normDomain(o.domain) === d && !TERMINAL.has(o.state));
   if (open) throw new Error(`Für ${d} läuft bereits Auftrag ${open.order_id} (${open.state}).`);
-  const order_id = `RF480-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
+  const order_id = `${info.order_prefix}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
+  const money = info.market === "VN"
+    ? { offer_class, market: "VN", currency: "VND", price_amount: info.price, locale: "vi-VN", payment: { required: info.deposit, paid: 0, currency: "VND", satisfied: false }, ...(vn || {}) }
+    : { offer_class: REPAIR_OFFER, price_chf: OFFERS[REPAIR_OFFER].price, currency: "CHF", payment: { required_chf: OFFERS[REPAIR_OFFER].price / 2, paid_chf: 0, satisfied: false } };
   const order = {
-    order_id, offer_class: REPAIR_OFFER, price_chf: OFFERS[REPAIR_OFFER].price, currency: "CHF",
+    order_id, ...money,
     lead_id: lead_id || d, domain: d, website: website || `https://${d}/`, company,
     delivery_email: delivery_email ? String(delivery_email).toLowerCase() : null, contact_name,
-    payment: { required_chf: OFFERS[REPAIR_OFFER].price / 2, paid_chf: 0, satisfied: false }, access_request: null,
+    access_request: null,
     customer_authorized_repair: false, authorization: null,
     state: "ORDER_RECEIVED", state_history: [{ at: now.toISOString(), from: null, to: "ORDER_RECEIVED", reason: "Auftrag erfasst" }],
     stack: null, access: null, backup: null,
@@ -215,7 +227,7 @@ export function createConfirmedRepairOrder(store, { domain, website = null, comp
 // Stornierter (voided) CHF-480-Verkauf für die Domain des Auftrags (TF-040/TF-046) – dann nie Reparatur oder Lieferung.
 export function repairSaleVoided(store, order = {}) {
   const sale = store.read("sales.json", { records: {} }).records?.[normDomain(order.domain)]?.sale;
-  return !!sale && sale.selected_offer === REPAIR_OFFER && isVoidedSale(sale);
+  return !!sale && sale.selected_offer === (order.offer_class || REPAIR_OFFER) && isVoidedSale(sale);
 }
 
 function saveOrder(store, order) {
@@ -383,8 +395,9 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       if (!order[field]?.draft_id) {
         // Neuer One-Time-Link: nur der Hash wird registriert/gespeichert; der Token steht ausschliesslich in der Mail.
         const tk = newIntakeToken({ now: t });
-        await intake.register({ order_id: order.order_id, domain: order.domain, token_hash: tk.token_hash, expires_at: tk.expires_at, public_key: accessKeys(store.dir).publicKeyPem, ...register });
-        const mail = build({ link: accessLink(intake.origin, tk.token), expires_at: tk.expires_at });
+        await intake.register({ order_id: order.order_id, domain: order.domain, token_hash: tk.token_hash, expires_at: tk.expires_at, public_key: accessKeys(store.dir).publicKeyPem, ...register,
+          ...(isVnOrder(order) ? { locale: "vi-VN" } : {}) }); // TF-064: Formular für VN-Kunden auf Vietnamesisch
+        const mail = build({ link: accessLink(intake.origin, tk.token, isVnOrder(order) ? "vi-VN" : "de-CH"), expires_at: tk.expires_at });
         const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: ACCESS_REQUEST_CLASS });
         order[field] = { to: order.delivery_email, draft_id: d.draftId, message_class: ACCESS_REQUEST_CLASS, token_hash: tk.token_hash, expires_at: tk.expires_at, created_at: t.toISOString(), ...extra };
         order.updated_at = t.toISOString();
@@ -558,8 +571,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       const gate = paymentGateForOrder(store, order);
       if (!gate.satisfied) {
         order.payment = gate;
-        if (changedWebsite(order)) { block(order, "PAYMENT_REVIEW_REQUIRED", `Zahlung unter die Schwelle gefallen (CHF ${gate.paid_chf} von mind. CHF ${gate.required_chf}), Website wurde bereits verändert – kein automatischer Rollback, Chris entscheidet.`); return false; }
-        transition(order, "PAYMENT_REQUIRED", `Zahlung unter die Schwelle gefallen (CHF ${gate.paid_chf} von mind. CHF ${gate.required_chf}) – noch nichts verändert, wartet.`, t);
+        if (changedWebsite(order)) { block(order, "PAYMENT_REVIEW_REQUIRED", `Zahlung unter die Schwelle gefallen (${gateText(gate)}), Website wurde bereits verändert – kein automatischer Rollback, Chris entscheidet.`); return false; }
+        transition(order, "PAYMENT_REQUIRED", `Zahlung unter die Schwelle gefallen (${gateText(gate)}) – noch nichts verändert, wartet.`, t);
         saveOrder(store, order); return false;
       }
     }
@@ -581,9 +594,9 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       // TF-041: Zahlung ist KEINE Freigabe. Ist die Schwelle erfüllt, bekommt der Kunde den sicheren Link – dort erteilt er
       // Zugang UND (Pflicht) die Reparaturfreigabe. Vorher: keine Anfrage, kein Intake.
       const gate = paymentGateForOrder(store, order);
-      if (order.payment?.paid_chf !== gate.paid_chf) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
+      if (!samePaid(order.payment, gate)) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
       if (gate.satisfied && canRequestAccess(order) && !order.access_request?.sent_at) {
-        transition(order, "ACCESS_REQUESTED", `Zahlungsschwelle erfüllt (CHF ${gate.paid_chf} ≥ ${gate.required_chf}) – sicherer Link für Zugang + Freigabe`, t);
+        transition(order, "ACCESS_REQUESTED", `Zahlungsschwelle erfüllt (${geText(gate)}) – sicherer Link für Zugang + Freigabe`, t);
         saveOrder(store, order); return true;
       }
       return false; // wartet auf Zahlung bzw. Freigabe
@@ -594,12 +607,12 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       // kein Login, keine Website-Änderung, keine Reparatur. Verbucht Chris die Zahlung, läuft der Auftrag automatisch weiter.
       const gate = paymentGateForOrder(store, order);
       if (!gate.satisfied) {
-        if (order.payment?.paid_chf !== gate.paid_chf) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
+        if (!samePaid(order.payment, gate)) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
         return false; // wartet auf Zahlung
       }
       order.payment = gate;
       const next = authorizationOk(order) ? "ACCESS_CHECK" : order.access_request?.sent_at ? "ACCESS_REQUESTED" : "AUTHORIZATION_REQUIRED";
-      transition(order, next, `Zahlungsschwelle erfüllt (CHF ${gate.paid_chf} ≥ ${gate.required_chf})`, t); saveOrder(store, order); return true;
+      transition(order, next, `Zahlungsschwelle erfüllt (${geText(gate)})`, t); saveOrder(store, order); return true;
     }
 
     if (order.state === "ACCESS_CHECK") {
@@ -608,7 +621,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       const gate = paymentGateForOrder(store, order);
       order.payment = gate;
       if (!gate.satisfied) {
-        transition(order, "PAYMENT_REQUIRED", `Zahlung ausstehend: CHF ${gate.paid_chf} von mind. CHF ${gate.required_chf} eingegangen (payments.js record ${order.order_id}).`, t);
+        transition(order, "PAYMENT_REQUIRED", `Zahlung ausstehend: ${gateText(gate)} eingegangen (payments.js record ${order.order_id}).`, t);
         saveOrder(store, order); return false;
       }
       if (!order.stack) {
@@ -665,7 +678,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       // (Zugang + Pflicht-Freigabe, syncAccessIntake) bzw. einen von Chris konfigurierten Adapter-Zugang. Nie Passwörter per Mail.
       const gate = paymentGateForOrder(store, order);
       order.payment = gate;
-      if (!gate.satisfied) { transition(order, "PAYMENT_REQUIRED", `Zahlungsschwelle nicht mehr erfüllt (CHF ${gate.paid_chf} von mind. CHF ${gate.required_chf}).`, t); saveOrder(store, order); return false; }
+      if (!gate.satisfied) { transition(order, "PAYMENT_REQUIRED", `Zahlungsschwelle nicht mehr erfüllt (${gateText(gate)}).`, t); saveOrder(store, order); return false; }
       if (!order.access_request?.sent_at) {
         if (!canRequestAccess(order)) {
           block(order, "BLOCKED_NO_ACCESS", "Keine automatische Zugangs-Anfrage möglich (Kundenadresse, sicherer Link oder Versandweg fehlt) – Zugangsdaten werden nie erraten."); return false;
@@ -980,6 +993,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
 // auftragsgebundenen One-Time-Link – Passwörter werden NIE per E-Mail erfragt oder angenommen. Keine Werbung, keine internen
 // IDs, keine Fachbegriffe. Ohne Link gibt es keine Mail (der Workflow sendet nur mit registriertem Link).
 export function buildAccessRequestMail(order, { link = null, expires_at = null } = {}) {
+  if (isVnOrder(order)) return { ...buildVnAccessRequestMail(order, { link, expires_at }), message_class: ACCESS_REQUEST_CLASS }; // TF-064: VN vollständig Vietnamesisch
   const until = expires_at ? new Intl.DateTimeFormat("de-CH", { dateStyle: "long", timeStyle: "short", timeZone: "Europe/Zurich" }).format(new Date(expires_at)) : null;
   const body = [
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
@@ -1014,6 +1028,7 @@ export function buildAccessRequestMail(order, { link = null, expires_at = null }
 // Kundenadresse, genau einmal, mit One-Time-Link. Der Fingerprint steht nur auf der Link-Seite (nicht geheim, aber unnötig in der
 // Mail); keine Hosts, Benutzer, Pfade oder internen IDs. Bis zur Bestätigung verbindet sich Jarvis nicht mit den Zugangsdaten.
 export function buildHostKeyConfirmationMail(order, { link = null, expires_at = null } = {}) {
+  if (isVnOrder(order)) return { ...buildVnHostKeyConfirmationMail(order, { link, expires_at }), message_class: ACCESS_REQUEST_CLASS };
   const until = expires_at ? new Intl.DateTimeFormat("de-CH", { dateStyle: "long", timeStyle: "short", timeZone: "Europe/Zurich" }).format(new Date(expires_at)) : null;
   const body = [
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
@@ -1047,6 +1062,7 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
   const relevant = issues.filter((i) => RELEVANT.has(i.severity) || i.customer_text);
   const manualOpen = manualItems(order).length;
   const line = (i) => `• ${i.customer_text || "Ein technischer Punkt auf " + (i.page || "Ihrer Website")}`;
+  if (isVnOrder(order)) return { subject: vnReportSubject(order), body: buildVnRepairReport(order, { now, fixed, openForReview, relevant: relevant.length, manualOpen }), created_at: new Date().toISOString() };
   const body = [
     `Webseiten-Check – Abschlussbericht «Check & Reparatur» (CHF ${OFFERS[REPAIR_OFFER].price})`,
     "",
@@ -1085,6 +1101,7 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
 // ---------- Liefermail CUSTOMER_ORDER_FULFILLMENT (TF-046): Abschlussbericht für den bestätigten, bezahlten Kunden ----------
 // Keine Werbung, keine internen IDs/Pfade/Referenzen; der Bericht selbst ist bereits kundentauglich (buildCustomerReport).
 export function buildRepairDeliveryMail(order) {
+  if (isVnOrder(order)) { const m = buildVnRepairDeliveryMail(order, { manualOpen: manualItems(order).length }); return { ...m, inline: m.body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS }; }
   const report = order.report?.body || "";
   const body = [
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
@@ -1106,7 +1123,7 @@ export function buildRepairDeliveryMail(order) {
 const REPORT_FORBIDDEN = [
   ["ip", /\b\d{1,3}(\.\d{1,3}){3}\b/], ["pfad", /(\/home\/|\/var\/|\/opt\/|\/srv\/|\/etc\/|public_html|wp-content\/|[A-Z]:\\)/i],
   ["url", /\b(https?|s?ftp|ssh):\/\//i], ["backup_id", /\bB[0-9a-f]{12}\b|\brepair_backups\b|backup_ref|rollback_point/i],
-  ["git", /\b[0-9a-f]{40}\b|\brepair\/RF480|\bcommit\b|\bbranch\b/i], ["auftrags_id", /\bRF480-\d{8}-[0-9a-f]{6}\b/],
+  ["git", /\b[0-9a-f]{40}\b|\brepair\/(RF480|VNFIX)|\bcommit\b|\bbranch\b/i], ["auftrags_id", /\b(RF480|VNFIX)-\d{8}-[0-9a-f]{6}\b/],
   ["secret", /passwor[td]\s*[:=]|token\s*[:=]|-----BEGIN|api[_-]?key|bearer\s/i], ["debug", /\b(stack|trace|console\.|error:|undefined|null\b|\[object)/i],
 ];
 export function reportUnsafe(text = "", order = {}) {
@@ -1158,7 +1175,8 @@ export function repairPhase(o, pay) {
 // Allowlist-Sicht für Dashboard/Cloud/Handy: Zähler + je Auftrag nur die hier aufgezählten, ungefährlichen Felder.
 // NIE: Evidence, URLs einzelner Befunde, Branch-/Commit-/Deploy-Referenzen, Preview-URLs, Freigabe-Referenzen, Tokens,
 // Token-Hashes, Zahlungsreferenzen, Zugangsdaten oder Kundenadressen, Historie.
-export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domain", "offer_class", "price_chf", "state", "phase", "findings",
+export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domain", "offer_class", "market", "currency", "price_chf", "price_amount", "paid_amount", "payment_required_amount",
+  "rest_to_deposit_amount", "state", "phase", "findings",
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
   "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified",
@@ -1180,6 +1198,9 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
       const pay = paymentSummary(store, o);
       return {
         order_id: o.order_id, company: o.company || null, domain: o.domain, offer_class: o.offer_class, price_chf: o.price_chf,
+        // TF-064: Markt/Währung/Beträge in Auftragswährung (CH zusätzlich wie bisher *_chf).
+        market: pay.market, currency: pay.currency, price_amount: pay.price_amount, paid_amount: pay.paid_amount, payment_required_amount: pay.deposit_amount,
+        rest_to_deposit_amount: pay.rest_to_deposit_amount,
         state: o.state, phase: repairPhase(o, pay), findings: issues.length, repaired: issues.filter((i) => i.repair_status === "repaired").length,
         needs_review: (o.manual_review || []).length,
         backup_ok: !!(o.backup?.rollback_point), desktop_retest: o.retest ? o.retest.desktop?.ok === true : null,
@@ -1187,8 +1208,8 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         production: o.deployment?.deployed === true ? "DEPLOYED" : o.deployment ? "BRANCH_ONLY" : "UNCHANGED",
         report_available: !!o.report,
         // Zahlungsstand (TF-041): nur Zahlen/Flags/Zustandswort aus dem Ledger – nie Referenzen, nie Zahlungsdetails.
-        paid_chf: pay.paid_chf, payment_required_chf: pay.deposit_chf, rest_to_deposit_chf: pay.rest_to_deposit_chf,
-        payment_status: pay.payment_status, payment_ok: pay.deposit_chf != null && pay.paid_chf >= pay.deposit_chf,
+        paid_chf: pay.paid_chf ?? null, payment_required_chf: pay.deposit_chf ?? null, rest_to_deposit_chf: pay.rest_to_deposit_chf ?? null,
+        payment_status: pay.payment_status, payment_ok: pay.deposit_amount != null && pay.paid_amount >= pay.deposit_amount,
         // Zugang: nur Ja/Nein + Zugangsart – nie Link, Token(-Hash), Zugangsdaten oder Tresor-Pfad.
         access_requested: !!o.access_request?.sent_at, access_received: o.access_intake?.status === "RECEIVED" || o.access_intake?.status === "DESTROYED",
         access_type: o.access_intake?.connector_type || null,

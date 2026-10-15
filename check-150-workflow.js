@@ -28,7 +28,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale } from "./sales.js";
-import { paymentGateForOrder, paymentThresholdChf, paymentSummary } from "./payments.js";
+import { paymentGateForOrder, paymentThresholdChf, paymentSummary, gatePaid, gateText, amountText } from "./payments.js";
+import { offerInfo, isCheckOffer } from "./pricing.js";
+import { isVnOrder, vnFindingText, vnInstructionsFor, pageLabelVi, buildVnCheckReport, buildVnCheckDeliveryDraft } from "./vn-customer-texts.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { fullSiteAudit, detectStack, normDomain } from "./repair-workflow.js";
 
@@ -55,29 +57,37 @@ const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 
 // ---------- Bestätigter Auftrag (bestehende Order-Logik: sales.json / recordSale) ----------
-export function confirmedCheck150Sale(store, domain) {
+export function confirmedCheck150Sale(store, domain, offer_class = CHECK150_OFFER) {
   const rec = store.read("sales.json", { records: {} }).records?.[normDomain(domain)];
   const sale = rec?.sale;
   // Ein stornierter (voided) Verkauf ist NIE eine Auftragsbestätigung (TF-040) – der Auftrag bleibt BLOCKED_ORDER_NOT_CONFIRMED.
-  if (!sale || isVoidedSale(sale) || sale.selected_offer !== CHECK150_OFFER || sale.sale_value !== OFFERS[CHECK150_OFFER].price) return null;
+  // TF-064: Angebot des Auftrags (CH REPAIR_CHECK_150 bzw. VN VN_REPAIR_CHECK) mit exakt seinem Festpreis aus pricing.js.
+  const info = isCheckOffer(offer_class) ? offerInfo(offer_class) : null;
+  if (!sale || !info || isVoidedSale(sale) || sale.selected_offer !== offer_class || sale.sale_value !== info.price) return null;
   return { sale_date: sale.sale_date, work_status: sale.work_status || "open", source: "sales.json" };
 }
 
 // ---------- Auftrag ----------
-export function createCheck150Order(store, { domain, website = null, company = null, delivery_email, contact_name = null, now = new Date() } = {}) {
+// TF-064: offer_class VN_REPAIR_CHECK → VN-Auftrag (VNCHECK-…, market VN, currency VND, Preis/Schwelle aus pricing.js, Kundentexte
+// Vietnamesisch). Gleicher Workflow; CH-Aufträge bleiben exakt im bisherigen Format (CA150-…, price_chf, CHF).
+export function createCheck150Order(store, { domain, website = null, company = null, delivery_email, contact_name = null, offer_class = CHECK150_OFFER, vn = null, now = new Date() } = {}) {
   const d = normDomain(domain);
   if (!d) throw new Error("Domain erforderlich.");
+  const info = offerInfo(offer_class);
+  if (!info || !isCheckOffer(offer_class)) throw new Error(`Unbekanntes Check-Angebot "${offer_class}".`);
   // Lieferadresse ist Pflicht und kommt vom bestätigten Auftrag – NIE automatisch eine alte Cold-Outreach-Adresse übernehmen.
   if (!EMAIL_RE.test(delivery_email || "")) throw new Error("Verifizierte Lieferadresse (--email) des bestätigten Auftrags erforderlich.");
   const data = store.read(CHECK150_ORDERS_FILE, { schema: 1, orders: {} });
   const open = Object.values(data.orders || {}).find((o) => normDomain(o.domain) === d && !TERMINAL.has(o.state));
   if (open) throw new Error(`Für ${d} läuft bereits Auftrag ${open.order_id} (${open.state}).`);
-  const order_id = `CA150-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
+  const order_id = `${info.order_prefix}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
+  const money = info.market === "VN"
+    ? { offer_class, market: "VN", currency: "VND", price_amount: info.price, locale: "vi-VN", payment: { required: info.deposit, paid: 0, currency: "VND", satisfied: false }, ...(vn || {}) }
+    : { offer_class: CHECK150_OFFER, price_chf: OFFERS[CHECK150_OFFER].price, currency: "CHF", payment: { required_chf: OFFERS[CHECK150_OFFER].price / 2, paid_chf: 0, satisfied: false } };
   const order = {
-    order_id, offer_class: CHECK150_OFFER, price_chf: OFFERS[CHECK150_OFFER].price, currency: "CHF",
+    order_id, ...money,
     domain: d, website: website || `https://${d}/`, company, delivery_email: delivery_email.toLowerCase(), contact_name,
     delivery: "draft", automatic_send_allowed: false, // wird erst true, wenn die Zahlungsschwelle erfüllt ist (TF-041)
-    payment: { required_chf: OFFERS[CHECK150_OFFER].price / 2, paid_chf: 0, satisfied: false },
     confirmed: null, state: "ORDER_RECEIVED",
     state_history: [{ at: now.toISOString(), from: null, to: "ORDER_RECEIVED", reason: "Auftrag erfasst" }],
     stack: null, audit: null, findings: [], report: null, report_text_file: null, delivery_draft: null,
@@ -213,7 +223,7 @@ function instructionsFor(finding, stackType, order) {
 }
 
 // ---------- Befunde: alle relevanten, belegten Kundenprobleme (Dedupe + Jargon-Gate aus swiss-repair, OHNE 3er-Deckel) ----------
-export function buildCheck150Findings(auditIssues = {}, { stackType = "other" } = {}) {
+export function buildCheck150Findings(auditIssues = {}, { stackType = "other", vn = false } = {}) {
   const raw = Object.values(auditIssues);
   const visible = selectCustomerVisibleFindings(raw, { max: Infinity });
   return visible.map((v, i) => {
@@ -226,6 +236,13 @@ export function buildCheck150Findings(auditIssues = {}, { stackType = "other" } 
       customer_title: v.text, customer_problem: v.text + ".", customer_impact: v.impact,
       location: src.location ? `${pageLabel(src.page || src.url || "")} → Bereich «${src.location}»` : pageLabel(src.page || src.url || ""),
     };
+    if (vn) {
+      // TF-064: VN-Kundentext vollständig Vietnamesisch (Titel/Auswirkung/Ort/Anleitung je Befund-Typ) – Seiten-/Bereichsnamen bleiben wie sie sind.
+      const pv = pageLabelVi(src.page || src.url || ""), x = vnFindingText(finding.primary_type, { page: src.page || src.url, label: src.label, location: src.location });
+      const fv = { ...finding, page_label: pv, customer_title: x.title, customer_problem: x.title + ".", customer_impact: x.impact,
+        location: src.location ? `${pv} → khu vực «${src.location}»` : pv };
+      return { ...fv, ...vnInstructionsFor(fv, stackType) };
+    }
     return { ...finding, ...instructionsFor(finding, stackType) };
   }).sort((a, b) => ({ critical: 0, high: 1, medium: 2, low: 3 }[a.severity] - { critical: 0, high: 1, medium: 2, low: 3 }[b.severity]));
 }
@@ -236,7 +253,8 @@ export function buildCheck150Report(order, { now = new Date() } = {}) {
   const count = (s) => f.filter((x) => x.severity === s).length;
   const summary = { total: f.length, critical: count("critical"), high: count("high"), medium: count("medium"), low: count("low") };
   const expert = f.some((x) => x.expert_recommended);
-  const lines = [
+  const vn = isVnOrder(order);
+  const lines = vn ? [buildVnCheckReport(order, { now, summary })] : [
     "Webseiten-Check & Anleitung",
     "Ergebnis Ihres Webseiten-Checks",
     "",
@@ -267,7 +285,7 @@ export function buildCheck150Report(order, { now = new Date() } = {}) {
   ];
   const text = lines.join("\n");
   return {
-    report: { title: "Webseiten-Check & Anleitung", summary, website: order.domain, company: order.company || null,
+    report: { title: vn ? "Kiểm tra website & hướng dẫn sửa lỗi" : "Webseiten-Check & Anleitung", summary, website: order.domain, company: order.company || null,
       generated_at: now.toISOString(), audit_reference: order.order_id,
       findings: f.map(({ finding_id, severity, customer_title, customer_problem, customer_impact, location, fix_summary, steps, verification_steps, difficulty, expert_recommended }) =>
         ({ finding_id, severity, customer_title, customer_problem, customer_impact, location, fix_summary, steps, verification_steps, difficulty, expert_recommended })) },
@@ -281,6 +299,7 @@ export function buildDeliveryDraft(order, reportText) {
   const f = order.findings || [];
   const top = f.slice(0, 3).map((x) => `• ${x.customer_title}`);
   const inline = reportText.length <= MAX_INLINE_REPORT;
+  if (isVnOrder(order)) return buildVnCheckDeliveryDraft(order, reportText, inline); // TF-064: VN vollständig Vietnamesisch, Signatur VN-Profil
   const body = [
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
     "",
@@ -315,7 +334,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
     const t = now();
 
     if (order.state === "ORDER_RECEIVED" || order.state === "BLOCKED_ORDER_NOT_CONFIRMED") {
-      const sale = confirmedCheck150Sale(store, order.domain);
+      const sale = confirmedCheck150Sale(store, order.domain, order.offer_class || CHECK150_OFFER);
       if (!sale) {
         if (order.state !== "BLOCKED_ORDER_NOT_CONFIRMED") block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Kein bestätigter CHF-150-Auftrag in sales.json – Cold-Outreach/Interesse genügt nie.");
         return false; // wird bei jedem Lauf erneut geprüft
@@ -329,20 +348,20 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
       // ZAHLUNGSSCHWELLE (TF-041): Verkauf != Zahlung. Erst wenn kumulativ mindestens CHF 75 (erste Hälfte, payments.js)
       // tatsächlich als eingegangen verbucht sind, beginnt die bezahlte Leistung. Vorher: kein Audit, kein Bericht,
       // keine Anleitung, keine Liefermail. Wird je Lauf neu geprüft; voided/refunded Zahlungen zählen nicht.
-      const sale = confirmedCheck150Sale(store, order.domain);
+      const sale = confirmedCheck150Sale(store, order.domain, order.offer_class || CHECK150_OFFER);
       if (!sale) { block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – Auftrag wartet."); return false; }
       const gate = paymentGateForOrder(store, order);
       if (!gate.satisfied) {
         if (order.state !== "BLOCKED_PAYMENT_NOT_RECEIVED") {
           order.payment = gate;
-          block(order, "BLOCKED_PAYMENT_NOT_RECEIVED", `Zahlung ausstehend: CHF ${gate.paid_chf} von mind. CHF ${gate.required_chf} eingegangen (payments.js record ${order.order_id}).`);
-        } else if (order.payment?.paid_chf !== gate.paid_chf) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
+          block(order, "BLOCKED_PAYMENT_NOT_RECEIVED", `Zahlung ausstehend: ${gateText(gate)} eingegangen (payments.js record ${order.order_id}).`);
+        } else if (gatePaid(order.payment) !== gatePaid(gate)) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
         return false; // wird bei jedem Lauf erneut geprüft
       }
       order.payment = gate;
       order.automatic_send_allowed = true; // Schwelle erfüllt → die Service-Mail darf automatisch an den bestätigten Kunden
       order.blocked_reason = null;
-      transition(order, "FULL_AUDIT", `Zahlungsschwelle erfüllt (CHF ${gate.paid_chf} ≥ ${gate.required_chf}) – Start vollständiger passiver Check`, t);
+      transition(order, "FULL_AUDIT", `Zahlungsschwelle erfüllt (${gate.currency === "VND" ? `${amountText(gate.paid, "VND")} ≥ ${amountText(gate.required, "VND")}` : `CHF ${gate.paid_chf} ≥ ${gate.required_chf}`}) – Start vollständiger passiver Check`, t);
       saveOrder(store, order); return true;
     }
 
@@ -357,7 +376,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
     }
 
     if (order.state === "FINDINGS_ANALYSIS") {
-      order.findings = buildCheck150Findings(order.audit?.issues || {}, { stackType: order.stack?.type || "other" });
+      order.findings = buildCheck150Findings(order.audit?.issues || {}, { stackType: order.stack?.type || "other", vn: isVnOrder(order) });
       order.report_findings_count = order.findings.length;
       transition(order, "INSTRUCTIONS_GENERATION", `${order.findings.length} relevante Kundenprobleme`, t); saveOrder(store, order); return true;
     }
@@ -415,17 +434,17 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
     if (order.state === "DELIVERY_SENDING") {
       // Automatischer Versand der Service-E-Mail an den BESTÄTIGTEN Kunden (TF-041) – unmittelbar davor wird fail closed
       // erneut geprüft: Verkauf weiterhin bestätigt (nicht voided) UND Zahlungsschwelle weiterhin erfüllt.
-      if (!confirmedCheck150Sale(store, order.domain)) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – kein Versand."); return false; }
+      if (!confirmedCheck150Sale(store, order.domain, order.offer_class || CHECK150_OFFER)) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – kein Versand."); return false; }
       const gate = paymentGateForOrder(store, order);
       order.payment = gate;
-      if (!gate.satisfied) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_PAYMENT_NOT_RECEIVED", `Zahlungsschwelle nicht mehr erfüllt (CHF ${gate.paid_chf} von mind. CHF ${gate.required_chf}) – kein Versand.`); return false; }
+      if (!gate.satisfied) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_PAYMENT_NOT_RECEIVED", `Zahlungsschwelle nicht mehr erfüllt (${gateText(gate)}) – kein Versand.`); return false; }
       // Weitere Pflichtbedingungen (fail closed) – jede fehlende Bedingung übergibt den Entwurf an Chris statt zu senden:
       const handOver = (reason) => { order.delivery_status = "draft_ready"; transition(order, "READY_FOR_DELIVERY", reason, t); saveOrder(store, order); return false; };
       if (order.delivery_sent_at) return handOver("Service-Mail wurde bereits gesendet – nie ein zweiter Versand");
       // Send-Idempotenz: ein früherer Versuch ohne gesicherten Ausgang (z. B. Neustart mitten im Versand) wird NIE
       // blind wiederholt – Chris prüft im Gesendet-Ordner, ob die Mail raus ist.
       if (order.delivery_send_attempted_at) return handOver("Versandstatus unklar (früherer Versuch ohne Bestätigung) – kein erneuter Versand, Chris prüft «Gesendet»");
-      if (order.offer_class !== CHECK150_OFFER) return handOver("Kein CHF-150-Auftrag – kein automatischer Versand");
+      if (!isCheckOffer(order.offer_class)) return handOver("Kein Check-Auftrag – kein automatischer Versand");
       if (!EMAIL_RE.test(String(order.delivery_email || "")) || (order.delivery_draft?.to && order.delivery_draft.to !== order.delivery_email))
         return handOver("Lieferadresse fehlt oder weicht vom Entwurf ab – kein automatischer Versand");
       if (!order.report || !order.report_text_hash || !order.delivery_draft?.draft_id || order.delivery_draft.report_hash !== order.report_text_hash)
@@ -511,11 +530,14 @@ export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
       const s = o.report?.summary || {};
       const pay = paymentSummary(store, o);
       return { order_id: o.order_id, company: o.company || null, domain: o.domain, offer_class: o.offer_class, price_chf: o.price_chf,
+        // TF-064: Markt/Währung/Beträge in Auftragswährung (CH zusätzlich wie bisher *_chf).
+        market: pay.market, currency: pay.currency, price_amount: pay.price_amount, paid_amount: pay.paid_amount, payment_required_amount: pay.deposit_amount,
+        rest_to_deposit_amount: pay.rest_to_deposit_amount,
         state: o.state, findings: o.report_findings_count ?? null, critical: s.critical ?? null, high: s.high ?? null, medium: s.medium ?? null, low: s.low ?? null,
         report_available: !!o.report, draft_available: !!o.delivery_draft?.draft_id, delivery_status: o.delivery_status || "none",
         // Zahlungsstand (TF-041): nur Zahlen/Flag/Zustandswort aus dem Ledger – nie Referenzen oder Zahlungsdetails im Dashboard.
-        paid_chf: pay.paid_chf, payment_required_chf: pay.deposit_chf, rest_to_deposit_chf: pay.rest_to_deposit_chf,
-        payment_status: pay.payment_status, payment_ok: pay.deposit_chf != null && pay.paid_chf >= pay.deposit_chf,
+        paid_chf: pay.paid_chf ?? null, payment_required_chf: pay.deposit_chf ?? null, rest_to_deposit_chf: pay.rest_to_deposit_chf ?? null,
+        payment_status: pay.payment_status, payment_ok: pay.deposit_amount != null && pay.paid_amount >= pay.deposit_amount,
         phase: check150Phase(o, pay),
         source: records[normDomain(o.domain)]?.direct_sale?.source === "direct_customer" ? "direct_customer" : "jarvis_lead",
         created_at: o.created_at, updated_at: o.updated_at };

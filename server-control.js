@@ -155,6 +155,12 @@ const BROWSER_GATE_WORDS = ["JA", "NEIN", "WARTET"]; // TF-045
 const BROWSER_REGRESSION_WORDS = ["KEINE", "GEFUNDEN", "ROLLBACK"];
 const REPAIR_DELIVERY_WORDS = ["none", "draft_ready", "sent", "attachment_required", "unclear", "report_unsafe", "failed", "manual"]; // TF-046
 const PROFILE_STATUS_WORDS = ["PROFILE_READY", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", "MANUAL_REVIEW_REQUIRED", "BLOCKED_UNSAFE_ACCESS", "BLOCKED_NO_ACCESS", "PREFLIGHT_RETRY"];
+// TF-064: Markt/Währung/Beträge in Auftragswährung (VND bis 1e9, ganze Zahlen) – zusätzlich zu den Legacy-*_chf-Feldern.
+const MARKET_WORDS = ["CH", "VN"], CURRENCY_WORDS = ["CHF", "VND"];
+const moneyFields = (o, n) => ({ market: word(o.market, MARKET_WORDS), currency: word(o.currency, CURRENCY_WORDS),
+  price_amount: o.price_amount == null ? null : n(o.price_amount, 1e9), paid_amount: o.paid_amount == null ? null : n(o.paid_amount, 1e9),
+  payment_required_amount: o.payment_required_amount == null ? null : n(o.payment_required_amount, 1e9),
+  rest_to_deposit_amount: o.rest_to_deposit_amount == null ? null : n(o.rest_to_deposit_amount, 1e9) });
 const payFields = (o, n) => ({ paid_chf: o.paid_chf == null ? null : n(o.paid_chf, 10_000), payment_required_chf: o.payment_required_chf == null ? null : n(o.payment_required_chf, 10_000),
   rest_to_deposit_chf: o.rest_to_deposit_chf == null ? null : n(o.rest_to_deposit_chf, 10_000), payment_status: word(o.payment_status, PAYMENT_STATE_WORDS), payment_ok: bool(o.payment_ok) });
 export function cleanCheck150(r) {
@@ -163,10 +169,10 @@ export function cleanCheck150(r) {
   const states = {};
   for (const [k, v] of Object.entries(r.states || {})) if (CHECK150_STATE_WORDS.includes(k)) states[k] = n(v, 10_000);
   const orders = (Array.isArray(r.orders) ? r.orders : []).slice(0, 50).map((o) => (o && typeof o === "object" ? {
-    order_id: typeof o.order_id === "string" && /^CA150-\d{8}-[0-9a-f]{6}$/.test(o.order_id) ? o.order_id : null,
+    order_id: typeof o.order_id === "string" && /^(CA150|VNCHECK)-\d{8}-[0-9a-f]{6}$/.test(o.order_id) ? o.order_id : null,
     company: typeof o.company === "string" && NAME_RE.test(o.company) ? o.company : null,
     domain: typeof o.domain === "string" && DOMAIN_RE.test(o.domain) ? o.domain : null,
-    offer_class: word(o.offer_class, ["REPAIR_CHECK_150"]), price_chf: n(o.price_chf, 10_000),
+    offer_class: word(o.offer_class, ["REPAIR_CHECK_150", "VN_REPAIR_CHECK"]), price_chf: o.price_chf == null ? null : n(o.price_chf, 10_000), ...moneyFields(o, n),
     state: word(o.state, CHECK150_STATE_WORDS), findings: o.findings == null ? null : n(o.findings, 10_000),
     critical: o.critical == null ? null : n(o.critical, 10_000), high: o.high == null ? null : n(o.high, 10_000),
     medium: o.medium == null ? null : n(o.medium, 10_000), low: o.low == null ? null : n(o.low, 10_000),
@@ -196,10 +202,10 @@ export function cleanRepair(r) {
   const states = {};
   for (const [k, v] of Object.entries(r.states || {})) if (REPAIR_STATES.includes(k)) states[k] = n(v, 10_000);
   const orders = (Array.isArray(r.orders) ? r.orders : []).slice(0, 50).map((o) => (o && typeof o === "object" ? {
-    order_id: typeof o.order_id === "string" && /^RF480-\d{8}-[0-9a-f]{6}$/.test(o.order_id) ? o.order_id : null,
+    order_id: typeof o.order_id === "string" && /^(RF480|VNFIX)-\d{8}-[0-9a-f]{6}$/.test(o.order_id) ? o.order_id : null,
     company: typeof o.company === "string" && NAME_RE.test(o.company) ? o.company : null,
     domain: typeof o.domain === "string" && DOMAIN_RE.test(o.domain) ? o.domain : null,
-    offer_class: word(o.offer_class, ["REPAIR_FIX_500"]), price_chf: n(o.price_chf, 10_000),
+    offer_class: word(o.offer_class, ["REPAIR_FIX_500", "VN_REPAIR_FIX"]), price_chf: o.price_chf == null ? null : n(o.price_chf, 10_000), ...moneyFields(o, n),
     state: word(o.state, REPAIR_STATES), findings: n(o.findings, 10_000), repaired: n(o.repaired, 10_000), needs_review: n(o.needs_review, 10_000),
     backup_ok: bool(o.backup_ok), desktop_retest: bool(o.desktop_retest), mobile_retest: bool(o.mobile_retest),
     production: word(o.production, ["DEPLOYED", "BRANCH_ONLY", "UNCHANGED"]), report_available: bool(o.report_available),
@@ -235,7 +241,7 @@ export function cleanPayments(p) {
   if (!p || typeof p !== "object") return null;
   const n = (v) => num(v, 1e7);
   return { status: word(p.status, ["ACTIVE"]), total: n(p.total), received: n(p.received), voided: n(p.voided), refunded: n(p.refunded),
-    received_chf: n(p.received_chf), refunded_chf: n(p.refunded_chf), waiting_deposit: n(p.waiting_deposit), payment_review: n(p.payment_review) };
+    received_chf: n(p.received_chf), refunded_chf: n(p.refunded_chf), received_vnd: num(p.received_vnd, 1e12), refunded_vnd: num(p.refunded_vnd, 1e12), waiting_deposit: n(p.waiting_deposit), payment_review: n(p.payment_review) };
 }
 // 24/7-Discovery (VPS): nur Zähler, Zeitpunkte, feste Wörter; Fehlertext bereinigt und gekürzt.
 export function cleanDiscovery(d) {

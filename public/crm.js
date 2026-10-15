@@ -246,6 +246,7 @@ function renderDrawer() {
     noteForm(l, dis),
     l.notes.length ? el("ul", { class: "crm-hist" }, [...l.notes].reverse().map((n) => el("li", {}, el("time", {}, fmt(n.at)), n.text))) : el("p", { class: "crm-note" }, t("noNotes")),
     ...(l.market === "VN" ? [el("h4", {}, t("sec.draft")), draftForm(l, blocked)] : []),
+    ...(l.market === "VN" && ["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) ? [el("h4", {}, t("sec.order")), orderBox(l, blocked)] : []),
     el("h4", {}, t("sec.admin")),
     el("div", { class: "crm-qa" },
       l.do_not_contact && l.dnc_source !== "crm" ? el("span", { class: "crm-note" }, t("dncLocked"))
@@ -304,6 +305,51 @@ function draftForm(l, blocked) {
     } catch { out.textContent = t("act.offline"); out.className = "crm-status bad"; }
   } }, el("p", { class: "crm-note" }, t("draft.h")), el("label", {}, t("draft.subject"), subj), el("label", {}, t("draft.body"), body),
     el("button", { type: "submit", class: "crm-btn primary", disabled: blocked }, t("draft.btn")), el("small", {}, t("draft.note")), out);
+}
+
+// TF-064: Kundenauftrag für einen EIGENEN VN-Lead – der Browser schickt nur lead_id + Angebot (CHECK/FIX) + Kundenbestätigung.
+// Preis, Währung, Markt, Domain und E-Mail bestimmt der Server (pricing.js + autorisierter Lead). Keine Zahlungsfunktionen hier.
+const OPEN_REQ = new Set(["pending", "processing"]);
+const CLOSED = new Set(["COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "CANCELLED"]);
+function orderBox(l, blocked) {
+  const box = el("div", { class: "crm-form crm-order" }, el("p", { class: "crm-note" }, t("app.loading")));
+  const load = async () => {
+    let j = null;
+    try { const r = await fetch(`/api/sales?view=orders&lead_id=${encodeURIComponent(l.lead_id)}`, { cache: "no-store", credentials: "same-origin" }); j = r.ok ? await r.json() : null; } catch {}
+    if (!j) { box.replaceChildren(el("p", { class: "crm-note" }, t("crm.unreachable"))); return; }
+    const orders = j.orders || [];
+    const open = orders.some((o) => OPEN_REQ.has(o.request_status) || (o.request_status === "done" && !CLOSED.has(o.state)));
+    const card = (o) => el("div", { class: "crm-lcard" },
+      kv([[t("ord.id"), o.order_id || (OPEN_REQ.has(o.request_status) ? t("ord.creating") : o.request_status === "failed" ? `${t("ord.failed")} · ${I.codeMsg(o.code)}` : "–")],
+        [t("ord.service"), t(`ord.${o.offer}`)], [t("ord.total"), I.money(o.price, o.currency)], [t("ord.paid"), I.money(o.paid, o.currency)],
+        [t("ord.rest"), I.money(o.remaining, o.currency)], [t("ord.payStatus"), t(`pay.${o.payment_status}`)], [t("ord.workStatus"), I.phase(o.phase)],
+        [t("ord.commission"), I.money(Number(o.commission_expected), o.currency)]]));
+    const out = el("p", { class: "crm-status", "aria-live": "polite" });
+    const confirmBox = el("input", { type: "checkbox" });
+    let chosen = null;
+    const confirmForm = el("div", { hidden: true }, el("label", { class: "consent" }, confirmBox, " ", t("ord.confirm")),
+      el("div", { class: "crm-qa" },
+        el("button", { type: "button", class: "crm-btn primary", onclick: async (e) => {
+          if (!confirmBox.checked) { out.textContent = t("ord.needConfirm"); out.className = "crm-status bad"; return; }
+          e.target.disabled = true; out.textContent = t("act.saving"); out.className = "crm-status wait";
+          try {
+            const r = await fetch("/api/sales", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ op: "order.createConfirmed", lead_id: l.lead_id, offer: chosen, confirmed: true }) });
+            const b = await r.json().catch(() => null);
+            if (r.ok) { out.textContent = t("ord.queued"); out.className = "crm-status ok"; setTimeout(load, 1500); }
+            else { out.textContent = errMsg(r.status, b); out.className = "crm-status bad"; e.target.disabled = false; }
+          } catch { out.textContent = t("act.offline"); out.className = "crm-status bad"; e.target.disabled = false; }
+        } }, t("ord.create")),
+        el("button", { type: "button", class: "crm-btn", onclick: () => { confirmForm.hidden = true; chosen = null; } }, t("ord.cancel"))));
+    const buttons = (j.offers || []).map((o) => el("button", { type: "button", class: "crm-btn", disabled: blocked || open,
+      onclick: () => { chosen = o.offer; confirmBox.checked = false; confirmForm.hidden = false; } }, `${t(`ord.${o.offer}`)} · ${I.money(o.price, o.currency)}`));
+    box.replaceChildren(
+      ...(orders.length ? orders.map(card) : [el("p", { class: "crm-note" }, t("ord.none"))]),
+      open ? el("p", { class: "crm-note" }, t("ord.open")) : el("p", { class: "crm-note" }, t("ord.choose")),
+      el("div", { class: "crm-qa" }, buttons), confirmForm, el("small", {}, t("ord.payNote")), out);
+  };
+  load();
+  return box;
 }
 
 // ---------- Schreiben: Auftrag → VPS → Ergebnis ----------

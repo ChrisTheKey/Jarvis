@@ -94,7 +94,8 @@ test("CHF-480 E2E: 239 → nichts; 240 → genau EINE CUSTOMER_ACCESS_REQUEST; Z
   await eng.processAll(); await engine(c, gmail, { static: adapter }).processAll();
   assert.equal(gmail.calls.filter((x) => x.op === "SEND").length, 1, "genau EINE Zugangs-Anfrage");
   assert.deepEqual([adapter.calls.checkAccess, adapter.calls.backup, adapter.calls.applyFix], [0, 0, 0], "Zahlung allein ist keine Freigabe");
-  assert.equal(publicRepairOrders(dir).orders[0].phase, "ACCESS_REQUEST_SENT");
+  const realNow = Date.now; Date.now = () => +clock; // deterministische Uhr (Fixture-Ablauf T0 + 72 h), nur für diese Prüfung
+  try { assert.equal(publicRepairOrders(dir).orders[0].phase, "ACCESS_REQUEST_SENT"); } finally { Date.now = realNow; }
 
   // Kunde öffnet den Link: nur Domain/Ablauf/Public Key/Freigabetext – keine Interna.
   const info = await c.customer({ op: "info", token });
