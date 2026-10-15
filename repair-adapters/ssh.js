@@ -123,8 +123,6 @@ export function sshAdapter({ dir = WORKER_DIR, connect = ssh2Connector(), fetchF
     detectCapabilities: () => ["READ_FILES", "WRITE_FILES", "ATOMIC_REPLACE", "BACKUP", "ROLLBACK", "BUILD_TEST", "HEALTH_CHECK"],
     typedOps,
     _internals: { listTree, atomicWrite },
-    // TF-059: Webroot-Export read-only über die SFTP-Schicht derselben Sitzung (gleiche Sandbox wie der SFTP-Adapter).
-    exportWebroot: (order, cred, opts) => files.exportWebroot(order, cred, opts),
 
     async checkAccess(order, cred) {
       if (String(cred?.username || "").trim().toLowerCase() === "root") return { ok: false, reason: "root_login", blocked_state: "BLOCKED_UNSAFE_ACCESS" };

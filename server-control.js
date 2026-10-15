@@ -190,11 +190,6 @@ const REPAIR_STATES = ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQU
   "BLOCKED_HOST_KEY_CHANGED"];
 const NAME_RE = /^[\p{L}\p{N} .,&'’()\/+-]{1,80}$/u;
 const DOMAIN_RE = /^[a-z0-9.-]{3,253}$/;
-const PACKAGE_WORDS = ["NETLIFY_READY", "FULL_BACKUP_ONLY", "PACKAGE_VALIDATION_FAILED", "EXPORT_NOT_AVAILABLE"];
-const cleanPackage = (p) => (p && typeof p === "object" && PACKAGE_WORDS.includes(p.status) ? {
-  status: p.status, file: word(p.file, ["website-netlify-ready.zip", "website-repaired-backup.zip"]), size: num(p.size, 1e10), file_count: num(p.file_count, 1e6),
-  sha256_short: typeof p.sha256_short === "string" && /^[0-9a-f]{12}$/.test(p.sha256_short) ? p.sha256_short : null,
-  netlify_ready: p.status === "NETLIFY_READY" && p.netlify_ready === true } : null);
 export function cleanRepair(r) {
   if (!r || typeof r !== "object") return null;
   const n = (v, max = 1e6) => num(v, max);
@@ -222,8 +217,6 @@ export function cleanRepair(r) {
     authorized: bool(o.authorized), delivery_status: word(o.delivery_status, REPAIR_DELIVERY_WORDS),
     // TF-055: offene manuelle Punkte nach dem Retest – nur eine Zahl.
     manual_items_open: o.manual_items_open == null ? null : n(o.manual_items_open, 10_000),
-    // TF-059: Website-Paket – nur Statuswort, fester Dateiname, Grösse, Anzahl, gekürzte SHA (nie VPS-Pfade, nie Inhalte).
-    package: cleanPackage(o.package),
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
   } : null)).filter(Boolean);
   return { total: n(r.total, 100_000), open: n(r.open, 100_000), completed_with_manual_items: n(r.completed_with_manual_items, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),

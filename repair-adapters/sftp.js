@@ -373,38 +373,6 @@ export function sftpAdapter({ dir = WORKER_DIR, connect = ssh2SftpConnector(), f
       return { ok: await withClient(cred, (c) => restore(c, root, bk, ids, cred)) };
     },
 
-    // TF-059: read-only Export des bereits autorisierten Webroots (erst nach bestandenem Abschluss-Gate, repair-package.js).
-    // Nur Namen aus readdir (kein ../ möglich), Symlinks nie folgen (readdir-Attribute + lstat vor jedem Lesen), verbotene
-    // Ordner/Dateien gar nicht erst lesen (shouldSkip). Nicht vollständig gelesen (zu tief/zu viele Dateien) → complete:false.
-    async exportWebroot(order, cred, { onFile, shouldSkip = () => false, maxFiles = 5000, maxDepth = 16 } = {}) {
-      if (typeof onFile !== "function") return { ok: false, reason: "no_sink" };
-      const root = rootOf(cred);
-      return withClient(cred, async (c) => {
-        if (await c.realpath(root) !== root) return { ok: false, reason: "remote_root_symlink" };
-        let files = 0, symlinks = 0;
-        const queue = [["", 0]];
-        while (queue.length) {
-          const [rel, depth] = queue.shift();
-          for (const e of await c.readdir(rel ? P.join(root, rel) : root)) {
-            const name = e?.filename;
-            if (!name || name === "." || name === ".." || /[\/\\\u0000-\u001f]/.test(name)) continue;
-            const r = rel ? `${rel}/${name}` : name;
-            if (e.attrs?.isSymlink) { symlinks++; continue; }
-            if (shouldSkip(r, !!e.attrs?.isDir)) continue;
-            if (e.attrs?.isDir) { if (depth + 1 >= maxDepth) return { ok: true, complete: false, reason: "too_deep" }; queue.push([r, depth + 1]); continue; }
-            if (!e.attrs?.isFile) continue;
-            if (++files > maxFiles) return { ok: true, complete: false, reason: "too_many_files" };
-            const full = P.join(root, r);
-            if (!within(full, root)) throw new SandboxError("Pfad ausserhalb von remote_root.");
-            const st = await c.lstat(full);
-            if (st?.isSymlink || !st?.isFile) { symlinks += st?.isSymlink ? 1 : 0; continue; }
-            if (onFile(r, Buffer.from(await c.readFile(full))) === "stop") return { ok: true, complete: false, reason: "too_large" };
-          }
-        }
-        return { ok: true, complete: true, symlinks_skipped: symlinks };
-      });
-    },
-
     async cleanup() { return { ok: true, revoked_required: true }; },
   };
 }

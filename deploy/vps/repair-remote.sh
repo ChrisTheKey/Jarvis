@@ -58,7 +58,7 @@ echo "$BEFORE" | tr ' ' '\n' | grep -v '^id=' ; echo "container_id=$(field "$BEF
 [ "$MAIL_PROJECT" != "$REPAIR_PROJECT" ] || blocked "Repair-Projekt = Mail-Projekt."
 
 # ---------- Neuen Stand entpacken (nur unter $R) ----------
-$SUDO mkdir -p "$R/state" "$R/outbox" "$R/crm-export" "$R/artifacts"
+$SUDO mkdir -p "$R/state" "$R/outbox" "$R/crm-export"
 $SUDO rm -rf "$R/app.new" && $SUDO mkdir -p "$R/app.new"
 $SUDO tar -xzf "$APP_TGZ" -C "$R/app.new"
 COMPOSE_NEW="$R/docker-compose.yml.new"
@@ -89,8 +89,8 @@ $SUDO mv "$R/app.new" "$R/app"
 $SUDO mv "$COMPOSE_NEW" "$R/docker-compose.yml"
 echo "$COMMIT" | $SUDO tee "$R/DEPLOYED_COMMIT" >/dev/null
 if [ -n "$OWNER" ]; then
-  $SUDO chown -R "$OWNER" "$R/state" "$R/outbox" "$R/crm-export" "$R/artifacts" && $SUDO chmod 700 "$R/state" "$R/outbox" "$R/crm-export" "$R/artifacts"
-  $SUDO find "$R/state" "$R/outbox" "$R/crm-export" "$R/artifacts" -type d -exec chmod 700 {} + && $SUDO find "$R/state" "$R/outbox" "$R/crm-export" "$R/artifacts" -type f -exec chmod 600 {} +
+  $SUDO chown -R "$OWNER" "$R/state" "$R/outbox" "$R/crm-export" && $SUDO chmod 700 "$R/state" "$R/outbox" "$R/crm-export"
+  $SUDO find "$R/state" "$R/outbox" "$R/crm-export" -type d -exec chmod 700 {} + && $SUDO find "$R/state" "$R/outbox" "$R/crm-export" -type f -exec chmod 600 {} +
 fi
 C=(compose -p "$REPAIR_PROJECT" -f "$R/docker-compose.yml" "${OVR[@]}" --project-directory "$R")
 (cd "$R" && $SUDO env JARVIS_COMMIT="$COMMIT" JARVIS_DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" docker "${C[@]}" build "$SERVICE")
