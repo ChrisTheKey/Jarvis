@@ -79,6 +79,9 @@ test("TF-063 VN F/G/H: persistenter, fairer Cursor über alle 34 Einheiten; Schw
   const s35 = await searchStep({ store: again, units, search: async () => [], now: new Date() });
   assert.equal(s35.unit, units[0].code); assert.equal(s35.cat_index, 1, "zweiter Durchlauf: nächste Branchengruppe");
   assert.equal(fs.readFileSync(chGeo, "utf8"), before, "CH-Cursor unverändert");
+  // Quelle überlastet (502): der Job zählt als besucht, die nächste Einheit kommt dran – keine Blockade einer Einheit.
+  await assert.rejects(searchStep({ store: again, units, search: async () => { throw new Error("Overpass HTTP 502"); }, now: new Date() }));
+  assert.equal((await searchStep({ store: again, units, search: async () => [], now: new Date() })).unit, units[2].code);
   // Anker rotieren je Einheit nach allen Branchengruppen.
   let st = emptyVnState();
   const anchors = new Set();

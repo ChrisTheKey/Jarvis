@@ -156,10 +156,13 @@ export async function searchStep({ store, units, search, now = new Date() }) {
   let st = store.state();
   const { job, state } = nextJob(st, units);
   st = { ...state, last_search_at: now.toISOString() };
+  // Cursor VOR der Abfrage festschreiben: ein fehlgeschlagener Job (Quelle überlastet) blockiert nie eine Einheit – er kommt im nächsten Zyklus wieder.
+  store.saveState(st);
   const idx = store.index(), leads = store.leads().leads;
   const queued = new Set((st.queue || []).map((c) => c.domain));
   let added = 0;
   const elements = await search(job);
+  st = { ...store.state(), queue: st.queue, search_failures: 0, search_backoff_until: null };
   for (const e of elements) {
     const c = candidateOf(e, job);
     if (!c || queued.has(c.domain) || leads[c.domain] || seenRecently(idx, c.domain, now)) continue;
@@ -288,7 +291,12 @@ export async function runService({ dir = process.env.JARVIS_VN_DIR || "/data/vn"
     if (!st.queue?.length) {
       if (st.search_backoff_until && Date.parse(st.search_backoff_until) > Date.now()) { await sleep(30_000); continue; }
       try { log("info", "vn_search", await searchStep({ store, units, search })); }
-      catch (e) { const s = store.state(); s.search_backoff_until = new Date(Date.now() + 5 * 60_000).toISOString(); store.saveState(s); log("warn", "vn_search_failed", { message: String(e.message).slice(0, 120) }); }
+      catch (e) {
+        // Backoff 1 → 2 → 4 → 8 → 15 min (Overpass „at capacity“), zurückgesetzt beim nächsten Erfolg.
+        const s = store.state(); s.search_failures = (s.search_failures || 0) + 1;
+        s.search_backoff_until = new Date(Date.now() + Math.min(15, 2 ** (s.search_failures - 1)) * 60_000).toISOString(); store.saveState(s);
+        log("warn", "vn_search_failed", { message: String(e.message).slice(0, 120), failures: s.search_failures });
+      }
       continue;
     }
     st = store.state();
