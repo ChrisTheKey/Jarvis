@@ -84,14 +84,14 @@ test("TF-063 Provision J/K: Verkäufer sieht nur eigene Provision, Chris alle (A
   void t2;
   const m = await t.json(await sales(makeReq("/api/sales?view=commission", { cookie: t.cookies.mario })));
   assert.equal(m.status, 200);
-  assert.equal(m.body.commission.payable, "168.00"); assert.equal(m.body.commission.paid_completed_orders, 1);
+  assert.equal(m.body.commission.payable, "288.00"); assert.equal(m.body.commission.paid_completed_orders, 1);
   assert.equal(m.body.sellers, undefined, "keine fremden Verkäufer");
   assert.ok(!JSON.stringify(m.body).includes("CA150-20261016-dddddd"), "Giulianos Auftrag unsichtbar");
   const g = await t.json(await sales(makeReq("/api/sales?view=commission", { cookie: t.cookies.giuliano })));
-  assert.equal(g.body.commission.payable, "0.00"); assert.equal(g.body.commission.pending, "52.50");
+  assert.equal(g.body.commission.payable, "0.00"); assert.equal(g.body.commission.pending, "90.00");
   const l = await t.json(await sales(makeReq("/api/sales?view=commission", { cookie: t.cookies.Kudoshin })));
   assert.equal(l.body.commission.payable, "0"); assert.equal(l.body.commission.currency, "VND"); assert.equal(l.body.commission.orders.length, 0);
   const c = await t.json(await sales(makeReq("/api/sales?view=commission", { cookie: t.cookies.chris })));
-  assert.equal(c.body.sellers.length, 4); assert.equal(c.body.totals.payable, "168.00"); assert.equal(c.body.pricing.VN, "CONFIGURED");
+  assert.equal(c.body.sellers.length, 4); assert.equal(c.body.totals.payable, "288.00"); assert.equal(c.body.pricing.VN, "CONFIGURED");
   assert.equal((await sales(makeReq("/api/sales", { method: "POST", cookie: t.cookies.mario, body: { op: "commission.setSeller", order_id: "CA150-20261016-dddddd", seller_id: "mario" } }))).status, 403);
 });

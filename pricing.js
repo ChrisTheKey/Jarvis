@@ -32,6 +32,22 @@ export const MARKET_PRICES = Object.freeze({
 });
 export const MARKET_CODES = Object.freeze(Object.keys(MARKET_PRICES));
 
+// ---------- Verkäufer-Provision (TF-063 35 %, TF-072 60 %) ----------
+// Ein Satz in Basispunkten für alle Verkäufer (Chris: keine Provision). Nie rückwirkend: jeder neue Auftrag speichert den Satz bei der
+// Erstellung (commission_rate_bps), ein bestehender Provisionseintrag behält seinen Satz. Aufträge ohne gespeicherten Satz → Satz, der
+// zum Auftragszeitpunkt galt. Betrag = Preis × bps / 10000 in Minor Units (kaufmännisch gerundet, commission-ledger.js).
+export const COMMISSION_BPS_SCHEDULE = Object.freeze([
+  Object.freeze({ from: null, bps: 3500 }), // TF-063 … TF-071
+  Object.freeze({ from: "2026-10-16T15:00:00.000Z", bps: 6000 }), // TF-072: neue Verkäufe
+]);
+export const SELLER_COMMISSION_BPS = COMMISSION_BPS_SCHEDULE.at(-1).bps;
+export const isCommissionBps = (v) => Number.isInteger(v) && v > 0 && v <= 10_000;
+export function commissionBpsAt(at) {
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) return SELLER_COMMISSION_BPS;
+  return COMMISSION_BPS_SCHEDULE.filter((r) => r.from == null || Date.parse(r.from) <= t).at(-1).bps;
+}
+
 // ---------- Minor Units / Formatierung ----------
 export const exponentOf = (currency) => CURRENCIES[currency]?.exponent ?? null;
 export function toMinor(amount, currency = "CHF") {

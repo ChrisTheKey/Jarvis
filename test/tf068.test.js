@@ -324,7 +324,9 @@ test("TF-068 Provision: gültig bezahlter Auftrag → korrekte Provision (aus 35
     const L1 = deriveLedger({ ledger: base, orders: ordersFromSnapshot(order("COMPLETED", sumFix)), resolveSeller: seller, now: new Date("2026-10-16T05:00:00Z") }).ledger;
     const e1 = L1.entries[VNFIX];
     assert.deepEqual([e1.status, e1.payable_minor, e1.seller_id], ["PAYABLE", 1365000, "Kudoshin"]);
-    assert.equal(e1.payable_minor, commissionMinor(toMinor(MARKET_PRICES.VN.offers.FIX.price, "VND"), RATE_BPS.Kudoshin));
+    // Auftrag vor TF-072 (03:00 UTC) → historischer Satz 3500 bps bleibt (nie rückwirkend auf 6000).
+    assert.equal(e1.payable_minor, commissionMinor(toMinor(MARKET_PRICES.VN.offers.FIX.price, "VND"), 3500));
+    assert.equal(e1.commission_rate_bps, 3500); assert.equal(RATE_BPS.Kudoshin, 6000);
     const pay = paymentsForOrder(p.store, VNFIX)[0];
     refundPayment(p.store, pay.payment_id, { reason: "Kunde erstattet" });
     const s2 = paymentSummary(p.store, { order_id: VNFIX, offer_class: "VN_REPAIR_FIX", market: "VN", currency: "VND" });
@@ -373,8 +375,8 @@ test("TF-068 Verkäufe & Provisionen: Owner-Übersicht CHF/VND getrennt, Payout 
   const o = await get("chris", "sales_overview");
   assert.equal(o.status, 200);
   const mario = o.body.sellers.find((x) => x.seller_id === "mario"), lap = o.body.sellers.find((x) => x.seller_id === "Kudoshin");
-  assert.deepEqual([mario.by_currency.CHF.orders, mario.by_currency.CHF.completed, mario.by_currency.CHF.revenue, mario.by_currency.CHF.commission_payable], [1, 1, "480.00", "168.00"]);
-  assert.deepEqual([lap.by_currency.VND.revenue, lap.by_currency.VND.commission_payable, lap.by_currency.CHF.orders], ["990000", "346500", 0]);
+  assert.deepEqual([mario.by_currency.CHF.orders, mario.by_currency.CHF.completed, mario.by_currency.CHF.revenue, mario.by_currency.CHF.commission_payable], [1, 1, "480.00", "288.00"]);
+  assert.deepEqual([lap.by_currency.VND.revenue, lap.by_currency.VND.commission_payable, lap.by_currency.CHF.orders], ["990000", "594000", 0]);
   const row = o.body.orders.find((x) => x.order_id === VNCHECK);
   for (const k of ["order_id", "lead_id", "seller_id", "market", "offer", "price", "currency", "confirmed_at", "payment_status", "fulfillment_status", "commission_status"]) assert.ok(row[k] != null, k);
   assert.deepEqual([row.seller_id, row.market, row.offer, row.currency, row.commission_status], ["Kudoshin", "VN", "CHECK", "VND", "PAYABLE"]);
@@ -385,7 +387,7 @@ test("TF-068 Verkäufe & Provisionen: Owner-Übersicht CHF/VND getrennt, Payout 
   assert.equal((await post("chris", po)).status, 200);
   assert.equal((await post("chris", po)).status, 409, "doppelte Auszahlung verhindert");
   const lapCom = (await get("Kudoshin", "commission")).body.commission;
-  assert.deepEqual([lapCom.seller_id, lapCom.currency, lapCom.payable, lapCom.paid_out], ["Kudoshin", "VND", "346500", "346500"]);
+  assert.deepEqual([lapCom.seller_id, lapCom.currency, lapCom.payable, lapCom.paid_out], ["Kudoshin", "VND", "594000", "346500"]);
   assert.ok(lapCom.orders.every((x) => x.currency === "VND"), "Kudoshin: keine CH-Daten");
   const marioCom = (await get("mario", "commission")).body;
   assert.equal(marioCom.commission.seller_id, "mario"); assert.equal(JSON.stringify(marioCom).includes(VNCHECK), false, "keine fremden Provisionen");

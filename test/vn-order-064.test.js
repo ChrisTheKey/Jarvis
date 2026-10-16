@@ -32,7 +32,7 @@ test("TF-064 VN-Order A, D–J: Kudoshin eigener Lead → Auftrag (Server-Preis/
   const a = await t.json(await order(t, "Kudoshin", { lead_id: LAP_LEAD, offer: "CHECK", confirmed: true }));
   assert.equal(a.status, 202);
   assert.deepEqual([a.body.order.price, a.body.order.currency, a.body.order.market, a.body.order.offer_class, a.body.order.deposit, a.body.order.commission_expected],
-    [990000, "VND", "VN", "VN_REPAIR_CHECK", 495000, "346500"]);
+    [990000, "VND", "VN", "VN_REPAIR_CHECK", 495000, "594000"]); // TF-072: neue Anfrage → 6000 bps
   const req = (await t.salesMem.orders.get()).state.requests[0];
   assert.deepEqual([req.domain, req.delivery_email, req.market, req.currency, req.price, req.seller_id, req.actor_user_id, req.status],
     [LAP_LEAD, `lienhe@${LAP_LEAD}`, "VN", "VND", 990000, "Kudoshin", "Kudoshin", "pending"]);

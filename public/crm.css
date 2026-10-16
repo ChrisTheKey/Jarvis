@@ -15,6 +15,12 @@
 .crm-btn.warn { color: var(--amber); border-color: rgba(255,181,71,.45); }
 .crm-btn.danger { color: var(--red); border-color: rgba(255,93,108,.55); }
 .crm-btn.big { min-height: 46px; font-size: 13px; font-weight: 700; justify-content: center; flex: 1; }
+.crm-btn.sm { min-height: 24px; padding: 2px 8px; font-size: 11px; }
+/* TF-072: Direktlink je Fehler (betroffene Seite + «Fehler öffnen») */
+.crm-ilink { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 3px; font-size: 12px; }
+.crm-ilink .crm-iurl { color: var(--cyan-2); font-family: var(--mono); word-break: break-all; }
+.crm-ilink .crm-inone { color: var(--muted); font-style: italic; }
+.crm-callissues { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .crm-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
 .crm-card { border: 1px solid var(--line); background: var(--glass); padding: 6px 9px; text-align: left; cursor: pointer; color: var(--muted); }
 .crm-card b { display: block; font: 700 20px var(--ui); color: var(--text); }

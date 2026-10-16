@@ -10,7 +10,7 @@
 //     (495000 bzw. 1950000 VND), die ausschliesslich Chris im Payment-Ledger verbucht.
 import { createStore } from "./mail-worker.js";
 import { recordSale } from "./sales.js";
-import { offerInfo, isVnOfferClass, isCheckOffer } from "./pricing.js";
+import { offerInfo, isVnOfferClass, isCheckOffer, commissionBpsAt, isCommissionBps } from "./pricing.js";
 import { createCheck150Order } from "./check-150-workflow.js";
 import { createRepairOrder } from "./repair-workflow.js";
 import { VN_SELLER_ID, canonicalSellerId } from "./seller-identity.js";
@@ -39,7 +39,9 @@ export function applyOrderRequest(store, r, { now = new Date() } = {}) {
   if (!EMAIL_RE.test(email)) return fail("NO_EMAIL", "Kunden-E-Mail fehlt");
   const website = typeof r.website === "string" && /^https?:\/\/[^\s<>"']+$/i.test(r.website) && r.website.length <= 300 ? r.website : `https://${domain}/`;
   const company = typeof r.company === "string" ? r.company.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 120) || null : null;
-  const vn = { lead_id: r.lead_id, seller_id: VN_SELLER_ID, confirmed_by: actorId, confirmed_at: typeof r.confirmed_at === "string" ? r.confirmed_at.slice(0, 40) : now.toISOString(), source: "vn_sales_confirmed", request_id: r.request_id };
+  const vn = { lead_id: r.lead_id, seller_id: VN_SELLER_ID, confirmed_by: actorId, confirmed_at: typeof r.confirmed_at === "string" ? r.confirmed_at.slice(0, 40) : now.toISOString(), source: "vn_sales_confirmed", request_id: r.request_id,
+    // TF-072: Provisionssatz der bestätigten Anfrage (bzw. Satz zum Bestätigungszeitpunkt) wird mit dem Auftrag gespeichert.
+    commission_rate_bps: isCommissionBps(r.commission_rate_bps) ? r.commission_rate_bps : commissionBpsAt(r.confirmed_at) };
   let order;
   try {
     const sales = store.read("sales.json", { records: {} });

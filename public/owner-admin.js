@@ -48,6 +48,8 @@ function userCard(u) {
 // TF-064: Beträge je Währung – CHF und VND werden nie zu einer Summe addiert.
 const money = (v, cur = "CHF") => { const n = Number(v); if (!Number.isFinite(n)) return "–"; return cur === "VND" ? `${String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ".")} ₫` : `CHF ${n.toFixed(2)}`; };
 const SELLER_CUR = { giuliano: "CHF", mario: "CHF", damiano: "CHF", Kudoshin: "VND" };
+// TF-072: Provisionssatz aus Basispunkten (6000 → „60 %“) – nie fest im Text.
+const pct = (bps) => (Number.isInteger(bps) ? `${bps / 100} %` : "–");
 function commissionBox(c) {
   if (!c) return el("p", { class: "crm-note" }, "Provisionen nicht verfügbar.");
   const sel = (e) => el("select", { class: "crm-sort", "aria-label": `Verkäufer für ${e.order_id}`, onchange: async (ev) => {
@@ -58,20 +60,20 @@ function commissionBox(c) {
   const totalRow = (cur) => tot[cur] ? el("tr", {}, el("td", {}, el("b", {}, `Total ${cur}`)), el("td", {}, el("b", {}, money(tot[cur].pending, cur))), el("td", {}, el("b", {}, money(tot[cur].payable, cur))),
     el("td", {}, el("b", {}, money(tot[cur].reversed, cur))), el("td", {}, el("b", {}, String(tot[cur].paid_completed_orders)))) : "";
   return el("div", {},
-    el("p", { class: "crm-note" }, `Satz 35 % · auszahlbar erst bei COMPLETED / COMPLETED_WITH_MANUAL_ITEMS UND vollständig bezahlt · gilt ab ${fmt(c.eligible_from)} (nicht rückwirkend) · VN-Preise: ${c.pricing?.VN === "CONFIGURED" ? "konfiguriert (990.000 ₫ / 3.900.000 ₫)" : "noch NICHT konfiguriert"} · keine automatische Auszahlung`),
+    el("p", { class: "crm-note" }, `Aktueller Satz ${pct(c.sellers?.[0]?.rate_bps)} für neue Verkäufe (bestehende Einträge behalten ihren Satz) · auszahlbar erst bei COMPLETED / COMPLETED_WITH_MANUAL_ITEMS UND vollständig bezahlt · gilt ab ${fmt(c.eligible_from)} (nicht rückwirkend) · VN-Preise: ${c.pricing?.VN === "CONFIGURED" ? "konfiguriert (990.000 ₫ / 3.900.000 ₫)" : "noch NICHT konfiguriert"} · keine automatische Auszahlung`),
     el("table", { class: "crm-table" }, el("thead", {}, el("tr", {}, ["Verkäufer", "Ausstehend", "Auszahlbar", "Storniert", "Abgeschl. + bezahlt"].map((h) => el("th", {}, h)))),
       el("tbody", {}, [...c.sellers.map((s) => el("tr", {}, el("td", {}, s.seller_id), el("td", {}, money(s.pending, s.currency)), el("td", {}, money(s.payable, s.currency)), el("td", {}, money(s.reversed, s.currency)), el("td", {}, String(s.paid_completed_orders)))),
         totalRow("CHF"), totalRow("VND")])),
-    c.sellers.some((s) => s.orders.length) ? el("ul", { class: "crm-hist" }, c.sellers.flatMap((s) => s.orders.map((o) => el("li", {}, `${s.seller_id} · ${o.order_id} · ${ST[o.status]} · ${o.order_state || "–"} / ${o.payment_status || "–"} · Preis ${money(o.price, o.currency)} · Provision ${money(o.commission, o.currency)}`)))) : "",
+    c.sellers.some((s) => s.orders.length) ? el("ul", { class: "crm-hist" }, c.sellers.flatMap((s) => s.orders.map((o) => el("li", {}, `${s.seller_id} · ${o.order_id} · ${ST[o.status]} · ${o.order_state || "–"} / ${o.payment_status || "–"} · Preis ${money(o.price, o.currency)} · Satz ${pct(o.rate_bps)} · Provision ${money(o.commission, o.currency)}`)))) : "",
     c.unassigned?.length ? el("div", {}, el("h5", {}, "Aufträge ohne Verkäufer (ohne CRM-Lead)"), el("ul", { class: "crm-hist" }, c.unassigned.map((e) => el("li", {}, `${e.order_id} · ${ST[e.status]} `, e.status === "PAYABLE" ? "" : sel(e))))) : "");
 }
 // TF-068 VERKÄUFE & PROVISIONEN: je Verkäufer und je Auftrag, CHF und VND getrennt. Auszahlung nur MARKIEREN (nach erfolgter Überweisung).
 const PS = { UNPAID: "offen", PARTIAL: "Teilzahlung", DEPOSIT_MET: "Anzahlung erfüllt", PAID_FULL: "voll bezahlt", REFUNDED: "erstattet", PAYMENT_REVIEW_REQUIRED: "Prüfung nötig" };
 function salesBox(so, pm) {
   if (!so) return el("p", { class: "crm-note" }, "Verkaufsübersicht nicht verfügbar.");
-  const head = ["Verkäufer", "Währung", "Aufträge", "Abgeschlossen", "Zahlungen erhalten", "Umsatz", "Prov. ausstehend", "Prov. fällig", "Prov. storniert", "Prov. ausbezahlt", "Offen auszuzahlen"];
+  const head = ["Verkäufer", "Satz", "Währung", "Aufträge", "Abgeschlossen", "Zahlungen erhalten", "Umsatz", "Prov. ausstehend", "Prov. fällig", "Prov. storniert", "Prov. ausbezahlt", "Offen auszuzahlen"];
   const rows = so.sellers.flatMap((x) => ["CHF", "VND"].filter((c) => x.by_currency[c].orders || (x.seller_id !== "direct" && SELLER_CUR[x.seller_id] === c)).map((c) => { const b = x.by_currency[c];
-    return el("tr", {}, ...[x.label, c, b.orders, b.completed, b.payments_received, money(b.revenue, c), money(b.commission_pending, c), money(b.commission_payable, c), money(b.commission_reversed, c), money(b.commission_paid_out, c), money(b.commission_outstanding, c)].map((v) => el("td", {}, String(v)))); }));
+    return el("tr", {}, ...[x.label, x.seller_id === "direct" ? "–" : pct(x.rate_bps), c, b.orders, b.completed, b.payments_received, money(b.revenue, c), money(b.commission_pending, c), money(b.commission_payable, c), money(b.commission_reversed, c), money(b.commission_paid_out, c), money(b.commission_outstanding, c)].map((v) => el("td", {}, String(v)))); }));
   const sel = el("select", { class: "crm-sort", "aria-label": "Verkäufer" }, ["giuliano", "mario", "damiano", "Kudoshin"].map((x) => el("option", { value: x }, `${x} (${SELLER_CUR[x]})`)));
   const amt = el("input", { type: "number", min: "0", step: "0.01", placeholder: "Betrag", "aria-label": "Betrag" });
   const when = el("input", { type: "date", "aria-label": "Auszahlungsdatum" });
@@ -89,9 +91,9 @@ Nur nach TATSÄCHLICH erfolgter Überweisung – Jarvis überweist nichts.`)) re
     el("p", { class: "crm-note" }, `${so.rule} · Zahlungsüberwachung: ${pm?.monitor?.status || "unbekannt"}${pm?.monitor?.missing?.length ? ` (fehlt: ${pm.monitor.missing.join(", ")})` : ""}`),
     el("table", { class: "crm-table" }, el("thead", {}, el("tr", {}, head.map((h) => el("th", {}, h)))), el("tbody", {}, rows)),
     el("h5", {}, "Aufträge"),
-    so.orders.length ? el("table", { class: "crm-table" }, el("thead", {}, el("tr", {}, ["Kunde", "Lead", "Verkäufer", "Angebot", "Betrag", "Zahlungsstatus", "Auftragsstatus", "Provision"].map((h) => el("th", {}, h)))),
-      el("tbody", {}, so.orders.map((o) => el("tr", {}, ...[o.customer || "–", o.lead_id || "–", o.seller_id || "Direkt (Chris)", `${o.market} ${o.offer || "–"}`, money(o.price, o.currency),
-        PS[o.payment_status] || o.payment_status, o.fulfillment_status || "–", `${ST[o.commission_status] || o.commission_status} · ${money(o.commission, o.currency)}`].map((v) => el("td", {}, String(v)))))))
+    so.orders.length ? el("table", { class: "crm-table" }, el("thead", {}, el("tr", {}, ["Kunde", "Lead", "Verkäufer", "Angebot", "Preis", "Währung", "Provisionssatz", "Provision", "Zahlungsstatus", "Auftragsstatus", "Provisionsstatus"].map((h) => el("th", {}, h)))),
+      el("tbody", {}, so.orders.map((o) => el("tr", {}, ...[o.customer || "–", o.lead_id || "–", o.seller_id || "Direkt (Chris)", `${o.market} ${o.offer || "–"}`, money(o.price, o.currency), o.currency,
+        o.seller_id ? pct(o.commission_rate_bps) : "–", money(o.commission, o.currency), PS[o.payment_status] || o.payment_status, o.fulfillment_status || "–", ST[o.commission_status] || o.commission_status].map((v) => el("td", {}, String(v)))))))
       : el("p", { class: "crm-note" }, "Noch keine Aufträge."),
     el("h5", {}, "Provisions-Auszahlung erfassen (PAYOUT_RECORDED)"),
     el("div", { class: "crm-qa" }, sel, amt, when, ref, el("button", { type: "button", class: "crm-btn primary", onclick: payout }, "AUSZAHLUNG ERFASSEN")),

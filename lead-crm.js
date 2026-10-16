@@ -14,7 +14,7 @@
 //
 // Nichts hier sendet, ruft an oder erstellt Entwürfe. Do Not Contact wirkt sofort im CRM (keine Anruf-Empfehlung, kein Follow-up,
 // keine Outreach-Queue) und – über lead-registry.js registryBlock – auf neue Cold-Entwürfe des Mail-Workers.
-import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines } from "./public/crm-model.js";
+import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines, issueLink } from "./public/crm-model.js";
 import { siteHealth, httpStatusOf, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES } from "./site-findings.js";
 import { buildIndex, findId, normCompany } from "./lead-db.js";
 import { displayCategory } from "./category-labels.js";
@@ -398,7 +398,9 @@ const cleanErrorItem = (f) => {
     label: str(f.label, 40), http_status: Number.isInteger(f.http_status) && f.http_status >= 100 && f.http_status <= 599 ? f.http_status : null,
     location: str(f.location, 60), viewport: Number.isInteger(f.viewport) && f.viewport >= 200 && f.viewport <= 4000 ? f.viewport : null };
   const lines = issueLines(x);
-  return { ...x, crm_title: lines.title, crm_detail: lines.detail };
+  // TF-072: Direktlink auf die betroffene Seite (affected_url, ältere Befunde aus page) + Ziel bei Link-/Bild-Fehlern – nur sichere
+  // öffentliche http(s)-Adressen (safePublicUrl), unbekannt → null. Nie erfunden, nie die Startseite als Ersatz.
+  return { ...x, crm_title: lines.title, crm_detail: lines.detail, ...issueLink({ ...x, affected_url: f.affected_url }) };
 };
 export function cleanErrors(e) {
   const x = e && typeof e === "object" ? e : {};

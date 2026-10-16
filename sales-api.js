@@ -28,7 +28,7 @@
 import { resolveActor, can, isOwner, deny, forbidden, SELLER_IDS, publicUser } from "./auth-core.js";
 import { sellerOf, reassign, distributionReport, leadMarket, VN_SELLER } from "./sales-scope.js";
 import { deriveLedger, ordersFromSnapshot, summarize, totalsByCurrency, overrideSeller, recordPayout, emptyLedger, MARKET_PRICING, RATE_BPS, commissionMinor, fromMinor } from "./commission-ledger.js";
-import { offerFor, offerInfo, toMinor, ORDER_ID_RE } from "./pricing.js";
+import { offerFor, offerInfo, toMinor, ORDER_ID_RE, SELLER_COMMISSION_BPS, commissionBpsAt, isCommissionBps } from "./pricing.js";
 import { safeEqual } from "./shared-state.js";
 import { ONBOARDING_FILTERS } from "./onboarding-core.js";
 import { migrateLedger, migrateOrderRequests, migrateStoreDoc, migrateOnce, VN_SELLER_ID, LEGACY_VN_SELLER_ID } from "./seller-identity.js";
@@ -90,11 +90,13 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
     const price = info?.price ?? r.price;
     const paid = Number.isFinite(o?.paid_amount) ? o.paid_amount : 0;
     const e = r.order_id ? L?.entries?.[r.order_id] : null;
-    const expected = commissionMinor(toMinor(price, cur), RATE_BPS[r.seller_id] ?? 0);
+    // TF-072: Satz der Anfrage (bei Bestätigung gespeichert) bzw. Satz zum Bestätigungszeitpunkt – nie der spätere aktuelle Satz.
+    const rate = !r.seller_id ? 0 : e ? e.rate_bps ?? 0 : isCommissionBps(r.commission_rate_bps) ? r.commission_rate_bps : commissionBpsAt(r.created_at);
+    const expected = commissionMinor(toMinor(price, cur), rate);
     return { request_id: r.request_id, request_status: r.status, code: r.code || null, order_id: r.order_id || null, lead_id: r.lead_id, company: r.company || null, domain: r.domain,
       offer: r.offer_kind, offer_class: r.offer_class, offer_name: info?.name_vi || null, market: r.market, currency: cur, price, deposit: info?.deposit ?? null,
       paid, remaining: Math.max(0, price - paid), payment_status: o?.payment_status || "UNPAID", state: o?.state || null, phase: o?.phase || null,
-      commission_expected: fromMinor(expected, cur), commission_status: e?.status || "PENDING",
+      commission_expected: fromMinor(expected, cur), commission_rate_bps: rate, commission_status: e?.status || "PENDING",
       commission: e ? fromMinor(e.status === "PAYABLE" ? e.payable_minor : e.status === "REVERSED" ? e.reversed_minor : e.expected_minor, cur) : fromMinor(expected, cur),
       created_at: r.created_at, seller_id: r.seller_id };
   }
@@ -115,7 +117,8 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
         return doc;
       });
       return reply(200, { requests: due.map((r) => ({ request_id: r.request_id, lead_id: r.lead_id, offer_class: r.offer_class, market: r.market, currency: r.currency, price: r.price,
-        domain: r.domain, website: r.website, company: r.company, delivery_email: r.delivery_email, actor_user_id: r.actor_user_id, seller_id: r.seller_id, confirmed_at: r.created_at })) });
+        domain: r.domain, website: r.website, company: r.company, delivery_email: r.delivery_email, actor_user_id: r.actor_user_id, seller_id: r.seller_id, confirmed_at: r.created_at,
+        commission_rate_bps: isCommissionBps(r.commission_rate_bps) ? r.commission_rate_bps : commissionBpsAt(r.created_at) })) });
     }
     if (body.op === "orders.result") {
       if (!REQ_ID_RE.test(String(body.request_id || ""))) return reply(400, { error: "request_id ungültig." });
@@ -197,7 +200,7 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
       if (recent >= ORDER_RATE.max) { audit("denied", "RATE_LIMIT"); res = reply(429, { error: "Zu viele Aufträge – bitte später erneut.", code: "RATE_LIMIT" }); return doc; }
       const r = { request_id: newId(), lead_id: lead.lead_id, offer_kind: body.offer, offer_class: info.offer_class, market: "VN", currency: info.currency, price: info.price,
         deposit: info.deposit, domain, website: lead.website || `https://${domain}/`, company: lead.company || null, delivery_email: email,
-        actor_user_id: actor.user_id, seller_id: VN_SELLER, customer_confirmed: true, status: "pending", created_at: t.toISOString() };
+        actor_user_id: actor.user_id, seller_id: VN_SELLER, commission_rate_bps: SELLER_COMMISSION_BPS, customer_confirmed: true, status: "pending", created_at: t.toISOString() };
       doc.requests = [...doc.requests, r].slice(-500);
       audit("queued", null, { request_id: r.request_id });
       res = reply(202, { order: orderView(r, snap, null) });
@@ -252,6 +255,7 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
           return { order_id: o.order_id, customer: r.company || o.domain || null, domain: o.domain, lead_id: e?.lead_id || null, seller_id: e?.seller_id || null,
             seller_source: e?.seller_source || "none", market: o.market, offer: offerInfo(o.offer_class)?.kind || null, offer_class: o.offer_class, price: o.price, paid: o.paid, currency: cur,
             confirmed_at: o.created_at, payment_status: o.payment_status || "UNPAID", fulfillment_status: o.state, commission_status: e?.status || (e ? "PENDING" : "NOT_ELIGIBLE"),
+            commission_rate_bps: e?.rate_bps ?? 0,
             commission: fromMinor(commission_minor || 0, cur) };
         }).sort((a, b) => String(b.confirmed_at).localeCompare(String(a.confirmed_at)));
         const DONE = ["COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"];
@@ -269,7 +273,8 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
           return { seller_id: sid || "direct", label: sid || "Direktkunde (Chris)", rate_bps: sid ? RATE_BPS[sid] : 0, by_currency: by };
         });
         return reply(200, { sellers, orders: orders.slice(0, 300), totals_by_currency: totalsByCurrency(L, SELLER_IDS), payouts: (L.payouts || []).slice(-100).reverse(),
-          rule: "PAYABLE nur bei COMPLETED|COMPLETED_WITH_MANUAL_ITEMS + PAID_FULL · 35 % (3500 bps) · keine automatische Auszahlung", eligible_from: L.eligible_from });
+          rule: `PAYABLE nur bei COMPLETED|COMPLETED_WITH_MANUAL_ITEMS + PAID_FULL · aktueller Satz ${SELLER_COMMISSION_BPS / 100} % (${SELLER_COMMISSION_BPS} bps) für neue Verkäufe, bestehende Einträge behalten ihren Satz · keine automatische Auszahlung`,
+          rate_bps: SELLER_COMMISSION_BPS, eligible_from: L.eligible_from });
       }
       if (view === "orders") {
         if (!owner && actor.role !== "SALES_AGENT_VN") return forbidden();

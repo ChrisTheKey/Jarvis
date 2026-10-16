@@ -181,7 +181,9 @@ const MARKET_WORDS = ["CH", "VN"], CURRENCY_WORDS = ["CHF", "VND"];
 const moneyFields = (o, n) => ({ market: word(o.market, MARKET_WORDS), currency: word(o.currency, CURRENCY_WORDS),
   price_amount: o.price_amount == null ? null : n(o.price_amount, 1e9), paid_amount: o.paid_amount == null ? null : n(o.paid_amount, 1e9),
   payment_required_amount: o.payment_required_amount == null ? null : n(o.payment_required_amount, 1e9),
-  rest_to_deposit_amount: o.rest_to_deposit_amount == null ? null : n(o.rest_to_deposit_amount, 1e9) });
+  rest_to_deposit_amount: o.rest_to_deposit_amount == null ? null : n(o.rest_to_deposit_amount, 1e9),
+  // TF-072: bei Auftragserstellung gespeicherter Provisionssatz (Basispunkte, 1–10000) – sonst null.
+  commission_rate_bps: Number.isInteger(o.commission_rate_bps) && o.commission_rate_bps > 0 && o.commission_rate_bps <= 10_000 ? o.commission_rate_bps : null });
 const payFields = (o, n) => ({ paid_chf: o.paid_chf == null ? null : n(o.paid_chf, 10_000), payment_required_chf: o.payment_required_chf == null ? null : n(o.payment_required_chf, 10_000),
   rest_to_deposit_chf: o.rest_to_deposit_chf == null ? null : n(o.rest_to_deposit_chf, 10_000), payment_status: word(o.payment_status, PAYMENT_STATE_WORDS), payment_ok: bool(o.payment_ok) });
 export function cleanCheck150(r) {

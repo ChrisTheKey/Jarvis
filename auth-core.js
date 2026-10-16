@@ -9,6 +9,7 @@
 // die Oberfläche speichert das Passwort nicht mehr (kein localStorage, kein ?key= in URLs).
 import { safeEqual, netlifyBlobStore } from "./shared-state.js";
 import { VN_SELLER_ID } from "./seller-identity.js";
+import { SELLER_COMMISSION_BPS } from "./pricing.js";
 
 export const ROLES = Object.freeze(["OWNER", "SALES_MANAGER_CH", "SALES_AGENT_CH", "SALES_AGENT_VN"]);
 export const LOCALES = Object.freeze(["de-CH", "vi-VN"]);
@@ -18,10 +19,10 @@ export const SELLER_IDS = Object.freeze(["giuliano", "mario", "damiano", VN_SELL
 // Feste Benutzer: Rolle, Sprache, Markt und Provisionssatz sind Code – nicht per API änderbar.
 export const USERS = Object.freeze({
   chris: Object.freeze({ id: "chris", name: "Chris", role: "OWNER", locale: "de-CH", markets: Object.freeze(["CH", "VN"]), commission_rate_bps: 0 }),
-  giuliano: Object.freeze({ id: "giuliano", name: "Giuliano", role: "SALES_MANAGER_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: 3500 }),
-  mario: Object.freeze({ id: "mario", name: "Mario", role: "SALES_AGENT_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: 3500 }),
-  damiano: Object.freeze({ id: "damiano", name: "Damiano", role: "SALES_AGENT_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: 3500 }),
-  [VN_SELLER_ID]: Object.freeze({ id: VN_SELLER_ID, name: "Kudoshin", role: "SALES_AGENT_VN", locale: "vi-VN", markets: Object.freeze(["VN"]), commission_rate_bps: 3500 }),
+  giuliano: Object.freeze({ id: "giuliano", name: "Giuliano", role: "SALES_MANAGER_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: SELLER_COMMISSION_BPS }),
+  mario: Object.freeze({ id: "mario", name: "Mario", role: "SALES_AGENT_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: SELLER_COMMISSION_BPS }),
+  damiano: Object.freeze({ id: "damiano", name: "Damiano", role: "SALES_AGENT_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: SELLER_COMMISSION_BPS }),
+  [VN_SELLER_ID]: Object.freeze({ id: VN_SELLER_ID, name: "Kudoshin", role: "SALES_AGENT_VN", locale: "vi-VN", markets: Object.freeze(["VN"]), commission_rate_bps: SELLER_COMMISSION_BPS }),
 });
 export const COOKIE = "jarvis_session";
 export const SESSION_MAX_MS = 7 * 86_400_000;       // absolute Höchstdauer

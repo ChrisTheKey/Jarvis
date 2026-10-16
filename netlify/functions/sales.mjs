@@ -1,4 +1,4 @@
-// /api/sales – Provision (35 %, abgeleitet), Lead-Zuweisungen und Vertriebs-Steuerung (TF-063). Siehe sales-api.js.
+// /api/sales – Provision (Satz in bps je Auftrag eingefroren, aktuell 60 %, abgeleitet), Lead-Zuweisungen und Vertriebs-Steuerung (TF-063). Siehe sales-api.js.
 import { createSalesHandler } from "../../sales-api.js";
 import { netlifyBlobStore } from "../../shared-state.js";
 import { netlifyAuthStore } from "../../auth-core.js";

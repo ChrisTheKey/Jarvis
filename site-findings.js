@@ -101,7 +101,8 @@ export function normalizeIssue(i, { verified_at = null, source = "full_audit", s
   const category = def.category({ ...i, url: i.url });
   return {
     key: `${def.family}|${where}`, type: i.type, category, text: short(i.customer_text_short || def.text(i, page), 140),
-    page, target, severity: SEVERITIES.includes(i.severity) ? i.severity : "medium",
+    // TF-072: affected_url = genau die geprüfte Seite, auf der der Fehler sichtbar ist (CRM-Direktlink) – ohne belegte Seite null.
+    page, affected_url: page, target, severity: SEVERITIES.includes(i.severity) ? i.severity : "medium",
     // TF-059: CRM-interne Fakten (nur wenn belegt): Linktext, HTTP-Status, Bereich/Element, Viewport-Breite. Nie Seiteninhalt.
     label: label40(i.label), http_status: httpStatusOf(i), location: VISUAL.has(i.type) ? short(i.location, 60) : null, viewport: viewportOf(i.viewport),
     verified_at: iso(verified_at) || iso(i.detectedAt) || iso(i.verified_at) || null, status: status === "RESOLVED" ? "RESOLVED" : "OPEN",
@@ -157,7 +158,7 @@ export function partialFindings(list = []) {
       reproducible: VISUAL.has(f.type) ? true : undefined, detectedAt: f.verified_at, customer_text_short: f.text }, { verified_at: f.verified_at, source: "cold" }) : null;
     if (n) return n;
     if (f.type && !TYPES[f.type]) return null; // bekannter, aber nicht gezählter Typ
-    return { key: `text|${short(f.text, 140).toLowerCase()}`, type: f.type || null, category: categoryOfText(f.text), text: short(f.text, 140), page: httpUrl(f.page), target: null,
+    return { key: `text|${short(f.text, 140).toLowerCase()}`, type: f.type || null, category: categoryOfText(f.text), text: short(f.text, 140), page: httpUrl(f.page), affected_url: httpUrl(f.page), target: null,
       severity: SEVERITIES.includes(f.severity) ? f.severity : "medium", verified_at: iso(f.verified_at), status: "OPEN", source: "cold", manual: false };
   }).filter(Boolean)));
 }

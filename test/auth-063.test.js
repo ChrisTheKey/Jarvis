@@ -14,7 +14,7 @@ test("TF-063 Auth A–E: Rollen und Sprachen je Benutzer", async () => {
     const r = await me(t, t.cookies[u]);
     assert.equal(r.status, 200, u);
     assert.equal(r.body.user.role, role, u); assert.equal(r.body.user.locale, locale, u);
-    assert.equal(r.body.user.commission_rate_bps, u === "chris" ? 0 : 3500);
+    assert.equal(r.body.user.commission_rate_bps, u === "chris" ? 0 : 6000); // TF-072
   }
 });
 

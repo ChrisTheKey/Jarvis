@@ -13,6 +13,7 @@ import { safeEqual } from "./shared-state.js";
 import { resolveActor, isOwner, deny, forbidden } from "./auth-core.js";
 import { canSeeLead, sellerOf, leadMarket, emptyAssignments } from "./sales-scope.js";
 import { LEAD_ID_RE } from "./lead-crm.js";
+import { issueLinks } from "./public/crm-model.js";
 import { migrateCallingControl, migrateCallingHistory, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import {
   SCHEMA, MARKETS, MODES, CALL_OUTCOMES, FINAL_OUTCOMES, REACHED_OUTCOMES, NO_ANSWER_OUTCOMES, DEFAULTS, LIMIT_BOUNDS, FORBIDDEN_CLIENT_FIELDS,
@@ -20,6 +21,11 @@ import {
   e164Of, maskPhone, zurichDay, nextWindowStart, crmActionsFor, buildLeadContext, cleanSummary, isoOrNull,
   CALLING_MARKETS, CONSENT_SOURCES, CONSENT_SCOPE, LEGAL_STATES, FREQUENCY_MS, validateToolCall, phoneHash, callFlag, leadList, callSecondsLeft,
 } from "./calling-core.js";
+
+// TF-072: Direktlinks der verifizierten Fehler EINES Leads (betroffene Seite + ggf. Ziel; nur sichere öffentliche http(s)-Adressen aus der
+// gescopten CRM-Sicht, unbekannt → null). Nur lesen: der Calling-Flow schreibt nie URLs und ändert nie Website-Inhalte.
+export const callIssueLinks = (l, max = 10) => issueLinks(l, max).map((x) => ({ title: x.title, text: x.text, type: x.type, category: x.category, severity: x.severity,
+  affected_url: x.affected_url, target_url: x.target_url }));
 
 // TF-068 Rollen: Kudoshin (SALES_AGENT_VN; TF-070, vormals lap) darf Kampagnen/Einzelanrufe STARTEN. Chris (OWNER) überwacht, konfiguriert, sieht Statistik/Audit und
 // hat den Notstopp – startet aber KEINE eigenen Kampagnen (403). Alle anderen 403. Nur Markt VN (CH-Calling deaktiviert).
@@ -380,7 +386,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
       if (prev) return prev.tool === body.tool ? { status: 200, body: { ok: true, idempotent: true, outcome: c.tool.outcome || null }, readOnly: true } : { status: 409, body: { error: "idempotency_key bereits verwendet.", code: "IDEMPOTENCY_CONFLICT" }, readOnly: true };
       if (body.tool === "get_current_lead") {
         const l = leads.find((x) => x.lead_id === c.lead_id);
-        return { status: 200, body: { ok: true, lead: l ? buildLeadContext(l, history.calls) : null }, readOnly: true };
+        return { status: 200, body: { ok: true, lead: l ? { ...buildLeadContext(l, history.calls), issue_links: callIssueLinks(l, 5) } : null }, readOnly: true };
       }
       const tl = c.tool;
       const setOutcome = (o) => { if (!tl.dnc) tl.outcome = o; };
@@ -483,7 +489,8 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
             consent_scope: cs.evidence.consent_scope, consent_evidence_reference: cs.evidence.consent_evidence_reference, verified_at: cs.evidence.verified_at, revoked_at: cs.evidence.revoked_at || null } : null,
           dnc_registry: cs.dnc_registry ? { result: cs.dnc_registry.result, checked_at: cs.dnc_registry.checked_at } : null,
           last_call: last ? pubCall(last) : null, attempts: calls.filter((c) => !c.dry_run).length, next_callback: cs.requested_callback?.callback_at || null,
-          dnc: !!(consents.dnc?.[leadId]), calls: calls.slice(-10).reverse().map(pubCall), recording: "OFF", can_start_calls: canStartCalls(actor) });
+          dnc: !!(consents.dnc?.[leadId]), calls: calls.slice(-10).reverse().map(pubCall), recording: "OFF", can_start_calls: canStartCalls(actor),
+          website: l.website || null, domain: l.domain || null, issues: callIssueLinks(l) });
       }
       // Leadlisten (TF-068): ALL_LEADS · CALL_ELIGIBLE_LEADS · CALL_BLOCKED_LEADS · DO_NOT_CONTACT – nur im eigenen Scope, nur VN.
       if (url.searchParams.get("view") === "lists") {

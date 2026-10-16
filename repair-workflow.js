@@ -61,7 +61,7 @@ import { createRequire } from "node:module";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale, recordDirectSale } from "./sales.js";
 import { paymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText } from "./payments.js";
-import { offerInfo, isFixOffer } from "./pricing.js";
+import { offerInfo, isFixOffer, SELLER_COMMISSION_BPS } from "./pricing.js";
 import { isVnOrder, buildVnAccessRequestMail, buildVnHostingQuestionMail, buildVnHostKeyConfirmationMail, buildVnRepairReport, buildVnRepairDeliveryMail, vnReportSubject } from "./vn-customer-texts.js";
 import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIntakeToken, openAccessCredential, destroyAccessSecret,
   markSecretDestroyed, syncAccessIntake, intakeClient } from "./access-intake.js";
@@ -199,8 +199,8 @@ export function createRepairOrder(store, { domain, website = null, lead_id = nul
   if (open) throw new Error(`Für ${d} läuft bereits Auftrag ${open.order_id} (${open.state}).`);
   const order_id = `${info.order_prefix}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
   const money = info.market === "VN"
-    ? { offer_class, market: "VN", currency: "VND", price_amount: info.price, locale: "vi-VN", payment: { required: info.deposit, paid: 0, currency: "VND", satisfied: false }, ...(vn || {}) }
-    : { offer_class: REPAIR_OFFER, price_chf: OFFERS[REPAIR_OFFER].price, currency: "CHF", payment: { required_chf: OFFERS[REPAIR_OFFER].price / 2, paid_chf: 0, satisfied: false } };
+    ? { offer_class, market: "VN", currency: "VND", price_amount: info.price, locale: "vi-VN", payment: { required: info.deposit, paid: 0, currency: "VND", satisfied: false }, commission_rate_bps: SELLER_COMMISSION_BPS, ...(vn || {}) }
+    : { offer_class: REPAIR_OFFER, price_chf: OFFERS[REPAIR_OFFER].price, currency: "CHF", commission_rate_bps: SELLER_COMMISSION_BPS, payment: { required_chf: OFFERS[REPAIR_OFFER].price / 2, paid_chf: 0, satisfied: false } };
   const order = {
     order_id, ...money,
     lead_id: lead_id || d, domain: d, website: website || `https://${d}/`, company,
@@ -1470,7 +1470,7 @@ export function repairPhase(o, pay) {
 // NIE: Evidence, URLs einzelner Befunde, Branch-/Commit-/Deploy-Referenzen, Preview-URLs, Freigabe-Referenzen, Tokens,
 // Token-Hashes, Zahlungsreferenzen, Zugangsdaten oder Kundenadressen, Historie.
 export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domain", "offer_class", "market", "currency", "price_chf", "price_amount", "paid_amount", "payment_required_amount",
-  "rest_to_deposit_amount", "state", "phase", "findings",
+  "rest_to_deposit_amount", "commission_rate_bps", "state", "phase", "findings",
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
   "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified",
@@ -1494,7 +1494,7 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         order_id: o.order_id, company: o.company || null, domain: o.domain, offer_class: o.offer_class, price_chf: o.price_chf,
         // TF-064: Markt/Währung/Beträge in Auftragswährung (CH zusätzlich wie bisher *_chf).
         market: pay.market, currency: pay.currency, price_amount: pay.price_amount, paid_amount: pay.paid_amount, payment_required_amount: pay.deposit_amount,
-        rest_to_deposit_amount: pay.rest_to_deposit_amount,
+        rest_to_deposit_amount: pay.rest_to_deposit_amount, commission_rate_bps: o.commission_rate_bps ?? null, // TF-072: bei Erstellung gespeicherter Satz
         state: o.state, phase: repairPhase(o, pay), findings: issues.length, repaired: issues.filter((i) => i.repair_status === "repaired").length,
         needs_review: (o.manual_review || []).length,
         backup_ok: !!(o.backup?.rollback_point), desktop_retest: o.retest ? o.retest.desktop?.ok === true : null,

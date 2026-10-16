@@ -4,7 +4,7 @@
 // automatische Aktion, kein Senden, kein Anruf, keine SMS/WhatsApp. Alle Inhalte per textContent (nie innerHTML mit Daten).
 // Sprache: de-CH (Standard, unverändert) oder vi-VN (setLocale) – Firmennamen, Domains, Telefonnummern und Kundeninhalte bleiben wie sie sind.
 import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, CARDS, SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
-  ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts } from "./crm-model.js";
+  ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts, issueLink, currentIssues } from "./crm-model.js";
 import { createI18n } from "./i18n.js";
 import { callingTexts, leadCallBox } from "./calling-ui.js";
 import { onboardingTexts, leadOnboardingBox, onboardingPanel } from "./onboarding-ui.js";
@@ -51,6 +51,20 @@ const top2 = (l) => { const tp = topIssues(l); return tp.length ? el("ol", { cla
 const factLine = (f) => { const x = issueFacts(f, I.issueWords); return [[t("fact.source"), x.source], [t("fact.element"), x.element], [t("fact.target"), x.target], [t("fact.result"), x.result],
   [t("fact.http"), x.http_status ? String(x.http_status) : null]].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · "); };
 const pageText = (f) => (f.page ? f.page.replace(/^https?:\/\//, "") : "–");
+// TF-072: Direktlink je Fehler – „Betroffene Seite“ (genaue geprüfte Seite) + „Fehler öffnen“ im neuen Tab (noopener noreferrer), bei
+// Link-/Bild-Fehlern zusätzlich „Ziel öffnen“. Unbekannte Seite → „Direktlink nicht verfügbar“ (nie Startseite/erratene Adresse).
+const issueLinkRow = (f) => { const x = issueLink(f); return el("div", { class: "crm-ilink" }, el("span", { class: "lbl" }, `${t("link.page")}: `),
+  x.affected_url ? [link(x.affected_url, x.affected_url.replace(/^https?:\/\//, ""), "crm-iurl"), " ", link(x.affected_url, t("link.open"), "crm-btn sm primary crm-iopen")]
+    : el("span", { class: "crm-inone" }, t("link.none")),
+  x.target_url ? [" ", link(x.target_url, t("link.target"), "crm-btn sm crm-itarget")] : ""); };
+// Kompakte Anrufansicht (Kudoshin/Chris, VN-Lead): Website, je verifiziertem Fehler Kurztext, Auswirkung, betroffene Seite + Direktlink.
+function callIssuesBox(l) {
+  const xs = currentIssues(l, 10);
+  return el("div", { class: "crm-callissues" }, el("div", {}, `${t("kv.website")}: `, link(l.website, l.domain || l.website || "–")),
+    xs.length ? el("ol", { class: "crm-find crm-cilist" }, xs.map((f) => el("li", {}, el("b", {}, `${t("link.err")}: ${lines(f).title}`),
+      el("small", {}, `${t("link.impact")}: ${t(`impact.${ISSUE_CATEGORIES.includes(f.category) ? f.category : "other"}`)}`), issueLinkRow(f))))
+      : el("p", { class: "crm-note" }, noTop(l)));
+}
 // TF-058: historischer Discovery-Fund (nur Anzeige – daraus entsteht nie ein Entwurf).
 const histBadge = (l) => (I.L.history[l.history_badge] ? badge(`hist-${l.history_badge}`, I.L.history[l.history_badge]) : "");
 const stageBadge = (l) => l.do_not_contact ? badge("dnc", t("dnc")) : badge(`st-${l.sales_stage}`, I.L.stage[l.sales_stage] || "–");
@@ -195,8 +209,8 @@ function renderDrawer() {
   // TF-055 Website-Zustand: Zahl + Audit-Art + Zeitpunkt, die zwei wichtigsten Fehler, danach ALLE aktuell verifizierten Fehler.
   const e = l.errors || { audit: "NONE", top: [], items: [] };
   const sev = (f) => I.L.severity[f.severity] || "–";
-  const findItem = (f) => { const x = lines(f); return el("li", { class: f.manual ? "manual" : "" }, el("b", {}, x.title), x.detail ? el("small", { class: "id" }, x.detail) : "",
-    el("small", {}, `${I.L.issue[f.category] || t("other")} · ${t("severity")} ${sev(f)}${f.manual ? ` · ${t("manualItem")}` : ""} · ${t("verified")} ${fmt(f.verified_at)}`)); };
+  const findItem = (f) => { const x = lines(f); return el("li", { class: f.manual ? "manual" : "" }, el("b", {}, `${t("link.err")}: ${x.title}`), x.detail ? el("small", { class: "id" }, x.detail) : "",
+    el("small", {}, `${I.L.issue[f.category] || t("other")} · ${t("severity")} ${sev(f)}${f.manual ? ` · ${t("manualItem")}` : ""} · ${t("verified")} ${fmt(f.verified_at)}`), issueLinkRow(f)); };
   const findings = [
     kv([[t("kv.verified"), errorLong(l, I.errWords)], [t("kv.audit"), `${I.L.audit[e.audit]}${e.scope && !I.vi ? ` – ${e.scope}` : ""}`], [t("kv.lastChecked"), fmt(e.checked_at)],
       ...(e.audit === "STALE" ? [[t("kv.hint"), e.full_checked_at ? t("hint.staleFull") : t("hint.staleHist")]] : []),
@@ -205,7 +219,7 @@ function renderDrawer() {
     el("h5", {}, t("h.top")),
     e.top?.length ? el("ol", { class: "crm-find crm-topd" }, e.top.map((f, i) => { const x = lines(f); return el("li", {}, el("b", {}, `#${i + 1} ${x.title}`),
       x.detail ? el("small", { class: "id" }, x.detail) : "", el("small", {}, factLine(f) || `${t("fact.page")}${pageText(f)}`),
-      el("small", {}, t("sevLine", sev(f), I.L.issue[f.category] || t("other"), fmt(f.verified_at)))); }))
+      el("small", {}, t("sevLine", sev(f), I.L.issue[f.category] || t("other"), fmt(f.verified_at))), issueLinkRow(f)); }))
       : el("p", {}, noTop(l)),
     ...(e.items?.length ? [el("h5", {}, t("h.all", e.items.length, e.audit === "FULL")), el("ul", { class: "crm-find" }, e.items.map(findItem))] : []),
   ];
@@ -251,7 +265,7 @@ function renderDrawer() {
     ...(l.market === "VN" && ["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) ? [el("h4", {}, t("sec.order")), orderBox(l, blocked)] : []),
     // TF-065: Calling-Agent-Sektion (letzter Anruf, Ergebnis, Dauer, Rückruf, Versuche, Zusammenfassung) – nur Chris und Kudoshin, Server prüft den Scope.
     // TF-068: Calling nur Vietnam – Sektion nur bei VN-Leads (Kudoshin: Anrufen, Chris: Überwachung).
-    ...(["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) && l.market === "VN" ? [el("h4", {}, callingTexts(I.locale).lead.h), leadCallBox(l, I.locale)] : []),
+    ...(["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) && l.market === "VN" ? [el("h4", {}, callingTexts(I.locale).lead.h), el("h5", {}, t("sec.callIssues")), callIssuesBox(l), leadCallBox(l, I.locale)] : []),
     // TF-066: Kunden-Onboarding der Aufträge dieses Leads (Server prüft Bereich/Markt; nie Zugangsdaten).
     el("h4", {}, onboardingTexts(I.locale).h), leadOnboardingBox(l, I.locale),
     el("h4", {}, t("sec.admin")),

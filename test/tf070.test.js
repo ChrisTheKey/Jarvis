@@ -32,20 +32,20 @@ function toLegacyUsers(authMem) {
   return doc;
 }
 
-test("TF-070 Konstanten: kanonische ID Kudoshin, Rolle SALES_AGENT_VN, vi-VN, VN, 35 %; «lap» kein Benutzer/Verkäufer", () => {
+test("TF-070 Konstanten: kanonische ID Kudoshin, Rolle SALES_AGENT_VN, vi-VN, VN, 60 % (TF-072); «lap» kein Benutzer/Verkäufer", () => {
   assert.equal(VN_SELLER_ID, "Kudoshin"); assert.equal(LEGACY_VN_SELLER_ID, "lap");
-  assert.deepEqual(publicUser(K), { user_id: K, name: K, role: "SALES_AGENT_VN", locale: "vi-VN", markets: ["VN"], commission_rate_bps: 3500 });
+  assert.deepEqual(publicUser(K), { user_id: K, name: K, role: "SALES_AGENT_VN", locale: "vi-VN", markets: ["VN"], commission_rate_bps: 6000 });
   assert.equal(publicUser("lap"), null); assert.equal(actorFor("lap"), null);
   assert.ok(!Object.hasOwn(USERS, "lap") && !SELLER_IDS.includes("lap") && !SELLERS.includes("lap"));
   assert.deepEqual(SELLER_IDS, ["giuliano", "mario", "damiano", K]);
   assert.equal(userIdOf("Kudoshin"), K); assert.equal(userIdOf("kudoshin"), K); assert.equal(userIdOf("lap"), null); assert.equal(userIdOf("Lap"), null);
-  assert.equal(VN_SELLER, K); assert.equal(RATE_BPS[K], 3500); assert.equal(CURRENCY_OF_SELLER[K], "VND");
+  assert.equal(VN_SELLER, K); assert.equal(RATE_BPS[K], 6000); assert.equal(CURRENCY_OF_SELLER[K], "VND");
   assert.equal(canonicalSellerId("lap"), K); assert.equal(canonicalSellerId("mario"), "mario");
   // Andere Benutzer exakt unverändert.
   assert.deepEqual(publicUser("chris"), { user_id: "chris", name: "Chris", role: "OWNER", locale: "de-CH", markets: ["CH", "VN"], commission_rate_bps: 0 });
-  assert.deepEqual(publicUser("giuliano"), { user_id: "giuliano", name: "Giuliano", role: "SALES_MANAGER_CH", locale: "de-CH", markets: ["CH"], commission_rate_bps: 3500 });
-  assert.deepEqual(publicUser("mario"), { user_id: "mario", name: "Mario", role: "SALES_AGENT_CH", locale: "de-CH", markets: ["CH"], commission_rate_bps: 3500 });
-  assert.deepEqual(publicUser("damiano"), { user_id: "damiano", name: "Damiano", role: "SALES_AGENT_CH", locale: "de-CH", markets: ["CH"], commission_rate_bps: 3500 });
+  assert.deepEqual(publicUser("giuliano"), { user_id: "giuliano", name: "Giuliano", role: "SALES_MANAGER_CH", locale: "de-CH", markets: ["CH"], commission_rate_bps: 6000 });
+  assert.deepEqual(publicUser("mario"), { user_id: "mario", name: "Mario", role: "SALES_AGENT_CH", locale: "de-CH", markets: ["CH"], commission_rate_bps: 6000 });
+  assert.deepEqual(publicUser("damiano"), { user_id: "damiano", name: "Damiano", role: "SALES_AGENT_CH", locale: "de-CH", markets: ["CH"], commission_rate_bps: 6000 });
   // Kundensichtbare Persona/Signatur bleibt; VN-Profil auch über die Konto-ID Kudoshin.
   assert.equal(senderProfileFor({ actor_user_id: K, market: "CH" }).id, "vn");
   assert.equal(senderProfileFor({ actor_user_id: "lap", market: "CH" }).id, "ch");
@@ -180,12 +180,12 @@ test("TF-070 Verkäufe + Provisionen: alte «lap»-Anfrage/-Provision/-Auszahlun
   assert.deepEqual([st.body.orders.canonical, st.body.orders.legacy], [1, 0]);
   assert.ok(!/vn-cong-ty|lienhe@|scrypt|"hash"/.test(JSON.stringify(st.body)), "keine Lead-IDs, Kontaktdaten oder Hashes");
 
-  // Neue Provision: VN-Auftrag → Kudoshin, 346500 / 1365000 VND.
+  // Neue Provision (nach TF-072): VN-Auftrag → Kudoshin, 594000 / 2340000 VND.
   const vnLead = { lead_id: "vn-cong-ty-2.vn", market: "VN", domain: "vn-cong-ty-2.vn" };
   const snap = { repair: { orders: [{ order_id: "VNFIX-20261017-aaaaaa", domain: "vn-cong-ty-2.vn", market: "VN", currency: "VND", offer_class: "VN_REPAIR_FIX", price_amount: 3900000, paid_amount: 3900000, state: "COMPLETED", payment_status: "PAID_FULL", created_at: "2026-10-17T07:00:00.000Z" }] },
     check150: { orders: [{ order_id: "VNCHECK-20261017-bbbbbb", domain: "vn-cong-ty-2.vn", market: "VN", currency: "VND", offer_class: "VN_REPAIR_CHECK", price_amount: 990000, paid_amount: 990000, state: "COMPLETED", payment_status: "PAID_FULL", created_at: "2026-10-17T07:00:00.000Z" }] } };
   const d = deriveLedger({ ledger: { ...emptyLedger(), eligible_from: "2026-10-16T00:00:00.000Z" }, orders: ordersFromSnapshot(snap), resolveSeller: () => ({ seller_id: sellerOf(vnLead, null), lead_id: vnLead.lead_id, source: "vn_default" }), now: new Date("2026-10-17T08:00:00Z") });
-  assert.deepEqual(Object.values(d.ledger.entries).map((x) => [x.seller_id, x.payable_minor]).sort((a, b) => a[1] - b[1]), [[K, 346500], [K, 1365000]]);
+  assert.deepEqual(Object.values(d.ledger.entries).map((x) => [x.seller_id, x.payable_minor]).sort((a, b) => a[1] - b[1]), [[K, 594000], [K, 2340000]]);
 
   // Neue VN-Sale (Kudoshin, eigener Lead) → seller_id Kudoshin; VPS-Übernahme akzeptiert nur Kudoshin, «lap» → BAD_ACTOR.
   const lead = (await json(await t.crm(makeReq("/api/crm", t.as(K))))).body.leads.find((l) => l.email && !l.do_not_contact && l.lead_id !== "vn-cong-ty-1.vn");

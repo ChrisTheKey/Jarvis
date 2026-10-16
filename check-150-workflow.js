@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale } from "./sales.js";
 import { paymentGateForOrder, paymentThresholdChf, paymentSummary, gatePaid, gateText, amountText } from "./payments.js";
-import { offerInfo, isCheckOffer } from "./pricing.js";
+import { offerInfo, isCheckOffer, SELLER_COMMISSION_BPS } from "./pricing.js";
 import { isVnOrder, vnFindingText, vnInstructionsFor, pageLabelVi, buildVnCheckReport, buildVnCheckDeliveryDraft } from "./vn-customer-texts.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { fullSiteAudit, detectStack, normDomain } from "./repair-workflow.js";
@@ -83,8 +83,8 @@ export function createCheck150Order(store, { domain, website = null, company = n
   if (open) throw new Error(`Für ${d} läuft bereits Auftrag ${open.order_id} (${open.state}).`);
   const order_id = `${info.order_prefix}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
   const money = info.market === "VN"
-    ? { offer_class, market: "VN", currency: "VND", price_amount: info.price, locale: "vi-VN", payment: { required: info.deposit, paid: 0, currency: "VND", satisfied: false }, ...(vn || {}) }
-    : { offer_class: CHECK150_OFFER, price_chf: OFFERS[CHECK150_OFFER].price, currency: "CHF", payment: { required_chf: OFFERS[CHECK150_OFFER].price / 2, paid_chf: 0, satisfied: false } };
+    ? { offer_class, market: "VN", currency: "VND", price_amount: info.price, locale: "vi-VN", payment: { required: info.deposit, paid: 0, currency: "VND", satisfied: false }, commission_rate_bps: SELLER_COMMISSION_BPS, ...(vn || {}) }
+    : { offer_class: CHECK150_OFFER, price_chf: OFFERS[CHECK150_OFFER].price, currency: "CHF", commission_rate_bps: SELLER_COMMISSION_BPS, payment: { required_chf: OFFERS[CHECK150_OFFER].price / 2, paid_chf: 0, satisfied: false } };
   const order = {
     order_id, ...money,
     domain: d, website: website || `https://${d}/`, company, delivery_email: delivery_email.toLowerCase(), contact_name,
@@ -562,7 +562,7 @@ export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
       return { order_id: o.order_id, company: o.company || null, domain: o.domain, offer_class: o.offer_class, price_chf: o.price_chf,
         // TF-064: Markt/Währung/Beträge in Auftragswährung (CH zusätzlich wie bisher *_chf).
         market: pay.market, currency: pay.currency, price_amount: pay.price_amount, paid_amount: pay.paid_amount, payment_required_amount: pay.deposit_amount,
-        rest_to_deposit_amount: pay.rest_to_deposit_amount,
+        rest_to_deposit_amount: pay.rest_to_deposit_amount, commission_rate_bps: o.commission_rate_bps ?? null, // TF-072: bei Erstellung gespeicherter Satz
         state: o.state, findings: o.report_findings_count ?? null, critical: s.critical ?? null, high: s.high ?? null, medium: s.medium ?? null, low: s.low ?? null,
         report_available: !!o.report, draft_available: !!o.delivery_draft?.draft_id, delivery_status: o.delivery_status || "none",
         // Zahlungsstand (TF-041): nur Zahlen/Flag/Zustandswort aus dem Ledger – nie Referenzen oder Zahlungsdetails im Dashboard.

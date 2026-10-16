@@ -138,6 +138,49 @@ export function issueLines(f = {}, w = ISSUE_WORDS_DE, text = typeof f.text === 
   const tgt = x.target && !x.element.includes(x.target) ? x.target : null;
   return { title: `${x.source} → ${x.element}`, detail: [tgt, x.result].filter(Boolean).join(" → ") || null };
 }
+// ---------- TF-072: Direktlink je Fehler (betroffene Seite) ----------
+// Nur sichere öffentliche http(s)-Adressen: kein javascript:/data:/file:, keine Zugangsdaten in der URL, nur Standard-Ports, kein
+// localhost/.local/.internal, keine IP-Literale aus privaten/reservierten Netzen, keine IPv6-Literale. Reine Anzeige/Navigation –
+// Jarvis ruft diese Adressen hier nie ab.
+const ip4 = (s) => s.split(".").reduce((a, p) => a * 256 + Number(p), 0);
+const PRIVATE_V4 = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+  "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4"].map((c) => { const [a, n] = c.split("/"); return [ip4(a), Number(n)]; });
+const LOCAL_HOST_RE = /(^|\.)(localhost|local|localdomain|internal|intranet|lan|home|corp|private|test|invalid|example|onion|home\.arpa|in-addr\.arpa|ip6\.arpa)$/;
+export function safePublicUrl(u) {
+  if (typeof u !== "string" || !u || u.length > 400 || /[\s<>"'`\\\u0000-\u001f\u007f]/.test(u)) return null;
+  let x; try { x = new URL(u); } catch { return null; }
+  if (!["http:", "https:"].includes(x.protocol) || x.username || x.password || x.port) return null;
+  const h = x.hostname.toLowerCase().replace(/\.$/, "");
+  if (!h || h.startsWith("[") || h.includes(":")) return null;
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const ip = ip4(h);
+    if (v4.slice(1).some((p) => Number(p) > 255) || PRIVATE_V4.some(([b, n]) => Math.floor(ip / 2 ** (32 - n)) === Math.floor(b / 2 ** (32 - n)))) return null;
+    return x.href;
+  }
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*\.(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$/.test(h) || LOCAL_HOST_RE.test(h)) return null;
+  return x.href;
+}
+// Betroffene Seite = die geprüfte Seite, auf der der Fehler sichtbar ist (affected_url, ältere Befunde: page). Unbekannt → null
+// (Anzeige „Direktlink nicht verfügbar“) – nie die Startseite oder eine erratene Adresse als Ersatz. Ziel (nur Link-/Bild-Fehler):
+// die kaputte Zieladresse selbst.
+const TARGET_LINK_TYPES = new Set(["broken_link", "contact_page_broken", "broken_image"]);
+export function issueLink(f = {}) {
+  // affected_url vorhanden (auch null = geprüft, aber unbekannt/unsicher) → massgeblich; nur ältere Befunde ohne das Feld nutzen page.
+  const affected_url = safePublicUrl(f?.affected_url !== undefined ? f.affected_url : f?.page);
+  const target = TARGET_LINK_TYPES.has(f?.type) ? safePublicUrl(f?.target_url ?? f?.target) : null;
+  return { affected_url, target_url: target && target !== affected_url ? target : null };
+}
+// Verifizierte Fehler eines Leads einzeln mit Direktlink (Detail, Anrufansicht, Calling-Agent): nie zusammengefasst, nie erfunden.
+export function currentIssues(lead, max = 40) {
+  const items = Array.isArray(errs(lead).items) && errs(lead).items.length ? errs(lead).items : Array.isArray(errs(lead).top) ? errs(lead).top : [];
+  return items.filter((f) => f && typeof f === "object" && f.status !== "RESOLVED" && (f.crm_title || f.text)).slice(0, max);
+}
+export function issueLinks(lead, max = 40) {
+  return currentIssues(lead, max).map((f) => ({ key: f.key || null, type: f.type || null, category: ISSUE_CATEGORIES.includes(f.category) ? f.category : "other", severity: f.severity || null,
+      text: f.text || null, title: f.crm_title || f.text, detail: f.crm_detail || null, ...issueLink(f) }));
+}
+
 // Reparatur-Stand (nach CHF-480): „Automatisch repariert + 2 manuelle Punkte offen“.
 export function repairLine(l, w = ERR_WORDS_DE) {
   const r = errs(l).repair;

@@ -3,10 +3,12 @@
 //   Auftrag (Server-Control-Snapshot: order_id, Domain, Markt, Währung, Preis, Zustand, payment_status/bezahlt aus payments.js)
 //   + Lead-Zuständigkeit (sales-scope.js sellerOf) + Aktivierungszeitpunkt (commission_eligible_from = TF-063 live).
 //
-// Regeln (alle vier Verkäufer 35 % = 3500 bps; Chris keine Provision):
+// Regeln (alle vier Verkäufer gleicher Satz, aktuell 60 % = 6000 bps ab TF-072, vorher 35 % = 3500 bps; Chris keine Provision):
+//   Satz      je Auftrag eingefroren (commission_rate_bps): bestehender Eintrag behält seinen Satz → beim Auftrag gespeicherter Satz →
+//             Satz zum Auftragszeitpunkt (pricing.js COMMISSION_BPS_SCHEDULE). Eine Satzänderung schreibt nie alte Provisionen um.
 //   PENDING   Auftrag existiert, aber NICHT (abgeschlossen UND voll bezahlt) – Anruf/Interesse/Bestellung/Teilzahlung/Deposit allein reichen nie
 //   PAYABLE   Zustand COMPLETED oder COMPLETED_WITH_MANUAL_ITEMS  UND  payment_status PAID_FULL
-//             Betrag = 35 % von min(bezahlt, Angebotspreis) – keine Provision auf Überzahlung; kaufmännisch gerundet in Minor Units
+//             Betrag = Satz von min(bezahlt, Angebotspreis) – keine Provision auf Überzahlung; kaufmännisch gerundet in Minor Units
 //   REVERSED  storniert (CANCELLED/void), zurückerstattet (REFUNDED) oder Deckung nachträglich entfallen – Eintrag bleibt, Historie bleibt
 // Einträge werden nie gelöscht; jede Statusänderung landet in history. Nach PAYABLE ist der Verkäufer gesperrt (keine stille Änderung).
 // Keine Auszahlung, keine Bankdaten, keine Überweisung.
@@ -14,10 +16,11 @@
 // TF-064 Währungen: Minor Units je Währung (CHF Exponent 2 → CHF 150.00 = 15000; VND Exponent 0 → 990000 VND = 990000).
 // Markt/Währung kommen aus dem Auftrag: Legacy-CH ohne Felder → CH/CHF; VN-Aufträge MÜSSEN market VN + currency VND tragen.
 // Summen werden je Währung getrennt geführt – CHF und VND werden nie addiert.
-import { MARKET_PRICES, ORDER_ID_RE, orderMoney, toMinor as toMinorOf, minorString } from "./pricing.js";
+import { MARKET_PRICES, ORDER_ID_RE, orderMoney, toMinor as toMinorOf, minorString, SELLER_COMMISSION_BPS, commissionBpsAt, isCommissionBps } from "./pricing.js";
 import { VN_SELLER_ID } from "./seller-identity.js";
 
-export const RATE_BPS = Object.freeze({ giuliano: 3500, mario: 3500, damiano: 3500, [VN_SELLER_ID]: 3500 });
+// Aktueller Satz je Verkäufer (für NEUE Aufträge) – gespeicherte Einträge tragen ihren eigenen Satz.
+export const RATE_BPS = Object.freeze({ giuliano: SELLER_COMMISSION_BPS, mario: SELLER_COMMISSION_BPS, damiano: SELLER_COMMISSION_BPS, [VN_SELLER_ID]: SELLER_COMMISSION_BPS });
 export const SELLERS = Object.freeze(Object.keys(RATE_BPS));
 export const STATUSES = Object.freeze(["PENDING", "PAYABLE", "REVERSED"]);
 export const DONE_STATES = Object.freeze(["COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"]);
@@ -29,8 +32,16 @@ export const CURRENCY_OF_SELLER = Object.freeze({ giuliano: "CHF", mario: "CHF",
 // Legacy-Signaturen (CHF) bleiben: toMinor(150) = 15000, fromMinor(5250) = "52.50". Mit Währung: toMinor(990000, "VND") = 990000.
 export const toMinor = (v, currency = "CHF") => toMinorOf(v, currency);
 export const fromMinor = (m, currency = "CHF") => minorString(m, currency);
-// 35 % in Minor Units, kaufmännisch gerundet: CHF 150 → 5250 (52.50), CHF 480 → 16800 (168.00), VND 990000 → 346500, VND 3900000 → 1365000.
+// Satz in Minor Units, kaufmännisch gerundet: 6000 bps → CHF 150 → 9000 (90.00), CHF 480 → 28800 (288.00), VND 990000 → 594000,
+// VND 3900000 → 2340000 (historisch 3500 bps → 5250 / 16800 / 346500 / 1365000).
 export const commissionMinor = (baseMinor, bps) => Math.round((baseMinor * bps) / 10_000);
+// Eingefrorener Satz eines Auftrags (siehe Kopf): Eintrag → Auftrag → Satz zum Auftragszeitpunkt.
+export function frozenRateBps(prev, o) {
+  if (isCommissionBps(prev?.commission_rate_bps)) return prev.commission_rate_bps;
+  if (isCommissionBps(prev?.rate_bps)) return prev.rate_bps; // Einträge vor TF-072 (rate_bps = damals gültiger Satz)
+  if (isCommissionBps(o?.commission_rate_bps)) return o.commission_rate_bps;
+  return commissionBpsAt(o?.created_at);
+}
 export const emptyLedger = () => ({ schema: 1, eligible_from: null, entries: {}, audit: [] });
 
 // Aufträge aus dem Snapshot (repair + check150) vereinheitlichen. Unbekannte/ungültige IDs und VN-Aufträge ohne explizites
@@ -45,7 +56,8 @@ export function ordersFromSnapshot(snapshot) {
     const price = Number.isFinite(o.price_amount) ? o.price_amount : Number.isFinite(o.price_chf) && m.currency === "CHF" ? o.price_chf : null;
     const paid = Number.isFinite(o.paid_amount) ? o.paid_amount : Number.isFinite(o.paid_chf) && m.currency === "CHF" ? o.paid_chf : 0;
     out.push({ order_id: o.order_id, domain: o.domain || null, offer_class: o.offer_class || null, price, paid, state: o.state || null,
-      payment_status: o.payment_status || null, created_at: o.created_at || null, market: m.market, currency: m.currency });
+      payment_status: o.payment_status || null, created_at: o.created_at || null, market: m.market, currency: m.currency,
+      commission_rate_bps: isCommissionBps(o.commission_rate_bps) ? o.commission_rate_bps : null });
   }
   return out;
 }
@@ -73,7 +85,9 @@ export function deriveLedger({ ledger, orders = [], resolveSeller = () => ({ sel
     const e = prev ? structuredClone(prev) : { order_id: o.order_id, market: o.market, currency: o.currency, created_at: o.created_at, history: [], seller_locked: false, seller_override: null };
     const s = e.seller_override ? { seller_id: e.seller_override, lead_id: e.lead_id || null, source: "owner" } : resolveSeller(o) || {};
     if (!e.seller_locked) { e.seller_id = SELLERS.includes(s.seller_id) ? s.seller_id : null; e.lead_id = s.lead_id || null; e.seller_source = e.seller_id ? s.source || "default" : "none"; }
-    e.rate_bps = e.seller_id ? RATE_BPS[e.seller_id] : 0;
+    e.commission_rate_bps = frozenRateBps(prev, o);
+    e.rate_bps = e.seller_id ? e.commission_rate_bps : 0;
+    if (o.offer_class) e.offer_class = o.offer_class;
     const priceMinor = toMinor(o.price ?? 0, o.currency), paidMinor = toMinor(o.paid ?? 0, o.currency);
     e.price_minor = priceMinor; e.paid_minor = paidMinor; e.order_state = o.state; e.payment_status = o.payment_status;
     e.base_minor = Math.min(priceMinor, paidMinor);
@@ -106,7 +120,8 @@ export function overrideSeller(ledger, { order_id, seller_id, actor_user_id, now
   if (seller_id !== null && CURRENCY_OF_SELLER[seller_id] !== (e.currency || "CHF")) throw Object.assign(new Error("Verkäufer passt nicht zum Markt/zur Währung des Auftrags."), { code: "BAD_SELLER" });
   const t = now.toISOString();
   L.audit = [...(L.audit || []), { ts: t, actor_user_id, action: "commission.set_seller", order_id, from: e.seller_id || null, to: seller_id, result: "success" }].slice(-2000);
-  e.seller_override = seller_id; e.seller_id = seller_id; e.seller_source = seller_id ? "owner" : "none"; e.rate_bps = seller_id ? RATE_BPS[seller_id] : 0;
+  e.seller_override = seller_id; e.seller_id = seller_id; e.seller_source = seller_id ? "owner" : "none";
+  e.commission_rate_bps = frozenRateBps(e, e); e.rate_bps = seller_id ? e.commission_rate_bps : 0;
   e.history = [...(e.history || []), { at: t, status: e.status, amount_minor: e.payable_minor || 0, reason: "owner_seller_override", seller_id }];
   return L;
 }
@@ -167,7 +182,8 @@ export function summarize(ledger, sellerIds = SELLERS) {
       return [c, { ...s, paid_out: fromMinor(po, c), outstanding: fromMinor(payableMinor(ledger, id, c) - po, c) }];
     }));
     return { seller_id: id, rate_bps: RATE_BPS[id] ?? 0, ...by[home], by_currency: by,
-      orders: mine.map((e) => { const c = entryCurrency(e); return { order_id: e.order_id, market: e.market || "CH", status: e.status, order_state: e.order_state, payment_status: e.payment_status,
+      orders: mine.map((e) => { const c = entryCurrency(e); return { order_id: e.order_id, market: e.market || "CH", offer_class: e.offer_class || null, rate_bps: e.rate_bps ?? 0,
+        status: e.status, order_state: e.order_state, payment_status: e.payment_status,
         price: fromMinor(e.price_minor || 0, c), commission: fromMinor(e.status === "PAYABLE" ? e.payable_minor : e.status === "REVERSED" ? e.reversed_minor : e.expected_minor, c),
         commission_minor: e.status === "PAYABLE" ? e.payable_minor : e.status === "REVERSED" ? e.reversed_minor : e.expected_minor, currency: c, created_at: e.created_at }; }) };
   };
