@@ -110,6 +110,39 @@ export function overrideSeller(ledger, { order_id, seller_id, actor_user_id, now
   return L;
 }
 
+// ---------- Auszahlungen (TF-068) ----------
+// Chris markiert NACH einer tatsächlich erfolgten Auszahlung: PAYOUT_RECORDED mit Betrag, Währung, Zeitpunkt, Referenz.
+// Jarvis überweist nie selbst. Teilzahlungen erlaubt; Summe je Verkäufer+Währung nie über die auszahlbare Provision (minus bereits
+// ausbezahlt). Gleiche Referenz nie doppelt. Einträge werden nie gelöscht.
+const normRef = (r) => String(r || "").replace(/\s+/g, " ").trim().toLowerCase();
+export function paidOutMinor(ledger, seller_id, currency) {
+  return (ledger?.payouts || []).filter((p) => p.seller_id === seller_id && p.currency === currency && p.status === "PAYOUT_RECORDED").reduce((a, p) => a + p.amount_minor, 0);
+}
+export function payableMinor(ledger, seller_id, currency) {
+  return Object.values(ledger?.entries || {}).filter((e) => e.seller_id === seller_id && entryCurrency(e) === currency && e.status === "PAYABLE").reduce((a, e) => a + (e.payable_minor || 0), 0);
+}
+export function recordPayout(ledger, { seller_id, amount, currency, paid_at, reference, actor_user_id, now = new Date() }) {
+  const err = (code, m) => Object.assign(new Error(m), { code });
+  if (!SELLERS.includes(seller_id)) throw err("BAD_SELLER", "Unbekannter Verkäufer.");
+  if (CURRENCY_OF_SELLER[seller_id] !== currency) throw err("BAD_CURRENCY", `Provision von ${seller_id} wird nur in ${CURRENCY_OF_SELLER[seller_id]} geführt.`);
+  const minor = toMinor(Number(amount), currency);
+  if (!Number.isFinite(Number(amount)) || minor <= 0 || Math.abs(minor - Number(amount) * 10 ** (currency === "VND" ? 0 : 2)) > 1e-6) throw err("BAD_AMOUNT", "Ungültiger Betrag.");
+  if (typeof paid_at !== "string" || Number.isNaN(Date.parse(paid_at)) || Date.parse(paid_at) > +now) throw err("BAD_DATE", "Auszahlungszeitpunkt ungültig oder in der Zukunft.");
+  const ref = String(reference || "").replace(/\s+/g, " ").trim();
+  if (ref.length < 3 || ref.length > 120) throw err("BAD_REFERENCE", "Referenz der Auszahlung ist Pflicht (3–120 Zeichen).");
+  const L = structuredClone(ledger || emptyLedger());
+  L.payouts ||= [];
+  if (L.payouts.some((p) => normRef(p.reference) === normRef(ref))) throw err("DUPLICATE_PAYOUT", "Diese Auszahlungsreferenz ist bereits erfasst.");
+  const open = payableMinor(L, seller_id, currency) - paidOutMinor(L, seller_id, currency);
+  if (minor > open) throw err("OVER_PAYOUT", `Betrag übersteigt die offene auszahlbare Provision (${fromMinor(Math.max(0, open), currency)} ${currency}).`);
+  const t = now.toISOString();
+  const payout = { payout_id: `PO-${t.slice(0, 10).replace(/-/g, "")}-${normRef(ref).replace(/[^a-z0-9]/g, "").slice(0, 6) || "x"}${L.payouts.length + 1}`, seller_id, currency, amount_minor: minor,
+    paid_at: new Date(paid_at).toISOString(), reference: ref, status: "PAYOUT_RECORDED", recorded_at: t, recorded_by: actor_user_id };
+  L.payouts.push(payout);
+  L.audit = [...(L.audit || []), { ts: t, actor_user_id, action: "commission.payout", seller_id, currency, amount_minor: minor, reference: ref, result: "success" }].slice(-2000);
+  return { ledger: L, payout };
+}
+
 // Summen einer Eintragsliste in EINER Währung (Minor Units).
 function sums(list) {
   const sum = (st, f) => list.filter((e) => e.status === st).reduce((a, e) => a + (e[f] || 0), 0);
@@ -127,7 +160,11 @@ export function summarize(ledger, sellerIds = SELLERS) {
     const mine = entries.filter((e) => e.seller_id === id);
     const home = CURRENCY_OF_SELLER[id] || "CHF";
     const curs = [...new Set([home, ...mine.map(entryCurrency)])];
-    const by = Object.fromEntries(curs.map((c) => [c, fmtSums(sums(mine.filter((e) => entryCurrency(e) === c)), c)]));
+    const by = Object.fromEntries(curs.map((c) => {
+      const s = fmtSums(sums(mine.filter((e) => entryCurrency(e) === c)), c);
+      const po = paidOutMinor(ledger, id, c);
+      return [c, { ...s, paid_out: fromMinor(po, c), outstanding: fromMinor(payableMinor(ledger, id, c) - po, c) }];
+    }));
     return { seller_id: id, rate_bps: RATE_BPS[id] ?? 0, ...by[home], by_currency: by,
       orders: mine.map((e) => { const c = entryCurrency(e); return { order_id: e.order_id, market: e.market || "CH", status: e.status, order_state: e.order_state, payment_status: e.payment_status,
         price: fromMinor(e.price_minor || 0, c), commission: fromMinor(e.status === "PAYABLE" ? e.payable_minor : e.status === "REVERSED" ? e.reversed_minor : e.expected_minor, c),
@@ -139,6 +176,9 @@ export function summarize(ledger, sellerIds = SELLERS) {
 export function totalsByCurrency(ledger, sellerIds = SELLERS) {
   const entries = Object.values(ledger?.entries || {}).filter((e) => sellerIds.includes(e.seller_id));
   const out = {};
-  for (const c of ["CHF", "VND"]) out[c] = fmtSums(sums(entries.filter((e) => entryCurrency(e) === c)), c);
+  for (const c of ["CHF", "VND"]) {
+    const po = sellerIds.reduce((a, s) => a + paidOutMinor(ledger, s, c), 0);
+    out[c] = { ...fmtSums(sums(entries.filter((e) => entryCurrency(e) === c)), c), paid_out: fromMinor(po, c) };
+  }
   return out;
 }

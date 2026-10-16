@@ -250,7 +250,8 @@ function renderDrawer() {
     ...(l.market === "VN" ? [el("h4", {}, t("sec.draft")), draftForm(l, blocked)] : []),
     ...(l.market === "VN" && ["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) ? [el("h4", {}, t("sec.order")), orderBox(l, blocked)] : []),
     // TF-065: Calling-Agent-Sektion (letzter Anruf, Ergebnis, Dauer, Rückruf, Versuche, Zusammenfassung) – nur Chris und Lap, Server prüft den Scope.
-    ...(["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) && (S.actor?.role === "OWNER" || l.market === "VN") ? [el("h4", {}, callingTexts(I.locale).lead.h), leadCallBox(l, I.locale)] : []),
+    // TF-068: Calling nur Vietnam – Sektion nur bei VN-Leads (Lap: Anrufen, Chris: Überwachung).
+    ...(["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) && l.market === "VN" ? [el("h4", {}, callingTexts(I.locale).lead.h), leadCallBox(l, I.locale)] : []),
     // TF-066: Kunden-Onboarding der Aufträge dieses Leads (Server prüft Bereich/Markt; nie Zugangsdaten).
     el("h4", {}, onboardingTexts(I.locale).h), leadOnboardingBox(l, I.locale),
     el("h4", {}, t("sec.admin")),

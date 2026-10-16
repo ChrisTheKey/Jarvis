@@ -77,7 +77,7 @@ export async function livekitDialer({ env, local }) {
         try {
           // Caller-ID nur aus dem autorisierten Trunk-/Provider-Wert (Umgebung), sonst Trunk-Standard. Kein Spoofing.
           await sip.createSipParticipant(trunk, job.phone_e164, room, { participantIdentity: `callee-${job.call_id.slice(0, 8)}`, participantName: "callee",
-            ...(callerId ? { fromNumber: callerId } : {}), waitUntilAnswered: true, ringingTimeout: 30, maxCallDuration: MAX_CALL_SECONDS, krispEnabled: true, hidePhoneNumber: true });
+            ...(callerId ? { fromNumber: callerId } : {}), waitUntilAnswered: true, ringingTimeout: 30, maxCallDuration: Math.max(60, Math.min(MAX_CALL_SECONDS, Number.isInteger(job.max_call_seconds) ? job.max_call_seconds : MAX_CALL_SECONDS)), krispEnabled: true, hidePhoneNumber: true });
           answeredAt = new Date();
           await report({ status: "ANSWERED", answered_at: answeredAt.toISOString() });
         } catch (e) {
@@ -85,7 +85,7 @@ export async function livekitDialer({ env, local }) {
           return { status: m.outcome || "FAILED", retry: m.retry, reason: m.reason };
         }
         // Gespräch beobachten: Ende, wenn der Agent abschliesst, der Angerufene auflegt, Abbruch oder Höchstdauer.
-        const deadline = Date.now() + (MAX_CALL_SECONDS + 60) * 1000;
+        const deadline = Date.now() + ((Number.isInteger(job.max_call_seconds) ? Math.min(job.max_call_seconds, MAX_CALL_SECONDS) : MAX_CALL_SECONDS) + 30) * 1000;
         while (!signal.aborted && !ticket.finished && Date.now() < deadline) {
           await sleep(3000, signal);
           const ps = await rooms.listParticipants(room).catch(() => null);
@@ -115,13 +115,25 @@ export async function livekitDialer({ env, local }) {
 }
 
 // ---------- lokaler Kanal Agent ↔ Orchestrator (nur 127.0.0.1, Einmal-Token je Anruf) ----------
-export function localChannel({ port = 0, modelsOf, transferOf } = {}) {
+// TF-068: POST /tool → CRM-Tools des Agenten, weitergereicht an /api/calling (op tool) mit call_id + lead_id DIESES Anrufs.
+export function localChannel({ port = 0, modelsOf, transferOf, toolFn = null } = {}) {
   const tickets = new Map();
   const server = http.createServer((req, res) => {
     const send = (s, b) => { res.writeHead(s, { "content-type": "application/json" }); res.end(JSON.stringify(b)); };
     const tk = tickets.get(String(req.headers["x-call-token"] || ""));
     if (!tk) return send(403, { error: "forbidden" });
     if (req.method === "GET" && req.url === "/context") return send(200, { call_id: tk.job.call_id, context: tk.job.context, models: modelsOf(tk.job.market), transfer: transferOf(tk.job.market) });
+    if (req.method === "POST" && req.url === "/tool") {
+      let raw = "";
+      req.on("data", (d) => { raw += d; if (raw.length > 8000) req.destroy(); });
+      req.on("end", async () => {
+        let b; try { b = JSON.parse(raw); } catch { return send(400, { error: "json" }); }
+        if (!toolFn) return send(503, { error: "tools_unavailable" });
+        const r = await toolFn(tk.job, b).catch((e) => ({ status: e.status || 502, body: e.body || { error: "tool_failed" } }));
+        send(r.status, r.body);
+      });
+      return;
+    }
     if (req.method === "POST" && req.url === "/event") {
       let raw = "";
       req.on("data", (d) => { raw += d; if (raw.length > 8000) req.destroy(); });
@@ -180,7 +192,7 @@ export function createOrchestrator({ env = (k) => process.env[k], fetchImpl = fe
     return j;
   };
   const statusBody = () => ({ configured: { livekit: cfg.livekit, livekit_url: cfg.livekit_url, api_credentials: cfg.api_credentials, trunk_ch: cfg.trunk_ch, trunk_vn: cfg.trunk_vn,
-      caller_id_ch: cfg.caller_id_ch, caller_id_vn: cfg.caller_id_vn, transfer_ch: cfg.transfer_ch, transfer_vn: cfg.transfer_vn },
+      caller_id_ch: cfg.caller_id_ch, caller_id_vn: cfg.caller_id_vn, transfer_ch: cfg.transfer_ch, transfer_vn: cfg.transfer_vn, voice_vn: cfg.voice_vn },
     ...probed, worker_registered: workerRegistered, dry_run: cfg.dry_run, default_concurrency: cfg.default_concurrency, max_concurrency: maxConc,
     provider_limit: Number.isInteger(providerLimit) && providerLimit > 0 ? providerLimit : null, recording: false,
     models: { CH: publicModels(resolveModels("CH", env)), VN: publicModels(resolveModels("VN", env)) }, commit: env("JARVIS_COMMIT") || null, started_at: startedAt, active: running.size });
@@ -194,7 +206,10 @@ export function createOrchestrator({ env = (k) => process.env[k], fetchImpl = fe
     const report = (x) => api({ op: "event", call_id: job.call_id, ...x }).catch((e) => log("event_failed", { call: job.call_id.slice(0, 8), status: e.status || null }));
     log("call_start", { call: job.call_id.slice(0, 8), market: job.market, phone: maskPhone(job.phone_e164), dry_run: !!job.dry_run, attempt: job.attempt });
     let out;
-    try { out = await (job.dry_run || cfg.dry_run || dialer.kind === "dry_run" ? dryDialer : dialer).run(job, { report, signal: ac.signal }); }
+    // TF-068 Zusatzschutz: echter VN-Anruf nur mit verifizierter männlicher VN-Stimme und Caller-ID (Server prüft das bereits).
+    const realVn = !(job.dry_run || cfg.dry_run || dialer.kind === "dry_run") && job.market === "VN";
+    if (realVn && (cfg.voice_vn !== "VOICE_VERIFIED" || !cfg.caller_id_vn)) out = { status: "FAILED", retry: true, reason: cfg.voice_vn !== "VOICE_VERIFIED" ? "VOICE_NOT_VERIFIED" : "CALLER_ID_NOT_CONFIGURED" };
+    else try { out = await (job.dry_run || cfg.dry_run || dialer.kind === "dry_run" ? dryDialer : dialer).run(job, { report, signal: ac.signal }); }
     catch (e) { out = { status: "FAILED", reason: "SERVICE_ERROR" }; log("call_error", { call: job.call_id.slice(0, 8), error: String(e?.message || e).slice(0, 120).replace(/\+\d{6,}/g, "[nr]") }); }
     // Abschluss melden; falls /api/calling nicht erreichbar → Eintrag bleibt im Zustand und wird beim nächsten Lauf als Review gemeldet.
     let ok = false;
@@ -229,7 +244,13 @@ export function createOrchestrator({ env = (k) => process.env[k], fetchImpl = fe
     writeHealth(dataDir, { at: now().toISOString(), ok: true, active: running.size, configured: cfg.livekit, dry_run: cfg.dry_run });
     return r;
   }
-  return { tick, recover, running, state: st, cfg, maxConc, statusBody, setWorker: (v) => { workerRegistered = v; }, setProbe: (p) => { probed = { ...probed, ...p }; } };
+  // CRM-Tool des Agenten: Server prüft aktiven Anruf, Lead, Allowlist und Idempotenz.
+  const tool = async (job, b) => {
+    const r = await fetchImpl(`${base}/api/calling`, { method: "POST", headers: { "content-type": "application/json", "x-jarvis-calling": token },
+      body: JSON.stringify({ op: "tool", call_id: job.call_id, lead_id: typeof b.lead_id === "string" ? b.lead_id : job.lead_id, tool: b.tool, params: b.params || {}, idempotency_key: b.idempotency_key }) });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  };
+  return { tick, recover, tool, running, state: st, cfg, maxConc, statusBody, setWorker: (v) => { workerRegistered = v; }, setProbe: (p) => { probed = { ...probed, ...p }; } };
 }
 
 // ---------- Prozess ----------
@@ -250,8 +271,9 @@ async function main() {
   }
   fs.mkdirSync(dataDir, { recursive: true });
   let dialer = dryRunDialer(), local = null, worker = null;
+  const orchRef = {};
   if (cfg.livekit) {
-    local = localChannel({ modelsOf: (m) => resolveModels(m, env), transferOf: (m) => ({ configured: cfg[`transfer_${m === "VN" ? "vn" : "ch"}`] }) });
+    local = localChannel({ modelsOf: (m) => resolveModels(m, env), transferOf: (m) => ({ configured: cfg[`transfer_${m === "VN" ? "vn" : "ch"}`] }), toolFn: (job, b) => orchRef.tool(job, b) });
     await local.listen();
     dialer = await livekitDialer({ env, local });
   }
@@ -261,6 +283,7 @@ async function main() {
     main.lastProbe = now;
     return dialer.probe({ trunkCh: env("LIVEKIT_SIP_TRUNK_CH"), trunkVn: env("LIVEKIT_SIP_TRUNK_VN") });
   } : null });
+  orchRef.tool = orch.tool;
   log("service_start", { configured: cfg.livekit, dry_run: cfg.dry_run, trunk_ch: cfg.trunk_ch, trunk_vn: cfg.trunk_vn, max_concurrency: orch.maxConc, recording: "OFF" });
   // Agent-Worker als Kindprozess (nur mit Credentials). Explizites Dispatch → ohne unseren Dispatch bekommt er keine Jobs.
   const startWorker = () => {

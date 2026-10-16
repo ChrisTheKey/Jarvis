@@ -26,11 +26,21 @@ async function loadSummary() {
   // TF-064: Beträge in der Währung des Verkäufers (Lap: VND «346.500 ₫», CH: «CHF 52.50») – nie gemischt.
   const m = (v, cur = c.currency) => I.money(Number(v), cur);
   $("aComStats").replaceChildren(stat("warn", m(c.pending), t("com.pending")), stat("ok", m(c.payable), t("com.payable")),
-    stat("bad", m(c.reversed), t("com.reversed")), stat("", String(c.paid_completed_orders), t("com.orders")),
+    stat("bad", m(c.reversed), t("com.reversed")), stat("", m(c.paid_out ?? 0), t("com.paid_out")), stat("", String(c.paid_completed_orders), t("com.orders")),
     stat("", t("com.rate", c.rate_bps / 100), t("com.title")));
   $("aComOrders").replaceChildren(...(c.orders.length ? c.orders.map((o) => { const li = document.createElement("li");
     li.textContent = `${t("com.order")} ${o.order_id} · ${t(`com.st.${o.status}`)} · ${t("com.price")} ${m(o.price, o.currency)} · ${t("com.amount")} ${m(o.commission, o.currency)}`; return li; })
     : [Object.assign(document.createElement("li"), { textContent: t("com.none") })]));
+}
+// TF-068: eigene Verkäufe (Lap: nur eigene VN-Aufträge, serverseitig gefiltert) – Angebot, Betrag, Zahlungs-/Auftrags-/Provisionsstatus.
+async function loadSales() {
+  const { status, body } = await get("/api/sales?view=orders");
+  if (status !== 200 || !body) return;
+  const t = I.t;
+  $("aSales").hidden = false; $("aSalesH").textContent = t("sales.title");
+  $("aSalesList").replaceChildren(...(body.orders.length ? body.orders.map((o) => Object.assign(document.createElement("li"), { textContent:
+    `${o.order_id || "–"} · ${o.company || o.domain} · ${t("sales.offer")} ${o.offer_name || o.offer} · ${I.money(Number(o.price), o.currency)} · ${t("sales.paid")} ${I.money(Number(o.paid), o.currency)} · ${t("sales.pay")} ${o.payment_status} · ${t("sales.state")} ${o.state || "–"} · ${t("com.amount")} ${I.money(Number(o.commission), o.currency)} (${t(`com.st.${o.commission_status}`)})` }))
+    : [Object.assign(document.createElement("li"), { textContent: t("sales.none") })]));
 }
 // ---------- Chat (eigener Verlauf über /api/state – nie Chris' Kontext) ----------
 function renderChat() {
@@ -95,6 +105,6 @@ async function start() {
   $("aChatForm").addEventListener("submit", (e) => { e.preventDefault(); const v = $("aChatIn").value.trim(); if (!v) return; $("aChatIn").value = ""; ask(v); });
   // TF-065: Trợ lý gọi điện – nur Lap (VN). Giuliano/Mario/Damiano sehen den Bereich nicht (und erhalten serverseitig 403).
   if (me.role === "SALES_AGENT_VN") { const { mountCalling } = await import("./calling-ui.js"); $("aCalling").hidden = false; mountCalling($("aCalling"), { locale: me.locale }); }
-  await Promise.all([loadSummary(), loadChat()]);
+  await Promise.all([loadSummary(), loadChat(), me.role === "SALES_AGENT_VN" ? loadSales() : null]);
 }
 start().catch(() => { $("aMsg").textContent = I.t("app.unreachable"); });

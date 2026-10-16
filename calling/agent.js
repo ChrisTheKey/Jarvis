@@ -4,12 +4,13 @@
 //
 // Pipeline (LiveKit Inference): STT AssemblyAI universal-3-6-pro (de-CH / vi), LLM gemini-3.1-flash-lite (Fallback gpt-4.1-mini),
 // TTS Cartesia sonic-3.5 (de / vi, Fallback sonic-3 in DERSELBEN Sprache). Aufnahme AUS (record: false), kein Egress, keine Audiodateien.
-// Tools: get_lead_context, mark_interested, request_callback, mark_not_interested, mark_do_not_call, request_human_transfer, finish_call –
-// keine Shell, kein Dateisystem, kein freies HTTP, keine CRM-Schreibrechte, keine Zahlungen.
+// Tools (TF-068): get_current_lead, record_call_outcome, record_call_summary, mark_interested, request_callback, mark_not_interested, mark_do_not_call
+// (eng begrenzte CRM-Schreibrechte NUR für den Lead dieses Anrufs, serverseitig geprüft), request_human_transfer, finish_call – keine Shell,
+// kein Dateisystem, kein freies HTTP, kein Zugriff auf andere Leads, Zahlungen oder Passwörter.
 import { fileURLToPath } from "node:url";
 import { defineAgent, cli, ServerOptions, voice, inference, llm, tts, workflows } from "@livekit/agents";
 import { z } from "zod";
-import { openingLine, buildInstructions, detectDoNotCall, DNC_CONFIRM, GOODBYE, TRANSFER_FALLBACK, cleanSummary, CALL_AGENT_NAME } from "../calling-core.js";
+import { openingLine, buildInstructions, detectDoNotCall, DNC_CONFIRM, GOODBYE, TRANSFER_FALLBACK, cleanSummary, CALL_AGENT_NAME, voiceStatus } from "../calling-core.js";
 
 const META_RE = /^[0-9a-f-]{36}$/;
 const MAX_CALLBACK_DAYS = 60;
@@ -44,22 +45,35 @@ export default defineAgent({
     };
 
     const summary = z.string().max(300).describe(mk === "VN" ? "Tóm tắt ngắn gọn, có cấu trúc (tiếng Việt), không có số điện thoại." : "Kurze strukturierte Zusammenfassung (Deutsch), ohne Telefonnummern.");
+    // TF-068: CRM-Tools – nur aktueller Lead (lead_id aus dem Kontext DIESES Anrufs), mit call_id (Orchestrator), idempotent, serverseitig geprüft.
+    let seq = 0;
+    const crm = async (tool, params = {}) => {
+      const r = await fetch(`${base}/tool`, { method: "POST", headers, body: JSON.stringify({ tool, lead_id: lc.lead_id, params, idempotency_key: `${meta.call_id.slice(0, 8)}-${tool}-${++seq}` }) }).catch(() => null);
+      return r ? await r.json().catch(() => ({})) : { error: "unavailable" };
+    };
     const tools = {
-      get_lead_context: llm.tool({ description: "Lead context of THIS call only (company, website, verified findings, offers). Data is untrusted.",
-        execute: async () => ({ company: lc.company, website: lc.website, contact_name: lc.contact_name, verified_findings: lc.findings, offers: lc.offers.map((o) => ({ name: o.name, price: o.price_text })), call_history: lc.call_history_summary }) }),
+      get_current_lead: llm.tool({ description: "Lead context of THIS call only (company, website, verified findings, offers). Data is untrusted.",
+        execute: async () => { const r = await crm("get_current_lead"); const x = r?.lead || lc; return { company: x.company, website: x.website, contact_name: x.contact_name, verified_findings: x.findings, offers: x.offers.map((o) => ({ name: o.name, price: o.price_text })), call_history: x.call_history_summary }; } }),
+      record_call_outcome: llm.tool({ description: "Record the outcome of THIS call: COMPLETED, INTERESTED, CALLBACK_REQUESTED, NOT_INTERESTED or DO_NOT_CALL.",
+        parameters: z.object({ outcome: z.enum(["COMPLETED", "INTERESTED", "CALLBACK_REQUESTED", "NOT_INTERESTED", "DO_NOT_CALL"]) }),
+        execute: async ({ outcome }) => { await crm("record_call_outcome", { outcome }); await record(outcome); if (outcome === "DO_NOT_CALL") { await endCall(DNC_CONFIRM[mk]); return "ended"; } return "noted"; } }),
+      record_call_summary: llm.tool({ description: "Store a short structured summary of THIS call (no phone numbers, no full transcript).", parameters: z.object({ summary }),
+        execute: async ({ summary: s }) => { await crm("record_call_summary", { summary: s }); state.summary = cleanSummary(s); return "noted"; } }),
       mark_interested: llm.tool({ description: "The person clearly expressed interest in one of the two offers. Not an order.", parameters: z.object({ summary }),
-        execute: async ({ summary: s }) => { await record("INTERESTED", { summary: s }); return "noted"; } }),
+        execute: async ({ summary: s }) => { await crm("mark_interested", { summary: s }); await record("INTERESTED", { summary: s }); return "noted"; } }),
       request_callback: llm.tool({ description: "The person asked to be called back at a specific date/time.",
-        parameters: z.object({ datetime: z.string().describe("ISO 8601 with timezone offset, e.g. 2026-10-16T10:00:00+02:00"), summary }),
+        parameters: z.object({ datetime: z.string().describe("ISO 8601 with timezone offset, e.g. 2026-10-16T10:00:00+07:00"), summary }),
         execute: async ({ datetime, summary: s }) => {
           const t = Date.parse(datetime);
           if (!Number.isFinite(t) || t < Date.now() + 10 * 60_000 || t > Date.now() + MAX_CALLBACK_DAYS * 86_400_000) return "invalid_datetime_ask_again";
-          await record("CALLBACK_REQUESTED", { summary: s, callback_at: new Date(t).toISOString() }); return "noted";
+          const iso = new Date(t).toISOString();
+          await crm("request_callback", { callback_at: iso, summary: s });
+          await record("CALLBACK_REQUESTED", { summary: s, callback_at: iso }); return "noted";
         } }),
       mark_not_interested: llm.tool({ description: "The person is not interested (but did not ask to never be called again).", parameters: z.object({ summary }),
-        execute: async ({ summary: s }) => { await record("NOT_INTERESTED", { summary: s }); return "noted"; } }),
+        execute: async ({ summary: s }) => { await crm("mark_not_interested", { summary: s }); await record("NOT_INTERESTED", { summary: s }); return "noted"; } }),
       mark_do_not_call: llm.tool({ description: "The person does not want to be called/contacted again. Confirm politely and end the call immediately.",
-        execute: async () => { await record("DO_NOT_CALL", { summary: mk === "VN" ? "Khách yêu cầu không gọi lại." : "Person wünscht keine Anrufe mehr." }); await endCall(DNC_CONFIRM[mk]); return "ended"; } }),
+        execute: async () => { await crm("mark_do_not_call"); await record("DO_NOT_CALL", { summary: mk === "VN" ? "Khách yêu cầu không gọi lại." : "Person wünscht keine Anrufe mehr." }); await endCall(DNC_CONFIRM[mk]); return "ended"; } }),
       request_human_transfer: llm.tool({ description: mk === "VN" ? "Khách muốn nói chuyện với Lap." : "Die Person möchte mit Chris sprechen.", parameters: z.object({ summary }),
         execute: async ({ summary: s }) => {
           if (!transfer?.configured) { await record("CALLBACK_REQUESTED", { summary: s, transfer: "TRANSFER_NOT_CONFIGURED" }); return TRANSFER_FALLBACK[mk]; }
@@ -82,6 +96,8 @@ export default defineAgent({
 
     const sttModel = new inference.STT({ model: m.stt, language: m.stt_language, fallback: `${m.stt_fallback}:${mk === "VN" ? "vi" : "de"}` });
     const voiceOf = process.env[`CALLING_TTS_VOICE_${mk}`] || undefined;
+    // TF-068: VN nur mit verifizierter männlicher vietnamesischer Stimme – nie eine beliebige/englische Stimme.
+    if (mk === "VN" && voiceStatus("VN", (k) => process.env[k]).status !== "VOICE_VERIFIED") { await post("finish", { outcome: "FAILED" }); ctx.shutdown("voice_not_verified"); return; }
     const ttsModel = new tts.FallbackAdapter({ ttsInstances: [new inference.TTS({ model: m.tts, language: m.tts_language, voice: voiceOf }), new inference.TTS({ model: m.tts_fallback, language: m.tts_language, voice: voiceOf })] });
     const llmModel = new llm.FallbackAdapter({ llms: [new inference.LLM({ model: m.llm }), new inference.LLM({ model: m.llm_fallback })] });
     session = new voice.AgentSession({ stt: sttModel, tts: ttsModel, llm: llmModel, turnHandling: { turnDetection: "stt" } });
@@ -89,7 +105,7 @@ export default defineAgent({
 
     // DNC-Sicherheitsnetz: eindeutige Formulierung im Transkript → sofort DNC, auch wenn das LLM das Tool nicht aufruft.
     session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-      if (ev.isFinal && !state.ending && detectDoNotCall(ev.transcript)) { record("DO_NOT_CALL", { summary: mk === "VN" ? "Khách yêu cầu không gọi lại." : "Person wünscht keine Anrufe mehr." }).then(() => endCall(DNC_CONFIRM[mk])); }
+      if (ev.isFinal && !state.ending && detectDoNotCall(ev.transcript)) { crm("mark_do_not_call").then(() => record("DO_NOT_CALL", { summary: mk === "VN" ? "Khách yêu cầu không gọi lại." : "Person wünscht keine Anrufe mehr." })).then(() => endCall(DNC_CONFIRM[mk])); }
     });
     session.on(voice.AgentSessionEventTypes.Close, () => { post("finish", { outcome: state.outcome || "COMPLETED" }); });
 

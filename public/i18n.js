@@ -87,6 +87,7 @@ const DE = {
   "com.orders": "Abgeschlossene, voll bezahlte Aufträge", "com.rule": "Provision wird erst auszahlbar, wenn der Auftrag abgeschlossen UND vollständig bezahlt ist.",
   "com.none": "Noch keine Aufträge mit Provision.", "com.order": "Auftrag", "com.status": "Status", "com.price": "Preis", "com.amount": "Provision",
   "com.st.PENDING": "Ausstehend", "com.st.PAYABLE": "Auszahlbar", "com.st.REVERSED": "Storniert", "com.payout_note": "Jarvis zahlt nichts automatisch aus.",
+  "com.paid_out": "Ausbezahlt", "com.outstanding": "Offen auszuzahlen", "sales.title": "Meine Verkäufe", "sales.none": "Noch keine Aufträge.", "sales.offer": "Angebot", "sales.paid": "Bezahlt", "sales.state": "Auftragsstatus", "sales.pay": "Zahlungsstatus",
   // Chat
   "chat.placeholder": "Frage an Jarvis …", "chat.send": "Senden", "chat.error": "Jarvis ist gerade nicht erreichbar.", "chat.empty": "Fragen Sie Jarvis zu Ihren Leads und Ihrer Provision.",
   "chat.you": "Sie", "chat.reset": "Verlauf löschen",
@@ -168,6 +169,7 @@ const VI = {
   "com.orders": "Đơn hàng đã hoàn thành và thanh toán đủ", "com.rule": "Hoa hồng chỉ được thanh toán khi đơn hàng đã hoàn thành VÀ khách đã thanh toán đầy đủ.",
   "com.none": "Chưa có đơn hàng nào có hoa hồng.", "com.order": "Đơn hàng", "com.status": "Trạng thái", "com.price": "Giá", "com.amount": "Hoa hồng",
   "com.st.PENDING": "Đang chờ", "com.st.PAYABLE": "Có thể thanh toán", "com.st.REVERSED": "Đã hủy", "com.payout_note": "Jarvis không tự động chi trả tiền.",
+  "com.paid_out": "Đã chi trả", "com.outstanding": "Còn phải chi trả", "sales.title": "Đơn hàng của tôi", "sales.none": "Chưa có đơn hàng.", "sales.offer": "Dịch vụ", "sales.paid": "Đã thanh toán", "sales.state": "Trạng thái đơn hàng", "sales.pay": "Trạng thái thanh toán",
   "chat.placeholder": "Hỏi Jarvis …", "chat.send": "Gửi", "chat.error": "Jarvis hiện không phản hồi.", "chat.empty": "Hãy hỏi Jarvis về khách hàng tiềm năng và hoa hồng của bạn.",
   "chat.you": "Bạn", "chat.reset": "Xóa lịch sử",
   "crm.title": "Khách hàng tiềm năng", "crm.loading": "Đang tải danh sách …", "crm.e401": "Chưa đăng nhập – vui lòng đăng nhập lại.", "crm.e404": "Danh sách chỉ có trên giao diện đám mây.",

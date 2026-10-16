@@ -26,7 +26,7 @@
 // Provision wird bei jedem Lesen aus Snapshot (Aufträge/Zahlungen) + Zuständigkeit abgeleitet und als Buch fortgeschrieben (nie gelöscht).
 import { resolveActor, can, isOwner, deny, forbidden, SELLER_IDS, publicUser } from "./auth-core.js";
 import { sellerOf, reassign, distributionReport, leadMarket, VN_SELLER } from "./sales-scope.js";
-import { deriveLedger, ordersFromSnapshot, summarize, totalsByCurrency, overrideSeller, emptyLedger, MARKET_PRICING, RATE_BPS, commissionMinor, fromMinor } from "./commission-ledger.js";
+import { deriveLedger, ordersFromSnapshot, summarize, totalsByCurrency, overrideSeller, recordPayout, emptyLedger, MARKET_PRICING, RATE_BPS, commissionMinor, fromMinor } from "./commission-ledger.js";
 import { offerFor, offerInfo, toMinor, ORDER_ID_RE } from "./pricing.js";
 import { safeEqual } from "./shared-state.js";
 import { ONBOARDING_FILTERS } from "./onboarding-core.js";
@@ -206,6 +206,36 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
         // totals = CHF (Legacy-Feld, nur CHF-Einträge); totals_by_currency = CHF und VND getrennt – nie eine gemischte Summe.
         return reply(200, { sellers: per, totals: byCur.CHF, totals_by_currency: byCur, unassigned, eligible_from: L.eligible_from, pricing, audit: (L.audit || []).slice(-30) });
       }
+      // TF-068 VERKÄUFE & PROVISIONEN (nur OWNER): je Verkäufer und je Auftrag, CHF und VND strikt getrennt.
+      if (view === "sales_overview") {
+        if (!owner) return forbidden();
+        const { L, snapshot } = await ledger();
+        const raw = new Map(snapshotOrders(snapshot).map((o) => [o.order_id, o]));
+        const orders = ordersFromSnapshot(snapshot).map((o) => {
+          const e = L.entries?.[o.order_id] || null, r = raw.get(o.order_id) || {}, cur = o.currency;
+          const commission_minor = !e ? 0 : e.status === "PAYABLE" ? e.payable_minor : e.status === "REVERSED" ? e.reversed_minor : e.expected_minor;
+          return { order_id: o.order_id, customer: r.company || o.domain || null, domain: o.domain, lead_id: e?.lead_id || null, seller_id: e?.seller_id || null,
+            seller_source: e?.seller_source || "none", market: o.market, offer: offerInfo(o.offer_class)?.kind || null, offer_class: o.offer_class, price: o.price, paid: o.paid, currency: cur,
+            confirmed_at: o.created_at, payment_status: o.payment_status || "UNPAID", fulfillment_status: o.state, commission_status: e?.status || (e ? "PENDING" : "NOT_ELIGIBLE"),
+            commission: fromMinor(commission_minor || 0, cur) };
+        }).sort((a, b) => String(b.confirmed_at).localeCompare(String(a.confirmed_at)));
+        const DONE = ["COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"];
+        const sellers = [...SELLER_IDS, null].map((sid) => {
+          const mine = orders.filter((o) => o.seller_id === sid);
+          const s = sid ? summarize(L, [sid])[0] : null;
+          const by = Object.fromEntries(["CHF", "VND"].map((c) => {
+            const xs = mine.filter((o) => o.currency === c);
+            const revenueMinor = xs.reduce((a, o) => a + toMinor(o.paid || 0, c), 0);
+            const cs = s?.by_currency?.[c];
+            return [c, { orders: xs.length, completed: xs.filter((o) => DONE.includes(o.fulfillment_status)).length, payments_received: xs.filter((o) => (o.paid || 0) > 0).length,
+              revenue: fromMinor(revenueMinor, c), commission_pending: cs?.pending ?? fromMinor(0, c), commission_payable: cs?.payable ?? fromMinor(0, c),
+              commission_reversed: cs?.reversed ?? fromMinor(0, c), commission_paid_out: cs?.paid_out ?? fromMinor(0, c), commission_outstanding: cs?.outstanding ?? fromMinor(0, c) }];
+          }));
+          return { seller_id: sid || "direct", label: sid || "Direktkunde (Chris)", rate_bps: sid ? RATE_BPS[sid] : 0, by_currency: by };
+        });
+        return reply(200, { sellers, orders: orders.slice(0, 300), totals_by_currency: totalsByCurrency(L, SELLER_IDS), payouts: (L.payouts || []).slice(-100).reverse(),
+          rule: "PAYABLE nur bei COMPLETED|COMPLETED_WITH_MANUAL_ITEMS + PAID_FULL · 35 % (3500 bps) · keine automatische Auszahlung", eligible_from: L.eligible_from });
+      }
       if (view === "orders") {
         if (!owner && actor.role !== "SALES_AGENT_VN") return forbidden();
         const leadFilter = url.searchParams.get("lead_id");
@@ -266,8 +296,21 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
       }
       if (body.op === "commission.setSeller") {
         await ledger();
-        await casUpdate("commissions", emptyLedger, (L) => overrideSeller(L, { order_id: body.order_id, seller_id: body.seller_id ?? null, actor_user_id: actor.user_id, now: now() }));
+        const reason = typeof body.reason === "string" ? body.reason.replace(/\s+/g, " ").trim().slice(0, 200) : null;
+        await casUpdate("commissions", emptyLedger, (L) => {
+          const next = overrideSeller(L, { order_id: body.order_id, seller_id: body.seller_id ?? null, actor_user_id: actor.user_id, now: now() });
+          if (reason) next.audit[next.audit.length - 1].reason = reason;
+          return next;
+        });
         return reply(200, { ok: true });
+      }
+      // TF-068: Auszahlung NUR markieren (nach tatsächlich erfolgter Überweisung durch Chris) – Jarvis überweist nie.
+      if (body.op === "commission.payout") {
+        if (Object.keys(body).some((k) => !["op", "seller_id", "amount", "currency", "paid_at", "reference"].includes(k))) return reply(400, { error: "Nur seller_id, amount, currency, paid_at, reference.", code: "BAD_PARAMS" });
+        await ledger();
+        let payout = null;
+        await casUpdate("commissions", emptyLedger, (L) => { const r = recordPayout(L, { ...body, actor_user_id: actor.user_id, now: now() }); payout = r.payout; return r.ledger; });
+        return reply(200, { ok: true, payout });
       }
       if (body.op === "vn.pause" || body.op === "vn.resume") {
         await casUpdate("config", () => ({}), (c) => ({ ...c, vn_paused: body.op === "vn.pause", vn_paused_at: now().toISOString(), vn_paused_by: actor.user_id }));

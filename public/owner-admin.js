@@ -65,6 +65,38 @@ function commissionBox(c) {
     c.sellers.some((s) => s.orders.length) ? el("ul", { class: "crm-hist" }, c.sellers.flatMap((s) => s.orders.map((o) => el("li", {}, `${s.seller_id} · ${o.order_id} · ${ST[o.status]} · ${o.order_state || "–"} / ${o.payment_status || "–"} · Preis ${money(o.price, o.currency)} · Provision ${money(o.commission, o.currency)}`)))) : "",
     c.unassigned?.length ? el("div", {}, el("h5", {}, "Aufträge ohne Verkäufer (ohne CRM-Lead)"), el("ul", { class: "crm-hist" }, c.unassigned.map((e) => el("li", {}, `${e.order_id} · ${ST[e.status]} `, e.status === "PAYABLE" ? "" : sel(e))))) : "");
 }
+// TF-068 VERKÄUFE & PROVISIONEN: je Verkäufer und je Auftrag, CHF und VND getrennt. Auszahlung nur MARKIEREN (nach erfolgter Überweisung).
+const PS = { UNPAID: "offen", PARTIAL: "Teilzahlung", DEPOSIT_MET: "Anzahlung erfüllt", PAID_FULL: "voll bezahlt", REFUNDED: "erstattet", PAYMENT_REVIEW_REQUIRED: "Prüfung nötig" };
+function salesBox(so, pm) {
+  if (!so) return el("p", { class: "crm-note" }, "Verkaufsübersicht nicht verfügbar.");
+  const head = ["Verkäufer", "Währung", "Aufträge", "Abgeschlossen", "Zahlungen erhalten", "Umsatz", "Prov. ausstehend", "Prov. fällig", "Prov. storniert", "Prov. ausbezahlt", "Offen auszuzahlen"];
+  const rows = so.sellers.flatMap((x) => ["CHF", "VND"].filter((c) => x.by_currency[c].orders || (x.seller_id !== "direct" && SELLER_CUR[x.seller_id] === c)).map((c) => { const b = x.by_currency[c];
+    return el("tr", {}, ...[x.label, c, b.orders, b.completed, b.payments_received, money(b.revenue, c), money(b.commission_pending, c), money(b.commission_payable, c), money(b.commission_reversed, c), money(b.commission_paid_out, c), money(b.commission_outstanding, c)].map((v) => el("td", {}, String(v)))); }));
+  const sel = el("select", { class: "crm-sort", "aria-label": "Verkäufer" }, ["giuliano", "mario", "damiano", "lap"].map((x) => el("option", { value: x }, `${x} (${SELLER_CUR[x]})`)));
+  const amt = el("input", { type: "number", min: "0", step: "0.01", placeholder: "Betrag", "aria-label": "Betrag" });
+  const when = el("input", { type: "date", "aria-label": "Auszahlungsdatum" });
+  const ref = el("input", { type: "text", maxlength: "120", placeholder: "Referenz der Überweisung", "aria-label": "Referenz" });
+  const payout = async () => {
+    const cur = SELLER_CUR[sel.value];
+    if (!amt.value || !when.value || ref.value.trim().length < 3) return say("Betrag, Datum und Referenz sind Pflicht.", true);
+    if (!confirm(`Auszahlung erfassen?
+${sel.value}: ${money(amt.value, cur)} am ${when.value}
+Nur nach TATSÄCHLICH erfolgter Überweisung – Jarvis überweist nichts.`)) return;
+    const r = await call("/api/sales", { op: "commission.payout", seller_id: sel.value, amount: Number(amt.value), currency: cur, paid_at: new Date(`${when.value}T12:00:00Z`).toISOString(), reference: ref.value.trim() });
+    if (r.status === 200) { say("PAYOUT_RECORDED (auditiert)."); load(); } else say(r.body?.error || `Fehler ${r.status}`, true);
+  };
+  return el("div", {},
+    el("p", { class: "crm-note" }, `${so.rule} · Zahlungsüberwachung: ${pm?.monitor?.status || "unbekannt"}${pm?.monitor?.missing?.length ? ` (fehlt: ${pm.monitor.missing.join(", ")})` : ""}`),
+    el("table", { class: "crm-table" }, el("thead", {}, el("tr", {}, head.map((h) => el("th", {}, h)))), el("tbody", {}, rows)),
+    el("h5", {}, "Aufträge"),
+    so.orders.length ? el("table", { class: "crm-table" }, el("thead", {}, el("tr", {}, ["Kunde", "Lead", "Verkäufer", "Angebot", "Betrag", "Zahlungsstatus", "Auftragsstatus", "Provision"].map((h) => el("th", {}, h)))),
+      el("tbody", {}, so.orders.map((o) => el("tr", {}, ...[o.customer || "–", o.lead_id || "–", o.seller_id || "Direkt (Chris)", `${o.market} ${o.offer || "–"}`, money(o.price, o.currency),
+        PS[o.payment_status] || o.payment_status, o.fulfillment_status || "–", `${ST[o.commission_status] || o.commission_status} · ${money(o.commission, o.currency)}`].map((v) => el("td", {}, String(v)))))))
+      : el("p", { class: "crm-note" }, "Noch keine Aufträge."),
+    el("h5", {}, "Provisions-Auszahlung erfassen (PAYOUT_RECORDED)"),
+    el("div", { class: "crm-qa" }, sel, amt, when, ref, el("button", { type: "button", class: "crm-btn primary", onclick: payout }, "AUSZAHLUNG ERFASSEN")),
+    so.payouts?.length ? el("ul", { class: "crm-hist" }, so.payouts.map((p) => el("li", {}, `${fmt(p.paid_at)} · ${p.seller_id} · ${money(p.currency === "VND" ? p.amount_minor : p.amount_minor / 100, p.currency)} · Ref. ${p.reference}`))) : "");
+}
 function assignBox(a) {
   if (!a) return el("p", { class: "crm-note" }, "Zuweisungen nicht verfügbar.");
   const r = a.report, g = (x) => `${x.count} · HIGH ${x.HIGH} / MEDIUM ${x.MEDIUM} / LOW ${x.LOW} · Telefon ${x.with_phone} · E-Mail ${x.with_email} · Ø Priorität ${x.avg_priority}`;
@@ -75,7 +107,7 @@ function assignBox(a) {
     .flatMap(([k, v]) => [el("span", {}, k), el("b", {}, v)])),
     el("div", { class: "crm-qa" }, el("button", { type: "button", class: "crm-btn", onclick: async () => { const x = await call("/api/sales", { op: vn.paused ? "vn.resume" : "vn.pause" }); say(x.status === 200 ? (x.body.paused ? "Vietnam-Discovery pausiert." : "Vietnam-Discovery fortgesetzt.") : `Fehler ${x.status}`, x.status !== 200); load(); } }, vn.paused ? "VN-DISCOVERY FORTSETZEN" : "VN-DISCOVERY PAUSIEREN")));
 }
-let users = null, com = null, asg = null;
+let users = null, com = null, asg = null, so = null, pm = null;
 function render(u = users) {
   users = u || users;
   const box = $("ownerAdmin");
@@ -86,11 +118,13 @@ function render(u = users) {
     note,
     el("div", { class: "crm-main" },
       users ? el("ul", { class: "crm-list oa-users" }, users.users.map(userCard)) : el("p", {}, "Lade …"),
+      el("h4", {}, "VERKÄUFE & PROVISIONEN"), salesBox(so, pm),
       el("h4", {}, "PROVISION"), commissionBox(com),
       el("h4", {}, "LEAD-ZUWEISUNG"), assignBox(asg)));
 }
 async function load() {
-  const [u, c, a] = await Promise.all([call("/api/auth/admin/users"), call("/api/sales?view=commission"), call("/api/sales?view=assignments")]);
+  const [u, c, a, s, p] = await Promise.all([call("/api/auth/admin/users"), call("/api/sales?view=commission"), call("/api/sales?view=assignments"), call("/api/sales?view=sales_overview"), call("/api/payments")]);
+  so = s.status === 200 ? s.body : null; pm = p.status === 200 ? p.body : null;
   if (u.status !== 200) { $("ownerAdmin").replaceChildren(el("p", { class: "crm-empty" }, u.status === 403 ? "Nur für den Owner." : `Nicht verfügbar (Fehler ${u.status}).`)); return; }
   com = c.status === 200 ? c.body : null; asg = a.status === 200 ? a.body : null;
   render(u.body);
