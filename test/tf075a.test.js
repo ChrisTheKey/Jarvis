@@ -392,12 +392,38 @@ test("CRM: CONTACT-FORM-Abzeichen nur mit Status-Wörtern, RBAC unverändert", (
   const src = { registry: { leads: { "kunde-firma.ch": { lead_id: "kunde-firma.ch", domain: "kunde-firma.ch", status: "MANUALLY_SENT", company: "Kunde Firma AG" } } }, contactForms: pub };
   const lead = cleanCrmLead(buildCrmLead("kunde-firma.ch", src, T0));
   assert.deepEqual(lead.contact_form, { status: "DRAFT_CREATED", matched: true, received_at: "2026-10-16T08:00:00.000Z", count: 1 });
-  assert.equal(cleanCrmLead({ ...lead, contact_form: { status: "<script>", matched: true } }).contact_form, null);
+  assert.equal(cleanCrmLead({ ...lead, contact_form: { status: "<script>", matched: true } }).contact_form, undefined);
+  assert.equal("contact_form" in buildCrmLead("kunde-firma.ch", { ...src, contactForms: { leads: {} } }, T0), false, "ohne Anfrage kein Feld (Sichtgrösse)");
   const doc = { assignments: { "kunde-firma.ch": { assigned_user_id: "mario", market: "CH" } } };
   assert.equal(canSeeLead({ role: "SALES_AGENT_CH", user_id: "mario" }, lead, doc), true);
   assert.equal(canSeeLead({ role: "SALES_AGENT_CH", user_id: "damiano" }, lead, doc), false, "kein Cross-Seller-Zugriff");
   assert.equal(canSeeLead({ role: "SALES_AGENT_VN", user_id: "kudoshin" }, lead, doc), false);
   assert.equal(canSeeLead({ role: "OWNER", user_id: "chris" }, lead, doc), true);
+});
+
+test("CRM-Agent: Sicht zu gross (413) → Aufträge trotzdem abgeholt, Sicht-Versand mit Backoff, Zustand sichtbar", async () => {
+  const { createCrmAgent } = await import("../crm-service.js");
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-tf075a-crm-"));
+  let t = T0;
+  const posts = [];
+  const fetchFn = async (url, init) => {
+    const b = JSON.parse(init.body);
+    posts.push({ op: b.op, view: !!b.view });
+    if (b.op === "pull" && b.view) return new Response(JSON.stringify({ error: "Zu gross." }), { status: 413 });
+    return new Response(JSON.stringify({ ok: true, requests: [] }), { status: 200 });
+  };
+  const sources = () => ({ registry: { leads: { "kunde-firma.ch": { lead_id: "kunde-firma.ch", domain: "kunde-firma.ch", status: "MANUALLY_SENT", company: "Kunde Firma AG" } } }, reviews: {}, directory: { leads: {} } });
+  const agent = createCrmAgent({ dataDir: data, sources, url: "https://jarvis.test", token: "x".repeat(40), fetchFn, now: () => t, log: () => {} });
+  const r1 = await agent.pollOnce();
+  assert.equal(r1.status, 200, "Pull ohne Sicht gelingt → Aufträge fliessen weiter");
+  assert.deepEqual(posts.map((p) => [p.op, p.view]), [["pull", true], ["pull", false]]);
+  assert.equal(agent.viewTooLarge(), true);
+  t = new Date(+T0 + 60_000);
+  await agent.pollOnce();
+  assert.deepEqual(posts.slice(2).map((p) => p.view), [false], "Backoff: nicht bei jedem Takt erneut die ganze Sicht");
+  t = new Date(+T0 + 31 * 60_000);
+  await agent.pollOnce();
+  assert.equal(posts.slice(3)[0].view, true, "nach VIEW_RESEND_MS erneuter Versuch");
 });
 
 test("Dry-Run/Plan: liest keine Inbox, legt keinen Entwurf an", async () => {

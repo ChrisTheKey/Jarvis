@@ -175,13 +175,23 @@ export function createCrmAgent({ dataDir, sources, url, token, fetchFn = globalT
     let v = null, payload = {};
     try {
       v = view();
-      if (v.fp !== sent.fp || +now() - sent.at > VIEW_RESEND_MS) payload = { view: v.body };
+      const backoff = sent.tooLarge && +now() - sent.at <= VIEW_RESEND_MS; // nach 413 höchstens alle VIEW_RESEND_MS erneut versuchen
+      if (!backoff && (v.fp !== sent.fp || +now() - sent.at > VIEW_RESEND_MS)) payload = { view: v.body };
     } catch (e) { log({ event: "view_failed", error: String(e.message).slice(0, 160) }); }
     let pulled;
     try { pulled = await post({ op: "pull", ...payload }); }
     catch (e) { log({ event: "pull_failed", error: String(e.message).slice(0, 120) }); return { hot: false, handled: 0, status: 0 }; }
-    if (pulled.status !== 200) { log({ event: "pull_refused", status: pulled.status }); return { hot: false, handled: 0, status: pulled.status }; }
-    if (payload.view) sent = { fp: v.fp, at: +now() };
+    // Sicht zu gross (413): Aufträge trotzdem abholen (Pull ohne Sicht), damit Notizen/DNC/Anrufe nicht blockiert sind. Die Sicht in der Cloud
+    // bleibt dann veraltet – sichtbar über view_too_large im Log und viewStatus 413 im Health-File (nie stillschweigend).
+    let viewStatus = payload.view ? pulled.status : null;
+    if (pulled.status === 413 && payload.view) {
+      log({ event: "view_too_large", bytes: JSON.stringify(payload.view).length, leads: payload.view.leads?.length || 0 });
+      try { pulled = await post({ op: "pull" }); }
+      catch (e) { log({ event: "pull_failed", error: String(e.message).slice(0, 120) }); return { hot: false, handled: 0, status: 0, viewStatus }; }
+    }
+    if (pulled.status !== 200) { log({ event: "pull_refused", status: pulled.status }); return { hot: false, handled: 0, status: pulled.status, viewStatus }; }
+    if (viewStatus === 200) sent = { fp: v.fp, at: +now() };
+    else if (viewStatus === 413) sent = { fp: null, at: +now(), tooLarge: true }; // nicht bei jedem Takt erneut 6+ MB schicken
     let handled = 0;
     for (const rq of Array.isArray(pulled.body.requests) ? pulled.body.requests.slice(0, 20) : []) {
       let res;
@@ -196,13 +206,13 @@ export function createCrmAgent({ dataDir, sources, url, token, fetchFn = globalT
       log({ event: "crm_action", action: String(rq?.action || "").slice(0, 40), ok: !!res.ok, code: res.code || null });
       handled++;
     }
-    return { hot: !!pulled.body.hot || handled > 0, handled, status: 200 };
+    return { hot: !!pulled.body.hot || handled > 0, handled, status: 200, viewStatus };
   }
   const uploadBackup = async (env) => {
     const r = await post({ op: "backup", backup: env });
     return r.status === 200 ? { ok: true, key: r.body.key } : { ok: false, error: `HTTP ${r.status}` };
   };
-  return { pollOnce, uploadBackup, endpoint };
+  return { pollOnce, uploadBackup, endpoint, viewTooLarge: () => !!sent.tooLarge };
 }
 export const nextDelayMs = ({ hot, status }) => (status === 200 ? (hot ? 3_000 : 20_000) : status === 0 ? 30_000 : 5 * 60_000);
 
@@ -281,7 +291,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
           const k = pem();
           if (k) { const b = await crmBackup({ dataDir: DATA, publicKeyPem: k, zurichDay, upload: agent?.uploadBackup || null }); if (!b.skipped) log({ event: "backup", files: b.status.files, generations: b.status.generations, offsite_ok: b.status.offsite_ok }); }
         } catch (e) { log({ event: "backup_failed", error: String(e?.message || e).slice(0, 160) }); }
-        try { writeAtomic(path.join(DATA, HEALTH_FILE), JSON.stringify({ beat: Date.now(), status: r.status })); } catch {}
+        try { writeAtomic(path.join(DATA, HEALTH_FILE), JSON.stringify({ beat: Date.now(), status: r.status, ...(agent?.viewTooLarge() ? { view: "TOO_LARGE_STALE" } : {}) })); } catch {}
         const wait = agent ? nextDelayMs(r) : 60_000;
         for (let t = 0; t < wait && !stop; t += 500) await new Promise((res) => setTimeout(res, 500));
       }

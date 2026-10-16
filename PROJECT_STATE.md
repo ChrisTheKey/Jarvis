@@ -33,6 +33,18 @@ Letzte Aktualisierung: 2026-10-16 (TF-075A)
   «CONTACT FORM · MATCHED · DRAFT CREATED». RBAC unverändert (sichtbar nur über canSeeLead des Leads).
 - **Unverändert:** TF-073/074 Geräte (Credentials, Pairing, JARVIS_SYNC_TOKEN, Chris lokal), 60 % / 6000 bps (Chris 0 %), Kudoshin, CALLING_DRY_RUN=true,
   VN-Gates, Cold-Outreach-Sicherheit, Zugangs-/Repair-Workflow.
+- **Tests:** test/tf075a.test.js 30/30. Mail-/Onboarding-/CRM-Regression (22 Suiten) 294/294. Gesamtsuite sequenziell 980 / 968 pass / 0 fail / 12 skip.
+  Secret-Scan 0 Treffer.
+- **Deploy-Fehler gefunden + behoben:** erster Mail-Deploy (eca9f62) – Allowlist-Regex der Gmail-Suche hatte beim Einfügen die Escapes verloren →
+  jede echte Suche abgelehnt (fail closed: nichts gelesen, kein Entwurf, nichts gesendet). Fix 11fbdb7 + Test gegen die echte gmail.searchInbound-Prüfung.
+- **CRM-Befund (Kapazität, nicht durch TF-075A verursacht):** die CRM-Sicht (1718 Leads) ist ~6.48 MB und liegt über MAX_AGENT_BYTES 6 MB (= Netlify-
+  Funktionslimit) → jeder Pull mit Sicht 413, dadurch blieben auch Dashboard-Aufträge hängen und der Dienst wurde unhealthy. TF-075A-Feld trug ~34 KB bei
+  (jetzt nur noch gesetzt, wenn eine Anfrage existiert). Mitigation im CRM-Dienst: bei 413 Pull OHNE Sicht (Aufträge fliessen weiter), Sicht-Versand
+  höchstens alle 30 min, Log `view_too_large`, Health-File `view: "TOO_LARGE_STALE"`. **Offen:** Cloud-CRM-Sicht bleibt veraltet, bis die Sicht
+  verkleinert/aufgeteilt wird (eigener Task, braucht Netlify).
+- **Deploy 2026-10-16:** Mail-Worker 11fbdb7 (deploy.sh fiverr; vorher Queue 0 pending / 0 creating / 0 sending; read-only Gmail-Zählung: 0
+  Formular-Benachrichtigungen in 14 Tagen → 0 Entwürfe; danach healthy, restarts 0, genau ein Worker, 0 Sends, keine Fehler). CRM siehe Abschluss
+  unten. Repair, Calling (CALLING_DRY_RUN=true), VN, Contacts NICHT neu gestartet. **Netlify: CODE READY (UI-Abzeichen + cleanCrmLead), NICHT live.**
 
 ## TF-074 – LOKALER JARVIS → GERÄTE-CREDENTIALS + SICHERER LOKALER ZUGRIFF PRO BENUTZER (2026-10-16, CODE READY, Netlify NICHT live (Deploy-Credits erschöpft), VPS: kein Dienst neu gestartet)
 - **DEVICE CONNECTION MODEL: eindeutige Credentials pro Benutzer UND pro Gerät, NUR AUSGEHEND (HTTPS), KEINE BENUTZERÜBERGREIFENDE GERÄTESTEUERUNG.**

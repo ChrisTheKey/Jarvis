@@ -233,7 +233,6 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     findings, findings_total: findings.length, findings_confirmed: findings.filter((f) => f.confirmed).length, errors,
     // TF-058: nur reine Historien-Leads tragen ein Abzeichen. ERNEUT VERIFIZIERT = aktueller Audit bestätigt ≥ 1 Fehler, sonst HISTORISCHER FUND.
     history_badge: histOnly ? ((errors.count || 0) >= 1 && (errors.audit === "FULL" || (hist.reverified === true && errors.audit === "PARTIAL")) ? "REVERIFIED" : "HISTORICAL") : null,
-    contact_form: cleanContactForm(src.contactForms?.leads?.[id]),
     draft_status: d.status, draft_url: d.url, draft_created_at: d.created_at, manual_sent: flags.manual_sent, manual_sent_at: d.manual_sent_at || iso(reg?.first_contacted_at),
     replied: flags.replied, customer: flags.customer,
     sales_stage: effectiveStage(crm, flags), stage_auto: !oneOf(crm?.sales_stage, SALES_STAGES),
@@ -249,6 +248,8 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     crm_created_at: iso(crm?.created_at),
     updated_at: maxIso(iso(crm?.updated_at), iso(dir?.contact_enriched_at), iso(reg?.last_updated_at), iso(rv?.updated_at), iso(dir?.first_seen_at), iso(hist?.updated_at)),
   };
+  const cf = cleanContactForm(src.contactForms?.leads?.[id]);
+  if (cf) lead.contact_form = cf; // nur wenn vorhanden – kein Zusatzgewicht in der Sicht für Leads ohne Anfrage
   lead.priority = priorityOf(lead);
   lead.follow_up = followUpBucket(lead, now);
   lead.call_recommended = callRecommended(lead);
@@ -438,7 +439,7 @@ export function cleanCrmLead(l) {
     findings: (Array.isArray(l.findings) ? l.findings : []).slice(0, 30).map((f) => (f && typeof f === "object" ? { key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
       status: oneOf(f.status, ["BESTÄTIGT", "AUDIT"]), confirmed: f.confirmed === true, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) } : null)).filter((f) => f?.text),
     findings_total: n(l.findings_total, 0, 1000), findings_confirmed: n(l.findings_confirmed, 0, 1000), errors: cleanErrors(l.errors), history_badge: oneOf(l.history_badge, HISTORY_BADGES),
-    contact_form: cleanContactForm(l.contact_form),
+    ...(cleanContactForm(l.contact_form) ? { contact_form: cleanContactForm(l.contact_form) } : {}),
     draft_status: oneOf(l.draft_status, DRAFT_STATUSES),
     draft_url: typeof l.draft_url === "string" && /^https:\/\/mail\.google\.com\/mail\/u\/0\/#drafts\?compose=[0-9a-f]{10,24}$/.test(l.draft_url) ? l.draft_url : null,
     draft_created_at: iso(l.draft_created_at), manual_sent: l.manual_sent === true, manual_sent_at: iso(l.manual_sent_at), replied: l.replied === true, customer: l.customer === true,
