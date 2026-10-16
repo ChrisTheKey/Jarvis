@@ -561,7 +561,7 @@ export async function replyDraftInThread(threadId, { to, body, messageClass, ord
 // Einzige Ausnahme von „nur eigene Threads lesen“: Benachrichtigungen bekannter Formular-Anbieter. Die Suchanfrage baut
 // contact-form.js ausschliesslich aus der Anbieter-Allowlist (from:(…) newer_than:…); hier wird sie zusätzlich geprüft.
 // Gelesen wird nur, was die Suche liefert und dessen From exakt in der Anfrage steht. Nie Label/Ändern/Löschen fremder Mails.
-const INBOUND_QUERY_RE = /^from:(([a-z0-9.!#$%&'*+/=?^_`{|}~@-]+(?: OR [a-z0-9.!#$%&'*+/=?^_`{|}~@-]+)*)) -in:sent -in:drafts -in:spam -in:trash newer_than:d{1,2}d$/i;
+const INBOUND_QUERY_RE = /^from:\(([a-z0-9.!#$%&'*+/=?^_`{|}~@-]+(?: OR [a-z0-9.!#$%&'*+/=?^_`{|}~@-]+)*)\) -in:sent -in:drafts -in:spam -in:trash newer_than:\d{1,2}d$/i;
 let inboundAllow = new Set();
 export async function searchInbound({ query, max = 20 } = {}) {
   const m = String(query || "").match(INBOUND_QUERY_RE);

@@ -11,12 +11,14 @@ import {
   classifyInbound, validateCustomerEmail, selectCustomerEmail, matchInquiry, orderMailQueue, priorityOf, inboundQuery, authPassFor,
   CONTACT_FORM_CLASS, CONTACT_FORM_DRAFT_MODE, CONTACT_FORMS_FILE, CONTACT_FORMS_PUBLIC_FILE, STATES, MATCH, MAX_ATTEMPTS, publicContactForms,
 } from "../contact-form.js";
-import { assertSendable, NEVER_SEND_MODES } from "../gmail.js";
 import { VN_SIGNATURE } from "../sender-profiles.js";
 import { buildCrmLead, cleanCrmLead } from "../lead-crm.js";
 import { canSeeLead } from "../sales-scope.js";
 import { COLD_DRAFTS_FILE, COLD_MODE } from "../swiss-repair.js";
 
+// gmail.js liest sein Secrets-Verzeichnis beim Import: leeres Test-Verzeichnis, nie die echten Gmail-Zugangsdaten.
+process.env.JARVIS_SECRETS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-tf075a-sec-"));
+const { assertSendable, NEVER_SEND_MODES, searchInbound } = await import("../gmail.js");
 const T0 = new Date("2026-10-16T08:00:00Z"); // 10:00 Zürich
 let dir, g, clock, orders;
 
@@ -404,6 +406,15 @@ test("Dry-Run/Plan: liest keine Inbox, legt keinen Entwurf an", async () => {
   await worker().tick();
   assert.ok(!g.calls.includes("search"));
   assert.equal(cfDrafts().length, 0);
+});
+
+test("gmail.searchInbound: echte Allowlist-Anfrage wird akzeptiert, freie Anfragen abgelehnt (ohne Netz)", async () => {
+  for (const cfg of [{}, { providers: [{ id: "x", from: ["forms@helvetic-webdesign.ch"], dkim: ["helvetic-webdesign.ch"] }], newerThanDays: 7 }]) {
+    // Allowlist-Prüfung bestanden → scheitert erst am fehlenden Gmail-Token (kein Netzaufruf), nie an der Allowlist.
+    await assert.rejects(searchInbound({ query: inboundQuery(cfg) }), (e) => !/Allowlist/.test(e.message));
+  }
+  for (const q of ["in:inbox", "from:(a@b.ch) OR subject:rechnung", "from:(a@b.ch) -in:sent -in:drafts -in:spam -in:trash newer_than:14d label:INBOX", ""])
+    await assert.rejects(searchInbound({ query: q }), /Allowlist/, q);
 });
 
 test("Store-Helfer: createStore schreibt contact_forms.json atomar (Regression Store-API)", () => {
