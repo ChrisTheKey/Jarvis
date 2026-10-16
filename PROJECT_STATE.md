@@ -2,7 +2,41 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-16 (TF-070)
+Letzte Aktualisierung: 2026-10-16 (TF-071)
+
+## TF-071 – HOSTING-/CMS-ERKENNUNG VOR DEM SICHEREN ZUGANG (2026-10-16, Code f3668fb, Repair + Mail LIVE, Netlify NICHT live bestätigt, Calling/CRM/Contacts/VN NICHT neu gestartet)
+- **Nur FIX mit Onboarding** (CHECK unverändert, keine Erkennung). Vor der ERSTEN Zugangs-Anfrage (ACCESS_REQUESTED, platformStep):
+  `hosting-probe.js` (VPS, nur öffentlich: A/AAAA/NS, CNAME www, PTR, Startseite ≤ 400 KB, Header ohne Set-Cookie, Weiterleitungen nur
+  innerhalb der Domain, /cpanel-Weiterleitung; private/lokale Ziele → keine HTTP-Anfrage) → `hosting-detect.js` (rein): je Kategorie CMS /
+  Deployment / Panel / DNS / Hosting Konfidenz HIGH|MEDIUM|LOW|UNKNOWN. HIGH nur mit starkem Signal + Gewicht ≥ 3, nur schwache Signale
+  (Wort im Text, NS beim Hoster) höchstens LOW, starker Konkurrent → höchstens MEDIUM. Nie raten.
+- **Zugangs-Engine**: WordPress/WooCommerce → WORDPRESS_ADMIN (temporärer Admin; cPanel/Plesk nur wenn nötig), Joomla/TYPO3/Drupal → CMS_ADMIN,
+  Shopify → SHOPIFY_STAFF, Wix/Webflow/Squarespace → Collaborator, Netlify/Vercel → Team, GitHub Pages → GITHUB_COLLABORATOR, Plesk/cPanel,
+  (S)FTP bzw. nur Hoster → SFTP. Automatisch nur bei HIGH; mit Kundenangabe reicht MEDIUM aus der Erkennung zur Ergänzung.
+- **Unsicher → HOSTING_UNKNOWN**: genau EINE Frage (Klasse CUSTOMER_ONBOARDING_DIALOGUE, Zweck hosting_question, eröffnet den Auftrags-Thread,
+  CH-Text exakt laut Vorgabe + «Bitte senden Sie uns noch keine Passwörter oder Zugangsdaten per E-Mail.», VN vollständig vietnamesisch,
+  + TF-066-Inhaltsfrage), KEIN Link, keine Registrierung → Auftragszustand WAITING_FOR_HOSTING_INFO (Export access_status HOSTING_INFO_MISSING).
+  Mail-Worker parst die Antwort deterministisch (nur feste Wörter, keine KI bei reiner Plattform-Antwort, keine eigene Antwort) → Brief
+  `platform` → Repair resolvePlatform → ACCESS_REQUESTED → passender sicherer Link im selben Thread (ohne erneute Inhaltsfrage).
+  Reminder/Hinweise fragen dann nach der Plattform statt auf einen Link zu verweisen. Unklare Angabe → Chris (platform_unclear).
+- **Adaptives Formular**: register mit `access_kind` → info liefert nur dessen Felder (WordPress: Admin-Login-URL/Benutzer/Passwort; SFTP:
+  Host/Port/Benutzer/Passwort + optional Webroot/Fingerprint/Passphrase/Provider; cPanel/Plesk: Login-URL/Benutzer/Passwort; Collaborator-
+  Wege ohne Passwortfeld), feste Zugangsart; andere Zugangsart → 400 (Cloud) bzw. abgelehnt (VPS). Ohne access_kind wie bisher.
+- **ACCESS_VALIDATION_FAILED** (Zugangsprüfung/Preflight auth_failed): Tresor sofort zerstört, nie erneut versucht, nur Metadaten
+  (access_intake_history), neuer Link im Thread (Zweck revalidate); nach 3 Fehlschlägen BLOCKED_NO_ACCESS + Chris. Erfolgreich → ACCESS_VALIDATED.
+  Plattform-Gate vor Backup + im completionGate (`platform`).
+- **CRM**: Onboarding-Karte Hosting / CMS / Zugangsart / Erkennung (Konfidenz + Quelle) / Zugangsstatus (DETECTING_PLATFORM … READY_FOR_REPAIR),
+  cleanOnboarding/cleanPlatform nur Allowlist-Wörter. Nie Zugangsdaten (Verkäufer und Chris).
+- **Tests**: neu tf071 (12) + TF-066-Welt mit festem Lab-Befund (Webflow HIGH); 035/036 Vorgaben angepasst (neuer Zustand, Plattform-Frage).
+  `npm run test:tf071` 12/12 + 066 19/19. Gesamtsuite sequenziell 919 / 907 pass / 0 fail / 12 skip. crm-browser-053 «N: Desktop» ist zeitabhängig
+  wackelig (auch auf dem Stand vor TF-071 1 von 3 Läufen rot) – im Gesamtlauf grün. Secret-Scan 0 Treffer, Netlify-Functions importierbar.
+- **Deploy**: Push f3668fb (origin = HEAD). Repair → f3668fb (deploy-repair.sh, healthy, MAIL_WORKER_UNTOUCHED=YES, READY FOR FIRST CUSTOMER,
+  0 Aufträge). Mail → f3668fb (deploy.sh, Start 13:46:08 UTC, healthy, restarts 0, genau ein Worker, Queue vorher 0/0, Onboarding 0 Datensätze).
+  Calling 08:19:22 (CALLING_DRY_RUN=true), CRM, Contacts, VN-Discovery: StartedAt/Restarts unverändert. Zahlungsüberwachung unverändert.
+  **Netlify: ~30 min nach dem Push weiterhin der alte Stand** (access.js/access.css/onboarding-ui.js = Vorversion; Endpunkte 401 wie bisher).
+  Kein Netlify-Zugang auf dem PC → Build-Log nicht einsehbar. **Bis Netlify live ist, keinen FIX-Auftrag starten** (alte Cloud ignoriert
+  access_kind → freie Zugangsart im Formular, der VPS lehnt eine abweichende Art ab und der One-Time-Link wäre verbraucht).
+- 0 echte Mails, 0 Anrufe, 0 Zahlungen, 0 Aufträge, 0 Kundenwebsites verändert. workspace/memory/chris.md und /opt/fiverr nicht angefasst.
 
 ## TF-070 – VN-VERKÄUFERKONTO «lap» → «Kudoshin» (2026-10-16, Code 1e2cff1, Netlify via Push, Repair + Mail LIVE, Calling/CRM/Contacts/VN NICHT neu gestartet)
 - **Identität**: legacy seller_id: `lap` · current seller_id: `Kudoshin` (Login-Name exakt «Kudoshin»; Gross/Klein wie bei allen Konten egal).
