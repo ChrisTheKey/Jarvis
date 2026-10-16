@@ -1,4 +1,4 @@
-// TF-064 Tests – Mail (33 A–J): CH-Entwurf unverändert, Lap-/VN-Entwurf mit vietnamesischer Signatur + Abmeldezeile, nie Versand,
+// TF-064 Tests – Mail (33 A–J): CH-Entwurf unverändert, Kudoshin-/VN-Entwurf mit vietnamesischer Signatur + Abmeldezeile, nie Versand,
 // Empfänger nur aus dem eigenen VN-Lead, Metadaten serverseitig. Gmail, Cloud und Leads sind Attrappen – kein Netz, keine echte Mail.
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +17,7 @@ const NIGHT = new Date("2026-10-15T20:00:00Z");
 const CH_SENDER = { name: "Chris", email: "chris@helvetic.test", signature: "Freundliche Grüsse\nChris\nHelvetic Webdesign\nchris@helvetic.test" };
 const LEADS = { "vn-a.vn": { lead_id: "vn-a.vn", market: "VN", email: "lienhe@vn-a.vn", company: "Công ty A" }, "vn-b.vn": { lead_id: "vn-b.vn", market: "VN", email: "lienhe@vn-b.vn" },
   "ch-firma.ch": { lead_id: "ch-firma.ch", market: "CH", email: "info@ch-firma.ch" } };
-const SCOPE = { lap: ["vn-a.vn"], chris: ["vn-a.vn", "vn-b.vn", "ch-firma.ch"], mario: ["ch-firma.ch"] };
+const SCOPE = { Kudoshin: ["vn-a.vn"], chris: ["vn-a.vn", "vn-b.vn", "ch-firma.ch"], mario: ["ch-firma.ch"] };
 const VN_BODY = "Kính gửi anh/chị,\n\nChúng tôi thấy trên website của anh/chị có một liên kết dẫn tới trang lỗi.\n\nTrân trọng,\nLap";
 let clock, blob, handler, dir, g;
 function fakeGmail() {
@@ -57,14 +57,14 @@ test("TF-064 Mail A: CH-Entwurf (Owner) – bestehende deutsche Signatur und Abm
   assert.equal(senderProfileFor(null, CH_SENDER).sender, CH_SENDER, "CH-Profil = cfg.sender (unverändert)");
 });
 
-test("TF-064 Mail B–H, J: Lap-VN-Entwurf – exakt vietnamesische Lap-Signatur + vi-Abmeldezeile, keine CH-Fusszeile, DRAFT_ONLY, Metadaten serverseitig", async () => {
+test("TF-064 Mail B–H, J: Kudoshin-VN-Entwurf – exakt vietnamesische Kudoshin-Signatur + vi-Abmeldezeile, keine CH-Fusszeile, DRAFT_ONLY, Metadaten serverseitig", async () => {
   // J: Metadaten aus dem Browser werden abgelehnt; der Server setzt sie aus Session + Lead.
-  assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", subject: "Website", body: VN_BODY, meta: { market: "CH" } }, as("lap")))).status, 400);
-  const r = await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", subject: "Website của anh/chị", body: VN_BODY }, as("lap")));
+  assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", subject: "Website", body: VN_BODY, meta: { market: "CH" } }, as("Kudoshin")))).status, 400);
+  const r = await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", subject: "Website của anh/chị", body: VN_BODY }, as("Kudoshin")));
   assert.equal(r.status, 201);
   const q = (await blob.get()).state.requests[0];
-  assert.deepEqual(q.meta, { actor_user_id: "lap", market: "VN", locale: "vi-VN", lead_id: "vn-a.vn" });
-  assert.deepEqual([q.recipient, q.delivery, q.requested_by], ["lienhe@vn-a.vn", "draft", "lap"]);
+  assert.deepEqual(q.meta, { actor_user_id: "Kudoshin", market: "VN", locale: "vi-VN", lead_id: "vn-a.vn" });
+  assert.deepEqual([q.recipient, q.delivery, q.requested_by], ["lienhe@vn-a.vn", "draft", "Kudoshin"]);
   await iterate();
   const d = draftTo("lienhe@vn-a.vn");
   assert.ok(d, "Entwurf angelegt (Lab-Gmail)");
@@ -86,7 +86,7 @@ test("TF-064 Mail B–H, J: Lap-VN-Entwurf – exakt vietnamesische Lap-Signatur
   assert.equal(g.calls.filter((c) => c.startsWith("create")).length, 1);
   assert.equal((await blob.get()).state.requests[0].status, "drafted");
   // Unsub-Erkennung vi: bereits vorhandene vietnamesische Abmeldezeile wird nicht doppelt angehängt.
-  const twice = finalizeForProfile(`${VN_BODY}\n\nNếu không muốn nhận thêm email, xin trả lời "huỷ đăng ký".`, senderProfileFor({ actor_user_id: "lap", market: "VN", locale: "vi-VN", lead_id: "vn-a.vn" }));
+  const twice = finalizeForProfile(`${VN_BODY}\n\nNếu không muốn nhận thêm email, xin trả lời "huỷ đăng ký".`, senderProfileFor({ actor_user_id: "Kudoshin", market: "VN", locale: "vi-VN", lead_id: "vn-a.vn" }));
   assert.ok(!twice.includes(UNSUB_LINE.vi));
   assert.ok(!finalizeForProfile("Xin chào", senderProfileFor({ market: "VN", actor_user_id: "chris", locale: "vi-VN", lead_id: "vn-b.vn" })).includes("Freundliche"), "market VN → VN-Profil auch für Chris");
   // DE/EN/FR/IT unverändert.
@@ -95,18 +95,18 @@ test("TF-064 Mail B–H, J: Lap-VN-Entwurf – exakt vietnamesische Lap-Signatur
 
 test("TF-064 Mail G (Versand): Verkäufer-/VN-Auftrag mit delivery send wird nie gesendet – auch nicht mit vorhandener Adresse", async () => {
   const queue = createMailQueue(blob, { now: () => clock, dedicated: true });
-  const r = await queue.create({ recipient: "lienhe@vn-a.vn", subject: "x", body: "y", delivery: "send" }, "lap", { actor_user_id: "lap", market: "VN", locale: "vi-VN", lead_id: "vn-a.vn" });
+  const r = await queue.create({ recipient: "lienhe@vn-a.vn", subject: "x", body: "y", delivery: "send" }, "Kudoshin", { actor_user_id: "Kudoshin", market: "VN", locale: "vi-VN", lead_id: "vn-a.vn" });
   assert.equal(r.status, 201);
   await iterate();
   assert.deepEqual(g.calls, [], "kein Entwurf, kein Send");
   assert.match((await blob.get()).state.requests[0].reason, /nur Entwurf/);
 });
 
-test("TF-064 Mail I: Lap löst nur den eigenen VN-Lead als Empfänger aus (fremder/CH-Lead 403, freier Empfänger 400)", async () => {
-  assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "vn-b.vn", subject: "s", body: "b" }, as("lap")))).status, 403);
-  assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "ch-firma.ch", subject: "s", body: "b" }, as("lap")))).status, 403);
-  assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", recipient: "x@evil.vn", subject: "s", body: "b" }, as("lap")))).status, 400);
-  assert.equal((await handler(req("POST", { op: "create", recipient: "x@evil.vn", subject: "s", body: "b", delivery: "draft" }, as("lap")))).status, 403);
+test("TF-064 Mail I: Kudoshin löst nur den eigenen VN-Lead als Empfänger aus (fremder/CH-Lead 403, freier Empfänger 400)", async () => {
+  assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "vn-b.vn", subject: "s", body: "b" }, as("Kudoshin")))).status, 403);
+  assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "ch-firma.ch", subject: "s", body: "b" }, as("Kudoshin")))).status, 403);
+  assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", recipient: "x@evil.vn", subject: "s", body: "b" }, as("Kudoshin")))).status, 400);
+  assert.equal((await handler(req("POST", { op: "create", recipient: "x@evil.vn", subject: "s", body: "b", delivery: "draft" }, as("Kudoshin")))).status, 403);
   assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "ch-firma.ch", subject: "s", body: "b" }, as("mario")))).status, 403, "CH-Lead über den VN-Weg nie");
   assert.equal((await blob.get()).state, null, "nichts in der Warteschlange");
 });

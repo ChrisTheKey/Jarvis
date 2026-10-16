@@ -154,7 +154,7 @@ export function eligibility(lead, { consent = null, dncSet = null, now = new Dat
   // Im Anruf selbst erbetener Rückruf (vom System mit call_id dokumentiert) – Zeitpunkt vom Kunden genannt.
   const cb = consent?.requested_callback && isoOk(consent.requested_callback.at) && typeof consent.requested_callback.call_id === "string" ? consent.requested_callback : null;
   const basis = ev.ok ? "CONSENT" : cb ? "REQUESTED_CALLBACK" : null;
-  // Öffentliche Nummer, Website-Fehler, Lap-Klick oder Chris-Freigabe sind KEINE Grundlage.
+  // Öffentliche Nummer, Website-Fehler, Kudoshin-Klick oder Chris-Freigabe sind KEINE Grundlage.
   if (!basis) return r("BLOCKED", "BLOCKED_CONSENT", consent?.evidence ? ev.code : "CALL_CONSENT_UNKNOWN");
   const reg = consent?.dnc_registry;
   if (!reg || reg.result !== "NOT_LISTED" || !isoOk(reg.checked_at) || +now - Date.parse(reg.checked_at) > DNC_REGISTRY_MAX_AGE_MS) return r("BLOCKED", "BLOCKED_DNC", "DNC_REGISTRY_NOT_CHECKED", basis);

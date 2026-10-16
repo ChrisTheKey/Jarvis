@@ -16,7 +16,7 @@ const fmt = (v) => (v ? new Date(v).toLocaleString("de-CH", { timeZone: "Europe/
 const ROLE = { SALES_MANAGER_CH: "Vertriebsleitung Schweiz", SALES_AGENT_CH: "Vertrieb Schweiz", SALES_AGENT_VN: "Vertrieb Vietnam", OWNER: "Owner" };
 const LANG = { "de-CH": "Deutsch (de-CH)", "vi-VN": "Vietnamesisch (vi-VN)" };
 const SCOPE = { giuliano: "Alle CH-Leads ausser Mario-/Damiano-Portfolio (inkl. neue CH-Leads)", mario: "Nur eigenes Portfolio (200 CH-Leads)",
-  damiano: "Nur eigenes Portfolio (200 CH-Leads)", lap: "Nur Vietnam-Leads" };
+  damiano: "Nur eigenes Portfolio (200 CH-Leads)", Kudoshin: "Nur Vietnam-Leads" };
 const ST = { PENDING: "Ausstehend", PAYABLE: "Auszahlbar", REVERSED: "Storniert" };
 const call = async (url, body) => {
   const r = await fetch(url, { method: body ? "POST" : "GET", credentials: "same-origin", cache: "no-store", ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}) });
@@ -47,13 +47,13 @@ function userCard(u) {
 }
 // TF-064: Beträge je Währung – CHF und VND werden nie zu einer Summe addiert.
 const money = (v, cur = "CHF") => { const n = Number(v); if (!Number.isFinite(n)) return "–"; return cur === "VND" ? `${String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ".")} ₫` : `CHF ${n.toFixed(2)}`; };
-const SELLER_CUR = { giuliano: "CHF", mario: "CHF", damiano: "CHF", lap: "VND" };
+const SELLER_CUR = { giuliano: "CHF", mario: "CHF", damiano: "CHF", Kudoshin: "VND" };
 function commissionBox(c) {
   if (!c) return el("p", { class: "crm-note" }, "Provisionen nicht verfügbar.");
   const sel = (e) => el("select", { class: "crm-sort", "aria-label": `Verkäufer für ${e.order_id}`, onchange: async (ev) => {
     const r = await call("/api/sales", { op: "commission.setSeller", order_id: e.order_id, seller_id: ev.target.value || null });
     if (r.status === 200) { say(`Verkäufer für ${e.order_id} gesetzt (auditiert).`); load(); } else say(r.body?.error || `Fehler ${r.status}`, true);
-  } }, el("option", { value: "" }, "– zuordnen –"), ["giuliano", "mario", "damiano", "lap"].filter((s) => SELLER_CUR[s] === (e.currency || "CHF")).map((s) => el("option", { value: s }, s)));
+  } }, el("option", { value: "" }, "– zuordnen –"), ["giuliano", "mario", "damiano", "Kudoshin"].filter((s) => SELLER_CUR[s] === (e.currency || "CHF")).map((s) => el("option", { value: s }, s)));
   const tot = c.totals_by_currency || { CHF: c.totals };
   const totalRow = (cur) => tot[cur] ? el("tr", {}, el("td", {}, el("b", {}, `Total ${cur}`)), el("td", {}, el("b", {}, money(tot[cur].pending, cur))), el("td", {}, el("b", {}, money(tot[cur].payable, cur))),
     el("td", {}, el("b", {}, money(tot[cur].reversed, cur))), el("td", {}, el("b", {}, String(tot[cur].paid_completed_orders)))) : "";
@@ -72,7 +72,7 @@ function salesBox(so, pm) {
   const head = ["Verkäufer", "Währung", "Aufträge", "Abgeschlossen", "Zahlungen erhalten", "Umsatz", "Prov. ausstehend", "Prov. fällig", "Prov. storniert", "Prov. ausbezahlt", "Offen auszuzahlen"];
   const rows = so.sellers.flatMap((x) => ["CHF", "VND"].filter((c) => x.by_currency[c].orders || (x.seller_id !== "direct" && SELLER_CUR[x.seller_id] === c)).map((c) => { const b = x.by_currency[c];
     return el("tr", {}, ...[x.label, c, b.orders, b.completed, b.payments_received, money(b.revenue, c), money(b.commission_pending, c), money(b.commission_payable, c), money(b.commission_reversed, c), money(b.commission_paid_out, c), money(b.commission_outstanding, c)].map((v) => el("td", {}, String(v)))); }));
-  const sel = el("select", { class: "crm-sort", "aria-label": "Verkäufer" }, ["giuliano", "mario", "damiano", "lap"].map((x) => el("option", { value: x }, `${x} (${SELLER_CUR[x]})`)));
+  const sel = el("select", { class: "crm-sort", "aria-label": "Verkäufer" }, ["giuliano", "mario", "damiano", "Kudoshin"].map((x) => el("option", { value: x }, `${x} (${SELLER_CUR[x]})`)));
   const amt = el("input", { type: "number", min: "0", step: "0.01", placeholder: "Betrag", "aria-label": "Betrag" });
   const when = el("input", { type: "date", "aria-label": "Auszahlungsdatum" });
   const ref = el("input", { type: "text", maxlength: "120", placeholder: "Referenz der Überweisung", "aria-label": "Referenz" });

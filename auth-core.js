@@ -8,18 +8,20 @@
 // Legacy: x-jarvis-key = JARVIS_PASSWORD (Chris, konstant verglichen) gilt weiterhin als OWNER – nur für Chris' Skripte/Tests;
 // die Oberfläche speichert das Passwort nicht mehr (kein localStorage, kein ?key= in URLs).
 import { safeEqual, netlifyBlobStore } from "./shared-state.js";
+import { VN_SELLER_ID } from "./seller-identity.js";
 
 export const ROLES = Object.freeze(["OWNER", "SALES_MANAGER_CH", "SALES_AGENT_CH", "SALES_AGENT_VN"]);
 export const LOCALES = Object.freeze(["de-CH", "vi-VN"]);
 export const OWNER_ID = "chris";
-export const SELLER_IDS = Object.freeze(["giuliano", "mario", "damiano", "lap"]);
+// TF-070: Vietnam-Verkäufer «Kudoshin» (vormals «lap», siehe seller-identity.js) – «lap» ist kein Benutzer mehr.
+export const SELLER_IDS = Object.freeze(["giuliano", "mario", "damiano", VN_SELLER_ID]);
 // Feste Benutzer: Rolle, Sprache, Markt und Provisionssatz sind Code – nicht per API änderbar.
 export const USERS = Object.freeze({
   chris: Object.freeze({ id: "chris", name: "Chris", role: "OWNER", locale: "de-CH", markets: Object.freeze(["CH", "VN"]), commission_rate_bps: 0 }),
   giuliano: Object.freeze({ id: "giuliano", name: "Giuliano", role: "SALES_MANAGER_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: 3500 }),
   mario: Object.freeze({ id: "mario", name: "Mario", role: "SALES_AGENT_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: 3500 }),
   damiano: Object.freeze({ id: "damiano", name: "Damiano", role: "SALES_AGENT_CH", locale: "de-CH", markets: Object.freeze(["CH"]), commission_rate_bps: 3500 }),
-  lap: Object.freeze({ id: "lap", name: "Lap", role: "SALES_AGENT_VN", locale: "vi-VN", markets: Object.freeze(["VN"]), commission_rate_bps: 3500 }),
+  [VN_SELLER_ID]: Object.freeze({ id: VN_SELLER_ID, name: "Kudoshin", role: "SALES_AGENT_VN", locale: "vi-VN", markets: Object.freeze(["VN"]), commission_rate_bps: 3500 }),
 });
 export const COOKIE = "jarvis_session";
 export const SESSION_MAX_MS = 7 * 86_400_000;       // absolute Höchstdauer
@@ -42,8 +44,9 @@ export function publicUser(id) {
   return u ? { user_id: u.id, name: u.name, role: u.role, locale: u.locale, markets: [...u.markets], commission_rate_bps: u.commission_rate_bps } : null;
 }
 export const actorFor = (id, source = "session") => { const u = publicUser(id); return u ? { ...u, market: u.markets.length === 1 ? u.markets[0] : "ALL", source } : null; };
-// Benutzername → ID (Gross/Klein egal, Anzeigename erlaubt). Unbekannt → null.
-export const userIdOf = (name) => { const n = String(name || "").trim().toLowerCase(); return Object.hasOwn(USERS, n) ? n : null; };
+// Benutzername → kanonische ID (Gross/Klein egal, Anzeigename erlaubt: "Kudoshin"/"kudoshin" → "Kudoshin"). Unbekannt (auch "lap") → null.
+const USER_BY_LOWER = new Map(Object.keys(USERS).map((id) => [id.toLowerCase(), id]));
+export const userIdOf = (name) => USER_BY_LOWER.get(String(name || "").trim().toLowerCase()) ?? null;
 
 // ---------- Cookies ----------
 export function parseCookies(header) {
@@ -97,7 +100,7 @@ export function userRecord(doc, id) {
   return { active: r.active !== false, password: r.password && typeof r.password === "object" ? r.password : null, password_set_at: iso(r.password_set_at),
     last_login_at: iso(r.last_login_at), sessions_revoked_at: iso(r.sessions_revoked_at), initialized_at: iso(r.initialized_at) };
 }
-export const sessionValid = (s, now) => !!s && USERS[s.user_id] && Date.parse(s.expires_at) > +now && Date.parse(s.created_at) <= +now;
+export const sessionValid = (s, now) => !!s && Object.hasOwn(USERS, s.user_id) && Date.parse(s.expires_at) > +now && Date.parse(s.created_at) <= +now;
 
 // Löst den Akteur eines Requests auf: Session-Cookie (bevorzugt) oder Legacy-Header (nur Chris). Ergebnis:
 //   { actor, via: "session"|"legacy", token_hash? } oder { actor: null, status, error }

@@ -1,4 +1,4 @@
-// TF-065 Browser-Test (echter Chromium): Lap sieht «TRỢ LÝ GỌI ĐIỆN» komplett auf Vietnamesisch (ohne CH-Daten, START gesperrt ohne LiveKit/SIP),
+// TF-065 Browser-Test (echter Chromium): Kudoshin sieht «TRỢ LÝ GỌI ĐIỆN» komplett auf Vietnamesisch (ohne CH-Daten, START gesperrt ohne LiveKit/SIP),
 // Lead-Detail mit vietnamesischer Anruf-Sektion; Giuliano sieht den Bereich nicht. Keine externen Requests, keine Anrufe.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -9,12 +9,12 @@ import { vnLeads, PW } from "./tf063-helpers.js";
 const GERMAN = /\b(und|der|die|das|nicht|Anruf|Rückruf|Fehler|Aufnahme|Kampagne|Warteschlange|Parallelität|Vorschau|Starten|STOPP|Schweiz|eingerichtet|Erreicht|Keine)\b/i;
 const CH_ONLY = /CHF|SIP CH\b/;
 
-test("TF-065 Lap: Trợ lý gọi điện 100 % Vietnamesisch, START gesperrt; Giuliano ohne Calling-Bereich", { skip: !exe && "kein Chromium/Chrome/Edge gefunden", timeout: 180_000 }, async () => {
-  const srv = await startServer({ n: 30, vnLeads: vnLeads(6), sellers: { lap: PW.lap, giuliano: PW.giuliano } });
+test("TF-065 Kudoshin: Trợ lý gọi điện 100 % Vietnamesisch, START gesperrt; Giuliano ohne Calling-Bereich", { skip: !exe && "kein Chromium/Chrome/Edge gefunden", timeout: 180_000 }, async () => {
+  const srv = await startServer({ n: 30, vnLeads: vnLeads(6), sellers: { Kudoshin: PW.Kudoshin, giuliano: PW.giuliano } });
   const browser = await chromium.launch({ executablePath: exe, headless: true });
   try {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
-    await loginAs(ctx, srv, "lap", PW.lap);
+    await loginAs(ctx, srv, "Kudoshin", PW.Kudoshin);
     const page = await ctx.newPage();
     const errors = [], external = [];
     page.on("pageerror", (e) => errors.push(String(e)));

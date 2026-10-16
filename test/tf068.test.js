@@ -1,4 +1,4 @@
-// TF-068 Tests – Vietnam Calling (nur Lap), Einwilligungsnachweis, Rechts-Gate, 08:00–17:00, 24-h-Frequenz, CRM-Tools des Agenten,
+// TF-068 Tests – Vietnam Calling (nur Kudoshin), Einwilligungsnachweis, Rechts-Gate, 08:00–17:00, 24-h-Frequenz, CRM-Tools des Agenten,
 // Zahlungseingangs-Überwachung (signierter Webhook, camt.053, Duplikat, Review), Provision 35 % CHF/VND, Auszahlungen, Verkaufsübersicht,
 // Verkäufer-Isolation. Keine echten Anrufe, Zahlungen, Mails oder Websites – alles RAM/Temp.
 import test from "node:test";
@@ -55,11 +55,11 @@ async function world({ consentIdx = [], legal = true, t0 = VN("10:00") } = {}) {
 }
 
 // ================= CALLING: Rollen =================
-test("TF-068 Rollen: Lap Calling 200, Chris Monitoring 200, Chris Start 403, Giuliano/Mario/Damiano 403", async () => {
+test("TF-068 Rollen: Kudoshin Calling 200, Chris Monitoring 200, Chris Start 403, Giuliano/Mario/Damiano 403", async () => {
   const w = await world({ consentIdx: [0] });
   await w.pull();
-  assert.equal((await w.as("lap")).status, 200, "Lap Calling");
-  assert.equal((await w.as("lap", { op: "call.start", lead_id: w.ids[0], confirmed: true })).status, 202, "Lap Start");
+  assert.equal((await w.as("Kudoshin")).status, 200, "Kudoshin Calling");
+  assert.equal((await w.as("Kudoshin", { op: "call.start", lead_id: w.ids[0], confirmed: true })).status, 202, "Kudoshin Start");
   const c = await w.as("chris");
   assert.equal(c.status, 200, "Chris Monitoring"); assert.ok(Array.isArray(c.body.audit)); assert.equal(c.body.active_calls.length, 0);
   assert.equal((await w.as("chris", { op: "call.start", lead_id: w.ids[0], confirmed: true })).status, 403, "Chris Calling Start");
@@ -112,13 +112,13 @@ test("TF-068 24 h: zweiter Werbeanruf an dieselbe Nummer innerhalb 24 h blocked,
   // API: Anruf abgeschlossen → am nächsten Morgen (< 24 h) kein Job, Position wartet bis 24 h nach dem ersten Anruf
   const w = await world({ consentIdx: [0] });
   await w.pull();
-  assert.equal((await w.as("lap", { op: "call.start", lead_id: w.ids[0], confirmed: true })).status, 202);
+  assert.equal((await w.as("Kudoshin", { op: "call.start", lead_id: w.ids[0], confirmed: true })).status, 202);
   const [job] = (await w.pull()).body.jobs;
   await w.agent({ op: "event", call_id: job.call_id, status: "COMPLETED", duration_s: 60 });
   w.clock.t = new Date(+VN("10:00") + 22 * 3_600_000); // nächster Tag 08:00
   await w.pull();
-  const again = await w.as("lap", { op: "call.start", lead_id: w.ids[0], confirmed: true });
-  assert.equal(again.status, 202, `Lap darf einplanen … ${JSON.stringify(again.body)}`);
+  const again = await w.as("Kudoshin", { op: "call.start", lead_id: w.ids[0], confirmed: true });
+  assert.equal(again.status, 202, `Kudoshin darf einplanen … ${JSON.stringify(again.body)}`);
   assert.equal((await w.pull()).body.jobs.length, 0, "… aber kein zweiter Anruf innerhalb 24 h");
   const it = (await w.mem.control.get()).state.campaigns.at(-1).items[0];
   assert.equal(it.last_code, "FREQUENCY_LIMIT_24H"); assert.ok(Date.parse(it.next_at) >= +VN("10:00") + 24 * 3_600_000);
@@ -126,32 +126,32 @@ test("TF-068 24 h: zweiter Werbeanruf an dieselbe Nummer innerhalb 24 h blocked,
   assert.equal((await w.pull()).body.jobs.length, 1, "nach 24 h im Fenster erlaubt");
 });
 
-test("TF-068 Owner-Konfiguration: Einwilligung erfassen (Server setzt Telefon/verified_at), Lap 403, Widerruf sofort, Rechts-Gate, Leadlisten", async () => {
+test("TF-068 Owner-Konfiguration: Einwilligung erfassen (Server setzt Telefon/verified_at), Kudoshin 403, Widerruf sofort, Rechts-Gate, Leadlisten", async () => {
   const w = await world({ legal: false });
   await w.pull();
   const id = w.ids[1];
   const rec = { op: "consent.record", lead_id: id, consent_status: "GRANTED", consent_source: "WRITTEN_FORM", consent_timestamp: "2026-10-01T08:00:00Z", consent_scope: ["ADVERTISING_CALLS"], consent_evidence_reference: "Formular 2026-10-01 Nr. 17" };
-  assert.equal((await w.as("lap", rec)).status, 403, "Lap kann keine Einwilligung erfinden");
+  assert.equal((await w.as("Kudoshin", rec)).status, 403, "Kudoshin kann keine Einwilligung erfinden");
   assert.equal((await w.as("chris", { ...rec, consent_source: "PHONE_BOOK" })).status, 400, "Telefonbuch keine Einwilligung");
   assert.equal((await w.as("chris", { ...rec, phone: "+84900000000" })).status, 400, "Telefon nie vom Client");
   assert.equal((await w.as("chris", rec)).status, 200);
   assert.equal((await w.as("chris", { op: "dnc_registry.record", lead_id: id, registry_result: "NOT_LISTED", reference: "DNC-Abgleich 2026-10-14" })).status, 200);
   const stored = (await w.mem.consents.get()).state.leads[id].evidence;
   assert.equal(stored.phone, vnPhone(1), "Telefon aus dem Lead"); assert.ok(stored.verified_at); assert.equal(stored.revoked_at, null);
-  let d = (await w.as("lap", null, `?lead=${encodeURIComponent(id)}`)).body;
+  let d = (await w.as("Kudoshin", null, `?lead=${encodeURIComponent(id)}`)).body;
   assert.equal(d.eligibility.code, "BLOCKED_PENDING_LEGAL_REVIEW", "ohne Rechtsfreigabe kein Anruf");
-  assert.equal((await w.as("lap", { op: "legal.set", status: "APPROVED", reference: "Gutachten X" })).status, 403);
+  assert.equal((await w.as("Kudoshin", { op: "legal.set", status: "APPROVED", reference: "Gutachten X" })).status, 403);
   assert.equal((await w.as("chris", { op: "legal.set", status: "APPROVED", reference: "Rechtsprüfung Decree 91/2020 – Test" })).status, 200);
-  d = (await w.as("lap", null, `?lead=${encodeURIComponent(id)}`)).body;
+  d = (await w.as("Kudoshin", null, `?lead=${encodeURIComponent(id)}`)).body;
   assert.equal(d.eligibility.decision, "ALLOWED"); assert.equal(d.call_flag, "CALL_ALLOWED"); assert.equal(d.list, "CALL_ELIGIBLE_LEADS");
-  const lists = (await w.as("lap", null, "?view=lists")).body;
+  const lists = (await w.as("Kudoshin", null, "?view=lists")).body;
   assert.equal(lists.counts.ALL_LEADS, 8); assert.equal(lists.counts.CALL_ELIGIBLE_LEADS, 1); assert.equal(lists.counts.DO_NOT_CONTACT, 1);
   assert.equal(lists.counts.CALL_BLOCKED_LEADS, 6);
   assert.ok(lists.leads.filter((x) => x.call_flag === "CONSENT_UNKNOWN").length >= 5, "neue Leads ohne Nachweis: CONSENT_UNKNOWN");
-  const elig = (await w.as("lap", null, "?view=lists&list=CALL_ELIGIBLE_LEADS")).body.leads;
+  const elig = (await w.as("Kudoshin", null, "?view=lists&list=CALL_ELIGIBLE_LEADS")).body.leads;
   assert.deepEqual(elig.map((x) => x.lead_id), [id], "Warteschlange nur rechtlich freigegebene Kontakte");
-  assert.equal((await w.as("lap", { op: "consent.revoke", lead_id: id, reason: "Kunde widerruft" })).status, 200);
-  assert.equal((await w.as("lap", null, `?lead=${encodeURIComponent(id)}`)).body.eligibility.code, "CONSENT_REVOKED");
+  assert.equal((await w.as("Kudoshin", { op: "consent.revoke", lead_id: id, reason: "Kunde widerruft" })).status, 200);
+  assert.equal((await w.as("Kudoshin", null, `?lead=${encodeURIComponent(id)}`)).body.eligibility.code, "CONSENT_REVOKED");
   // CH-Leads bleiben im CRM unverändert (nur nicht im Calling)
   assert.equal((await w.s.stores.view.get()).state.leads.length, 50);
 });
@@ -161,7 +161,7 @@ test("TF-068 CRM-Tools: Ergebnis korrekt gespeichert, idempotent, Cross-lead 403
   const w = await world({ consentIdx: [0, 1] });
   const real = { ...SVC, dry_run: false };
   await w.pull(real);
-  assert.equal((await w.as("lap", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 2, confirmed: true })).status, 202);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 2, confirmed: true })).status, 202);
   const jobs = (await w.pull(real)).body.jobs;
   assert.equal(jobs.length, 2);
   const [a, b] = jobs;
@@ -181,7 +181,7 @@ test("TF-068 CRM-Tools: Ergebnis korrekt gespeichert, idempotent, Cross-lead 403
   await w.agent({ op: "event", call_id: a.call_id, status: "COMPLETED", duration_s: 95, answered_at: new Date(+w.clock.t).toISOString() });
   const h = (await w.mem.history.get()).state.calls.find((c) => c.call_id === a.call_id);
   for (const k of ["call_id", "lead_id", "seller_id", "market", "started_at", "ended_at", "duration_s", "outcome", "short_summary", "callback_at", "consent_evidence_reference"]) assert.ok(h[k] != null, k);
-  assert.deepEqual([h.seller_id, h.market, h.outcome, h.duration_s], ["lap", "VN", "CALLBACK_REQUESTED", 95]);
+  assert.deepEqual([h.seller_id, h.market, h.outcome, h.duration_s], ["Kudoshin", "VN", "CALLBACK_REQUESTED", 95]);
   assert.equal(h.consent_evidence_reference, `FORM-${a.lead_id}`); assert.equal(h.recording, false); assert.ok(!("phone_key" in h)); assert.ok(!JSON.stringify(h).includes(a.phone_e164));
   const crm = (await w.s.stores.vnQueue.get()).state.requests.filter((r) => r.params.lead_id === a.lead_id);
   assert.equal(crm[0].params.result, "CALLBACK_REQUESTED"); assert.ok(crm[0].params.follow_up_at);
@@ -192,7 +192,7 @@ test("TF-068 CRM-Tools: Ergebnis korrekt gespeichert, idempotent, Cross-lead 403
   assert.equal((await tool(b, { tool: "mark_interested", params: { summary: "x" } })).body.outcome, "DO_NOT_CALL", "DNC schlägt alles – keine Override-Funktion");
   await w.agent({ op: "event", call_id: b.call_id, status: "COMPLETED" });
   assert.equal((await w.mem.history.get()).state.calls.find((c) => c.call_id === b.call_id).outcome, "DO_NOT_CALL");
-  assert.equal((await w.as("lap", { op: "call.start", lead_id: b.lead_id, confirmed: true })).status, 409);
+  assert.equal((await w.as("Kudoshin", { op: "call.start", lead_id: b.lead_id, confirmed: true })).status, 409);
   // nach Anrufende keine Tools mehr
   assert.equal((await tool(a, { tool: "record_call_summary", params: { summary: "x y z" } })).status, 404);
 });
@@ -207,7 +207,7 @@ test("TF-068 Stimme: sonic-3.6 bevorzugt, Kandidat nicht verifiziert → VOICE_N
   const w = await world({ consentIdx: [0] });
   const real = { ...SVC, dry_run: false, configured: { ...SVC.configured, voice_vn: "VOICE_NOT_VERIFIED" } };
   await w.pull(real);
-  const st = await w.as("lap", { op: "call.start", lead_id: w.ids[0], confirmed: true });
+  const st = await w.as("Kudoshin", { op: "call.start", lead_id: w.ids[0], confirmed: true });
   assert.equal(st.status, 409); assert.equal(st.body.code, "VOICE_NOT_VERIFIED");
   assert.equal((await w.as("chris")).body.service.voice_vn, "VOICE_NOT_VERIFIED");
   const ins = buildInstructions(buildLeadContext({ lead_id: "y.vn", market: "VN", company: "ABC" }));
@@ -259,7 +259,7 @@ test("TF-068 Payment-Webhook: nicht konfiguriert 503, ungültige Signatur blocke
   assert.equal((await post(on, JSON.stringify({ op: "inbox.pull" }), { "x-jarvis-worker": "falsch" })).status, 401);
   const get = (u) => on(makeReq("/api/payments", { cookie: s.cookies[u] }));
   assert.equal((await get("chris")).status, 200);
-  for (const u of ["lap", "giuliano", "mario", "damiano"]) assert.equal((await get(u)).status, 403, `${u} keine globalen Finanzdaten`);
+  for (const u of ["Kudoshin", "giuliano", "mario", "damiano"]) assert.equal((await get(u)).status, 403, `${u} keine globalen Finanzdaten`);
 });
 
 test("TF-068 Abgleich: gültige Zahlung verbucht, Duplikat blocked, unbekannt/mehrdeutig/Währung falsch → PAYMENT_REVIEW_REQUIRED, Gate einmal erfüllt", () => {
@@ -319,12 +319,12 @@ test("TF-068 Provision: gültig bezahlter Auftrag → korrekte Provision (aus 35
     const sumFix = paymentSummary(p.store, { order_id: VNFIX, offer_class: "VN_REPAIR_FIX", market: "VN", currency: "VND" });
     assert.equal(sumFix.payment_status, "PAID_FULL");
     const order = (st, s) => ({ repair: { orders: [{ order_id: VNFIX, domain: "vn-cong-ty-1.vn", offer_class: "VN_REPAIR_FIX", market: "VN", currency: "VND", price_amount: 3900000, paid_amount: s.paid_amount, state: st, payment_status: s.payment_status, created_at: "2026-10-16T03:00:00Z" }] } });
-    const seller = () => ({ seller_id: "lap", lead_id: "vn-cong-ty-1.vn", source: "vn_default" });
+    const seller = () => ({ seller_id: "Kudoshin", lead_id: "vn-cong-ty-1.vn", source: "vn_default" });
     const base = { ...emptyLedger(), eligible_from: "2026-10-01T00:00:00Z" };
     const L1 = deriveLedger({ ledger: base, orders: ordersFromSnapshot(order("COMPLETED", sumFix)), resolveSeller: seller, now: new Date("2026-10-16T05:00:00Z") }).ledger;
     const e1 = L1.entries[VNFIX];
-    assert.deepEqual([e1.status, e1.payable_minor, e1.seller_id], ["PAYABLE", 1365000, "lap"]);
-    assert.equal(e1.payable_minor, commissionMinor(toMinor(MARKET_PRICES.VN.offers.FIX.price, "VND"), RATE_BPS.lap));
+    assert.deepEqual([e1.status, e1.payable_minor, e1.seller_id], ["PAYABLE", 1365000, "Kudoshin"]);
+    assert.equal(e1.payable_minor, commissionMinor(toMinor(MARKET_PRICES.VN.offers.FIX.price, "VND"), RATE_BPS.Kudoshin));
     const pay = paymentsForOrder(p.store, VNFIX)[0];
     refundPayment(p.store, pay.payment_id, { reason: "Kunde erstattet" });
     const s2 = paymentSummary(p.store, { order_id: VNFIX, offer_class: "VN_REPAIR_FIX", market: "VN", currency: "VND" });
@@ -339,18 +339,18 @@ test("TF-068 Provision: gültig bezahlter Auftrag → korrekte Provision (aus 35
 
 test("TF-068 Auszahlung: nur markieren, Teilzahlungen, nie über Auszahlbar, Referenz nie doppelt, Währung des Verkäufers", () => {
   const L = { ...emptyLedger(), eligible_from: "2026-10-01T00:00:00Z", entries: {
-    [VNFIX]: { order_id: VNFIX, market: "VN", currency: "VND", seller_id: "lap", status: "PAYABLE", payable_minor: 1365000, expected_minor: 1365000 },
+    [VNFIX]: { order_id: VNFIX, market: "VN", currency: "VND", seller_id: "Kudoshin", status: "PAYABLE", payable_minor: 1365000, expected_minor: 1365000 },
     [RF]: { order_id: RF, market: "CH", currency: "CHF", seller_id: "mario", status: "PAYABLE", payable_minor: 16800, expected_minor: 16800 } } };
   const now = new Date("2026-10-16T12:00:00Z");
-  const a = recordPayout(L, { seller_id: "lap", amount: 1000000, currency: "VND", paid_at: "2026-10-16T10:00:00Z", reference: "VCB-0001", actor_user_id: "chris", now }).ledger;
-  let s = summarize(a, ["lap"])[0];
+  const a = recordPayout(L, { seller_id: "Kudoshin", amount: 1000000, currency: "VND", paid_at: "2026-10-16T10:00:00Z", reference: "VCB-0001", actor_user_id: "chris", now }).ledger;
+  let s = summarize(a, ["Kudoshin"])[0];
   assert.deepEqual([s.payable, s.paid_out, s.outstanding], ["1365000", "1000000", "365000"], "Teilzahlung");
-  assert.throws(() => recordPayout(a, { seller_id: "lap", amount: 400000, currency: "VND", paid_at: "2026-10-16T10:00:00Z", reference: "VCB-0002", actor_user_id: "chris", now }), /übersteigt/);
-  assert.throws(() => recordPayout(a, { seller_id: "lap", amount: 100, currency: "VND", paid_at: "2026-10-16T10:00:00Z", reference: "vcb-0001 ", actor_user_id: "chris", now }), /bereits erfasst/);
-  assert.throws(() => recordPayout(a, { seller_id: "lap", amount: 100, currency: "CHF", paid_at: "2026-10-16T10:00:00Z", reference: "X-1", actor_user_id: "chris", now }), /nur in VND/);
-  assert.throws(() => recordPayout(a, { seller_id: "lap", amount: 100, currency: "VND", paid_at: "2026-12-01T10:00:00Z", reference: "X-2", actor_user_id: "chris", now }), /Zukunft/);
-  const b = recordPayout(a, { seller_id: "lap", amount: 365000, currency: "VND", paid_at: "2026-10-16T11:00:00Z", reference: "VCB-0003", actor_user_id: "chris", now }).ledger;
-  s = summarize(b, ["lap"])[0];
+  assert.throws(() => recordPayout(a, { seller_id: "Kudoshin", amount: 400000, currency: "VND", paid_at: "2026-10-16T10:00:00Z", reference: "VCB-0002", actor_user_id: "chris", now }), /übersteigt/);
+  assert.throws(() => recordPayout(a, { seller_id: "Kudoshin", amount: 100, currency: "VND", paid_at: "2026-10-16T10:00:00Z", reference: "vcb-0001 ", actor_user_id: "chris", now }), /bereits erfasst/);
+  assert.throws(() => recordPayout(a, { seller_id: "Kudoshin", amount: 100, currency: "CHF", paid_at: "2026-10-16T10:00:00Z", reference: "X-1", actor_user_id: "chris", now }), /nur in VND/);
+  assert.throws(() => recordPayout(a, { seller_id: "Kudoshin", amount: 100, currency: "VND", paid_at: "2026-12-01T10:00:00Z", reference: "X-2", actor_user_id: "chris", now }), /Zukunft/);
+  const b = recordPayout(a, { seller_id: "Kudoshin", amount: 365000, currency: "VND", paid_at: "2026-10-16T11:00:00Z", reference: "VCB-0003", actor_user_id: "chris", now }).ledger;
+  s = summarize(b, ["Kudoshin"])[0];
   assert.deepEqual([s.paid_out, s.outstanding], ["1365000", "0"]);
   const m = recordPayout(b, { seller_id: "mario", amount: 168, currency: "CHF", paid_at: "2026-10-16T11:00:00Z", reference: "UBS-1", actor_user_id: "chris", now }).ledger;
   assert.equal(summarize(m, ["mario"])[0].paid_out, "168.00");
@@ -372,21 +372,21 @@ test("TF-068 Verkäufe & Provisionen: Owner-Übersicht CHF/VND getrennt, Payout 
   const get = async (u, q) => t.json(await t.sales(makeReq(`/api/sales?view=${q}`, { cookie: t.cookies[u] })));
   const o = await get("chris", "sales_overview");
   assert.equal(o.status, 200);
-  const mario = o.body.sellers.find((x) => x.seller_id === "mario"), lap = o.body.sellers.find((x) => x.seller_id === "lap");
+  const mario = o.body.sellers.find((x) => x.seller_id === "mario"), lap = o.body.sellers.find((x) => x.seller_id === "Kudoshin");
   assert.deepEqual([mario.by_currency.CHF.orders, mario.by_currency.CHF.completed, mario.by_currency.CHF.revenue, mario.by_currency.CHF.commission_payable], [1, 1, "480.00", "168.00"]);
   assert.deepEqual([lap.by_currency.VND.revenue, lap.by_currency.VND.commission_payable, lap.by_currency.CHF.orders], ["990000", "346500", 0]);
   const row = o.body.orders.find((x) => x.order_id === VNCHECK);
   for (const k of ["order_id", "lead_id", "seller_id", "market", "offer", "price", "currency", "confirmed_at", "payment_status", "fulfillment_status", "commission_status"]) assert.ok(row[k] != null, k);
-  assert.deepEqual([row.seller_id, row.market, row.offer, row.currency, row.commission_status], ["lap", "VN", "CHECK", "VND", "PAYABLE"]);
-  for (const u of ["lap", "giuliano", "mario", "damiano"]) assert.equal((await get(u, "sales_overview")).status, 403, `${u} keine globalen Finanzdaten`);
+  assert.deepEqual([row.seller_id, row.market, row.offer, row.currency, row.commission_status], ["Kudoshin", "VN", "CHECK", "VND", "PAYABLE"]);
+  for (const u of ["Kudoshin", "giuliano", "mario", "damiano"]) assert.equal((await get(u, "sales_overview")).status, 403, `${u} keine globalen Finanzdaten`);
   const post = async (u, body) => t.json(await t.sales(makeReq("/api/sales", { method: "POST", body, cookie: t.cookies[u] })));
-  const po = { op: "commission.payout", seller_id: "lap", amount: 346500, currency: "VND", paid_at: new Date(Date.now() - 1000).toISOString(), reference: "VCB-TEST-1" };
-  assert.equal((await post("lap", po)).status, 403, "keine Zahlungs-/Auszahlungsrechte für Verkäufer");
+  const po = { op: "commission.payout", seller_id: "Kudoshin", amount: 346500, currency: "VND", paid_at: new Date(Date.now() - 1000).toISOString(), reference: "VCB-TEST-1" };
+  assert.equal((await post("Kudoshin", po)).status, 403, "keine Zahlungs-/Auszahlungsrechte für Verkäufer");
   assert.equal((await post("chris", po)).status, 200);
   assert.equal((await post("chris", po)).status, 409, "doppelte Auszahlung verhindert");
-  const lapCom = (await get("lap", "commission")).body.commission;
-  assert.deepEqual([lapCom.seller_id, lapCom.currency, lapCom.payable, lapCom.paid_out], ["lap", "VND", "346500", "346500"]);
-  assert.ok(lapCom.orders.every((x) => x.currency === "VND"), "Lap: keine CH-Daten");
+  const lapCom = (await get("Kudoshin", "commission")).body.commission;
+  assert.deepEqual([lapCom.seller_id, lapCom.currency, lapCom.payable, lapCom.paid_out], ["Kudoshin", "VND", "346500", "346500"]);
+  assert.ok(lapCom.orders.every((x) => x.currency === "VND"), "Kudoshin: keine CH-Daten");
   const marioCom = (await get("mario", "commission")).body;
   assert.equal(marioCom.commission.seller_id, "mario"); assert.equal(JSON.stringify(marioCom).includes(VNCHECK), false, "keine fremden Provisionen");
   assert.equal((await get("giuliano", "orders")).status, 403);

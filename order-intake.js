@@ -2,7 +2,7 @@
 // repair_orders.json, sales.json und payments.json). Nur ausgehend: Abholen über /api/sales (x-jarvis-worker), Ergebnis zurückmelden.
 //
 // Fail closed, idempotent je request_id:
-//   - nur market VN, nur VN_REPAIR_CHECK / VN_REPAIR_FIX, Verkäufer lap; Preis/Währung/Schwelle werden HIER erneut aus pricing.js
+//   - nur market VN, nur VN_REPAIR_CHECK / VN_REPAIR_FIX, Verkäufer Kudoshin (TF-070, vormals lap); Preis/Währung/Schwelle werden HIER erneut aus pricing.js
 //     bestimmt – weicht die Anfrage ab, wird nichts angelegt (PRICE_MISMATCH). Domain/E-Mail müssen gültig sein.
 //   - bereits angewendete request_id → derselbe Auftrag wird erneut gemeldet (kein Duplikat nach Neustart/Lease-Ablauf)
 //   - offener Auftrag derselben Domain (beide Workflows) → DUPLICATE_OPEN_ORDER
@@ -13,6 +13,7 @@ import { recordSale } from "./sales.js";
 import { offerInfo, isVnOfferClass, isCheckOffer } from "./pricing.js";
 import { createCheck150Order } from "./check-150-workflow.js";
 import { createRepairOrder } from "./repair-workflow.js";
+import { VN_SELLER_ID, canonicalSellerId } from "./seller-identity.js";
 
 export const ORDER_INTAKE_FILE = "order_intake.json";
 const DOMAIN_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
@@ -29,14 +30,16 @@ export function applyOrderRequest(store, r, { now = new Date() } = {}) {
   const info = offerInfo(r.offer_class);
   if (!info || !isVnOfferClass(r.offer_class) || r.market !== "VN") return fail("BAD_MARKET", "nur VN-Angebote");
   if (r.currency !== info.currency || r.price !== info.price) return fail("PRICE_MISMATCH", "Preis/Währung weicht von pricing.js ab");
-  if (r.seller_id !== "lap" || !["lap", "chris"].includes(r.actor_user_id)) return fail("BAD_ACTOR", "Verkäufer/Akteur ungültig");
+  // TF-070 Migrationskompatibilität: eine noch vor der Umstellung angelegte Anfrage mit «lap» wird als Kudoshin übernommen – geschrieben wird nur Kudoshin.
+  const actorId = canonicalSellerId(r.actor_user_id);
+  if (canonicalSellerId(r.seller_id) !== VN_SELLER_ID || ![VN_SELLER_ID, "chris"].includes(actorId)) return fail("BAD_ACTOR", "Verkäufer/Akteur ungültig");
   const domain = String(r.domain || "").toLowerCase().replace(/^www\./, "");
   if (!DOMAIN_RE.test(domain) || !LEAD_RE.test(String(r.lead_id || ""))) return fail("BAD_LEAD", "Domain/Lead ungültig");
   const email = String(r.delivery_email || "").toLowerCase();
   if (!EMAIL_RE.test(email)) return fail("NO_EMAIL", "Kunden-E-Mail fehlt");
   const website = typeof r.website === "string" && /^https?:\/\/[^\s<>"']+$/i.test(r.website) && r.website.length <= 300 ? r.website : `https://${domain}/`;
   const company = typeof r.company === "string" ? r.company.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 120) || null : null;
-  const vn = { lead_id: r.lead_id, seller_id: "lap", confirmed_by: r.actor_user_id, confirmed_at: typeof r.confirmed_at === "string" ? r.confirmed_at.slice(0, 40) : now.toISOString(), source: "vn_sales_confirmed", request_id: r.request_id };
+  const vn = { lead_id: r.lead_id, seller_id: VN_SELLER_ID, confirmed_by: actorId, confirmed_at: typeof r.confirmed_at === "string" ? r.confirmed_at.slice(0, 40) : now.toISOString(), source: "vn_sales_confirmed", request_id: r.request_id };
   let order;
   try {
     const sales = store.read("sales.json", { records: {} });
@@ -45,7 +48,7 @@ export function applyOrderRequest(store, r, { now = new Date() } = {}) {
       ? createCheck150Order(store, { domain, website, company, delivery_email: email, offer_class: r.offer_class, vn, now })
       : createRepairOrder(store, { domain, website, company, lead_id: r.lead_id, delivery_email: email, offer_class: r.offer_class, vn, now });
     const records = recordSale(sales.records || {}, domain, { offer: r.offer_class, date: now.toISOString().slice(0, 10), now,
-      extra: { source: "vn_sales_confirmed", lead_id: r.lead_id, seller_id: "lap", confirmed_by: r.actor_user_id, order_id: order.order_id } });
+      extra: { source: "vn_sales_confirmed", lead_id: r.lead_id, seller_id: VN_SELLER_ID, confirmed_by: actorId, order_id: order.order_id } });
     store.write("sales.json", { ...sales, records });
   } catch (e) {
     if (/läuft bereits/.test(e.message)) return fail("DUPLICATE_OPEN_ORDER", "offener Auftrag für diese Domain");

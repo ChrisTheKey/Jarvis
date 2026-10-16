@@ -8,6 +8,7 @@ import { CHECK150_ORDERS_FILE, CHECK150_CANCELLED, CHECK150_BLOCKED, confirmedCh
 import { paymentGateForOrder } from "./payments.js";
 import { orderKind, localeOf } from "./onboarding-core.js";
 import { writeOrdersExport } from "./onboarding-store.js";
+import { canonicalSellerId } from "./seller-identity.js";
 
 const KEEP_TERMINAL_MS = 30 * 86_400_000;
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
@@ -30,7 +31,7 @@ export function onboardingOrderEntry(store, o, { now = new Date(), kind }) {
   try { gate = paymentGateForOrder(store, o).satisfied === true; } catch {}
   return {
     order_id: o.order_id, kind, offer_class: o.offer_class, market: o.market === "VN" ? "VN" : "CH", locale: localeOf(o),
-    seller_id: o.vn?.seller_id || null, lead_id: o.vn?.lead_id || o.lead_id || null,
+    seller_id: canonicalSellerId(o.vn?.seller_id || null), lead_id: o.vn?.lead_id || o.lead_id || null,
     domain: o.domain, company: o.company || null, contact_name: o.contact_name || null,
     customer_email: EMAIL_RE.test(String(o.delivery_email || "")) ? String(o.delivery_email).toLowerCase() : null,
     order_confirmed: confirmed, payment_gate_met: gate, order_state: o.state, terminal, completed, cancelled,

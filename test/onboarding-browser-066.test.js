@@ -1,4 +1,4 @@
-// TF-066 Browser-Test (echter Chromium): Lead-Detail «Tiếp nhận khách hàng» für Lap komplett Vietnamesisch (nur eigene VN-Aufträge),
+// TF-066 Browser-Test (echter Chromium): Lead-Detail «Tiếp nhận khách hàng» für Kudoshin komplett Vietnamesisch (nur eigene VN-Aufträge),
 // Chris sieht «Kunden-Onboarding» auf Deutsch inkl. Übersicht mit Filtern (Onboarding offen, Wartet auf Kunde/Zugang/Bestätigung,
 // Manuelle Prüfung, Bereit zur Ausführung). Nie Zugangsdaten/Links/Kunden-E-Mail im DOM. Keine externen Requests.
 import test from "node:test";
@@ -14,7 +14,7 @@ const onb = (o) => ({ kind: "FIX", market: "CH", locale: "de-CH", state: "WAITIN
   changes: { phone_numbers: [{ id: "cc-1", kind: "phone", page: null, section: null, old_text: null, new_text: "031 111 11 11", address: null, customer_confirmed: false, complete: true }],
     email_addresses: [], addresses: [], opening_hours: [], text_replacements: [], spelling_corrections: [], removals: [], additions: [], other_requests: [] }, ...o });
 
-test("TF-066 CRM: Lap sieht Onboarding nur für eigene VN-Aufträge, 100 % Vietnamesisch; Chris: Kunden-Onboarding + Filter", { skip: !exe && "kein Chromium/Chrome/Edge gefunden", timeout: 180_000 }, async () => {
+test("TF-066 CRM: Kudoshin sieht Onboarding nur für eigene VN-Aufträge, 100 % Vietnamesisch; Chris: Kunden-Onboarding + Filter", { skip: !exe && "kein Chromium/Chrome/Edge gefunden", timeout: 180_000 }, async () => {
   const vn = vnLeads(6);
   const lapLead = vn.find((l) => l.email && !l.do_not_contact);
   const snapshot = { repair: cleanRepair({ orders: [
@@ -22,12 +22,12 @@ test("TF-066 CRM: Lap sieht Onboarding nur für eigene VN-Aufträge, 100 % Vietn
       onboarding: onb({ market: "VN", locale: "vi-VN", state: "WAITING_FOR_ACCESS", content: "none", brief_status: "NO_CONTENT_CHANGES", changes: undefined }) },
     { order_id: "RF480-20261016-bbbbbb", domain: "ch-firma-0001.ch", market: "CH", state: "ACCESS_REQUESTED", onboarding: onb({ state: "MANUAL_REVIEW_REQUIRED", awaiting: "chris", manual_reason: "Preis-/Zahlungsthema – Chris prüft." }) },
   ] }) };
-  const srv = await startServer({ n: 30, vnLeads: vn, sellers: { lap: PW.lap }, snapshot });
+  const srv = await startServer({ n: 30, vnLeads: vn, sellers: { Kudoshin: PW.Kudoshin }, snapshot });
   const browser = await chromium.launch({ executablePath: exe, headless: true });
   try {
-    // Lap (vi-VN, Smartphone)
+    // Kudoshin (vi-VN, Smartphone)
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
-    await loginAs(ctx, srv, "lap", PW.lap);
+    await loginAs(ctx, srv, "Kudoshin", PW.Kudoshin);
     const page = await ctx.newPage();
     const errors = [], external = [];
     page.on("pageerror", (e) => errors.push(String(e)));

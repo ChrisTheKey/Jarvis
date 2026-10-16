@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 import { USERS, OWNER_ID, SELLER_IDS, MIN_PASSWORD, SESSION_MAX_MS, COOKIE, publicUser, userIdOf, userRecord, emptyUsers, emptySessions, sessionValid,
   sessionCookie, clearCookie, isHttps, sha256Hex, randomToken, resolveActor, sameOrigin, isOwner, sessionToken } from "./auth-core.js";
 import { safeEqual } from "./shared-state.js";
+import { migrateAuthUsers, migrateAuthSessions, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 
 export const SCRYPT = Object.freeze({ N: 32768, r: 8, p: 1, keylen: 64, maxmem: 96 * 1024 * 1024 });
 export const RATE = Object.freeze({ windowMs: 15 * 60_000, perUser: 5, perIp: 20 });
@@ -76,6 +77,13 @@ export function createAuthHandler({ getStore, env, now = () => new Date() }) {
   }
   const recordFail = (user, ip) => update("limits", (l) => { const t = +now(); l.fails = [...(l.fails || []).filter((f) => t - Date.parse(f.at) < RATE.windowMs), { u: user, ip, at: new Date(t).toISOString() }].slice(-2000); }, () => ({ fails: [] }));
   const clearFails = (user) => update("limits", (l) => { l.fails = (l.fails || []).filter((f) => f.u !== user); }, () => ({ fails: [] }));
+
+  // TF-070: Konto «lap» → «Kudoshin» (Passwort-Hash übernommen, «lap»-Sitzungen entfernt) – einmal je Instanz, idempotent.
+  const migrateIdentity = migrateOnce(async () => {
+    const store = await getStore();
+    await migrateStoreDoc(store.users, (d) => migrateAuthUsers(d, { now: now() }));
+    await migrateStoreDoc(store.sessions, migrateAuthSessions);
+  });
 
   async function readDocs() {
     const store = await getStore();
@@ -155,6 +163,7 @@ export function createAuthHandler({ getStore, env, now = () => new Date() }) {
   return async (req) => {
     const url = new URL(req.url);
     const route = url.pathname.replace(/^\/api\/auth\/?/, "").replace(/\/+$/, "");
+    await migrateIdentity();
     if (route === "login") return req.method === "POST" ? login(req) : reply(405, { error: "Nur POST." });
     if (route === "logout") return req.method === "POST" ? logout(req) : reply(405, { error: "Nur POST." });
     const r = await resolveActor(req, { env, getAuthStore: getStore, now });
@@ -172,7 +181,7 @@ export function createAuthHandler({ getStore, env, now = () => new Date() }) {
     let body;
     try { body = JSON.parse((await req.text()).slice(0, 4000) || "{}"); } catch { return reply(400, { error: "Ungültige Anfrage." }); }
     const target = typeof body?.user_id === "string" && SELLER_IDS.includes(body.user_id) ? body.user_id : null;
-    if (!target) return reply(400, { error: "user_id muss giuliano, mario, damiano oder lap sein." });
+    if (!target) return reply(400, { error: "user_id muss giuliano, mario, damiano oder Kudoshin sein." });
     const done = async (action, extra = {}) => { await audit({ actor_user_id: r.actor.user_id, action, target_user_id: target, result: "success" }); return reply(200, { ok: true, ...(await adminUsers(now())), ...extra }); };
     if (route === "admin/password") {
       const problem = passwordProblem(body.password);

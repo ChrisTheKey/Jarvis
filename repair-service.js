@@ -52,7 +52,7 @@ export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUT
   const mailer = createOutboxMailer({ dir: outboxDir });
   const onboardingDir = onboarding ? onboardingDirOf(outboxDir) : null;
   const out = {};
-  // TF-064: bestätigte VN-Aufträge (Lap/Chris über /api/sales) übernehmen – vor den Workflows, Fehler stoppen den Service nie.
+  // TF-064: bestätigte VN-Aufträge (Kudoshin/Chris über /api/sales) übernehmen – vor den Workflows, Fehler stoppen den Service nie.
   if (orderIntake) {
     try { out.vn_orders = await (await import("./order-intake.js")).syncOrderIntake({ dir, client: orderIntake, log }); }
     catch (e) { out.vn_orders = { error: true }; log("error", "vn_order_intake_failed", { error: String(e.message).slice(0, 160) }); }

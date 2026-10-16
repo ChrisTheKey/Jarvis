@@ -1,4 +1,4 @@
-// TF-065 Tests (TF-068 angepasst) – LiveKit Outbound Calling Agent: Zugang (Lap startet, Chris überwacht), Scope, Berechtigung (nur VN), Zeitfenster, DNC, Parallelität,
+// TF-065 Tests (TF-068 angepasst) – LiveKit Outbound Calling Agent: Zugang (Kudoshin startet, Chris überwacht), Scope, Berechtigung (nur VN), Zeitfenster, DNC, Parallelität,
 // Pause/Resume/Stop, Tageslimit, Rückruf, keine Aufnahme, Agent-Verhalten DE/VI, Dienst im Dry Run, Crash-Recovery. Keine echten Anrufe.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -16,7 +16,7 @@ import {
 } from "../calling-core.js";
 import { createOrchestrator, dryRunDialer } from "../calling/service.js";
 
-// TF-068 Anpassung (Anforderung geändert): Agent ruft nur noch VN an; Kampagnen startet nur Lap (Chris überwacht); VN nur mit vollständigem
+// TF-068 Anpassung (Anforderung geändert): Agent ruft nur noch VN an; Kampagnen startet nur Kudoshin (Chris überwacht); VN nur mit vollständigem
 // Einwilligungsnachweis + DNC-Register-Abgleich + Owner-Rechtsfreigabe; max. 1 Werbeanruf je Nummer in 24 h.
 const T0 = new Date("2026-10-14T03:00:00Z"); // Mittwoch: Hồ Chí Minh 10:00 – VN-Fenster offen
 const AGENT = callingAgentToken(CONTROL);
@@ -54,10 +54,10 @@ async function world({ consentIdx = [], dnc = {}, legal = true } = {}) {
 const ALL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 // ---------------- 50 AUTH ----------------
-test("TF-065/068 50 Auth: Lap 200 + Start, Chris 200 nur Überwachung (Start 403), Giuliano/Mario/Damiano 403, ohne Sitzung 401", async () => {
+test("TF-065/068 50 Auth: Kudoshin 200 + Start, Chris 200 nur Überwachung (Start 403), Giuliano/Mario/Damiano 403, ohne Sitzung 401", async () => {
   const w = await world({ consentIdx: [0] });
   assert.equal((await w.as("chris")).status, 200);
-  assert.equal((await w.as("lap")).status, 200);
+  assert.equal((await w.as("Kudoshin")).status, 200);
   for (const u of ["giuliano", "mario", "damiano"]) {
     assert.equal((await w.as(u)).status, 403, `${u} GET`);
     assert.equal((await w.as(u, { op: "campaign.preview", market: "VN" })).status, 403, `${u} POST`);
@@ -68,11 +68,11 @@ test("TF-065/068 50 Auth: Lap 200 + Start, Chris 200 nur Überwachung (Start 403
   assert.equal((await w.as("chris", { op: "campaign.preview", market: "VN" })).status, 200, "Owner-Monitoring: Vorschau");
   assert.equal((await w.as("chris", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true })).status, 403, "Chris startet keine Kampagnen");
   assert.equal((await w.as("chris", { op: "call.start", lead_id: w.lapVn[0], confirmed: true })).status, 403);
-  assert.equal((await w.as("lap", { op: "campaign.preview", market: "VN" })).status, 200);
-  assert.equal((await w.as("lap", { op: "campaign.preview", market: "CH" })).status, 403);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.preview", market: "VN" })).status, 200);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.preview", market: "CH" })).status, 403);
   assert.equal((await w.as("chris", { op: "campaign.preview", market: "CH" })).status, 403, "CH-Calling deaktiviert – auch für den Owner");
-  assert.equal((await w.as("lap", { op: "config.set", daily_call_cap: 500 })).status, 403, "Lap darf Limits nicht erhöhen");
-  const lapView = (await w.as("lap")).body;
+  assert.equal((await w.as("Kudoshin", { op: "config.set", daily_call_cap: 500 })).status, 403, "Kudoshin darf Limits nicht erhöhen");
+  const lapView = (await w.as("Kudoshin")).body;
   assert.deepEqual(lapView.actor.markets, ["VN"]); assert.equal(lapView.actor.can_start_calls, true);
   const chrisView = (await w.as("chris")).body;
   assert.deepEqual(chrisView.actor.markets, ["VN"]); assert.equal(chrisView.actor.can_start_calls, false); assert.equal(chrisView.service.sip_ch, "DISABLED");
@@ -80,17 +80,17 @@ test("TF-065/068 50 Auth: Lap 200 + Start, Chris 200 nur Überwachung (Start 403
 });
 
 // ---------------- 51 SCOPE ----------------
-test("TF-065/068 51 Scope: Lap CH 403, Lap eigener VN-Lead ok, Telefon/Caller-ID/Trunk vom Client 400", async () => {
+test("TF-065/068 51 Scope: Kudoshin CH 403, Kudoshin eigener VN-Lead ok, Telefon/Caller-ID/Trunk vom Client 400", async () => {
   const w = await world({ consentIdx: [0, 1] });
   await w.pull();
-  assert.equal((await w.as("lap", { op: "call.start", lead_id: w.chIds[0], confirmed: true })).status, 403);
-  assert.equal((await w.as("lap", { op: "campaign.preview", market: "VN", lead_ids: [w.chIds[0]] })).status, 403);
-  assert.equal((await w.as("lap", { op: "call.start", lead_id: w.lapVn[0], confirmed: true })).status, 202, "Lap VN eigener Lead mit Nachweis");
+  assert.equal((await w.as("Kudoshin", { op: "call.start", lead_id: w.chIds[0], confirmed: true })).status, 403);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.preview", market: "VN", lead_ids: [w.chIds[0]] })).status, 403);
+  assert.equal((await w.as("Kudoshin", { op: "call.start", lead_id: w.lapVn[0], confirmed: true })).status, 202, "Kudoshin VN eigener Lead mit Nachweis");
   for (const f of [{ phone: "+84900000000" }, { caller_id: "+84280000000" }, { trunk_id: "ST_x" }, { room: "r" }, { agent_name: "x" }, { force: true }]) {
-    const r = await w.as("lap", { op: "call.start", lead_id: w.lapVn[1], confirmed: true, ...f });
+    const r = await w.as("Kudoshin", { op: "call.start", lead_id: w.lapVn[1], confirmed: true, ...f });
     assert.equal(r.status, 400, JSON.stringify(f)); assert.equal(r.body.code, "CLIENT_FIELD_FORBIDDEN");
   }
-  assert.equal((await w.as("lap", { op: "campaign.start", market: "VN", mode: "PARALLEL", confirmed: true, number: "+84900000000" })).status, 400);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "PARALLEL", confirmed: true, number: "+84900000000" })).status, 400);
 });
 
 // ---------------- 52 ELIGIBILITY ----------------
@@ -121,18 +121,18 @@ test("TF-065/068 52 Berechtigung: CH nie, VN nur mit Nachweis + Register + Recht
 // ---------------- 23/24/47 Preview + Gate ----------------
 test("TF-065/068 23/47 Vorschau zählt korrekt; START ohne LiveKit/SIP gesperrt (409, kein Anruf)", async () => {
   const w = await world({ consentIdx: [0, 1, 2] });
-  const pv = await w.as("lap", { op: "campaign.preview", market: "VN" });
+  const pv = await w.as("Kudoshin", { op: "campaign.preview", market: "VN" });
   assert.equal(pv.status, 200);
   for (const k of ["leads_in_filter", "phone_present", "CALL_ALLOWED", "BLOCKED_CONSENT", "BLOCKED_DNC", "BLOCKED_TIME_WINDOW", "BLOCKED_FREQUENCY", "BLOCKED_LEGAL", "BLOCKED_DIRECTORY", "BLOCKED_OTHER", "planned_max_calls"]) assert.ok(k in pv.body, k);
   assert.equal(pv.body.leads_in_filter, pv.body.CALL_ALLOWED + pv.body.BLOCKED_CONSENT + pv.body.BLOCKED_DNC + pv.body.BLOCKED_TIME_WINDOW + pv.body.BLOCKED_FREQUENCY + pv.body.BLOCKED_LEGAL + pv.body.BLOCKED_DIRECTORY + pv.body.BLOCKED_OTHER);
   assert.equal(pv.body.CALL_ALLOWED, 3, "genau die Leads mit Nachweis");
   assert.equal(pv.body.can_start.ok, false);
-  assert.equal((await w.as("lap", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true })).status, 409);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true })).status, 409);
   await w.pull(5, { configured: { livekit: false } });
-  const g = (await w.as("lap")).body;
+  const g = (await w.as("Kudoshin")).body;
   assert.equal(g.service.livekit, "NOT_CONFIGURED"); assert.equal(g.service.sip_vn, "NOT_CONFIGURED");
   assert.equal(g.can_start.VN.ok, false);
-  assert.equal((await w.as("lap", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true })).body.error, "LiveKit/SIP chưa được cấu hình");
+  assert.equal((await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true })).body.error, "LiveKit/SIP chưa được cấu hình");
   assert.equal((await w.pull()).body.jobs.length, 0);
 });
 
@@ -178,10 +178,10 @@ test("TF-065 55 Parallelität 1/2/3/5 – harte Obergrenze, Server-Maximum, Sequ
 });
 
 // ---------------- E2E über die API (Dry Run) ----------------
-test("TF-065/068 55 API: Parallel-Kampagne (Lap), Browser bleibt im Server-Maximum, Pause/Resume/Stop (auch Chris), Telefon nur maskiert", async () => {
+test("TF-065/068 55 API: Parallel-Kampagne (Kudoshin), Browser bleibt im Server-Maximum, Pause/Resume/Stop (auch Chris), Telefon nur maskiert", async () => {
   const w = await world({ consentIdx: [0, 1, 2, 4, 5] });
   await w.pull(5, { ...SVC_OK, max_concurrency: 3 });
-  const st = await w.as("lap", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 99, confirmed: true });
+  const st = await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 99, confirmed: true });
   assert.equal(st.status, 202); assert.equal(st.body.concurrency, 3, "Browser kann Maximum nicht umgehen"); assert.equal(st.body.dry_run, true);
   const p1 = await w.pull(5, { ...SVC_OK, max_concurrency: 3 });
   assert.equal(p1.body.jobs.length, 3);
@@ -192,10 +192,10 @@ test("TF-065/068 55 API: Parallel-Kampagne (Lap), Browser bleibt im Server-Maxim
   assert.equal(JSON.stringify(g).includes(p1.body.jobs[0].phone_e164), false);
   assert.equal((await w.pull(5, { ...SVC_OK, max_concurrency: 3 })).body.jobs.length, 0, "Server-Maximum erreicht");
   const cid = st.body.campaign_id;
-  assert.equal((await w.as("lap", { op: "campaign.pause", campaign_id: cid })).status, 200);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.pause", campaign_id: cid })).status, 200);
   assert.equal((await w.agent({ op: "event", call_id: p1.body.jobs[0].call_id, status: "COMPLETED", duration_s: 40 })).status, 200);
   assert.equal((await w.pull()).body.jobs.length, 0, "Pause: keine neuen Anrufe");
-  assert.equal((await w.as("lap", { op: "campaign.resume", campaign_id: cid })).status, 200);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.resume", campaign_id: cid })).status, 200);
   w.clock.t = new Date(+T0 + 60_000);
   const p2 = await w.pull(5, { ...SVC_OK, max_concurrency: 3 });
   assert.equal(p2.body.jobs.length, 1, "Resume: nächster Lead");
@@ -203,17 +203,17 @@ test("TF-065/068 55 API: Parallel-Kampagne (Lap), Browser bleibt im Server-Maxim
   assert.equal(stop.status, 200, "Owner darf jede Kampagne stoppen");
   assert.equal((await w.pull()).body.commands.length, 0, "STOP beendet aktive Gespräche nicht");
   assert.equal((await w.pull()).body.jobs.length, 0, "STOP: keine neuen Anrufe");
-  const st2 = await w.as("lap", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true, lead_ids: [w.lapVn[6]] });
+  const st2 = await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true, lead_ids: [w.lapVn[6]] });
   assert.equal(st2.status, 409, "VN ohne Nachweis → nichts zulässig");
 });
 
 test("TF-065/068 25 STOP + AKTIVE ANRUFE BEENDEN; Notstopp; Simulation schreibt nie ins CRM", async () => {
   const w = await world({ consentIdx: [0, 1, 2, 4] });
   await w.pull();
-  const st = await w.as("lap", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 2, confirmed: true });
+  const st = await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 2, confirmed: true });
   const jobs = (await w.pull()).body.jobs;
   assert.equal(jobs.length, 2);
-  assert.equal((await w.as("lap", { op: "campaign.stop", campaign_id: st.body.campaign_id, end_active: true })).status, 200);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.stop", campaign_id: st.body.campaign_id, end_active: true })).status, 200);
   const cmds = (await w.pull()).body.commands;
   assert.deepEqual(cmds.map((c) => c.call_id).sort(), jobs.map((j) => j.call_id).sort());
   for (const j of jobs) assert.equal((await w.agent({ op: "event", call_id: j.call_id, status: "INTERESTED", summary: "Khách quan tâm, gọi lại +84 90 123 45 67" })).status, 200);
@@ -221,15 +221,15 @@ test("TF-065/068 25 STOP + AKTIVE ANRUFE BEENDEN; Notstopp; Simulation schreibt 
   assert.equal((q?.requests || []).filter((r) => r.actor_user_id === "system:calling").length, 0, "Dry Run → kein CRM-Eintrag");
   const hist = (await w.mem.history.get()).state.calls;
   assert.ok(hist.every((c) => c.dry_run && c.recording === false && !c.summary.includes("123 45")), "Zusammenfassung ohne Nummer");
-  // Notstopp (nur Chris): neue Kampagne läuft → alles gestoppt, aktive beendet, keine neuen Jobs, Lap kann nicht starten
+  // Notstopp (nur Chris): neue Kampagne läuft → alles gestoppt, aktive beendet, keine neuen Jobs, Kudoshin kann nicht starten
   w.clock.t = new Date(+T0 + 120_000);
-  assert.equal((await w.as("lap", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true, lead_ids: [w.lapVn[4]] })).status, 202);
+  assert.equal((await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true, lead_ids: [w.lapVn[4]] })).status, 202);
   const [j3] = (await w.pull()).body.jobs;
   assert.ok(j3);
-  assert.equal((await w.as("lap", { op: "emergency.stop", reason: "Test Lap" })).status, 403, "Notstopp nur Owner");
+  assert.equal((await w.as("Kudoshin", { op: "emergency.stop", reason: "Test Kudoshin" })).status, 403, "Notstopp nur Owner");
   assert.equal((await w.as("chris", { op: "emergency.stop", reason: "Test Notstopp" })).status, 200);
   assert.deepEqual((await w.pull()).body.commands.map((c) => c.call_id), [j3.call_id]);
-  assert.equal((await w.as("lap", { op: "call.start", lead_id: w.lapVn[5] ?? w.lapVn[4], confirmed: true })).status, 409, "gesperrt bis Aufhebung");
+  assert.equal((await w.as("Kudoshin", { op: "call.start", lead_id: w.lapVn[5] ?? w.lapVn[4], confirmed: true })).status, 409, "gesperrt bis Aufhebung");
   assert.equal((await w.as("chris", { op: "emergency.release", reason: "Test beendet" })).status, 200);
   const audit = (await w.as("chris")).body.audit.map((a) => a.action);
   assert.ok(audit.includes("emergency.stop") && audit.includes("emergency.release"));
@@ -240,7 +240,7 @@ test("TF-065/068 54 DNC im Gespräch: DO_NOT_CALL, Queue bereinigt, CRM DNC, kü
   const w = await world({ consentIdx: [0, 1] });
   const real = { ...SVC_OK, dry_run: false };
   await w.pull(5, real);
-  const st = await w.as("lap", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true });
+  const st = await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true });
   assert.equal(st.body.dry_run, false);
   const [job] = (await w.pull(5, real)).body.jobs;
   assert.equal((await w.agent({ op: "event", call_id: job.call_id, status: "ANSWERED" })).status, 200);
@@ -250,9 +250,9 @@ test("TF-065/068 54 DNC im Gespräch: DO_NOT_CALL, Queue bereinigt, CRM DNC, kü
   assert.equal(q[0].params.result, "DO_NOT_CALL"); assert.equal(q[1].params.value, true);
   const cs = (await w.mem.consents.get()).state;
   assert.ok(cs.dnc[job.lead_id]);
-  const pv = await w.as("lap", { op: "campaign.preview", market: "VN", lead_ids: [job.lead_id] });
+  const pv = await w.as("Kudoshin", { op: "campaign.preview", market: "VN", lead_ids: [job.lead_id] });
   assert.equal(pv.body.BLOCKED_DNC, 1); assert.equal(pv.body.CALL_ALLOWED, 0);
-  assert.equal((await w.as("lap", { op: "call.start", lead_id: job.lead_id, confirmed: true })).status, 409, "DNC nicht umgehbar");
+  assert.equal((await w.as("Kudoshin", { op: "call.start", lead_id: job.lead_id, confirmed: true })).status, 409, "DNC nicht umgehbar");
   w.clock.t = new Date(+T0 + 30 * 3_600_000);
   const later = (await w.pull(5, real)).body.jobs;
   assert.ok(!later.some((j) => j.lead_id === job.lead_id), "kein zweiter Versuch");
@@ -268,7 +268,7 @@ test("TF-065/068 33/36/46 Rückruf mit callback_at, Wiederholung frühestens nac
   const real = { ...SVC_OK, dry_run: false };
   await w.pull(5, real);
   assert.equal((await w.as("chris", { op: "config.set", daily_call_cap: 2 })).status, 200);
-  await w.as("lap", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 5, confirmed: true });
+  await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 5, confirmed: true });
   const jobs = (await w.pull(5, real)).body.jobs;
   assert.equal(jobs.length, 2, "Tageslimit 2 echte Calls");
   const cb = "2026-10-15T03:00:00.000Z";
@@ -285,18 +285,18 @@ test("TF-065/068 33/36/46 Rückruf mit callback_at, Wiederholung frühestens nac
   assert.equal(it.state, "RETRY_LATER"); assert.ok(Date.parse(it.next_at) >= +T0 + 24 * 3_600_000, "VN: Wiederholung frühestens 24 h später");
   const it2 = { attempts: 2, state: "ACTIVE" }; applyOutcomeToItem(it2, "BUSY", { now: T0, market: "VN" });
   assert.equal(it2.state, "DONE", "nach 1 Wiederholung Schluss");
-  assert.equal((await w.as("lap", { op: "config.set", max_campaign_size: 200 })).status, 403);
+  assert.equal((await w.as("Kudoshin", { op: "config.set", max_campaign_size: 200 })).status, 403);
   const ui = (await w.as("chris")).body;
   assert.equal(ui.limits.daily_call_cap, 2); assert.equal(ui.limits.remaining_today, 0);
-  const cbs = (await w.as("lap", null, "?view=callbacks")).body.callbacks;
-  assert.deepEqual(cbs.map((x) => x.lead_id), [jobs[0].lead_id], "Lap sieht eigene Rückrufe");
+  const cbs = (await w.as("Kudoshin", null, "?view=callbacks")).body.callbacks;
+  assert.deepEqual(cbs.map((x) => x.lead_id), [jobs[0].lead_id], "Kudoshin sieht eigene Rückrufe");
 });
 
 // ---------------- 12 VN Zeitfenster ----------------
 test("TF-065/068 12 VN ausserhalb 08:00–17:00 → WAITING_FOR_ALLOWED_HOURS, kein Wählen; Start am nächsten Morgen 08:00", async () => {
   const w = await world({ consentIdx: [0, 1, 2] });
   await w.pull();
-  const st = await w.as("lap", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true });
+  const st = await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true });
   assert.equal(st.status, 202); assert.equal(st.body.planned, 3);
   w.clock.t = new Date("2026-10-14T11:00:00Z"); // 18:00 VN
   const p = await w.pull();
@@ -306,7 +306,7 @@ test("TF-065/068 12 VN ausserhalb 08:00–17:00 → WAITING_FOR_ALLOWED_HOURS, k
   w.clock.t = new Date("2026-10-15T01:00:00Z");
   const p2 = await w.pull();
   assert.equal(p2.body.jobs.length, 1); assert.equal(p2.body.jobs[0].market, "VN"); assert.match(p2.body.jobs[0].phone_e164, /^\+84/);
-  const lv = (await w.as("lap")).body;
+  const lv = (await w.as("Kudoshin")).body;
   assert.ok(lv.active_calls.every((c) => c.market === "VN"));
 });
 
@@ -323,7 +323,7 @@ test("TF-065/068 43/48 Dienst (Dry Run) ruft nie SIP auf; nach Absturz kein Dopp
   await o.tick();
   assert.equal((await w.as("chris")).body.service.livekit, "NOT_CONFIGURED");
   await w.pull(5, SVC_OK);
-  const st = await w.as("lap", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 2, confirmed: true });
+  const st = await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "PARALLEL", concurrency: 2, confirmed: true });
   assert.equal(st.status, 202);
   const fast = createOrchestrator({ env: fenv, fetchImpl, dialer, dataDir: dir, now: () => w.clock.t });
   const r = await fast.tick();
@@ -331,7 +331,7 @@ test("TF-065/068 43/48 Dienst (Dry Run) ruft nie SIP auf; nach Absturz kein Dopp
   await new Promise((res) => setTimeout(res, 3500 + 500));
   assert.equal(sipCalls, 0, "Dry Run → nie SIP");
   const hist = (await w.mem.history.get()).state.calls;
-  assert.ok(hist.length >= 2 && hist.every((c) => c.dry_run && c.seller_id === "lap" && c.consent_evidence_reference));
+  assert.ok(hist.length >= 2 && hist.every((c) => c.dry_run && c.seller_id === "Kudoshin" && c.consent_evidence_reference));
   const left = await w.pull(1, SVC_OK);
   const job = left.body.jobs[0];
   assert.ok(job, "nächster Lead aktiv");
@@ -421,7 +421,7 @@ test("TF-065 45/17 SIP-Status/Fehler sauber gemappt, Rate-Limit → RETRY_LATER 
 test("TF-065 38 Freie Statuscodes vom Dienst → 400; fremder Schlüssel → 401", async () => {
   const w = await world({ consentIdx: [0] });
   await w.pull();
-  await w.as("lap", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true });
+  await w.as("Kudoshin", { op: "campaign.start", market: "VN", mode: "SEQUENTIAL", confirmed: true });
   const [job] = (await w.pull()).body.jobs;
   assert.equal((await w.agent({ op: "event", call_id: job.call_id, status: "SOLD" })).status, 400);
   const r = await w.calling(makeReq("/api/calling", { method: "POST", body: { op: "pull" }, origin: null, headers: { "x-jarvis-calling": "f".repeat(64) } }));
@@ -444,13 +444,13 @@ test("TF-065 56 Keine Aufnahme: record:false, kein Egress, keine Audiopfade/-upl
 });
 
 // ---------------- 37 Lead-Detail ----------------
-test("TF-065/068 37 Lead-Detail Call-Sektion: Chris VN (Überwachung), Lap nur eigene VN, CH nicht im Calling, andere 403", async () => {
+test("TF-065/068 37 Lead-Detail Call-Sektion: Chris VN (Überwachung), Kudoshin nur eigene VN, CH nicht im Calling, andere 403", async () => {
   const w = await world({ consentIdx: [0] });
   const g = await w.as("chris", null, `?lead=${encodeURIComponent(w.lapVn[0])}`);
   assert.equal(g.status, 200); assert.equal(g.body.recording, "OFF"); assert.equal(g.body.can_start_calls, false); assert.equal(g.body.call_flag, "CALL_ALLOWED");
   for (const k of ["last_call", "attempts", "next_callback", "eligibility", "calls", "consent", "dnc_registry"]) assert.ok(k in g.body, k);
   assert.equal((await w.as("chris", null, `?lead=${encodeURIComponent(w.chIds[7])}`)).status, 403, "CH-Leads nicht im Calling");
-  assert.equal((await w.as("lap", null, `?lead=${encodeURIComponent(w.chIds[7])}`)).status, 403);
-  assert.equal((await w.as("lap", null, `?lead=${encodeURIComponent(w.lapVn[0])}`)).body.can_start_calls, true);
+  assert.equal((await w.as("Kudoshin", null, `?lead=${encodeURIComponent(w.chIds[7])}`)).status, 403);
+  assert.equal((await w.as("Kudoshin", null, `?lead=${encodeURIComponent(w.lapVn[0])}`)).body.can_start_calls, true);
   assert.equal((await w.as("mario", null, `?lead=${encodeURIComponent(w.chIds[7])}`)).status, 403);
 });

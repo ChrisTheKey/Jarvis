@@ -6,6 +6,7 @@
 // Nie in der Cloud: Gmail-Zugangsdaten, OAuth-Tokens, .secrets, lokale Pfade, Befehle, Anhänge.
 import { safeEqual, findSensitiveKeys } from "./shared-state.js";
 import { cleanCore } from "./cloud-core.js";
+import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
   ttlHours: 24, maxTtlHours: 72, duplicateHours: 24, bodyBytes: 16_000 };
@@ -30,7 +31,8 @@ const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const META_LEAD_RE = /^[a-z0-9][a-z0-9.@_+-]{2,252}$/;
 export function cleanMeta(m) {
   if (!m || typeof m !== "object") return null;
-  const actor = typeof m.actor_user_id === "string" && /^[a-z]{2,20}$/.test(m.actor_user_id) ? m.actor_user_id : null;
+  // TF-070: Benutzer-IDs dürfen Grossbuchstaben enthalten ("Kudoshin").
+  const actor = typeof m.actor_user_id === "string" && /^[A-Za-z]{2,20}$/.test(m.actor_user_id) ? m.actor_user_id : null;
   const market = ["CH", "VN"].includes(m.market) ? m.market : null;
   const locale = ["de-CH", "vi-VN"].includes(m.locale) ? m.locale : null;
   const lead_id = typeof m.lead_id === "string" && META_LEAD_RE.test(m.lead_id) ? m.lead_id : null;
@@ -249,7 +251,10 @@ const reply = (status, body) => new Response(JSON.stringify(body), { status, hea
 // nie Versand). DNC/Opt-out/Suppression → abgelehnt (der Mail-Worker prüft Suppression zusätzlich). GET: nur eigene Entwurfsaufträge.
 export const LEAD_DRAFT_FIELDS = Object.freeze(["op", "lead_id", "subject", "body"]);
 export function createMailRequestHandler({ getStore, env, now = () => new Date(), resolveActor = null, resolveLead = null }) {
+  // TF-070: Aufträge des Kontos «lap» gehören Kudoshin (requested_by + Metadaten) – einmal je Instanz, idempotent.
+  const migrateIdentity = migrateOnce(async () => migrateStoreDoc(await getStore(), migrateMailQueue));
   return async (req) => {
+    await migrateIdentity();
     const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD"), workerToken = env("JARVIS_MAIL_WORKER_TOKEN");
     const dedicated = !!workerToken;
     const isWorker = dedicated && safeEqual(req.headers.get("x-jarvis-worker"), workerToken);

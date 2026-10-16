@@ -1,4 +1,4 @@
-// Jarvis i18n (TF-063) – eine Oberfläche, zwei Sprachen: de-CH (bestehende Schweizer Terminologie, unverändert) und vi-VN (Lap).
+// Jarvis i18n (TF-063) – eine Oberfläche, zwei Sprachen: de-CH (bestehende Schweizer Terminologie, unverändert) und vi-VN (Kudoshin).
 // Reines ES-Modul ohne DOM: Browser (crm.js, sales-app.js, login.js) UND Netlify-Funktion (CSV-Kopfzeilen). Firmennamen, Domains,
 // Telefonnummern und Kundeninhalte werden nie übersetzt; interne Codes werden nie direkt angezeigt (immer über die Label-Tabellen).
 import { STAGE_LABEL, CALL_LABEL, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, AUDIT_LABEL, ISSUE_LABEL, SEVERITY_LABEL, HISTORY_LABEL,

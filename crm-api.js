@@ -7,7 +7,7 @@
 //   VN-Dienst:    x-jarvis-vn  = HMAC-SHA256(JARVIS_SERVER_CONTROL_TOKEN, "jarvis-vn-agent-v1") – eigener Schlüssel, nur VN-Sicht/-Queue
 //
 // TF-063 Scope (serverseitig, sales-scope.js): OWNER alle Leads (CH + VN); Giuliano CH ohne Mario-/Damiano-Portfolio; Mario/Damiano nur
-// ihr Portfolio; Lap nur VN. Liste, Detail, Auftragsstatus, CSV und JEDE Schreibaktion werden gegen diesen Scope geprüft – ausserhalb → 403.
+// ihr Portfolio; Kudoshin nur VN. Liste, Detail, Auftragsstatus, CSV und JEDE Schreibaktion werden gegen diesen Scope geprüft – ausserhalb → 403.
 // Keine Shell, keine Pfade, keine Dateien vom Client, kein Senden, kein Anruf. Unbekannte Aktionen → 400.
 import crypto from "node:crypto";
 import { safeEqual } from "./shared-state.js";
@@ -17,6 +17,7 @@ import { verifyBackup, BACKUP_FORMAT } from "./backup.js";
 import { resolveActor, can, isOwner, deny, forbidden } from "./auth-core.js";
 import { scopeLeads, canSeeLead, leadMarket, fairDistribution, applyDistribution, distributionReport, emptyAssignments } from "./sales-scope.js";
 import { csvLabelsFor } from "./public/i18n.js";
+import { migrateCrmQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 
 export const REQUEST_TTL_MS = 3 * 60_000;
 export const LEASE_MS = 2 * 60_000;
@@ -148,7 +149,13 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
   }
   const patchLeadIn = (getStore, market) => (lead) => patchStore(getStore, (v) => { if (!v || !Array.isArray(v.leads)) return null; const i = v.leads.findIndex((l) => l.lead_id === lead.lead_id); if (i < 0) return null; v.leads[i] = { ...lead, market }; return v; });
 
+  // TF-070: CRM-Schreibaufträge des Kontos «lap» gehören Kudoshin – einmal je Instanz, idempotent (Audit bleibt unverändert).
+  const migrateIdentity = migrateOnce(async () => {
+    await migrateStoreDoc(await getQueueStore(), migrateCrmQueue);
+    if (getVnQueueStore) await migrateStoreDoc(await getVnQueueStore(), migrateCrmQueue);
+  });
   return async (req) => {
+    await migrateIdentity();
     const url = new URL(req.url);
     const control = env("JARVIS_SERVER_CONTROL_TOKEN");
     const agentToken = crmAgentToken(control), vnToken = vnAgentToken(control), password = env("JARVIS_PASSWORD");

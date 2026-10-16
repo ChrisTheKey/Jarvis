@@ -216,7 +216,7 @@ async function paidFix(W, { amount = 240 } = {}) {
 }
 async function paidVnFix(W) {
   const o = createRepairOrder(W.store, { domain: VN_DOMAIN, website: VN_SITE, company: "Nhà hàng Phố", delivery_email: VN_EMAIL, contact_name: "anh Minh", offer_class: "VN_REPAIR_FIX",
-    vn: { lead_id: VN_DOMAIN, seller_id: "lap", confirmed_by: "lap", confirmed_at: T0.toISOString(), source: "vn_sales_confirmed", request_id: "00000000-0000-0000-0000-000000000066" }, now: T0 });
+    vn: { lead_id: VN_DOMAIN, seller_id: "Kudoshin", confirmed_by: "Kudoshin", confirmed_at: T0.toISOString(), source: "vn_sales_confirmed", request_id: "00000000-0000-0000-0000-000000000066" }, now: T0 });
   recordPayment(W.store, { order_id: o.order_id, amount: 1950000, currency: "VND", reference: `ONB66-${o.order_id}`, now: T0 });
   await W.tick();
   return o.order_id;
@@ -766,7 +766,7 @@ test("§30–§32 CRM: Onboarding-Sicht im Snapshot nur als Allowlist (nie Secre
   for (const bad of [EMAIL, "geheim", "#t=", "password"]) assert.ok(!s.includes(bad), bad);
   assert.equal(cleaned.orders[0].onboarding.changes.phone_numbers[0].new_text, "031 123 45 67");
   assert.equal(cleanCheck150({ orders: [{ order_id: "CA150-20261016-aaaaaa", onboarding: { state: "HACK", kind: "CHECK" } }] }).orders[0].onboarding.state, null, "nur bekannte Wörter");
-  // API-Scope: Snapshot mit Aufträgen zu einem Mario-Lead und einem Giuliano-Lead (CH) sowie einem Lap-Lead (VN).
+  // API-Scope: Snapshot mit Aufträgen zu einem Mario-Lead und einem Giuliano-Lead (CH) sowie einem Kudoshin-Lead (VN).
   const t = await salesSetup();
   const lead = async (u) => (await t.json(await t.crm(makeReq("/api/crm", { cookie: t.cookies[u] })))).body.leads.find((l) => l.domain);
   const [mar, giu] = [await lead("mario"), await lead("giuliano")];
@@ -782,7 +782,7 @@ test("§30–§32 CRM: Onboarding-Sicht im Snapshot nur als Allowlist (nie Secre
   assert.deepEqual(ids(await view("chris")), ["RF480-20261016-aaaaaa", "RF480-20261016-bbbbbb", "VNFIX-20261016-cccccc"]);
   assert.deepEqual(ids(await view("mario")), ["RF480-20261016-aaaaaa"], "Mario nur eigene");
   assert.deepEqual(ids(await view("giuliano")), ["RF480-20261016-bbbbbb"], "Giuliano nur eigene CH");
-  assert.deepEqual(ids(await view("lap")), ["VNFIX-20261016-cccccc"], "Lap nur eigene VN");
+  assert.deepEqual(ids(await view("Kudoshin")), ["VNFIX-20261016-cccccc"], "Kudoshin nur eigene VN");
   assert.deepEqual(ids(await view("damiano")), [], "Damiano: keine fremden");
   const f = await view("chris", "&filter=manual_review");
   assert.deepEqual([ids(f), f.body.counts.waiting_confirmation, f.body.counts.waiting_access], [["RF480-20261016-bbbbbb"], 1, 3]);

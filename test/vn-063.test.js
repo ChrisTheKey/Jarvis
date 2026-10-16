@@ -89,7 +89,7 @@ test("TF-063 VN F/G/H: persistenter, fairer Cursor über alle 34 Einheiten; Schw
   assert.equal(anchors.size, 3, "HCM: alle drei früheren Hauptorte als Such-Anker");
 });
 
-test("TF-063 VN E/L: CRM-Agent – VN-Sicht, VN-Queue, eigener Schlüssel; Laps Schreibaktion landet nur im VN-Dienst", async () => {
+test("TF-063 VN E/L: CRM-Agent – VN-Sicht, VN-Queue, eigener Schlüssel; Kudoshins Schreibaktion landet nur im VN-Dienst", async () => {
   const CONTROL = "c".repeat(48);
   assert.equal(deriveVnToken(CONTROL), vnAgentToken(CONTROL));
   const dir = tmp(), store = createVnStore(dir), now = new Date();

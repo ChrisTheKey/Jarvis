@@ -19,59 +19,59 @@ const order = (t, user, body) => t.sales(makeReq("/api/sales", { method: "POST",
 const worker = (t, body, token = ENV.JARVIS_MAIL_WORKER_TOKEN) => t.sales(makeReq("/api/sales", { method: "POST", origin: null, headers: { "x-jarvis-worker": token }, body }));
 const tmpStore = () => createStore(fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-064-order-")));
 
-test("TF-064 VN-Order A, D–J: Lap eigener Lead → Auftrag (Server-Preis/-Währung/-Markt); Manipulation 400; Mario/Giuliano 403; Owner; Doppelbestellung", async () => {
+test("TF-064 VN-Order A, D–J: Kudoshin eigener Lead → Auftrag (Server-Preis/-Währung/-Markt); Manipulation 400; Mario/Giuliano 403; Owner; Doppelbestellung", async () => {
   const t = await setup({ ch: 900, vn: 20 });
   // D/E/F: Client darf Preis/Währung/Markt/Kundendaten nicht senden.
   for (const extra of [{ price: 1 }, { currency: "CHF" }, { market: "CH" }, { domain: "evil.vn" }, { email: "x@evil.vn" }, { recipient: "x@evil.vn" }])
-    assert.equal((await order(t, "lap", { lead_id: LAP_LEAD, offer: "CHECK", confirmed: true, ...extra })).status, 400, JSON.stringify(extra));
-  assert.equal((await order(t, "lap", { lead_id: LAP_LEAD, offer: "PLUS", confirmed: true })).status, 400, "kein drittes Angebot");
-  assert.equal((await order(t, "lap", { lead_id: LAP_LEAD, offer: "CHECK" })).status, 400, "ohne Kundenbestätigung kein Auftrag");
+    assert.equal((await order(t, "Kudoshin", { lead_id: LAP_LEAD, offer: "CHECK", confirmed: true, ...extra })).status, 400, JSON.stringify(extra));
+  assert.equal((await order(t, "Kudoshin", { lead_id: LAP_LEAD, offer: "PLUS", confirmed: true })).status, 400, "kein drittes Angebot");
+  assert.equal((await order(t, "Kudoshin", { lead_id: LAP_LEAD, offer: "CHECK" })).status, 400, "ohne Kundenbestätigung kein Auftrag");
   // G/H: CH-Verkäufer dürfen keine VN-Aufträge.
   for (const u of ["mario", "giuliano", "damiano"]) assert.equal((await order(t, u, { lead_id: LAP_LEAD, offer: "CHECK", confirmed: true })).status, 403, u);
-  // A: Lap legt den Auftrag für den eigenen Lead an – alle Werte vom Server.
-  const a = await t.json(await order(t, "lap", { lead_id: LAP_LEAD, offer: "CHECK", confirmed: true }));
+  // A: Kudoshin legt den Auftrag für den eigenen Lead an – alle Werte vom Server.
+  const a = await t.json(await order(t, "Kudoshin", { lead_id: LAP_LEAD, offer: "CHECK", confirmed: true }));
   assert.equal(a.status, 202);
   assert.deepEqual([a.body.order.price, a.body.order.currency, a.body.order.market, a.body.order.offer_class, a.body.order.deposit, a.body.order.commission_expected],
     [990000, "VND", "VN", "VN_REPAIR_CHECK", 495000, "346500"]);
   const req = (await t.salesMem.orders.get()).state.requests[0];
   assert.deepEqual([req.domain, req.delivery_email, req.market, req.currency, req.price, req.seller_id, req.actor_user_id, req.status],
-    [LAP_LEAD, `lienhe@${LAP_LEAD}`, "VN", "VND", 990000, "lap", "lap", "pending"]);
+    [LAP_LEAD, `lienhe@${LAP_LEAD}`, "VN", "VND", 990000, "Kudoshin", "Kudoshin", "pending"]);
   // J: Doppelbestellung (offene Anfrage) verhindert – auch mit dem anderen Angebot.
-  const dup = await t.json(await order(t, "lap", { lead_id: LAP_LEAD, offer: "FIX", confirmed: true }));
+  const dup = await t.json(await order(t, "Kudoshin", { lead_id: LAP_LEAD, offer: "FIX", confirmed: true }));
   assert.deepEqual([dup.status, dup.body.code], [409, "DUPLICATE_OPEN_ORDER"]);
   // DNC / ohne E-Mail → kein Auftrag.
-  assert.equal((await t.json(await order(t, "lap", { lead_id: "vn-cong-ty-3.vn", offer: "CHECK", confirmed: true }))).body.code, "DO_NOT_CONTACT");
-  assert.equal((await t.json(await order(t, "lap", { lead_id: "vn-cong-ty-2.vn", offer: "CHECK", confirmed: true }))).body.code, "NO_EMAIL");
-  // I: Owner kann prüfen/verwalten (eigener Auftrag für einen VN-Lead, Verkäufer bleibt Lap; Sicht auf alle VN-Aufträge).
+  assert.equal((await t.json(await order(t, "Kudoshin", { lead_id: "vn-cong-ty-3.vn", offer: "CHECK", confirmed: true }))).body.code, "DO_NOT_CONTACT");
+  assert.equal((await t.json(await order(t, "Kudoshin", { lead_id: "vn-cong-ty-2.vn", offer: "CHECK", confirmed: true }))).body.code, "NO_EMAIL");
+  // I: Owner kann prüfen/verwalten (eigener Auftrag für einen VN-Lead, Verkäufer bleibt Kudoshin; Sicht auf alle VN-Aufträge).
   const o = await t.json(await order(t, "chris", { lead_id: OWNER_LEAD, offer: "FIX", confirmed: true }));
-  assert.deepEqual([o.status, o.body.order.price, o.body.order.seller_id], [202, 3900000, "lap"]);
+  assert.deepEqual([o.status, o.body.order.price, o.body.order.seller_id], [202, 3900000, "Kudoshin"]);
   const ov = await t.json(await t.sales(makeReq("/api/sales?view=orders", { cookie: t.cookies.chris })));
   assert.equal(ov.body.orders.length, 2);
-  const lv = await t.json(await t.sales(makeReq(`/api/sales?view=orders&lead_id=${LAP_LEAD}`, { cookie: t.cookies.lap })));
+  const lv = await t.json(await t.sales(makeReq(`/api/sales?view=orders&lead_id=${LAP_LEAD}`, { cookie: t.cookies.Kudoshin })));
   assert.equal(lv.body.orders.length, 1);
   assert.deepEqual(lv.body.offers.map((x) => [x.offer, x.price, x.currency]), [["CHECK", 990000, "VND"], ["FIX", 3900000, "VND"]]);
   assert.ok(!JSON.stringify(lv.body).includes("lienhe@"), "keine Kunden-E-Mail in der Verkäufer-Sicht");
   assert.equal((await t.sales(makeReq("/api/sales?view=orders", { cookie: t.cookies.mario }))).status, 403);
-  // Zahlungen: keine Cloud-Operation – Lap bekommt 403, auch Owner hat hier keinen Zahlungsweg.
+  // Zahlungen: keine Cloud-Operation – Kudoshin bekommt 403, auch Owner hat hier keinen Zahlungsweg.
   for (const op of ["payment.record", "payment.refund", "payment.void", "payment.markFull"]) {
-    assert.equal((await t.sales(makeReq("/api/sales", { method: "POST", cookie: t.cookies.lap, body: { op, order_id: "VNCHECK-20261015-abcdef", amount: 990000 } }))).status, 403, op);
+    assert.equal((await t.sales(makeReq("/api/sales", { method: "POST", cookie: t.cookies.Kudoshin, body: { op, order_id: "VNCHECK-20261015-abcdef", amount: 990000 } }))).status, 403, op);
     assert.equal((await t.sales(makeReq("/api/sales", { method: "POST", cookie: t.cookies.chris, body: { op } }))).status, 400, `${op}: nicht über die Cloud`);
   }
 });
 
-test("TF-064 VN-Order B/C: Lap mit CH-Lead oder fremder/unbekannter lead_id → 403; CSRF ohne Origin → 403", async () => {
+test("TF-064 VN-Order B/C: Kudoshin mit CH-Lead oder fremder/unbekannter lead_id → 403; CSRF ohne Origin → 403", async () => {
   const t = await setup({ ch: 900, vn: 20 });
-  assert.equal((await t.json(await order(t, "lap", { lead_id: "ch-firma-0001.ch", offer: "CHECK", confirmed: true }))).status, 403);
-  assert.equal((await t.json(await order(t, "lap", { lead_id: "unbekannt-firma.vn", offer: "CHECK", confirmed: true }))).status, 403);
+  assert.equal((await t.json(await order(t, "Kudoshin", { lead_id: "ch-firma-0001.ch", offer: "CHECK", confirmed: true }))).status, 403);
+  assert.equal((await t.json(await order(t, "Kudoshin", { lead_id: "unbekannt-firma.vn", offer: "CHECK", confirmed: true }))).status, 403);
   assert.equal((await t.json(await order(t, "chris", { lead_id: "ch-firma-0001.ch", offer: "CHECK", confirmed: true }))).status, 403, "Owner: CH-Lead nicht über den VN-Weg");
-  const r = await t.sales(makeReq("/api/sales", { method: "POST", cookie: t.cookies.lap, origin: "https://evil.example", body: { op: "order.createConfirmed", lead_id: LAP_LEAD, offer: "CHECK", confirmed: true } }));
+  const r = await t.sales(makeReq("/api/sales", { method: "POST", cookie: t.cookies.Kudoshin, origin: "https://evil.example", body: { op: "order.createConfirmed", lead_id: LAP_LEAD, offer: "CHECK", confirmed: true } }));
   assert.equal(r.status, 403);
   assert.equal((await t.salesMem.orders?.get())?.state?.requests?.length || 0, 0, "nichts angelegt");
 });
 
 test("TF-064 VPS-Übernahme: Repair-Dienst holt ab (Worker-Token), legt VNCHECK an, idempotent, meldet zurück; falscher Token 401", async () => {
   const t = await setup({ ch: 900, vn: 20 });
-  assert.equal((await order(t, "lap", { lead_id: LAP_LEAD, offer: "CHECK", confirmed: true })).status, 202);
+  assert.equal((await order(t, "Kudoshin", { lead_id: LAP_LEAD, offer: "CHECK", confirmed: true })).status, 202);
   assert.equal((await worker(t, { op: "orders.pull" }, "falsch".repeat(8))).status, 401);
   const store = tmpStore();
   const client = { pull: async () => (await (await worker(t, { op: "orders.pull" })).json()).requests, result: async (x) => (await worker(t, { op: "orders.result", ...x })).json() };
@@ -80,7 +80,7 @@ test("TF-064 VPS-Übernahme: Repair-Dienst holt ab (Worker-Token), legt VNCHECK 
   const o = Object.values(store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders)[0];
   assert.match(o.order_id, /^VNCHECK-\d{8}-[0-9a-f]{6}$/);
   assert.deepEqual([o.market, o.currency, o.price_amount, o.offer_class, o.domain, o.delivery_email, o.seller_id, o.lead_id, o.locale, o.state],
-    ["VN", "VND", 990000, "VN_REPAIR_CHECK", LAP_LEAD, `lienhe@${LAP_LEAD}`, "lap", LAP_LEAD, "vi-VN", "ORDER_RECEIVED"]);
+    ["VN", "VND", 990000, "VN_REPAIR_CHECK", LAP_LEAD, `lienhe@${LAP_LEAD}`, "Kudoshin", LAP_LEAD, "vi-VN", "ORDER_RECEIVED"]);
   const sale = store.read("sales.json", { records: {} }).records[LAP_LEAD].sale;
   assert.deepEqual([sale.selected_offer, sale.sale_value, sale.currency, sale.market, sale.source], ["VN_REPAIR_CHECK", 990000, "VND", "VN", "vn_sales_confirmed"]);
   const reqs = (await t.salesMem.orders.get()).state.requests;
@@ -90,11 +90,11 @@ test("TF-064 VPS-Übernahme: Repair-Dienst holt ab (Worker-Token), legt VNCHECK 
   const again = applyOrderRequest(store, { ...reqs[0], confirmed_at: reqs[0].created_at });
   assert.deepEqual([again.ok, again.duplicate, again.order_id], [true, true, o.order_id]);
   assert.equal(Object.keys(store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders).length, 1);
-  // Sicht für Lap: Auftragsnummer + Status in VND.
-  const lv = await t.json(await t.sales(makeReq(`/api/sales?view=orders&lead_id=${LAP_LEAD}`, { cookie: t.cookies.lap })));
+  // Sicht für Kudoshin: Auftragsnummer + Status in VND.
+  const lv = await t.json(await t.sales(makeReq(`/api/sales?view=orders&lead_id=${LAP_LEAD}`, { cookie: t.cookies.Kudoshin })));
   assert.equal(lv.body.orders[0].order_id, o.order_id);
   // Manipulierte Anfrage (Preis/Markt/Verkäufer) wird auf dem VPS nie angelegt.
-  const base = { request_id: "11111111-2222-3333-4444-555555555555", lead_id: "x.vn", offer_class: "VN_REPAIR_FIX", market: "VN", currency: "VND", price: 3900000, domain: "x.vn", delivery_email: "a@x.vn", actor_user_id: "lap", seller_id: "lap" };
+  const base = { request_id: "11111111-2222-3333-4444-555555555555", lead_id: "x.vn", offer_class: "VN_REPAIR_FIX", market: "VN", currency: "VND", price: 3900000, domain: "x.vn", delivery_email: "a@x.vn", actor_user_id: "Kudoshin", seller_id: "Kudoshin" };
   assert.equal(applyOrderRequest(store, { ...base, price: 1 }).code, "PRICE_MISMATCH");
   assert.equal(applyOrderRequest(store, { ...base, currency: "CHF" }).code, "PRICE_MISMATCH");
   assert.equal(applyOrderRequest(store, { ...base, market: "CH" }).code, "BAD_MARKET");
@@ -117,7 +117,7 @@ test("TF-064 VN CHECK Workflow: wartet bis 495000 VND, danach vietnamesischer Be
   const store = tmpStore();
   const T0 = new Date("2026-10-15T09:00:00Z");
   const r = applyOrderRequest(store, { request_id: "aaaaaaaa-2222-3333-4444-555555555555", lead_id: "khach-san.vn", offer_class: "VN_REPAIR_CHECK", market: "VN", currency: "VND", price: 990000,
-    domain: "khach-san.vn", website: "https://khach-san.vn/", company: "Khách sạn Sông Hàn", delivery_email: "lienhe@khach-san.vn", actor_user_id: "lap", seller_id: "lap" }, { now: T0 });
+    domain: "khach-san.vn", website: "https://khach-san.vn/", company: "Khách sạn Sông Hàn", delivery_email: "lienhe@khach-san.vn", actor_user_id: "Kudoshin", seller_id: "Kudoshin" }, { now: T0 });
   assert.ok(r.ok);
   const HOME = "https://khach-san.vn/";
   const issues = [{ type: "broken_link", url: "https://khach-san.vn/phong-cu", page: HOME, label: "Phòng nghỉ", evidence: `HTTP 404 (verlinkt auf ${HOME})`, severity: "medium", detectedAt: T0.toISOString() },

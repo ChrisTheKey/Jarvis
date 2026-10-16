@@ -1,11 +1,11 @@
 // /api/sales – Provision, Lead-Zuweisungen, Vertriebs-Steuerung (TF-063) und bestätigte VN-Aufträge (TF-064). Netlify Function,
 // Session-Auth (auth-core.js).
 //
-//   GET  ?view=commission        Verkäufer: NUR eigene Provision (Ausstehend/Auszahlbar/Storniert) in der eigenen Währung (Lap: VND)
+//   GET  ?view=commission        Verkäufer: NUR eigene Provision (Ausstehend/Auszahlbar/Storniert) in der eigenen Währung (Kudoshin: VND)
 //                                OWNER: alle Verkäufer getrennt + Gesamtsummen JE WÄHRUNG (CHF und VND nie addiert) + nicht zugeordnete Aufträge
 //   GET  ?view=summary           eigene Kennzahlen (Leads im Scope, Provision) – Grundlage für den Verkäufer-Chat
 //   GET  ?view=assignments       OWNER: Verteilungsbericht (nur Zählwerte/Verteilungen) + Audit
-//   GET  ?view=orders[&lead_id]  Lap: eigene VN-Aufträge (Angebot, Preis, bezahlt, offen, Zahlungs-/Arbeitsstatus, erwartete Provision);
+//   GET  ?view=orders[&lead_id]  Kudoshin: eigene VN-Aufträge (Angebot, Preis, bezahlt, offen, Zahlungs-/Arbeitsstatus, erwartete Provision);
 //                                OWNER: alle VN-Aufträge. Nie Kunden-E-Mail, Zahlungsreferenzen oder interne Pfade.
 //   GET  ?view=onboarding[&lead_id][&filter]  TF-066 Kunden-Onboarding je Auftrag (Zahlungsschwelle, Zugang als Wort, Inhaltsänderungen,
 //                                wartet auf, letzte Antworten, offene Punkte, bestätigte Website-Angaben). Serverseitig gescoped:
@@ -13,7 +13,7 @@
 //                                Links, Token, Rohmails oder die Kunden-E-Mail. filter: open|waiting_customer|waiting_access|
 //                                waiting_confirmation|manual_review|ready
 //   POST { op: "order.createConfirmed", lead_id, offer: "CHECK"|"FIX", confirmed: true }
-//                                Lap (SALES_AGENT_VN) bzw. OWNER: bewusst bestätigter Kundenauftrag für einen EIGENEN VN-Lead. Der Client
+//                                Kudoshin (SALES_AGENT_VN) bzw. OWNER: bewusst bestätigter Kundenauftrag für einen EIGENEN VN-Lead. Der Client
 //                                sendet NUR lead_id + Angebot + Bestätigung – Domain, Website, Firma, E-Mail, Markt, Währung und Preis
 //                                löst der Server aus dem autorisierten Lead bzw. pricing.js auf (jedes weitere Feld → 400).
 //   POST { op: "reassign", lead_id, user_id }                OWNER: CH-Lead bewusst neu zuweisen (auditiert)
@@ -22,6 +22,7 @@
 //   Repair-Dienst (x-jarvis-worker = JARVIS_MAIL_WORKER_TOKEN, nur ausgehend vom VPS):
 //   POST { op: "orders.pull" }                               offene bestätigte VN-Auftragsanfragen abholen (Lease, idempotent auf dem VPS)
 //   POST { op: "orders.result", request_id, ok, order_id?, code?, error? }   Ergebnis melden
+//   POST { op: "identity.status" }                           TF-070: Stand der Kontoumbenennung lap → Kudoshin (nur Zählwerte/Flags)
 // Zahlungen erfasst/ändert/erstattet ausschliesslich Chris auf dem VPS (payments.js) – hier gibt es dafür keine Operation.
 // Provision wird bei jedem Lesen aus Snapshot (Aufträge/Zahlungen) + Zuständigkeit abgeleitet und als Buch fortgeschrieben (nie gelöscht).
 import { resolveActor, can, isOwner, deny, forbidden, SELLER_IDS, publicUser } from "./auth-core.js";
@@ -30,6 +31,7 @@ import { deriveLedger, ordersFromSnapshot, summarize, totalsByCurrency, override
 import { offerFor, offerInfo, toMinor, ORDER_ID_RE } from "./pricing.js";
 import { safeEqual } from "./shared-state.js";
 import { ONBOARDING_FILTERS } from "./onboarding-core.js";
+import { migrateLedger, migrateOrderRequests, migrateStoreDoc, migrateOnce, VN_SELLER_ID, LEGACY_VN_SELLER_ID } from "./seller-identity.js";
 
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const LEAD_RE = /^[a-z0-9][a-z0-9.@_+-]{2,252}$/;
@@ -69,15 +71,18 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
     const store = await getSalesStore("commissions");
     for (let i = 0; i < 4; i++) {
       const { state, etag } = await store.get();
-      const { ledger: L, changed } = deriveLedger({ ledger: state || emptyLedger(), orders: ordersFromSnapshot(snapshot), resolveSeller, now: now() });
+      // TF-070: Verkäufer-Identität «lap» → «Kudoshin» im selben bedingten Schreibvorgang (keine neuen Einträge, Beträge unverändert).
+      const mig = migrateLedger(state || emptyLedger());
+      const { ledger: L, changed: derived } = deriveLedger({ ledger: mig.doc, orders: ordersFromSnapshot(snapshot), resolveSeller, now: now() });
+      const changed = derived || mig.changed;
       if (!changed || (await store.set(L, etag))) return { L, snapshot };
     }
-    return { L: (await store.get()).state || emptyLedger(), snapshot };
+    return { L: migrateLedger((await store.get()).state || emptyLedger()).doc, snapshot };
   }
   const snapshotOrders = (snapshot) => [...(snapshot?.check150?.orders || []), ...(snapshot?.repair?.orders || [])].filter((o) => o && ORDER_ID_RE.test(String(o.order_id || "")));
   const isOpenState = (s) => !CLOSED_ORDER_STATES.includes(s);
 
-  // ---------- VN-Auftragssicht (Lap/OWNER): Anfrage + Auftragsstand aus dem Snapshot + erwartete Provision ----------
+  // ---------- VN-Auftragssicht (Kudoshin/OWNER): Anfrage + Auftragsstand aus dem Snapshot + erwartete Provision ----------
   function orderView(r, snap, L) {
     const o = r.order_id ? snap.find((x) => x.order_id === r.order_id) : null;
     const info = offerInfo(r.offer_class);
@@ -130,10 +135,33 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
       });
       return reply(status, status === 200 ? { ok: true } : { error: status === 404 ? "Unbekannte Anfrage." : "Anfrage ist bereits abgeschlossen." });
     }
+    if (body.op === "identity.status") {
+      // TF-070: nur Zählwerte und Flags – keine Lead-IDs, Namen, Kontaktdaten, Hashes oder Beträge.
+      const d = await data();
+      const authDocs = getAuthStore ? await (async () => { const s = await getAuthStore(); return { users: (await s.users.get()).state || {}, sessions: (await s.sessions.get()).state || {} }; })() : null;
+      const [all, asg, L, od] = await Promise.all([d.leads(), d.assignments(), (async () => (await (await getSalesStore("commissions")).get()).state || emptyLedger())(),
+        (async () => (await (await getSalesStore("orders")).get()).state || emptyOrders())()]);
+      const users = authDocs?.users?.users || {};
+      const by = (list, f, v) => list.filter((x) => x?.[f] === v).length;
+      const entries = Object.values(L.entries || {}), payouts = L.payouts || [], reqs = doc0(od);
+      const seller = (l) => sellerOf(l, asg);
+      const vn = all.filter((l) => leadMarket(l) === "VN"), ch = all.filter((l) => leadMarket(l) === "CH");
+      const mig = authDocs?.users?.identity_migrations?.["TF-070"] || null;
+      return reply(200, { canonical_seller_id: VN_SELLER_ID, sellers: SELLER_IDS, vn_seller: VN_SELLER,
+        auth: authDocs ? { canonical_record: Object.hasOwn(users, VN_SELLER_ID), canonical_password_set: !!users[VN_SELLER_ID]?.password, canonical_active: users[VN_SELLER_ID] ? users[VN_SELLER_ID].active !== false : null,
+          legacy_record: Object.hasOwn(users, LEGACY_VN_SELLER_ID), legacy_sessions: Object.values(authDocs.sessions?.sessions || {}).filter((s) => s?.user_id === LEGACY_VN_SELLER_ID).length,
+          migration: mig ? { at: mig.at, password_transferred: mig.password_transferred === true } : null } : null,
+        leads: { vn_total: vn.length, vn_canonical: vn.filter((l) => seller(l) === VN_SELLER_ID).length, ch_canonical: ch.filter((l) => seller(l) === VN_SELLER_ID).length,
+          legacy: all.filter((l) => seller(l) === LEGACY_VN_SELLER_ID).length, ch_by_seller: Object.fromEntries(["giuliano", "mario", "damiano"].map((s) => [s, ch.filter((l) => seller(l) === s).length])) },
+        commissions: { entries: entries.length, canonical: by(entries, "seller_id", VN_SELLER_ID), legacy: by(entries, "seller_id", LEGACY_VN_SELLER_ID) + by(entries, "seller_override", LEGACY_VN_SELLER_ID),
+          payouts: payouts.length, payouts_canonical: by(payouts, "seller_id", VN_SELLER_ID), payouts_legacy: by(payouts, "seller_id", LEGACY_VN_SELLER_ID) },
+        orders: { requests: reqs.length, canonical: by(reqs, "seller_id", VN_SELLER_ID), legacy: by(reqs, "seller_id", LEGACY_VN_SELLER_ID) + by(reqs, "actor_user_id", LEGACY_VN_SELLER_ID) } });
+    }
     return reply(400, { error: "Unbekannte Operation." });
   }
+  const doc0 = (od) => (Array.isArray(od?.requests) ? od.requests : []);
 
-  // ---------- order.createConfirmed (Lap/OWNER, nur eigener VN-Lead) ----------
+  // ---------- order.createConfirmed (Kudoshin/OWNER, nur eigener VN-Lead) ----------
   async function createConfirmed(actor, body) {
     const owner = isOwner(actor);
     if (!owner && actor.role !== "SALES_AGENT_VN") return reply(403, { error: "Keine Berechtigung für Vietnam-Aufträge.", code: "FORBIDDEN" });
@@ -178,7 +206,14 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
     return res;
   }
 
+  // TF-070: Provisionsbuch + VN-Auftragsanfragen von «lap» auf «Kudoshin» – einmal je Instanz, idempotent, vor jedem Abholen durch den VPS.
+  const migrateIdentity = migrateOnce(async () => {
+    await migrateStoreDoc(await getSalesStore("commissions"), migrateLedger);
+    await migrateStoreDoc(await getSalesStore("orders"), migrateOrderRequests);
+  });
+
   return async (req) => {
+    await migrateIdentity();
     const workerToken = env("JARVIS_MAIL_WORKER_TOKEN");
     if (req.method === "POST" && req.headers.get("x-jarvis-worker") != null) {
       if (!workerToken || !safeEqual(req.headers.get("x-jarvis-worker"), workerToken)) return reply(401, { error: "Nicht berechtigt." });
@@ -290,7 +325,7 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
         const d = await data();
         const lead = (await d.leads()).find((l) => l.lead_id === body.lead_id);
         if (!lead) return reply(404, { error: "Unbekannter Lead." });
-        if (leadMarket(lead) !== "CH") return reply(400, { error: "Nur Schweizer Leads sind zuweisbar (VN gehört Lap)." });
+        if (leadMarket(lead) !== "CH") return reply(400, { error: "Nur Schweizer Leads sind zuweisbar (VN gehört Kudoshin)." });
         await casUpdate("assignments", () => ({ schema: 1, assignments: {}, audit: [] }), (doc) => reassign(doc, { lead_id: body.lead_id, user_id: body.user_id, actor_user_id: actor.user_id, now: now() }));
         return reply(200, { ok: true });
       }

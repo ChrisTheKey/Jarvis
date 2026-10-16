@@ -2,18 +2,19 @@
 //
 // Markt: lead.market "VN" (Vietnam-Discovery) – alles andere ist "CH" (bestehende Schweizer Discovery).
 // Zuständigkeit (sellerOf):
-//   VN-Lead                                   → lap
+//   VN-Lead                                   → Kudoshin (TF-070, vormals lap)
 //   CH-Lead mit gesperrter Zuweisung mario    → mario
 //   CH-Lead mit gesperrter Zuweisung damiano  → damiano
 //   jeder andere CH-Lead (auch neue)          → giuliano
-// Sichtbarkeit: OWNER alles; jeder Verkäufer genau die Leads, für die er zuständig ist (Lap nur VN, die anderen nur CH).
+// Sichtbarkeit: OWNER alles; jeder Verkäufer genau die Leads, für die er zuständig ist (Kudoshin nur VN, die anderen nur CH).
 // Zuweisungen liegen NICHT in lead_registry.json (Discovery/Dedupe unberührt), sondern im eigenen Blob "jarvis-sales/assignments".
+import { VN_SELLER_ID } from "./seller-identity.js";
 
 export const MARKETS = Object.freeze(["CH", "VN"]);
 export const PORTFOLIO_SELLERS = Object.freeze(["mario", "damiano"]);
 export const PORTFOLIO_SIZE = 200;
 export const CH_DEFAULT_SELLER = "giuliano";
-export const VN_SELLER = "lap";
+export const VN_SELLER = VN_SELLER_ID;
 export const ASSIGNABLE = Object.freeze(["giuliano", "mario", "damiano"]);
 export const ASSIGNMENT_SOURCES = Object.freeze(["tf063_fair_distribution", "owner_reassign"]);
 

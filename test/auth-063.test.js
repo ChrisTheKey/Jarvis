@@ -9,7 +9,7 @@ const me = async (t, cookie) => t.json(await t.auth(makeReq("/api/auth/me", { co
 
 test("TF-063 Auth A–E: Rollen und Sprachen je Benutzer", async () => {
   const t = await setup({ assign: false });
-  const exp = { chris: ["OWNER", "de-CH"], giuliano: ["SALES_MANAGER_CH", "de-CH"], mario: ["SALES_AGENT_CH", "de-CH"], damiano: ["SALES_AGENT_CH", "de-CH"], lap: ["SALES_AGENT_VN", "vi-VN"] };
+  const exp = { chris: ["OWNER", "de-CH"], giuliano: ["SALES_MANAGER_CH", "de-CH"], mario: ["SALES_AGENT_CH", "de-CH"], damiano: ["SALES_AGENT_CH", "de-CH"], Kudoshin: ["SALES_AGENT_VN", "vi-VN"] };
   for (const [u, [role, locale]] of Object.entries(exp)) {
     const r = await me(t, t.cookies[u]);
     assert.equal(r.status, 200, u);
@@ -29,7 +29,7 @@ test("TF-063 Auth F/G: falsches Passwort → 401, danach Rate Limit 429", async 
 
 test("TF-063 Auth H: Session-Cookie HttpOnly, Secure, SameSite=Strict, Path=/, ≤ 7 Tage; nicht im Body", async () => {
   const t = await setup({ assign: false });
-  const r = await t.login("lap", PW.lap);
+  const r = await t.login("Kudoshin", PW.Kudoshin);
   const c = r.headers.get("set-cookie");
   assert.match(c, /^jarvis_session=[A-Za-z0-9_-]{40,64};/);
   for (const flag of ["HttpOnly", "Secure", "SameSite=Strict", "Path=/"]) assert.ok(c.includes(flag), flag);
@@ -68,10 +68,10 @@ test("TF-063 Auth K/L: Passwort nie in API-Antworten, Speicher, Audit oder Logs"
   try {
     const t = await setup({ assign: false });
     const users = await t.json(await t.auth(makeReq("/api/auth/admin/users", { cookie: t.cookies.chris })));
-    const everything = JSON.stringify(users.body) + JSON.stringify((await me(t, t.cookies.lap)).body) + JSON.stringify(t.authMem.users.peek()) + JSON.stringify(t.authMem.audit.peek()) + logs.join("\n");
+    const everything = JSON.stringify(users.body) + JSON.stringify((await me(t, t.cookies.Kudoshin)).body) + JSON.stringify(t.authMem.users.peek()) + JSON.stringify(t.authMem.audit.peek()) + logs.join("\n");
     for (const pw of [...Object.values(PW), ENV.JARVIS_PASSWORD]) assert.ok(!everything.includes(pw), "Klartext-Passwort gefunden");
     assert.ok(!JSON.stringify(users.body).includes("hash") && !JSON.stringify(users.body).includes("salt"), "keine Hash-Daten in der Antwort");
-    const rec = t.authMem.users.peek().users.lap.password;
+    const rec = t.authMem.users.peek().users.Kudoshin.password;
     assert.equal(rec.algo, "scrypt"); assert.equal(rec.N, SCRYPT.N); assert.ok(rec.salt && rec.hash);
     assert.equal(t.authMem.users.peek().users.chris.password.algo, "scrypt", "Owner-Bootstrap speichert nur einen Hash");
   } finally { Object.assign(console, orig); }
@@ -83,14 +83,14 @@ test("TF-063 Auth: scrypt mit zufälligem Salt, konstanter Vergleich, ≥ 12 Zei
   assert.equal(await verifyPassword("ein-langes-passwort", a), true);
   assert.equal(await verifyPassword("ein-langes-passworT", a), false);
   const t = await setup({ assign: false });
-  const r = await t.json(await t.auth(makeReq("/api/auth/admin/password", { method: "POST", cookie: t.cookies.chris, body: { user_id: "lap", password: "zu-kurz-11c" } })));
+  const r = await t.json(await t.auth(makeReq("/api/auth/admin/password", { method: "POST", cookie: t.cookies.chris, body: { user_id: "Kudoshin", password: "zu-kurz-11c" } })));
   assert.equal(r.status, 400);
   assert.match(fs.readFileSync(new URL("../auth-api.js", import.meta.url), "utf8"), /timingSafeEqual/);
 });
 
 test("TF-063 Auth: Owner-Bootstrap über bestehendes JARVIS_PASSWORD, Reset/Revoke, Verkäufer dürfen nichts verwalten", async () => {
   const t = await setup({ assign: false });
-  for (const u of ["giuliano", "mario", "damiano", "lap"]) {
+  for (const u of ["giuliano", "mario", "damiano", "Kudoshin"]) {
     for (const [path, method] of [["/api/auth/admin/users", "GET"], ["/api/auth/admin/password", "POST"], ["/api/auth/admin/revoke", "POST"], ["/api/auth/admin/active", "POST"], ["/api/auth/admin/reset", "POST"]]) {
       const r = await t.auth(makeReq(path, { method, cookie: t.cookies[u], ...(method === "POST" ? { body: { user_id: "mario", password: "x".repeat(20), active: false } } : {}) }));
       assert.equal(r.status, 403, `${u} ${path}`);
@@ -112,12 +112,12 @@ test("TF-063 CSRF: schreibende Cookie-Requests mit fremdem Origin → 403", asyn
   const t = await setup({ assign: false });
   const r = await t.crm(makeReq("/api/crm", { method: "POST", cookie: t.cookies.chris, origin: "https://evil.example", body: { action: "crm.addNote", params: { lead_id: "ch-firma-0001.ch", text: "x" } } }));
   assert.equal(r.status, 403);
-  assert.equal((await t.auth(makeReq("/api/auth/login", { method: "POST", origin: "https://evil.example", body: { username: "lap", password: PW.lap } }))).status, 403);
+  assert.equal((await t.auth(makeReq("/api/auth/login", { method: "POST", origin: "https://evil.example", body: { username: "Kudoshin", password: PW.Kudoshin } }))).status, 403);
 });
 
 test("TF-063 Owner-only: Server Control, Backup, State – Verkäufer 403 (GET und POST), Chris 200", async () => {
   const t = await setup({ assign: false });
-  for (const u of ["giuliano", "mario", "damiano", "lap"]) {
+  for (const u of ["giuliano", "mario", "damiano", "Kudoshin"]) {
     assert.equal((await t.server(makeReq("/api/server-control", { cookie: t.cookies[u] }))).status, 403, `${u} server GET`);
     assert.equal((await t.server(makeReq("/api/server-control", { method: "POST", cookie: t.cookies[u], body: { action: "system.health" } }))).status, 403, `${u} server POST`);
     assert.equal((await t.server(makeReq("/api/server-control?leaddb=1", { cookie: t.cookies[u] }))).status, 403, `${u} leaddb`);
@@ -137,8 +137,8 @@ test("TF-063 Owner-only: Server Control, Backup, State – Verkäufer 403 (GET u
 test("TF-063 Chat-Verlauf je Benutzer getrennt (kein Chris-Kontext für Verkäufer)", async () => {
   const t = await setup({ assign: false });
   await t.state(makeReq("/api/state", { method: "POST", cookie: t.cookies.chris, body: { op: "conversation", turns: [{ role: "user", content: "Privat von Chris" }] } }));
-  await t.state(makeReq("/api/state", { method: "POST", cookie: t.cookies.lap, body: { op: "conversation", turns: [{ role: "user", content: "Xin chào Jarvis" }] } }));
-  const lap = await t.json(await t.state(makeReq("/api/state", { cookie: t.cookies.lap })));
+  await t.state(makeReq("/api/state", { method: "POST", cookie: t.cookies.Kudoshin, body: { op: "conversation", turns: [{ role: "user", content: "Xin chào Jarvis" }] } }));
+  const lap = await t.json(await t.state(makeReq("/api/state", { cookie: t.cookies.Kudoshin })));
   const mario = await t.json(await t.state(makeReq("/api/state", { cookie: t.cookies.mario })));
   assert.deepEqual(lap.body.conversation.turns.map((x) => x.content), ["Xin chào Jarvis"]);
   assert.equal(mario.body.conversation.turns.length, 0);

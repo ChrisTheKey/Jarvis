@@ -2,7 +2,7 @@
 // (nur lead_id, Markt, Modus, Parallelität) an; der Dienst jarvis-calling auf dem VPS holt ausgehend ab, bekommt erst beim Abholen – nach
 // erneuter Berechtigungsprüfung – die Nummer aus dem autoritativen Lead und meldet strukturierte Ergebnisse zurück.
 //
-//   Browser:  Session-Cookie (auth-core.js). Zugang NUR OWNER (Chris) und SALES_AGENT_VN (Lap, nur eigene VN-Leads). Alle anderen 403, ohne Sitzung 401.
+//   Browser:  Session-Cookie (auth-core.js). Zugang NUR OWNER (Chris) und SALES_AGENT_VN (Kudoshin, nur eigene VN-Leads). Alle anderen 403, ohne Sitzung 401.
 //   Dienst:   x-jarvis-calling = HMAC-SHA256(JARVIS_SERVER_CONTROL_TOKEN, "jarvis-calling-agent-v1") – eigener Schlüssel, nur pull/event.
 //
 // Der Browser darf weder Telefonnummer, Caller-ID, Trunk, Room noch Agent-Namen senden (400). Kein «force»: Berechtigung, DNC und
@@ -13,6 +13,7 @@ import { safeEqual } from "./shared-state.js";
 import { resolveActor, isOwner, deny, forbidden } from "./auth-core.js";
 import { canSeeLead, sellerOf, leadMarket, emptyAssignments } from "./sales-scope.js";
 import { LEAD_ID_RE } from "./lead-crm.js";
+import { migrateCallingControl, migrateCallingHistory, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import {
   SCHEMA, MARKETS, MODES, CALL_OUTCOMES, FINAL_OUTCOMES, REACHED_OUTCOMES, NO_ANSWER_OUTCOMES, DEFAULTS, LIMIT_BOUNDS, FORBIDDEN_CLIENT_FIELDS,
   AGENT_TOKEN_LABEL, CALL_LEASE_MS, HARD_MAX_CONCURRENCY, eligibility, previewCounts, planClaims, applyOutcomeToItem, effectiveMax, clampConcurrency,
@@ -20,7 +21,7 @@ import {
   CALLING_MARKETS, CONSENT_SOURCES, CONSENT_SCOPE, LEGAL_STATES, FREQUENCY_MS, validateToolCall, phoneHash, callFlag, leadList, callSecondsLeft,
 } from "./calling-core.js";
 
-// TF-068 Rollen: Lap (SALES_AGENT_VN) darf Kampagnen/Einzelanrufe STARTEN. Chris (OWNER) überwacht, konfiguriert, sieht Statistik/Audit und
+// TF-068 Rollen: Kudoshin (SALES_AGENT_VN; TF-070, vormals lap) darf Kampagnen/Einzelanrufe STARTEN. Chris (OWNER) überwacht, konfiguriert, sieht Statistik/Audit und
 // hat den Notstopp – startet aber KEINE eigenen Kampagnen (403). Alle anderen 403. Nur Markt VN (CH-Calling deaktiviert).
 export const canStartCalls = (actor) => actor?.role === "SALES_AGENT_VN";
 export const LEAD_LISTS = Object.freeze(["ALL_LEADS", "CALL_ELIGIBLE_LEADS", "CALL_BLOCKED_LEADS", "DO_NOT_CONTACT"]);
@@ -143,6 +144,11 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
     }
     return { status: 409, body: { error: "Gleichzeitige Änderung – bitte erneut versuchen.", code: "CONFLICT" } };
   }
+  // TF-070: Kampagnen/Anrufe des Kontos «lap» gehören Kudoshin – einmal je Instanz, idempotent (Audit bleibt unverändert).
+  const migrateIdentity = migrateOnce(async () => {
+    await migrateStoreDoc(await getCallingStore("control"), migrateCallingControl);
+    await migrateStoreDoc(await getCallingStore("history"), migrateCallingHistory);
+  });
   const read = async (key, empty) => { const s = (await (await getCallingStore(key)).get()).state; return s && typeof s === "object" ? { ...empty(), ...s } : empty(); };
   const readAssignments = async () => (getSalesStore ? (await (await getSalesStore("assignments")).get()).state : null) || emptyAssignments();
   async function allLeads() {
@@ -396,6 +402,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
   }
 
   return async (req) => {
+    await migrateIdentity();
     const url = new URL(req.url);
     const control = env("JARVIS_SERVER_CONTROL_TOKEN");
     const agentToken = callingAgentToken(control);
@@ -427,7 +434,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
       return reply(400, { error: "Unbekannte Operation." });
     }
 
-    // ----- Browser (Chris / Lap) -----
+    // ----- Browser (Chris / Kudoshin) -----
     const owner = isOwner(actor);
     const t = now();
     const [ctl, history, consents, leads, asg] = await Promise.all([read("control", emptyControl), read("history", emptyHistory), read("consents", emptyConsents), allLeads(), readAssignments()]);
@@ -486,7 +493,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
         const counts = Object.fromEntries(LEAD_LISTS.map((k) => [k, k === "ALL_LEADS" ? rows.length : rows.filter((x) => x.list === k).length]));
         return reply(200, { list: want, counts, leads: (want === "ALL_LEADS" ? rows : rows.filter((x) => x.list === want)).slice(0, 500) });
       }
-      // Rückrufe im eigenen Scope (Lap: eigene; Owner: alle VN).
+      // Rückrufe im eigenen Scope (Kudoshin: eigene; Owner: alle VN).
       if (url.searchParams.get("view") === "callbacks") {
         const list = Object.entries(consents.leads || {}).filter(([id, x]) => x?.requested_callback?.callback_at && !consents.dnc?.[id] && inScope(byId.get(id)))
           .map(([id, x]) => ({ lead_id: id, company: byId.get(id)?.company || null, callback_at: x.requested_callback.callback_at, call_id: x.requested_callback.call_id || null }))
@@ -588,8 +595,8 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
       return reply(r.status, r.body);
     }
     if (p.market && !marketsOf.includes(p.market)) return reply(403, { error: p.market === "CH" ? "CH-Calling ist deaktiviert." : "Markt nicht in Ihrem Bereich.", code: p.market === "CH" ? "CH_CALLING_DISABLED" : "OUT_OF_SCOPE" });
-    // Start nur durch Lap. Chris (OWNER) überwacht nur – keine eigenen Anrufkampagnen.
-    if ((p.op === "campaign.start" || p.op === "call.start") && !canStartCalls(actor)) return forbidden("Der Owner überwacht nur – Kampagnen startet ausschliesslich Lap.");
+    // Start nur durch Kudoshin. Chris (OWNER) überwacht nur – keine eigenen Anrufkampagnen.
+    if ((p.op === "campaign.start" || p.op === "call.start") && !canStartCalls(actor)) return forbidden("Der Owner überwacht nur – Kampagnen startet ausschliesslich Kudoshin.");
 
     // Kandidaten: Leads im Scope + Markt (+ optional Priorität / ausgewählte Leads), nach Priorität.
     const pickLeads = (market, { priority, lead_ids, lead_id } = {}) => {
@@ -652,7 +659,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
       });
       return reply(r.status, r.body);
     }
-    // pause / resume / stop / cancel – nur eigene Kampagnen (Lap) bzw. alle (Owner); Markt im Scope.
+    // pause / resume / stop / cancel – nur eigene Kampagnen (Kudoshin) bzw. alle (Owner); Markt im Scope.
     const r = await mutate("control", emptyControl, (cur) => {
       if (p.op === "call.cancel") {
         const c = cur.calls[p.call_id];

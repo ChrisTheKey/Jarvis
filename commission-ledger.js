@@ -15,15 +15,16 @@
 // Markt/Währung kommen aus dem Auftrag: Legacy-CH ohne Felder → CH/CHF; VN-Aufträge MÜSSEN market VN + currency VND tragen.
 // Summen werden je Währung getrennt geführt – CHF und VND werden nie addiert.
 import { MARKET_PRICES, ORDER_ID_RE, orderMoney, toMinor as toMinorOf, minorString } from "./pricing.js";
+import { VN_SELLER_ID } from "./seller-identity.js";
 
-export const RATE_BPS = Object.freeze({ giuliano: 3500, mario: 3500, damiano: 3500, lap: 3500 });
+export const RATE_BPS = Object.freeze({ giuliano: 3500, mario: 3500, damiano: 3500, [VN_SELLER_ID]: 3500 });
 export const SELLERS = Object.freeze(Object.keys(RATE_BPS));
 export const STATUSES = Object.freeze(["PENDING", "PAYABLE", "REVERSED"]);
 export const DONE_STATES = Object.freeze(["COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"]);
 export const VOID_STATES = Object.freeze(["CANCELLED"]);
 // Konfigurierte Märkte/Währungen – aus der zentralen Preisquelle (CH: CHF, VN: VND, beide konfiguriert).
 export const MARKET_PRICING = Object.freeze(Object.fromEntries(Object.values(MARKET_PRICES).map((m) => [m.market, Object.freeze({ currency: m.currency, configured: m.configured === true })])));
-export const CURRENCY_OF_SELLER = Object.freeze({ giuliano: "CHF", mario: "CHF", damiano: "CHF", lap: "VND" });
+export const CURRENCY_OF_SELLER = Object.freeze({ giuliano: "CHF", mario: "CHF", damiano: "CHF", [VN_SELLER_ID]: "VND" });
 
 // Legacy-Signaturen (CHF) bleiben: toMinor(150) = 15000, fromMinor(5250) = "52.50". Mit Währung: toMinor(990000, "VND") = 990000.
 export const toMinor = (v, currency = "CHF") => toMinorOf(v, currency);
@@ -152,7 +153,7 @@ function sums(list) {
 const fmtSums = (x, cur) => ({ currency: cur, pending: fromMinor(x.pending, cur), payable: fromMinor(x.payable, cur), reversed: fromMinor(x.reversed, cur), paid_completed_orders: x.paid_completed_orders });
 const entryCurrency = (e) => e.currency || "CHF";
 
-// Zusammenfassung je Verkäufer: Hauptwährung des Verkäufers (Lap VND, sonst CHF) oben, alle Währungen getrennt in by_currency.
+// Zusammenfassung je Verkäufer: Hauptwährung des Verkäufers (Kudoshin VND, sonst CHF) oben, alle Währungen getrennt in by_currency.
 // Beträge als Strings in natürlicher Genauigkeit ("52.50" bzw. "346500").
 export function summarize(ledger, sellerIds = SELLERS) {
   const entries = Object.values(ledger?.entries || {});

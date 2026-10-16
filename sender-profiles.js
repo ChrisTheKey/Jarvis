@@ -6,8 +6,10 @@
 //   VN  Lap · Hỗ trợ khách hàng Việt Nam · Helvetic Webdesign · vi-VN · Landingpage – feste Signatur, vietnamesische Abmeldezeile
 //       Bewusst OHNE Adresse, Telefonnummer, Firmenregister- oder Steuernummer (nichts erfunden).
 //
-// Auswahl (senderProfileFor): actor_user_id = lap ODER market = VN → VN, sonst CH. Die Metadaten stammen serverseitig aus der
+// Auswahl (senderProfileFor): actor_user_id = Kudoshin (TF-070, vormals lap) ODER market = VN → VN, sonst CH. Die Metadaten stammen serverseitig aus der
 // Session bzw. dem Lead (mail-requests.js), nie frei aus dem Browser.
+// TF-070: nur die Konto-ID wurde umbenannt; die kundensichtbare Signatur/Persona «Lap» bleibt bewusst unverändert.
+import { VN_SELLER_ID } from "./seller-identity.js";
 
 export const VN_LANDING_PAGE_URL = "https://lapvietnamese.netlify.app/";
 export const VN_SIGNATURE = ["Trân trọng,", "Lap", "Hỗ trợ khách hàng Việt Nam", "Helvetic Webdesign", VN_LANDING_PAGE_URL].join("\n");
@@ -15,7 +17,7 @@ export const VN_PROFILE = Object.freeze({
   id: "vn", market: "VN", locale: "vi-VN", lang: "vi", name: "Lap", company: "Helvetic Webdesign", role: "Hỗ trợ khách hàng Việt Nam",
   landing_page: VN_LANDING_PAGE_URL, signature: VN_SIGNATURE,
 });
-export const VN_ACTORS = Object.freeze(["lap"]);
+export const VN_ACTORS = Object.freeze([VN_SELLER_ID]);
 export const isVnMeta = (meta) => !!meta && (VN_ACTORS.includes(meta.actor_user_id) || meta.market === "VN");
 
 // Profil für einen Mailauftrag: { id: "ch", sender: cfg.sender } (unverändert) oder das feste VN-Profil.

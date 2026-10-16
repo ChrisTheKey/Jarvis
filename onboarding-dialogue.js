@@ -21,6 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as C from "./onboarding-core.js";
+import { canonicalSellerId } from "./seller-identity.js";
 import { readOrdersExport, writeBrief, writeReissueRequest, listReissueRequests, removeReissueRequest, onboardingDirOf } from "./onboarding-store.js";
 
 export const ONBOARDING_FILE = "onboarding.json";
@@ -82,7 +83,7 @@ export function createOnboarding({ dir, onboardingDir, gmail, extract = null, no
     const kind = o?.kind || (/^(CA150|VNCHECK)-/.test(rq.order_id) ? "CHECK" : "FIX");
     const market = o?.market || (/^VN/.test(rq.order_id) ? "VN" : "CH");
     const base = { order_id: rq.order_id, kind, market, locale: market === "VN" ? "vi-VN" : "de-CH" };
-    return { ...base, offer_class: o?.offer_class || null, seller_id: o?.seller_id || null, lead_id: o?.lead_id || null, domain: o?.domain || null,
+    return { ...base, offer_class: o?.offer_class || null, seller_id: canonicalSellerId(o?.seller_id || null), lead_id: o?.lead_id || null, domain: o?.domain || null,
       company: o?.company || null, contact_name: o?.contact_name || null, customer_email: normEmail(rq.to), thread_id: info.threadId,
       message_class: rq.message_class, bound_at: t, state: "WAITING_FOR_CUSTOMER_INFO", brief: { ...C.emptyBrief(base), last_jarvis_reply_at: t },
       processed: {}, reminders: { count: 0, last_at: null }, reissues: 0, reissue_seq: 0, access_status: o?.access_status || null, updated_at: t };

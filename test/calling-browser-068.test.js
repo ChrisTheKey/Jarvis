@@ -1,4 +1,4 @@
-// TF-068 Browser-Test (echter Chromium): Lap – Trợ lý gọi điện weiterhin 100 % Vietnamesisch inkl. Rechtsprüfung/Stimme/Lịch gọi lại und
+// TF-068 Browser-Test (echter Chromium): Kudoshin – Trợ lý gọi điện weiterhin 100 % Vietnamesisch inkl. Rechtsprüfung/Stimme/Lịch gọi lại und
 // «Đơn hàng của tôi»; Chris – CALLING AGENT nur Überwachung (kein STARTEN, NOTSTOPP vorhanden) und Bereich «VERKÄUFE & PROVISIONEN».
 // Keine externen Requests, keine Anrufe, keine Zahlungen.
 import test from "node:test";
@@ -9,13 +9,13 @@ import { vnLeads, PW } from "./tf063-helpers.js";
 
 const GERMAN = /\b(und|der|die|das|nicht|Anruf|Rückruf|Fehler|Aufnahme|Kampagne|Warteschlange|Parallelität|Vorschau|Starten|STOPP|Schweiz|eingerichtet|Erreicht|Keine|Rechtsprüfung|Stimme|Kosten)\b/i;
 
-test("TF-068 Lap vi-VN + Chris Überwachung/Notstopp + VERKÄUFE & PROVISIONEN", { skip: !exe && "kein Chromium/Chrome/Edge gefunden", timeout: 180_000 }, async () => {
-  const srv = await startServer({ n: 30, vnLeads: vnLeads(6), sellers: { lap: PW.lap } });
+test("TF-068 Kudoshin vi-VN + Chris Überwachung/Notstopp + VERKÄUFE & PROVISIONEN", { skip: !exe && "kein Chromium/Chrome/Edge gefunden", timeout: 180_000 }, async () => {
+  const srv = await startServer({ n: 30, vnLeads: vnLeads(6), sellers: { Kudoshin: PW.Kudoshin } });
   const browser = await chromium.launch({ executablePath: exe, headless: true });
   try {
-    // ---- Lap ----
+    // ---- Kudoshin ----
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
-    await loginAs(ctx, srv, "lap", PW.lap);
+    await loginAs(ctx, srv, "Kudoshin", PW.Kudoshin);
     const page = await ctx.newPage();
     const errors = [], external = [];
     page.on("pageerror", (e) => errors.push(String(e)));

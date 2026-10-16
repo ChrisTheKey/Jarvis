@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="crm.css">
 </head>
 <body>
-<!-- TF-063 Verkäufer-Oberfläche (Giuliano, Mario, Damiano, Lap): gleiche Module wie das Owner-HUD (crm.js, crm-model.js, i18n.js),
+<!-- TF-063 Verkäufer-Oberfläche (Giuliano, Mario, Damiano, Kudoshin): gleiche Module wie das Owner-HUD (crm.js, crm-model.js, i18n.js),
      Daten kommen bereits serverseitig auf den eigenen Bereich gefiltert. Texte setzt sales-app.js je Sprache (de-CH / vi-VN). -->
 <div class="app" id="app" hidden>
   <header>
@@ -29,7 +29,7 @@
       <p class="note" id="aComRule"></p>
       <ul class="orders" id="aComOrders"></ul>
     </section>
-    <!-- TF-065: nur Lap (SALES_AGENT_VN) – sales-app.js blendet ein; der Server liefert anderen Rollen 403. -->
+    <!-- TF-065: nur Kudoshin (SALES_AGENT_VN) – sales-app.js blendet ein; der Server liefert anderen Rollen 403. -->
     <section class="panel" id="aSales" hidden><h2 id="aSalesH"></h2><ul class="orders" id="aSalesList"></ul></section>
     <section class="panel wide" id="aCalling" hidden></section>
     <section class="panel wide chat">

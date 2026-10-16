@@ -1,5 +1,5 @@
 // TF-063 Verkäufer-Oberfläche: eigene Leads (CRM, serverseitig gefiltert), eigene Provision, eigener Jarvis-Chat (user-scoped Verlauf).
-// Sprache aus der Sitzung (/api/auth/me): Giuliano/Mario/Damiano de-CH, Lap vi-VN – alle sichtbaren Texte über i18n.js.
+// Sprache aus der Sitzung (/api/auth/me): Giuliano/Mario/Damiano de-CH, Kudoshin vi-VN – alle sichtbaren Texte über i18n.js.
 // Kein Zugriff auf Owner-Funktionen; jede Grenze prüft zusätzlich der Server (403).
 import { createI18n } from "./i18n.js";
 
@@ -23,7 +23,7 @@ async function loadSummary() {
   const c = body.commission, t = I.t;
   $("aLeadsText").textContent = t("app.leads_text", body.leads?.total ?? 0);
   const stat = (cls, v, label) => { const d = document.createElement("div"); d.className = cls; const b = document.createElement("b"); b.textContent = v; const s = document.createElement("span"); s.textContent = label; d.append(b, s); return d; };
-  // TF-064: Beträge in der Währung des Verkäufers (Lap: VND «346.500 ₫», CH: «CHF 52.50») – nie gemischt.
+  // TF-064: Beträge in der Währung des Verkäufers (Kudoshin: VND «346.500 ₫», CH: «CHF 52.50») – nie gemischt.
   const m = (v, cur = c.currency) => I.money(Number(v), cur);
   $("aComStats").replaceChildren(stat("warn", m(c.pending), t("com.pending")), stat("ok", m(c.payable), t("com.payable")),
     stat("bad", m(c.reversed), t("com.reversed")), stat("", m(c.paid_out ?? 0), t("com.paid_out")), stat("", String(c.paid_completed_orders), t("com.orders")),
@@ -32,7 +32,7 @@ async function loadSummary() {
     li.textContent = `${t("com.order")} ${o.order_id} · ${t(`com.st.${o.status}`)} · ${t("com.price")} ${m(o.price, o.currency)} · ${t("com.amount")} ${m(o.commission, o.currency)}`; return li; })
     : [Object.assign(document.createElement("li"), { textContent: t("com.none") })]));
 }
-// TF-068: eigene Verkäufe (Lap: nur eigene VN-Aufträge, serverseitig gefiltert) – Angebot, Betrag, Zahlungs-/Auftrags-/Provisionsstatus.
+// TF-068: eigene Verkäufe (Kudoshin: nur eigene VN-Aufträge, serverseitig gefiltert) – Angebot, Betrag, Zahlungs-/Auftrags-/Provisionsstatus.
 async function loadSales() {
   const { status, body } = await get("/api/sales?view=orders");
   if (status !== 200 || !body) return;
@@ -95,7 +95,7 @@ async function start() {
   I = createI18n(me.locale);
   texts();
   $("app").hidden = false;
-  // CRM-Modul erst jetzt laden – mit der Sprache des Benutzers (Lap: vi-VN).
+  // CRM-Modul erst jetzt laden – mit der Sprache des Benutzers (Kudoshin: vi-VN).
   document.documentElement.dataset.locale = me.locale;
   await import("./crm.js");
   window.JarvisCrm.setLocale(me.locale);
@@ -103,7 +103,7 @@ async function start() {
   if (location.hash === "#crm") window.JarvisCrm.open();
   $("aLogout").addEventListener("click", async () => { try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch {} toLogin(); });
   $("aChatForm").addEventListener("submit", (e) => { e.preventDefault(); const v = $("aChatIn").value.trim(); if (!v) return; $("aChatIn").value = ""; ask(v); });
-  // TF-065: Trợ lý gọi điện – nur Lap (VN). Giuliano/Mario/Damiano sehen den Bereich nicht (und erhalten serverseitig 403).
+  // TF-065: Trợ lý gọi điện – nur Kudoshin (VN). Giuliano/Mario/Damiano sehen den Bereich nicht (und erhalten serverseitig 403).
   if (me.role === "SALES_AGENT_VN") { const { mountCalling } = await import("./calling-ui.js"); $("aCalling").hidden = false; mountCalling($("aCalling"), { locale: me.locale }); }
   await Promise.all([loadSummary(), loadChat(), me.role === "SALES_AGENT_VN" ? loadSales() : null]);
 }

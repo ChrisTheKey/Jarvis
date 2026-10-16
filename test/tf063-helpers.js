@@ -17,7 +17,7 @@ export const ORIGIN = "https://jarvis.test";
 export const CONTROL = "c".repeat(48);
 export const ENV = { JARVIS_PASSWORD: "owner-legacy-pw-123", JARVIS_SERVER_CONTROL_TOKEN: CONTROL, JARVIS_MAIL_WORKER_TOKEN: "w".repeat(48), JARVIS_SYNC_TOKEN: "s".repeat(40) };
 export const env = (k) => ENV[k];
-export const PW = { giuliano: "Giuliano-Passwort-01", mario: "Mario-Passwort-0002", damiano: "Damiano-Passwort-03", lap: "Lap-Mat-Khau-0004" };
+export const PW = { giuliano: "Giuliano-Passwort-01", mario: "Mario-Passwort-0002", damiano: "Damiano-Passwort-03", Kudoshin: "Kudoshin-Mat-Khau-0004" };
 export const CANTONS = ["ZH", "BE", "LU", "SG", "AG", "TI", "VD", "GE", "BS", "GR", "TG", "SO"];
 export const CATS = ["Restaurant", "Treuhand", "Coiffeur", "Hotel", "Geschäft", "Handwerk", "Arztpraxis", "IT"];
 

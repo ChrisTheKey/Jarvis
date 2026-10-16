@@ -9,6 +9,7 @@ import { netlifyBlobStore } from "../../shared-state.js";
 import { resolveActor as resolveSession, netlifyAuthStore } from "../../auth-core.js";
 import { netlifySalesData } from "../../sales-data.js";
 import { summarize } from "../../commission-ledger.js";
+import { migrateLedger } from "../../seller-identity.js";
 import { offerFor, formatMoney } from "../../pricing.js";
 
 const CLOUD_MODE = `Du bist gerade im Cloud-Modus und läufst auf dem Jarvis-Server (VPS, rund um die Uhr) – das ist der normale Betrieb; der PC von Chris ist nur ein optionaler Client und darf aus sein. Du kannst sprechen, planen, Texte formulieren und Mails als Gmail-Entwurf anlegen (Werkzeug mail_request), aber keine Befehle auf dem Computer von Chris ausführen, keine Dateien lesen und Gmail nur über das Werkzeug mail_request erreichen. Wird so etwas verlangt, sag kurz, dass dafür Jarvis auf dem Computer gestartet sein muss. Server-Status und die festen Server-Aktionen sieht Chris im HUD unter „Server“; du selbst führst keine Server-Befehle aus.
@@ -182,7 +183,7 @@ async function sellerContext(actor) {
   const leads = await d.scoped(actor);
   const { getStore } = await import("@netlify/blobs");
   const ledger = await getStore({ name: "jarvis-sales", consistency: "strong" }).get("commissions", { type: "json" }).catch(() => null);
-  return { leads: { total: leads.length, with_phone: leads.filter((l) => l.phone).length, with_email: leads.filter((l) => l.email).length }, commission: summarize(ledger, [actor.user_id])[0] };
+  return { leads: { total: leads.length, with_phone: leads.filter((l) => l.phone).length, with_email: leads.filter((l) => l.email).length }, commission: summarize(migrateLedger(ledger).doc, [actor.user_id])[0] }; // TF-070: «lap»-Einträge gehören Kudoshin
 }
 const edgeEnv = (k) => Netlify.env.get(k);
 export default createCloudHandler({

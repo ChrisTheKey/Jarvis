@@ -1,9 +1,9 @@
-// TF-065 Calling Agent – Oberfläche für Chris (Owner-HUD «CALLING AGENT», Deutsch) und Lap (Verkäufer-App «TRỢ LÝ GỌI ĐIỆN», komplett Vietnamesisch).
+// TF-065 Calling Agent – Oberfläche für Chris (Owner-HUD «CALLING AGENT», Deutsch) und Kudoshin (Verkäufer-App «TRỢ LÝ GỌI ĐIỆN», komplett Vietnamesisch).
 // Nur Anzeige + Aufrufe von /api/calling. Der Browser sendet nie Telefonnummer, Caller-ID, Trunk, Room oder Agent-Namen – nur lead_id,
 // Markt, Modus und Parallelität. Jede Grenze (Rolle, Scope, Berechtigung, DNC, Zeitfenster, Limits) prüft der Server.
 const T = {
   "de-CH": {
-    title: "CALLING AGENT", sub: "LiveKit Outbound – nur Chris und Lap · keine Aufnahme", refresh: "AKTUALISIEREN", close: "SCHLIESSEN",
+    title: "CALLING AGENT", sub: "LiveKit Outbound – nur Chris und Kudoshin · keine Aufnahme", refresh: "AKTUALISIEREN", close: "SCHLIESSEN",
     livekit: "LiveKit", sip_ch: "SIP CH", sip_vn: "SIP VN", dry: "Testmodus (Dry Run)", rec: "Aufnahme", yes: "JA", no: "NEIN", off: "AUS",
     st: { ONLINE: "ONLINE", NOT_CONFIGURED: "NOT CONFIGURED", OFFLINE: "OFFLINE", READY: "READY", NOT_VERIFIED: "NICHT VERIFIZIERT", CONFIGURED: "KONFIGURIERT", DISABLED: "DEAKTIVIERT" },
     s: { active: "Aktive Gespräche", queued: "Warteschlange", called: "Heute angerufen", reached: "Erreicht", no_answer: "Keine Antwort", interested: "Interessiert", callbacks: "Callbacks", dnc: "DNC", errors: "Fehler" },
@@ -22,7 +22,7 @@ const T = {
     lead: { h: "Calling Agent", last: "Letzter Anruf", status: "Status", result: "Ergebnis", dur: "Dauer", next: "Nächster Rückruf", attempts: "Anzahl Versuche", sum: "Kurze Zusammenfassung",
       elig: "Anruf-Berechtigung", call: "AGENT ANRUFEN", call_q: (c) => `Calling Agent starten?\nEs wird 1 zulässiger Lead angerufen (${c}).\nParallelität: 1.`, noRec: "Keine Audioaufnahme." },
     err: (s, b) => b?.error || `Fehler ${s}`, ok: "Gespeichert.", queued: (n) => `Gestartet – ${n} Lead(s) eingeplant.`, forbidden: "Kein Zugang.",
-    monitorOnly: "Owner: nur Überwachung, Konfiguration, Statistik, Audit und Notstopp – Kampagnen startet ausschliesslich Lap. Nur Vietnam (CH-Calling deaktiviert).",
+    monitorOnly: "Owner: nur Überwachung, Konfiguration, Statistik, Audit und Notstopp – Kampagnen startet ausschliesslich Kudoshin. Nur Vietnam (CH-Calling deaktiviert).",
     legal: "Rechtsprüfung VN", voice: "VN-Männerstimme", callerId: "Caller-ID VN", costs: "Kosten heute", noCost: "keine Provider-Daten",
     lg: { APPROVED: "FREIGEGEBEN", BLOCKED_PENDING_LEGAL_REVIEW: "BLOCKED_PENDING_LEGAL_REVIEW" }, vc: { VOICE_VERIFIED: "VERIFIZIERT", VOICE_NOT_VERIFIED: "VOICE_NOT_VERIFIED" },
     halt: "NOTSTOPP", release: "NOTSTOPP AUFHEBEN", halted: "NOTSTOPP AKTIV – keine neuen Anrufe.", halt_q: "Notstopp auslösen? Alle Kampagnen werden gestoppt und aktive Gespräche beendet.",
@@ -178,7 +178,7 @@ export function mountCalling(box, { locale = "de-CH", onClose = null } = {}) {
 }
 const LIVE = new Set(["QUEUED", "DIALING", "RINGING", "ANSWERED"]);
 
-// ---------- Call-Sektion im Lead-Detail (CRM) – nur Chris und Lap, nur Leads im eigenen Scope ----------
+// ---------- Call-Sektion im Lead-Detail (CRM) – nur Chris und Kudoshin, nur Leads im eigenen Scope ----------
 export function leadCallBox(lead, locale = "de-CH") {
   const t = callingTexts(locale), o = OUT[locale] || OUT["de-CH"], e = ELIG[locale] || ELIG["de-CH"];
   const box = el("div", {}, el("p", { class: "crm-note" }, "…"));

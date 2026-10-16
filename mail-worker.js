@@ -137,7 +137,7 @@ export function finalizeCommercial(body, sender = {}, lang = "de") {
   return out;
 }
 // TF-064: werblicher Entwurf nach Absenderprofil. CH → finalizeCommercial exakt wie bisher (cfg.sender, Sprache des Leads).
-// VN (actor lap oder market VN) → feste vietnamesische Lap-Signatur + vietnamesische Abmeldezeile, nie Chris' Schweizer Signatur.
+// VN (actor Kudoshin – vormals lap – oder market VN) → feste vietnamesische Lap-Signatur + vietnamesische Abmeldezeile, nie Chris' Schweizer Signatur.
 // Eine bereits vorhandene Grussformel «Trân trọng, Lap» am Ende wird durch die vollständige Signatur ersetzt (keine Doppelung).
 export function finalizeForProfile(body, profile, lang = "de") {
   if (profile?.id !== "vn") return finalizeCommercial(body, profile?.sender || {}, lang);
