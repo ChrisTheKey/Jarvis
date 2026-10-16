@@ -2,7 +2,35 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-16 (TF-068)
+Letzte Aktualisierung: 2026-10-16 (TF-070)
+
+## TF-070 – VN-VERKÄUFERKONTO «lap» → «Kudoshin» (2026-10-16, Code 1e2cff1, Netlify via Push, Repair + Mail LIVE, Calling/CRM/Contacts/VN NICHT neu gestartet)
+- **Identität**: legacy seller_id: `lap` · current seller_id: `Kudoshin` (Login-Name exakt «Kudoshin»; Gross/Klein wie bei allen Konten egal).
+  KEIN neuer Verkäufer: SALES_AGENT_VN, vi-VN, Markt VN, 35 % (3500 bps), CHECK 990000 / FIX 3900000 VND → 346500 / 1365000 VND unverändert.
+  «lap» ist kein Benutzer, kein Verkäufer, kein Alias: Login 401, alte Sitzungen ungültig/entfernt, nie mehr geschrieben.
+  Erwähnungen von «Lap/lap» in den Abschnitten TF-063 … TF-068 unten sind historisch (= heute Kudoshin).
+- **Kundensichtbare Persona bleibt bewusst «Lap»** (VN-Mail-Signatur «Trân trọng, / Lap / …», Sprachagent «chuyển máy cho Lap»,
+  lapvietnamese.netlify.app) – nur die Konto-ID wurde umbenannt. Änderung bei Bedarf separat (Mail- + Calling-Deploy).
+- **Code**: `seller-identity.js` (VN_SELLER_ID, LEGACY_VN_SELLER_ID, canonicalSellerId, idempotente Migrationen). Netlify migriert beim
+  ersten Aufruf je Instanz: jarvis-auth users (users.lap → users.Kudoshin, Passwort-Hash 1:1, kein neues Passwort) + sessions (lap entfernt),
+  jarvis-sales commissions (entries seller_id/seller_override, payouts) + orders (seller_id/actor_user_id), jarvis-calling control
+  (campaigns owner_user_id, calls) + history, jarvis-crm queue/vn-queue (actor_user_id), jarvis-mail-requests (requested_by + meta),
+  jarvis-user-state conv/lap → conv/Kudoshin. **Unverändert (Audit-Integrität)**: alle audit[], Provisions-history[], Auth-Audit,
+  Einwilligungs-Nachweise (verified_by/revoked_by) – dort kann «lap» als historischer Akteur stehen. Rückrufe hängen am Lead (Scope).
+  VPS order-intake akzeptiert eine vor der Umstellung angelegte «lap»-Anfrage als Kudoshin (Übergangskompatibilität), schreibt nur Kudoshin.
+  mail-requests cleanMeta erlaubt Grossbuchstaben in Benutzer-IDs (sonst verlöre der Mail-Worker die VN-Metadaten → deshalb Mail-Deploy).
+  `/api/sales` Worker-Op `identity.status` (nur Zählwerte/Flags, x-jarvis-worker). Dockerfile/.repair/.crm kopieren seller-identity.js.
+- **Produktion (2026-10-16, identity.status)**: Verkäufer giuliano/mario/damiano/Kudoshin; VN-Leads 74 → Kudoshin 74, CH-Leads bei Kudoshin 0,
+  «lap» 0; CH unverändert Giuliano 1304 / Mario 200 / Damiano 200. Provisionseinträge 0, Auszahlungen 0, VN-Auftragsanfragen 0 (nichts zu
+  migrieren, keine Duplikate). Auth: weder users.lap noch users.Kudoshin gespeichert → für «lap» war nie ein Passwort gesetzt; es gab keinen
+  Hash zu übernehmen. «lap»-Login 401. **Offen für Chris**: im HUD ZUGÄNGE das Passwort für Kudoshin setzen.
+- **Deploy**: Repair 1e2cff1 (deploy-repair.sh, MAIL_WORKER_UNTOUCHED=YES) → Mail-Worker 1e2cff1 (deploy.sh, Queue vorher 0 pending/0 processing)
+  → Push (origin = HEAD) → Netlify live (owner-admin/calling-ui/sales-app/crm/i18n/sales.html byte-gleich HEAD; /api/auth/me, /api/calling
+  ohne Sitzung 401). jarvis-calling (StartedAt 08:19:22, CALLING_DRY_RUN=true), CRM, Contacts, VN-Discovery unverändert.
+- **Tests**: neu tf070 (6: Konstanten/andere Benutzer, Login + Hash-Übernahme + lap 401 + Idempotenz, RBAC/Scope, Verkäufe/Provision/
+  Auszahlung/identity.status, Calling Kampagne/Anruf/Rückruf + neuer Anruf, CRM-/Mail-Aufträge); Fixtures lap → Kudoshin.
+  `npm run test:tf070` 52/52. Gesamtsuite sequenziell 907 / 895 pass / 0 fail / 12 skip (Docker-Labs). Secret-Scan 0 Treffer.
+- 0 echte Anrufe, 0 Mails, 0 Zahlungen, 0 Aufträge, 0 Kundenwebsites verändert. workspace/memory/chris.md und /opt/fiverr nicht angefasst.
 
 ## TF-068 – VIETNAM CALLING + CRM + PAYMENTS + COMMISSIONS (2026-10-16, Netlify via Push, Dienst jarvis-calling neu (NOT_CONFIGURED, DRY_RUN), Mail/Repair/CRM/Contacts/VN NICHT neu gestartet)
 - **Bestand**: HEAD = origin = 582ca0f vor Beginn. TF-066 auf Netlify live verifiziert (onboarding-ui.js / calling-ui.js byte-gleich HEAD,
