@@ -38,6 +38,7 @@
     "test:tf070": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf070.test.js test/auth-063.test.js test/scope-063.test.js test/commission-064.test.js test/vn-order-064.test.js test/mail-064.test.js test/tf068.test.js test/lap-vi-browser-063.test.js test/calling-browser-068.test.js",
     "test:tf071": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf071.test.js test/onboarding-066.test.js test/onboarding-browser-066.test.js",
     "test:tf072": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf072.test.js test/tf072-browser.test.js test/crm-detail-059.test.js test/commission-063.test.js test/commission-064.test.js",
+    "test:tf073": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf073.test.js test/tf072.test.js test/auth-063.test.js test/scope-063.test.js test/commission-064.test.js",
     "payments-reconcile": "node payment-reconcile.js"
   },
   "dependencies": {

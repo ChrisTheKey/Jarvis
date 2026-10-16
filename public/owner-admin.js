@@ -109,6 +109,25 @@ function assignBox(a) {
     .flatMap(([k, v]) => [el("span", {}, k), el("b", {}, v)])),
     el("div", { class: "crm-qa" }, el("button", { type: "button", class: "crm-btn", onclick: async () => { const x = await call("/api/sales", { op: vn.paused ? "vn.resume" : "vn.pause" }); say(x.status === 200 ? (x.body.paused ? "Vietnam-Discovery pausiert." : "Vietnam-Discovery fortgesetzt.") : `Fehler ${x.status}`, x.status !== 200); load(); } }, vn.paused ? "VN-DISCOVERY FORTSETZEN" : "VN-DISCOVERY PAUSIEREN")));
 }
+// TF-073: Geräte – Owner-Übersicht ist Monitoring/Admin (Metadaten, sperren/freigeben), KEINE Fernsteuerung fremder Geräte.
+// Eigene Geräte (Chris) koppeln/widerrufen wie jeder Benutzer. Secrets, IPs, Dateien oder Remote-Desktop gibt es hier nicht.
+function devicesBox(all, own) {
+  if (!all) return el("p", { class: "crm-note" }, "Geräte nicht verfügbar.");
+  const codeLine = el("p", { class: "crm-note", "aria-live": "polite" });
+  const admin = async (d, op) => { const r = await call(`/api/devices/${encodeURIComponent(d.device_id)}/${op}`, {}); say(r.status === 200 ? `Gerät ${d.device_name}: ${op === "disable" ? "gesperrt" : op === "enable" ? "freigegeben" : "für Neu-Kopplung freigegeben"}.` : r.body?.error || `Fehler ${r.status}`, r.status !== 200); load(); };
+  const rows = all.devices.map((d) => el("li", {}, `${d.owner_user_id} · ${d.device_name} · ${d.device_type} · ${d.status} · ${d.online ? "online" : "offline"} · zuletzt ${fmt(d.last_seen_at)} `,
+    d.status === "active" ? el("button", { type: "button", class: "crm-btn", onclick: () => confirm(`Gerät «${d.device_name}» (${d.owner_user_id}) sperren?`) && admin(d, "disable") }, "SPERREN") : "",
+    d.status === "disabled" ? el("button", { type: "button", class: "crm-btn", onclick: () => admin(d, "enable") }, "FREIGEBEN") : "",
+    d.owner_user_id === "chris" && d.status === "active" ? el("button", { type: "button", class: "crm-btn", onclick: async () => { if (!confirm("Eigenes Gerät widerrufen?")) return; const r = await call(`/api/devices/${encodeURIComponent(d.device_id)}/revoke`, {}); say(r.status === 200 ? "Gerät widerrufen." : `Fehler ${r.status}`, r.status !== 200); load(); } }, "WIDERRUFEN") : ""));
+  return el("div", {},
+    el("p", { class: "crm-note" }, `Eigene Geräte: ${own?.devices?.filter((d) => d.status === "active").length ?? 0} · Fremde Geräte nur Metadaten – sperren ja, steuern nie (Server: 403).`),
+    rows.length ? el("ul", { class: "crm-hist" }, rows) : el("p", { class: "crm-note" }, "Noch keine Geräte gekoppelt."),
+    el("div", { class: "crm-qa" }, el("button", { type: "button", class: "crm-btn", onclick: async () => {
+      const r = await call("/api/devices/pair/start", {});
+      codeLine.textContent = r.status === 200 ? `Einmal-Code für ein EIGENES Gerät (bis ${fmt(r.body.expires_at)}): ${r.body.pairing_code} · node device-agent.js --pair <Code> --name <Gerätename>` : (r.body?.error || `Fehler ${r.status}`);
+    } }, "EIGENES GERÄT KOPPELN")), codeLine);
+}
+let dev = null, devOwn = null;
 let users = null, com = null, asg = null, so = null, pm = null;
 function render(u = users) {
   users = u || users;
@@ -122,11 +141,13 @@ function render(u = users) {
       users ? el("ul", { class: "crm-list oa-users" }, users.users.map(userCard)) : el("p", {}, "Lade …"),
       el("h4", {}, "VERKÄUFE & PROVISIONEN"), salesBox(so, pm),
       el("h4", {}, "PROVISION"), commissionBox(com),
-      el("h4", {}, "LEAD-ZUWEISUNG"), assignBox(asg)));
+      el("h4", {}, "LEAD-ZUWEISUNG"), assignBox(asg),
+      el("h4", {}, "GERÄTE"), devicesBox(dev, devOwn)));
 }
 async function load() {
-  const [u, c, a, s, p] = await Promise.all([call("/api/auth/admin/users"), call("/api/sales?view=commission"), call("/api/sales?view=assignments"), call("/api/sales?view=sales_overview"), call("/api/payments")]);
-  so = s.status === 200 ? s.body : null; pm = p.status === 200 ? p.body : null;
+  const [u, c, a, s, p, d, dn] = await Promise.all([call("/api/auth/admin/users"), call("/api/sales?view=commission"), call("/api/sales?view=assignments"), call("/api/sales?view=sales_overview"), call("/api/payments"),
+    call("/api/devices/admin"), call("/api/devices")]);
+  so = s.status === 200 ? s.body : null; pm = p.status === 200 ? p.body : null; dev = d.status === 200 ? d.body : null; devOwn = dn.status === 200 ? dn.body : null;
   if (u.status !== 200) { $("ownerAdmin").replaceChildren(el("p", { class: "crm-empty" }, u.status === 403 ? "Nur für den Owner." : `Nicht verfügbar (Fehler ${u.status}).`)); return; }
   com = c.status === 200 ? c.body : null; asg = a.status === 200 ? a.body : null;
   render(u.body);

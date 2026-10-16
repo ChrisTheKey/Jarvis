@@ -54,7 +54,8 @@ export function passwordProblem(pw) {
 
 const clientIp = (req) => String(req.headers.get("x-nf-client-connection-ip") || req.headers.get("x-forwarded-for") || "unknown").split(",")[0].trim().slice(0, 64);
 
-export function createAuthHandler({ getStore, env, now = () => new Date() }) {
+// TF-073: onUserDisabled(user_id, actor_user_id) beendet alle Geräte-Sitzungen des deaktivierten Kontos (Geräte gehen nie an Chris über).
+export function createAuthHandler({ getStore, env, now = () => new Date(), onUserDisabled = null }) {
   async function update(key, fn, empty) {
     const store = await getStore();
     for (let i = 0; i < 6; i++) {
@@ -200,7 +201,7 @@ export function createAuthHandler({ getStore, env, now = () => new Date() }) {
     if (route === "admin/active") {
       if (typeof body.active !== "boolean") return reply(400, { error: "active: true/false." });
       await update("users", (d) => { d.users ||= {}; d.users[target] = { ...(d.users[target] || {}), active: body.active }; }, emptyUsers);
-      if (!body.active) await revokeAll(target);
+      if (!body.active) { await revokeAll(target); if (onUserDisabled) await onUserDisabled(target, r.actor.user_id); }
       return done(body.active ? "auth.admin.activated" : "auth.admin.deactivated");
     }
     return reply(404, { error: "Unbekannte Admin-Aktion." });

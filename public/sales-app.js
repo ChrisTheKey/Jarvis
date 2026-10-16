@@ -42,6 +42,29 @@ async function loadSales() {
     `${o.order_id || "–"} · ${o.company || o.domain} · ${t("sales.offer")} ${o.offer_name || o.offer} · ${I.money(Number(o.price), o.currency)} · ${t("sales.paid")} ${I.money(Number(o.paid), o.currency)} · ${t("sales.pay")} ${o.payment_status} · ${t("sales.state")} ${o.state || "–"} · ${t("com.amount")} ${I.money(Number(o.commission), o.currency)} (${t(`com.st.${o.commission_status}`)})` }))
     : [Object.assign(document.createElement("li"), { textContent: t("sales.none") })]));
 }
+// TF-073: eigene Geräte – Liste, Einmal-Code zum Koppeln, Widerruf. Keine Fernsteuerung fremder Geräte (Server: 403).
+async function loadDevices() {
+  const t = I.t, { status, body } = await get("/api/devices");
+  $("aDevH").textContent = t("dev.title"); $("aDevNote").textContent = t("dev.note"); $("aDevPair").textContent = t("dev.pair");
+  if (status !== 200 || !body) { $("aDevList").replaceChildren(Object.assign(document.createElement("li"), { textContent: t("dev.fail", status) })); return; }
+  const live = body.devices.filter((d) => d.status !== "revoked");
+  $("aDevList").replaceChildren(...(live.length ? live.map((d) => {
+    const li = document.createElement("li");
+    li.textContent = `${d.device_name} · ${d.device_type} · ${t(`dev.st.${d.status}`)} · ${d.online ? t("dev.online") : t("dev.offline")} `;
+    if (d.status === "active") {
+      const b = Object.assign(document.createElement("button"), { type: "button", className: "btn ghost", textContent: t("dev.revoke") });
+      b.addEventListener("click", async () => { if (!confirm(t("dev.confirm"))) return; await post(`/api/devices/${encodeURIComponent(d.device_id)}/revoke`, {}); loadDevices(); });
+      li.append(b);
+    }
+    return li;
+  }) : [Object.assign(document.createElement("li"), { textContent: t("dev.none") })]));
+}
+const post = async (url, body) => { const r = await fetch(url, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); if (r.status === 401) toLogin(); return { status: r.status, body: await r.json().catch(() => null) }; };
+async function pairStart() {
+  const t = I.t, r = await post("/api/devices/pair/start", {});
+  if (r.status !== 200) { $("aDevCode").textContent = t("dev.fail", r.body?.code || r.status); return; }
+  $("aDevCode").textContent = `${t("dev.code", r.body.pairing_code, new Date(r.body.expires_at).toLocaleTimeString(I.locale))} · ${t("dev.howto")}`;
+}
 // ---------- Chat (eigener Verlauf über /api/state – nie Chris' Kontext) ----------
 function renderChat() {
   const log = $("aChatLog");
@@ -102,9 +125,10 @@ async function start() {
   $("crmBtn").textContent = I.t("app.leads_open");
   if (location.hash === "#crm") window.JarvisCrm.open();
   $("aLogout").addEventListener("click", async () => { try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch {} toLogin(); });
+  $("aDevPair").addEventListener("click", pairStart);
   $("aChatForm").addEventListener("submit", (e) => { e.preventDefault(); const v = $("aChatIn").value.trim(); if (!v) return; $("aChatIn").value = ""; ask(v); });
   // TF-065: Trợ lý gọi điện – nur Kudoshin (VN). Giuliano/Mario/Damiano sehen den Bereich nicht (und erhalten serverseitig 403).
   if (me.role === "SALES_AGENT_VN") { const { mountCalling } = await import("./calling-ui.js"); $("aCalling").hidden = false; mountCalling($("aCalling"), { locale: me.locale }); }
-  await Promise.all([loadSummary(), loadChat(), me.role === "SALES_AGENT_VN" ? loadSales() : null]);
+  await Promise.all([loadSummary(), loadChat(), loadDevices(), me.role === "SALES_AGENT_VN" ? loadSales() : null]);
 }
 start().catch(() => { $("aMsg").textContent = I.t("app.unreachable"); });

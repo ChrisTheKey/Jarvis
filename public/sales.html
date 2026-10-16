@@ -29,6 +29,9 @@
       <p class="note" id="aComRule"></p>
       <ul class="orders" id="aComOrders"></ul>
     </section>
+    <!-- TF-073: eigene Geräte (nur eigene; der Server liefert für fremde Geräte 403 – auch dem Owner). -->
+    <section class="panel" id="aDev"><h2 id="aDevH"></h2><p class="note" id="aDevNote"></p><ul class="orders" id="aDevList"></ul>
+      <button class="btn" type="button" id="aDevPair"></button><p class="note" id="aDevCode" aria-live="polite"></p></section>
     <!-- TF-065: nur Kudoshin (SALES_AGENT_VN) – sales-app.js blendet ein; der Server liefert anderen Rollen 403. -->
     <section class="panel" id="aSales" hidden><h2 id="aSalesH"></h2><ul class="orders" id="aSalesList"></ul></section>
     <section class="panel wide" id="aCalling" hidden></section>
