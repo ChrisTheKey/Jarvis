@@ -491,7 +491,7 @@ test("§54 THREAD-SICHERHEIT: fremder Thread nie gelesen; andere Absenderadresse
   assert.deepEqual([lb.threadId, lb.to], [rb.thread_id, "b@zweite-firma.test"]);
   assert.equal(W.rec(a).brief.items.length, 0, "Auftrag A unverändert");
   // Falscher Empfänger für Auftrag A (Adresse von B) → Outbox lehnt ab, nichts gesendet.
-  const m = createOutboxMailer({ dir: W.ob });
+  const m = createOutboxMailer({ dir: W.ob, now: W.now }); // gleiche Fake-Uhr wie Export/Mail-Worker (sonst Export «veraltet» → defer)
   const d = await m.createDraft({ to: "b@zweite-firma.test", subject: "x", body: "x", messageClass: C.ONBOARDING_CLASS, orderId: a, purpose: "check_intro" });
   await m.sendDraft(d.draftId).catch(() => {});
   const before = W.g.sends().length;
