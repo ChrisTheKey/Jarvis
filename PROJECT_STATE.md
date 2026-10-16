@@ -2,7 +2,43 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-16 (TF-072)
+Letzte Aktualisierung: 2026-10-16 (TF-073)
+
+## TF-073 – GERÄTE-ISOLATION PRO BENUTZER + 60 % PROVISION VERIFIZIERT (2026-10-16, Code 04d9d9f, CODE READY, Netlify NICHT live (Deploy-Credits erschöpft), VPS: kein Dienst neu gestartet)
+- **ACTIVE COMMISSION: 60 % = 6000 bps** (neue Verkäufe) für Giuliano, Mario, Damiano, Kudoshin; Chris 0. Logik unverändert aus TF-072 (`pricing.js`
+  COMMISSION_BPS_SCHEDULE, SELLER_COMMISSION_BPS einzige Quelle) – keine aktive 35-%-Konfiguration mehr, 3500 nur noch als historischer Schedule-Eintrag.
+  Neue Beträge aus bps verifiziert: CH CHECK 150 → 90.00 CHF, CH FIX 480 → 288.00 CHF, VN CHECK 990000 → 594000 VND, VN FIX 3900000 → 2340000 VND.
+  Gespeicherte 3500-bps-Einträge bleiben 3500 (nie rückwirkend).
+- **DEVICE SECURITY MODEL: per-user cloud/device isolation** – jeder Benutzer (chris, giuliano, mario, damiano, Kudoshin) hat eigene Geräte (PC/Telefon).
+  **Kein** Mesh, **kein** gemeinsamer Geräte-Pool, **kein** globaler Geräte-Token, **keine** Peer-to-Peer- oder Quer-Zugriffe.
+  **Chris OWNER behält die Cloud-Konto-Administration** (Verkäufer, Leads, Verkäufe, Provisionen, Rückrufe, CRM, Kontostatus, Calling) **aber KEINEN
+  Geräte-Fernsteuerungs-Bypass**: Geräte-Steuerung nur bei `authenticated_user_id === device.owner_user_id` – auch für OWNER. Cloud-Admin-RBAC
+  (auth-core PERMISSIONS) und Geräte-RBAC (device-core `authorizeDeviceAccess`) sind getrennt; geprüft beim Sitzung-Öffnen, Einreihen UND bei der
+  Auslieferung an den Agenten (unterste serverseitige Schicht), zusätzlich im Agenten selbst.
+- Neu: `device-core.js` (Modell, Kernregel, Whitelists), `device-api.js` (/api/devices/*), `netlify/functions/devices.mjs` (Blobs "jarvis-devices"),
+  `device-agent.js` (lokaler Agent, **nur ausgehend HTTPS**, kein offener Port, kein RDP/SSH/VNC/SMB, nur Aktionen `device.ping`/`device.status` –
+  kein Dateisystem/Desktop). Gerät: device_id, owner_user_id (kanonisch, unveränderlich), device_type pc|phone, device_name, created_at,
+  last_seen_at, status active|revoked|disabled.
+- **Kopplung**: nur an das eigene Konto (Session), Einmal-Code 10 min, single use (atomar per etag), an Benutzer + flow `device_pair` gebunden,
+  max. 3 offene Codes; Gerät erzeugt eigene Identität (nur SHA-256 an die Cloud), Server gibt je Gerät ein eigenes Credential aus (nur SHA-256
+  gespeichert, rotierbar über den Kanal, widerrufbar). Eigentümerwechsel nie durch Umschreiben: Widerruf/Sperre → OWNER `release` (Audit) →
+  neue Kopplung mit neuer device_id; alter Datensatz behält den alten Eigentümer.
+- **Widerruf** (Eigentümer): kein Reconnect, keine Befehle, alte Sitzungen tot. **Sperren/Freigeben** (Chris, Admin): beendet Sitzungen, gibt Chris
+  keine Verbindung. **Konto deaktiviert** (auth admin/active false): alle Geräte-Sitzungen + offene Befehle des Verkäufers enden
+  (`onUserDisabled` → `terminateUserDevices`), Kanal prüft den Kontostatus zusätzlich selbst (fail closed); Geräte gehen nicht an Chris über.
+- **Sichtbarkeit**: Verkäufer sehen nur eigene Geräte (`DEVICE_NOT_PAIRED`, kein Fallback auf Chris' Computer); Chris-Übersicht nur Metadaten
+  (Verkäufer, Name, Typ, online/offline, zuletzt gesehen) – nie Secret, Fingerprint, IP, Dateien, Remote-Desktop, Sitzungs-Credentials.
+  Fremde/unbekannte Geräte → 403 DEVICE_FORBIDDEN (gleiche Antwort, kein Existenz-Orakel).
+- **Audit** (jarvis-devices/audit): pair_start, paired, pair_complete-Blockaden (used/expired/invalid/owned_elsewhere), revoked, session_opened/closed,
+  action_queued, blocked_cross_user, disabled/enabled, released_for_repairing, credential_rotated, account.disabled – nie Secrets/Codes/Tokens.
+- Bestehend, unverändert: JARVIS_SYNC_TOKEN gehört nur Chris' lokalem Kern (schreibt nur Chris' Owner-State, keine Geräte-Steuerung);
+  JARVIS_SERVER_CONTROL_TOKEN nur der VPS-Agent (feste Aktionen, Owner-Infrastruktur, kein Benutzer-Gerät).
+- UI (CODE READY, nicht live): sales.html/sales-app.js «Meine Geräte» (de-CH + vi-VN), owner-admin.js «GERÄTE» (Metadaten, sperren/freigeben,
+  eigenes Gerät koppeln/widerrufen).
+- Tests: `test/tf073.test.js` (9) – Eigentum je Benutzer, volle 5×5-Quer-Matrix 403, Chris-Cloud-Admin 200, Kopplung (fremd/abgelaufen/Replay/
+  Widerruf/Konto deaktiviert/Rotation), keine Secrets in Speicher/Audit, Provision. `npm run test:tf073`.
+- CALLING_DRY_RUN bleibt true, Payment-Monitor unverändert, 0 echte Mails/Anrufe/Zahlungen, 0 Kundenwebsites verändert.
+- **Offen**: Netlify-Produktionsdeploy (Credits erschöpft) – /api/devices und die Geräte-UI sind erst nach dem nächsten erfolgreichen Deploy live.
 
 ## TF-072 – DIREKTE CRM-FEHLERLINKS + 60 % VERKÄUFERPROVISION (2026-10-16, Code d81cb2b, Repair + CRM LIVE, Netlify NICHT live, Mail/Calling/Contacts/VN NICHT neu gestartet)
 - **Provision**: aktueller Satz **60 % = 6000 bps** für Giuliano, Mario, Damiano, Kudoshin (Chris 0) – **gültig für NEUE Verkäufe ab TF-072**
