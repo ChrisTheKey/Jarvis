@@ -44,7 +44,9 @@ Letzte Aktualisierung: 2026-10-16 (TF-075A)
   verkleinert/aufgeteilt wird (eigener Task, braucht Netlify).
 - **Deploy 2026-10-16:** Mail-Worker 11fbdb7 (deploy.sh fiverr; vorher Queue 0 pending / 0 creating / 0 sending; read-only Gmail-Zählung: 0
   Formular-Benachrichtigungen in 14 Tagen → 0 Entwürfe; danach healthy, restarts 0, genau ein Worker, 0 Sends, keine Fehler). CRM siehe Abschluss
-  unten. Repair, Calling (CALLING_DRY_RUN=true), VN, Contacts NICHT neu gestartet. **Netlify: CODE READY (UI-Abzeichen + cleanCrmLead), NICHT live.**
+  unten. CRM 787c142 (deploy-crm.sh build|start; MAIL_WORKER_UNTOUCHED=YES, CONTACTS_WORKER_UNTOUCHED=YES; nach 4 min healthy, Pull 200,
+  view_too_large 6 484 490 Bytes / 1718 Leads ohne TF-075A-Feld, Health view TOO_LARGE_STALE). Repair, Calling (CALLING_DRY_RUN=true), VN, Contacts
+  NICHT neu gestartet. **Netlify: CODE READY (UI-Abzeichen + cleanCrmLead), NICHT live.**
 
 ## TF-074 – LOKALER JARVIS → GERÄTE-CREDENTIALS + SICHERER LOKALER ZUGRIFF PRO BENUTZER (2026-10-16, CODE READY, Netlify NICHT live (Deploy-Credits erschöpft), VPS: kein Dienst neu gestartet)
 - **DEVICE CONNECTION MODEL: eindeutige Credentials pro Benutzer UND pro Gerät, NUR AUSGEHEND (HTTPS), KEINE BENUTZERÜBERGREIFENDE GERÄTESTEUERUNG.**
