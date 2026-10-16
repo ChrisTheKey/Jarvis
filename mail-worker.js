@@ -28,7 +28,9 @@ import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend, ensureColdDra
 import { publicLeads } from "./cloud-leads.js";
 import { loadRegistry, registryBlock, reconcileRegistry, publicRegistry, registryStatus, CRM_UNAVAILABLE } from "./lead-registry.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
-import { senderProfileFor } from "./sender-profiles.js";
+import { readOrdersExport } from "./onboarding-store.js";
+import { senderProfileFor, VN_SIGNATURE } from "./sender-profiles.js";
+import { processContactForms, DEFAULT_CONTACT_FORM_CONFIG, CONTACT_FORM_DRAFT_MODE } from "./contact-form.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -232,7 +234,8 @@ export const AI_BUDGET_FILE = "ai_budget.json";
 // TF-066: onboardingThreads() → Map threadId → order_id der gebundenen Auftrags-Threads (Dialog läuft in onboarding-dialogue.js,
 // hier werden sie weder gelesen noch beantwortet noch mit Follow-ups versehen).
 export const SERVICE_THREAD_CLASSES = new Set(["CUSTOMER_ONBOARDING_DIALOGUE", "CUSTOMER_ACCESS_REQUEST"]);
-export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, aiPaused = async () => {}, sendGuard = ALLOW_ALL, onboardingThreads = null }) {
+// TF-075A: contactOrders() → Aufträge (order_id → { customer_email, market, lead_id, … }) für die exakte Zuordnung von Kontaktformular-Anfragen.
+export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, aiPaused = async () => {}, sendGuard = ALLOW_ALL, onboardingThreads = null, contactOrders = () => ({}) }) {
   const store = createStore(dir);
   // KI-Budget-Sperre (fail closed, persistiert): nach einem Guthabenfehler keine weiteren KI-Aufrufe. Höchstens ein Prüfversuch
   // je aiRecheckMinutes (von Anthropic abgelehnte Aufrufe kosten nichts); gelingt er, ist die KI wieder frei.
@@ -299,6 +302,15 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       gmailDegraded ||= { stage, at: t.toISOString(), message: String(e.message || e).slice(0, 160) };
       log("warn", "gmail_degraded", { stage, error: String(e.message || e).slice(0, 200) });
     };
+    // 0) TF-075A P0: Kontaktformular-Anfragen VOR allem anderen (vor Cold-Sync, Antworten, Follow-ups, Erstkontakten, Cloud-Aufträgen
+    // und Cold-Entwürfen). FIFO, nur Gmail-ENTWURF (CONTACT_FORM_DRAFT_ONLY, nie state.actions → nie Send-Queue), genau einer je Anfrage.
+    let contactForms = null;
+    try {
+      contactForms = await processContactForms({ gmail, store, cfg: { ...DEFAULT_CONTACT_FORM_CONFIG, ...(cfg.contactForms || {}) }, sender: cfg.sender, vnSignature: VN_SIGNATURE,
+        ownAddresses: [cfg.sender?.email, ...cfg.excludeAddresses].filter(Boolean), leads: () => contactLeads(store), orders: contactOrders, now: t, log, escalate,
+        isTransient: (e) => TRANSIENT_RE.test(String(e?.message || e)), readOnly: dry || readOnly });
+      if (contactForms.degraded) degrade("contact_form", { message: contactForms.degraded });
+    } catch (e) { log("error", "contact_form_failed", { error: String(e.message).slice(0, 160) }); }
     // TF-025: von Chris manuell in Gmail versendete Cold-Entwürfe erkennen (nur eigene, eindeutig zugeordnete Threads).
     // Ergebnis sind nur Fakten (Zeit, IDs) – nie eine Rechtsgrundlage. Danach gelten die normalen sicheren Antwortregeln.
     // TF-037: höchstens maxColdDraftChecksPerTick Entwürfe je Durchlauf (persistenter Round-Robin-Cursor in gmail.js).
@@ -352,7 +364,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     // Abgebrochene Vorbereitungen (Absturz zwischen Anlegen und Speichern) einem vorhandenen Entwurf zuordnen.
     for (const [key, a] of Object.entries(state.actions)) {
       if (a.status !== "creating") continue;
-      const found = Object.entries(reg.drafts || {}).find(([, d]) => d.createdAt >= a.at && (a.threadId ? d.threadId === a.threadId : normEmail(d.to) === a.to));
+      const found = Object.entries(reg.drafts || {}).find(([, d]) => d.mode !== CONTACT_FORM_DRAFT_MODE && d.createdAt >= a.at && (a.threadId ? d.threadId === a.threadId : normEmail(d.to) === a.to));
       if (found) { state.actions[key] = { ...a, status: "prepared", draftId: found[0] }; state.prepared[found[0]] = { key, at: a.at, kind: a.kind }; }
       else if (t - new Date(a.at) > 10 * 60_000) delete state.actions[key]; // nichts entstanden → darf neu versucht werden
     }
@@ -825,6 +837,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         if (!EMAIL_RE.test(to)) { blockAt(key, a, "blocked", "Empfänger ungültig."); continue; }
         // Cold-Lead-Entwürfe (und Altlasten aus TF-022) sendet Jarvis nie – nur Chris manuell in Gmail. Vor allen anderen Prüfungen.
         if (a.kind === "einzelmail" || fresh.drafts[a.draftId]?.mode === COLD_MODE) { blockAt(key, a, "cold_draft_never_auto", "COLD_LEAD_DRAFT_ONLY – nur manueller Versand durch Chris."); continue; }
+        if (fresh.drafts[a.draftId]?.mode === CONTACT_FORM_DRAFT_MODE) { blockAt(key, a, "contact_form_draft_never_auto", "CONTACT_FORM_DRAFT_ONLY – nur manueller Versand durch Chris."); continue; }
         if (!state.compliantThreads[a.threadId]) { blockAt(key, a, "blocked_no_legal_basis", "Keine Versandgrundlage für diesen Thread."); continue; }
         if (a.basisFrom === "lead" || a.kind === "erstkontakt") {
           const lead = (Array.isArray(freshLeads) ? freshLeads : []).find((l) => normEmail(l?.email) === to);
@@ -884,7 +897,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     };
 
     save();
-    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, sendMode: cfg.sendMode, autoSendActive: auto, window: win?.id || null, windows, stats, escalations, cloudResults, ownThreads, plan, sends, optouts, humanContacts,
+    return { day, limit: cfg.limit, sentToday, used, free: free(), dryRun: dry, contactForms, sendMode: cfg.sendMode, autoSendActive: auto, window: win?.id || null, windows, stats, escalations, cloudResults, ownThreads, plan, sends, optouts, humanContacts,
       gmail: gmailDegraded ? { status: "DEGRADED", ...gmailDegraded } : { status: "OK" },
       suppressedTotal: Object.keys(supp).length, eligibleLeads: eligibleLeads.length, blockedLeads: blockedLeads.length, notes };
   }
@@ -927,6 +940,18 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       }
     },
   };
+}
+
+// TF-075A: Leads für die exakte Kontaktformular-Zuordnung (Adresse/Domain) aus der Lead-Datenbank. VN-Kunden werden über ihre Aufträge
+// (contactOrders) zugeordnet – die VN-Lead-Daten liegen nicht im Mail-Worker.
+export function contactLeads(store) {
+  const out = [];
+  for (const l of Object.values(loadRegistry(store).leads || {})) {
+    if (!l?.lead_id) continue;
+    out.push({ lead_id: l.lead_id, domain: l.domain || null, emails: [l.business_email, ...(l.alt_emails || [])].filter(Boolean).map(normEmail), market: l.market === "VN" ? "VN" : "CH",
+      language: l.language || null, company: l.company || null });
+  }
+  return out;
 }
 
 // ---------- Texte schreiben lassen (Claude Code ohne Werkzeuge – liefert nur JSON) ----------
@@ -1115,7 +1140,9 @@ async function loop() {
   const onboarding = onbDir ? onbMod.createOnboarding({ dir: WORKER_DIR, onboardingDir: onbDir, gmail, extract: role === "vps" || process.env.JARVIS_COMPOSE === "api" ? onbMod.apiExtract() : null,
     log, notify: shared.createOnboardingNotifier({ local, log }) }) : null;
   const onboardingThreads = onboarding ? () => onboarding.boundThreads() : null;
-  let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads });
+  // TF-075A: Aufträge für die exakte Zuordnung von Kontaktformular-Anfragen (Export des Repair-Service, nur lesen).
+  const contactOrders = () => (onbDir ? readOrdersExport(onbDir).orders || {} : {});
+  let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads, contactOrders });
   const startedAt = new Date().toISOString();
   // Server Control (nur VPS): Pause zwischen Durchläufen ist weckbar; Neustart des Cores = sauberes Ende nach dem Durchlauf,
   // Docker (restart: unless-stopped) startet den Container-Prozess neu. Nie mitten in einem Gmail-Durchlauf.
@@ -1136,7 +1163,7 @@ async function loop() {
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
     queue: () => { const inbox = createStore(WORKER_DIR).read(CLOUD_INBOX, {}); const st = Object.values(inbox).map((e) => e.status); return { pending: st.filter((x) => x === "pending").length, processing: st.filter((x) => x === "accepted_local").length }; },
     restartCore: () => { restartRequested = true; wake(); },
-    restartMailWorker: () => { worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads }); standbyLogged = false; wake(); },
+    restartMailWorker: () => { worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads, contactOrders }); standbyLogged = false; wake(); },
     restartScheduler: () => wake(),
     // Cloud/Handy: Lead-Liste (Allowlist) und Cold-Entwurf je genau einem Lead – nur Entwurf, nie Versand.
     leads: () => publicLeads(salesMod.loadPipeline({ dir: WORKER_DIR, registry: gmail.listOwned() }).leads),

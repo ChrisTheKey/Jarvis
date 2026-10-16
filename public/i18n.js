@@ -1,7 +1,7 @@
 // Jarvis i18n (TF-063) – eine Oberfläche, zwei Sprachen: de-CH (bestehende Schweizer Terminologie, unverändert) und vi-VN (Kudoshin).
 // Reines ES-Modul ohne DOM: Browser (crm.js, sales-app.js, login.js) UND Netlify-Funktion (CSV-Kopfzeilen). Firmennamen, Domains,
 // Telefonnummern und Kundeninhalte werden nie übersetzt; interne Codes werden nie direkt angezeigt (immer über die Label-Tabellen).
-import { STAGE_LABEL, CALL_LABEL, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, AUDIT_LABEL, ISSUE_LABEL, SEVERITY_LABEL, HISTORY_LABEL,
+import { STAGE_LABEL, CALL_LABEL, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, AUDIT_LABEL, ISSUE_LABEL, SEVERITY_LABEL, HISTORY_LABEL, CONTACT_FORM_LABEL,
   CARDS, PIPELINE_CARDS, ERROR_CARDS, SORTS, ERR_WORDS_DE, ISSUE_WORDS_DE, CSV_COLUMNS } from "./crm-model.js";
 
 export const LOCALES = Object.freeze(["de-CH", "vi-VN"]);
@@ -18,7 +18,7 @@ const labelsOf = (cards) => Object.fromEntries(Object.entries(cards).map(([k, c]
 // ---------- Statuswörter / Karten ----------
 const DE_LABELS = {
   stage: STAGE_LABEL, call: CALL_LABEL, contact: CONTACT_LABEL, draft: DRAFT_LABEL, followUp: FOLLOW_UP_LABEL, audit: AUDIT_LABEL, issue: ISSUE_LABEL,
-  severity: SEVERITY_LABEL, history: HISTORY_LABEL, cards: labelsOf(CARDS), pipeline: labelsOf(PIPELINE_CARDS), errorCards: labelsOf(ERROR_CARDS), sorts: labelsOf(SORTS),
+  severity: SEVERITY_LABEL, history: HISTORY_LABEL, contactForm: CONTACT_FORM_LABEL, cards: labelsOf(CARDS), pipeline: labelsOf(PIPELINE_CARDS), errorCards: labelsOf(ERROR_CARDS), sorts: labelsOf(SORTS),
   level: { HIGH: "HIGH", MEDIUM: "MEDIUM", LOW: "LOW" }, category: {}, reasons: {},
 };
 const VI_LABELS = {
@@ -35,6 +35,7 @@ const VI_LABELS = {
   issue: { contact: "Liên hệ", navigation: "Điều hướng", http: "Lỗi trang (404/5xx)", images: "Hình ảnh", mobile: "Điện thoại di động", other: "Khác" },
   severity: { critical: "nghiêm trọng", high: "cao", medium: "trung bình", low: "thấp" },
   history: { HISTORICAL: "PHÁT HIỆN CŨ", REVERIFIED: "ĐÃ XÁC MINH LẠI" },
+  contactForm: { badge: "BIỂU MẪU LIÊN HỆ", matched: "ĐÃ KHỚP", NEW: "MỚI", DRAFT_CREATED: "ĐÃ TẠO BẢN NHÁP", REVIEW_REQUIRED: "CẦN KIỂM TRA" },
   cards: { all: "Tất cả", new: "Mới", to_contact: "Cần liên hệ", contacted: "Đã liên hệ", interested: "Quan tâm", follow_ups: "Cần theo dõi", customers: "Khách hàng",
     dnc: "Không liên hệ", with_phone: "Có số điện thoại", with_person: "Có người liên hệ", with_draft: "Có bản nháp", with_findings: "Có ít nhất 1 lỗi website", history: "Phát hiện cũ" },
   pipeline: { pipe_waiting: "Đang chờ bản nháp", pipe_no_draft: "Chưa có bản nháp", pipe_draft: "Bản nháp sẵn sàng", pipe_contacted: "Đã liên hệ", pipe_customer: "Khách hàng" },

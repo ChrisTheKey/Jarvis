@@ -67,6 +67,9 @@ function callIssuesBox(l) {
 }
 // TF-058: historischer Discovery-Fund (nur Anzeige – daraus entsteht nie ein Entwurf).
 const histBadge = (l) => (I.L.history[l.history_badge] ? badge(`hist-${l.history_badge}`, I.L.history[l.history_badge]) : "");
+// TF-075A: Kontaktformular-Anfrage (zugeordnet) – CONTACT FORM · MATCHED · Status. Nur Status-Wörter, nie Mailinhalt.
+const cfBadge = (l) => (l.contact_form && I.L.contactForm?.[l.contact_form.status]
+  ? badge(`cf-${l.contact_form.status}`, [I.L.contactForm.badge, l.contact_form.matched ? I.L.contactForm.matched : null, I.L.contactForm[l.contact_form.status]].filter(Boolean).join(" · ")) : "");
 const stageBadge = (l) => l.do_not_contact ? badge("dnc", t("dnc")) : badge(`st-${l.sales_stage}`, I.L.stage[l.sales_stage] || "–");
 const errMsg = (status, body) => (body?.code ? I.codeMsg(body.code, body.error) : I.vi ? t("act.err", status) : body?.error || t("act.err", status));
 
@@ -155,7 +158,7 @@ function tableView(list) {
   const head = ["th.company", "th.category", "th.website", "th.errors", "th.top", "th.person", "th.phone", "th.email", "th.draft", "th.status", "th.call", "th.next"].map((k) => t(k));
   const rows = list.map((l) => el("tr", { class: `${l.do_not_contact ? "dnc" : ""}${S.sel === l.lead_id ? " sel" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
-    el("td", { class: "co" }, el("b", {}, l.company || l.domain || l.lead_id), el("small", {}, place(l) || ""), badge(l.priority?.level || "LOW", `${level(l)} ${l.priority?.score ?? 0}`), histBadge(l)),
+    el("td", { class: "co" }, el("b", {}, l.company || l.domain || l.lead_id), el("small", {}, place(l) || ""), badge(l.priority?.level || "LOW", `${level(l)} ${l.priority?.score ?? 0}`), histBadge(l), cfBadge(l)),
     el("td", { class: "cat" }, cat(l)),
     el("td", {}, link(l.website, l.domain || t("th.website"))),
     el("td", { class: "err" }, errorsCell(l)),
@@ -173,7 +176,7 @@ function cardsView(list) {
   return el("ul", { class: "crm-list" }, list.map((l) => el("li", { class: `crm-lcard${l.do_not_contact ? " dnc" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
     el("div", { class: "row" }, el("h3", {}, l.company || l.domain || l.lead_id), stageBadge(l)),
-    l.domain ? el("small", { class: "dom" }, l.domain) : "", histBadge(l),
+    l.domain ? el("small", { class: "dom" }, l.domain) : "", histBadge(l), cfBadge(l),
     el("div", { class: "crm-cat" }, el("span", { class: "lbl" }, t("card.category")), " ", cat(l)),
     el("div", { class: "crm-errline" }, el("span", { class: "lbl" }, t("card.errors")), errNum(l), auditBadge(l)),
     el("div", { class: "crm-top2wrap" }, el("span", { class: "lbl" }, t("card.top2")), top2(l)),
@@ -231,7 +234,7 @@ function renderDrawer() {
   const unconfirmed = (l.findings_total || 0) - (l.findings_confirmed || 0);
   d.replaceChildren(
     el("div", { class: "crm-top" }, el("h3", {}, l.company || l.domain || l.lead_id), el("button", { type: "button", class: "crm-btn", onclick: closeDrawer, "aria-label": t("aria.closeDetail") }, t("btn.close"))),
-    el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", t("priority", level(l), l.priority?.score ?? 0)), " ", histBadge(l)),
+    el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", t("priority", level(l), l.priority?.score ?? 0)), " ", histBadge(l), " ", cfBadge(l)),
     l.history_badge ? el("p", { class: "crm-note" }, t("histNote")) : "",
     blocked ? el("div", { class: "crm-dnc-banner" }, `${t("dncBanner")}${l.dnc_source && l.dnc_source !== "crm" ? t("dncSource", src) : ""}`) : "",
     el("small", {}, (l.priority?.reasons || []).map(I.reason).join(" · ") || t("noReasons")),

@@ -107,6 +107,8 @@ export function createSourceReader({ dataDir, mailDir, repairDir = null }) {
     siteFindings: read(path.join(dataDir, SITE_FINDINGS_FILE), { domains: {} }),
     repairFindings: repairDir ? read(path.join(repairDir, REPAIR_FINDINGS_FILE), { orders: {} }) : { orders: {} },
     history: read(path.join(dataDir, HISTORY_FILE), { leads: {} }), // TF-058: historische Funde (CRM-eigen, niedrigste Priorität)
+    // TF-075A: Kontaktformular-Anfragen je zugeordnetem Lead (nur Status-Wörter, keine Adressen/Inhalte; Schreiber: Mail-Worker).
+    contactForms: read(path.join(mailDir, "mail_worker", "contact_forms_public.json"), { leads: {} }),
   });
 }
 

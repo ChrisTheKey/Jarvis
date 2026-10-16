@@ -29,6 +29,9 @@ export const LABEL = "JARVIS";
 // TF-025: Cold-Lead-Entwürfe – Jarvis legt sie an, sendet sie aber NIE (weder Worker, VPS, Kampagne noch Cloud-Queue).
 // Nur Chris versendet sie selbst in Gmail. Diese Sperre sitzt hier, auf der untersten Ebene vor jedem Send.
 export const COLD_DRAFT_MODE = "COLD_LEAD_DRAFT_ONLY";
+// TF-075A: Antwort-Entwürfe auf Kontaktformular-Anfragen – Jarvis legt sie an, sendet sie aber NIE (nur Chris manuell in Gmail).
+export const CONTACT_FORM_DRAFT_MODE = "CONTACT_FORM_DRAFT_ONLY";
+export const NEVER_SEND_MODES = Object.freeze([COLD_DRAFT_MODE, CONTACT_FORM_DRAFT_MODE]);
 // Einzige automatisch sendbare Service-Klassen für echte, bezahlte Kundenaufträge (TF-041, nach Zahlungsschwelle).
 // TF-066: + CUSTOMER_ONBOARDING_DIALOGUE – transaktionaler Dialog zu einem bestätigten, bezahlten Auftrag (nur im Auftrags-Thread).
 export const SERVICE_MESSAGE_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE"]);
@@ -316,7 +319,8 @@ export async function createDraft(fields) {
   const info = await labelAndDescribe(draft.message.id, lid);
   if (fields.threadId && info.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
   const reply = fields.inReplyTo ? { inReplyTo: fields.inReplyTo, references: fields.references } : {};
-  const cold = fields.mode === COLD_DRAFT_MODE ? { mode: COLD_DRAFT_MODE, leadId: fields.leadId || null, draftHash: fields.draftHash || null, legalBasis: "NONE" } : {};
+  const cold = fields.mode === COLD_DRAFT_MODE ? { mode: COLD_DRAFT_MODE, leadId: fields.leadId || null, draftHash: fields.draftHash || null, legalBasis: "NONE" }
+    : fields.mode === CONTACT_FORM_DRAFT_MODE ? { mode: CONTACT_FORM_DRAFT_MODE, contactFormKey: String(fields.contactFormKey || "").slice(0, 40) || null, messageClass: "CONTACT_FORM_INQUIRY" } : {};
   // Service-Mails bezahlter Kundenaufträge (TF-041) tragen ihre Nachrichtenklasse – nie zusammen mit einem Cold-Entwurf.
   const service = !cold.mode && SERVICE_MESSAGE_CLASSES.includes(fields.messageClass) ? { messageClass: fields.messageClass,
     ...(ORDER_ID_RE.test(String(fields.orderId || "")) ? { orderId: fields.orderId } : {}) } : {}; // TF-066: Auftrag des Service-Threads
@@ -366,6 +370,7 @@ async function withSendLock(fn) {
 // window: "morning" | "afternoon" für automatische Läufe des Mail-Workers; ohne Fenster (z. B. manuell) gilt nur das Tageslimit.
 export const assertSendable = (draftId, reg = loadRegistry()) => {
   if (reg.drafts?.[draftId]?.mode === COLD_DRAFT_MODE) throw new Error(`Entwurf ${draftId} ist ein Cold-Lead-Entwurf (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie. Nur Chris entscheidet manuell in Gmail.`);
+  if (reg.drafts?.[draftId]?.mode === CONTACT_FORM_DRAFT_MODE) throw new Error(`Entwurf ${draftId} ist eine Kontaktformular-Antwort (CONTACT_FORM_DRAFT_ONLY) – Jarvis sendet sie nie. Nur Chris sendet manuell in Gmail.`);
 };
 export const sendDraft = async (draftId, { window = null } = {}) => { assertSendable(draftId); return withSendLock(async () => {
   assertSendable(draftId);
@@ -550,6 +555,37 @@ export async function replyDraftInThread(threadId, { to, body, messageClass, ord
   const subject = own[0]?.subject || last?.subject || "";
   return createDraft({ to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId, messageClass, orderId,
     inReplyTo: last?.rfcMessageId || "", references: [last?.references, last?.rfcMessageId].filter(Boolean).join(" ") });
+}
+
+// ---------- TF-075A: Kontaktformular-Benachrichtigungen (nur Allowlist-Anbieter) ----------
+// Einzige Ausnahme von „nur eigene Threads lesen“: Benachrichtigungen bekannter Formular-Anbieter. Die Suchanfrage baut
+// contact-form.js ausschliesslich aus der Anbieter-Allowlist (from:(…) newer_than:…); hier wird sie zusätzlich geprüft.
+// Gelesen wird nur, was die Suche liefert und dessen From exakt in der Anfrage steht. Nie Label/Ändern/Löschen fremder Mails.
+const INBOUND_QUERY_RE = /^from:(([a-z0-9.!#$%&'*+/=?^_`{|}~@-]+(?: OR [a-z0-9.!#$%&'*+/=?^_`{|}~@-]+)*)) -in:sent -in:drafts -in:spam -in:trash newer_than:d{1,2}d$/i;
+let inboundAllow = new Set();
+export async function searchInbound({ query, max = 20 } = {}) {
+  const m = String(query || "").match(INBOUND_QUERY_RE);
+  if (!m) throw new Error("Kontaktformular-Suche nur mit Allowlist-Anfrage.");
+  inboundAllow = new Set(m[1].toLowerCase().split(" OR "));
+  const q = new URLSearchParams({ q: query, maxResults: String(Math.max(1, Math.min(100, Number(max) || 20))) });
+  const r = await gmail("GET", `/messages?${q}`);
+  return (r.messages || []).map((x) => x.id).filter(Boolean);
+}
+const INBOUND_HEADERS = new Set(["from", "reply-to", "to", "delivered-to", "subject", "date", "message-id", "authentication-results"]);
+export async function readInbound(messageId) {
+  if (!/^[0-9a-f]{8,32}$/i.test(String(messageId || ""))) throw new Error("Message-ID ungültig.");
+  const m = await gmail("GET", `/messages/${encodeURIComponent(messageId)}?format=full`);
+  const d = describeMessage(m);
+  const from = (d.from.match(/<([^>]+)>/)?.[1] || d.from).trim().toLowerCase();
+  if (!inboundAllow.has(from)) throw new Error("Nachricht stammt nicht von einem Allowlist-Formular-Anbieter – nicht gelesen.");
+  if (d.sent || d.draft) throw new Error("Keine eingehende Nachricht.");
+  const headers = {};
+  for (const h of m.payload?.headers || []) {
+    const k = h.name.toLowerCase();
+    if (!INBOUND_HEADERS.has(k)) continue;
+    if (k === "authentication-results") (headers[k] ||= []).push(h.value); else headers[k] ??= h.value; // Reihenfolge erhalten: oberster = Gmail
+  }
+  return { ...d, threadId: m.threadId, deliveredTo: headers["delivered-to"] || "", headers };
 }
 
 // ---------- Kommandozeile ----------

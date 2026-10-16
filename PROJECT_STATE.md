@@ -2,7 +2,37 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-16 (TF-074)
+Letzte Aktualisierung: 2026-10-16 (TF-075A)
+
+## TF-075A – KONTAKTFORMULAR-ANFRAGEN = P0 + GMAIL-ANTWORTENTWURF (2026-10-16, CODE READY, Deploy siehe unten, Netlify NICHT live (Deploy-Credits erschöpft))
+- **Umfang bewusst eng:** NUR Kontaktformular-Anfragen. Das gestoppte breite TF-075 (Zugangsdaten-Annahme, Website-Zugriff, ZIP, Repair-Workflow)
+  ist **NICHT Teil von TF-075A** – dort wurde nichts geändert.
+- **CONTACT_FORM_INQUIRY = P0 = höchste Mail-Priorität.** `contact-form.js` läuft als Schritt 0 jedes Worker-Durchlaufs – vor Cold-Sync,
+  Antworten in Jarvis-Threads (P1/P2), Follow-ups/Erstkontakten, Cloud-Aufträgen und Cold-Entwürfen (P3). Reihenfolge im P0: FIFO
+  (received_at, dann Gmail-ID). Defektes Element: Versuch zählt, nach 3 Versuchen CONTACT_FORM_FAILED (Chris informiert), nie Endlosschleife,
+  das nächste Element läuft im selben Durchlauf weiter. Gmail-Störung (429/5xx/Netz): Element bleibt NEW, Mail DEGRADED, nächster Durchlauf.
+- **CONTACT_FORM → Gmail-ENTWURF ONLY. Kein Auto-Send.** Modus CONTACT_FORM_DRAFT_ONLY im Gmail-Register; `gmail.assertSendable` verweigert ihn
+  (wie COLD_LEAD_DRAFT_ONLY), kein state.actions-Eintrag (nie Send-Queue), Send-Loop blockt den Modus zusätzlich. Chris sendet manuell in Gmail.
+- **Erkennung:** nur Absender aus der Anbieter-Allowlist (Netlify formresponses@netlify.com, Formspree noreply@formspree.io; weitere über
+  config.json `contactForms.providers`) UND DKIM-/DMARC-Pass dieser Domain im obersten, von Gmail gesetzten Authentication-Results (mx.google.com).
+  From allein reicht nie (gefälscht → untrusted, kein P0). Optional `contactForms.receivingMailboxes` und `contactForms.forms`
+  (registrierte Formulare mit market/lead_id/order_id/customer_email). Gmail wird nur mit der aus der Allowlist gebauten Suche gelesen
+  (`gmail.searchInbound`/`readInbound`, max. 20 Volltexte je Durchlauf, 14 Tage) – keine freie Inbox-Analyse, nie Labels/Änderungen an fremden Mails.
+- **Kundenadresse:** verifiziertes Reply-To → validiertes Formularfeld → exakte Adresse des registrierten Formulars. Nie Anbieter-/No-reply-/eigene
+  Adresse, keine Header-Injection, genau eine Adresse; Widerspruch Reply-To ↔ Feld oder unklar → CONTACT_FORM_RECIPIENT_REVIEW_REQUIRED (kein Entwurf).
+- **Zuordnung nur exakt:** Auftrag (Adresse; Auftragsnummer nur mit passender Adresse), Lead (Adresse, dann geschäftliche Domain). Nie über Namen.
+  Zustände CONTACT_FORM_MATCHED_ORDER / _MATCHED_LEAD / _UNMATCHED / _MATCH_REVIEW_REQUIRED. Unzugeordnet → Entwurf ohne fremden Kontext.
+  Aufträge aus dem Onboarding-Export (orders.json), Leads aus lead_registry.json; VN-Leads liegen nicht im Mail-Worker → VN über Aufträge/Formular-Markt.
+- **Sprache:** Auftrag/Lead-Markt → sonst Formular-Markt → sonst eindeutig vietnamesischer Text → vi, sonst de. Vorlage fest (keine KI, nichts
+  erfunden): CH Deutsch + cfg.sender-Signatur; VN Vietnamesisch + Lap-Signatur (VN_SIGNATURE). Kundentext zitiert.
+- **Genau ein Entwurf:** Schlüssel aus Submission-ID → RFC-Message-ID → Gmail-ID (nie Betreff). Doppelte Zustellung desselben Events → dedupliziert;
+  neue Einsendung desselben Kunden → neuer P0. Claim CONTACT_FORM_DRAFTING vor Gmail; nach Absturz Register-Abgleich (contactFormKey), sonst nach
+  10 min CONTACT_FORM_DRAFT_UNKNOWN (nie wiederholt, Chris).
+- **Ablage:** `.secrets/mail_worker/contact_forms.json` (nur Metadaten, nie Mailtext) + `contact_forms_public.json` (nur Lead-ID → Status-Wort).
+  CRM: `contact_form` {status NEW|DRAFT_CREATED|REVIEW_REQUIRED, matched, received_at, count} nur für zugeordnete Leads; UI-Abzeichen
+  «CONTACT FORM · MATCHED · DRAFT CREATED». RBAC unverändert (sichtbar nur über canSeeLead des Leads).
+- **Unverändert:** TF-073/074 Geräte (Credentials, Pairing, JARVIS_SYNC_TOKEN, Chris lokal), 60 % / 6000 bps (Chris 0 %), Kudoshin, CALLING_DRY_RUN=true,
+  VN-Gates, Cold-Outreach-Sicherheit, Zugangs-/Repair-Workflow.
 
 ## TF-074 – LOKALER JARVIS → GERÄTE-CREDENTIALS + SICHERER LOKALER ZUGRIFF PRO BENUTZER (2026-10-16, CODE READY, Netlify NICHT live (Deploy-Credits erschöpft), VPS: kein Dienst neu gestartet)
 - **DEVICE CONNECTION MODEL: eindeutige Credentials pro Benutzer UND pro Gerät, NUR AUSGEHEND (HTTPS), KEINE BENUTZERÜBERGREIFENDE GERÄTESTEUERUNG.**

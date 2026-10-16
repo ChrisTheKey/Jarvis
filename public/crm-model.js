@@ -269,6 +269,8 @@ export const CARDS = Object.freeze({
 });
 // TF-058 Abzeichen historischer Discovery-Funde (low_score/no_contact/Backup/Recheck).
 export const HISTORY_LABEL = Object.freeze({ HISTORICAL: "HISTORISCHER FUND", REVERIFIED: "ERNEUT VERIFIZIERT" });
+// TF-075A: Kontaktformular-Anfrage (nur zugeordnete Leads): Abzeichen + Status.
+export const CONTACT_FORM_LABEL = Object.freeze({ badge: "CONTACT FORM", matched: "MATCHED", NEW: "NEW", DRAFT_CREATED: "DRAFT CREATED", REVIEW_REQUIRED: "REVIEW REQUIRED" });
 const yes = (v) => v === "1" || v === "yes" || v === true;
 const no = (v) => v === "0" || v === "no" || v === false;
 export function filterLeads(list = [], f = {}, now = new Date()) {
