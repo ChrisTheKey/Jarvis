@@ -242,13 +242,22 @@ const reply = (status, body) => new Response(JSON.stringify(body), { status, hea
 // TF-063: Browser-Benutzer über resolveActor (auth-core.js, Session-Cookie bzw. Legacy-Key = Chris). Nur der OWNER sieht den gemeinsamen
 // Zustand (Chris' Notizen, Gesprächsverlauf, Meldungen, Business-Status). Verkäufer bekommen ausschliesslich ihren EIGENEN Gesprächsverlauf
 // (getUserStore(user_id)) – nie Chris' Kontext, nie fremde Meldungen. Alle anderen Operationen → 403.
-export function createStateHandler({ getStore, env, now = () => new Date(), resolveActor = null, getUserStore = null }) {
+// TF-074: verifyDevice (device-api createStateDeviceAuth) – x-jarvis-device = Chris' gekoppelter DESKTOP mit eigenem Credential, gleiche Rechte
+// wie der Legacy-Sync-Token (nur Chris' Owner-State). Verkäufer-Geräte → 403; JARVIS_SYNC_TOKEN bleibt in der Übergangszeit gültig (nur Chris).
+export function createStateHandler({ getStore, env, now = () => new Date(), resolveActor = null, getUserStore = null, verifyDevice = null }) {
   return async (req) => {
     const syncToken = env("JARVIS_SYNC_TOKEN"), password = env("JARVIS_PASSWORD"), workerToken = env("JARVIS_MAIL_WORKER_TOKEN");
     // Der VPS-Mail-Worker synchronisiert mit seinem eigenen Token (gleiche Rechte wie der lokale Kern).
     const isCore = !!workerToken && safeEqual(req.headers.get("x-jarvis-sync"), workerToken);
-    const isLocal = (!!syncToken && safeEqual(req.headers.get("x-jarvis-sync"), syncToken)) || isCore;
-    if (req.method === "GET" && new URL(req.url).searchParams.has("probe")) return reply(200, { configured: !!syncToken });
+    let isLocal = (!!syncToken && safeEqual(req.headers.get("x-jarvis-sync"), syncToken)) || isCore;
+    if (req.method === "GET" && new URL(req.url).searchParams.has("probe")) return reply(200, { configured: !!syncToken, device_auth: !!verifyDevice });
+    let viaDevice = null;
+    if (!isLocal && req.headers.get("x-jarvis-device")) {
+      if (!verifyDevice) return reply(401, { error: "Nicht berechtigt." });
+      const v = await verifyDevice(req);
+      if (!v.ok) return reply(v.status || 401, { error: v.error || "Nicht berechtigt.", ...(v.code ? { code: v.code } : {}) });
+      isLocal = true; viaDevice = v;
+    }
     let isUser = false, actor = null;
     if (!isLocal) {
       if (resolveActor) {
@@ -296,7 +305,10 @@ export function createStateHandler({ getStore, env, now = () => new Date(), reso
     for (let attempt = 0; attempt < 4; attempt++) {
       const { state, etag } = await store.get();
       const next = sanitizeState({ ...change(sanitizeState(state || emptyState())), updatedAt: t });
-      if (await store.set(next, etag)) return reply(200, next);
+      if (await store.set(next, etag)) {
+        if (viaDevice && body.op === "sync") await viaDevice.onSynced?.();
+        return reply(200, next);
+      }
     }
     return reply(409, { error: "Gleichzeitige Änderung – bitte erneut versuchen." });
   };

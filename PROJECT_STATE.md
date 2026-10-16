@@ -2,7 +2,49 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-16 (TF-073)
+Letzte Aktualisierung: 2026-10-16 (TF-074)
+
+## TF-074 – LOKALER JARVIS → GERÄTE-CREDENTIALS + SICHERER LOKALER ZUGRIFF PRO BENUTZER (2026-10-16, CODE READY, Netlify NICHT live (Deploy-Credits erschöpft), VPS: kein Dienst neu gestartet)
+- **DEVICE CONNECTION MODEL: eindeutige Credentials pro Benutzer UND pro Gerät, NUR AUSGEHEND (HTTPS), KEINE BENUTZERÜBERGREIFENDE GERÄTESTEUERUNG.**
+  Chris' OWNER-Cloud-Administration (Konten, Leads, Verkäufe, Provisionen, CRM) bleibt getrennt von der Gerätesteuerung: Gerätesteuerung nur bei
+  `authenticated_user_id === device.owner_user_id`, auch für OWNER. Chris sieht Admin-Metadaten aller Geräte und darf sperren/freigeben/Konten deaktivieren,
+  aber nie fremde Sitzungen öffnen, Dateien lesen, Aktionen ausführen oder Credentials erhalten.
+- **Legacy JARVIS_SYNC_TOKEN: vorübergehende Übergangskompatibilität NUR für Chris.** Nicht gelöscht, nicht rotiert, Wert nie ausgegeben. Gibt nur Zugriff
+  auf Chris' Owner-State (/api/state) – nie eine Verkäufer-Identität, nie Geräte-API (401 als Geräte-Credential, Session oder Kopplung).
+- Gerätemodell: device_id, owner_user_id, device_type (pc = DESKTOP, phone = PHONE; Eingabe "desktop" → pc), device_name, created_at, last_seen_at, status,
+  credential_hash (nur SHA-256), **credential_version** (neu, Rotation +1, Header `x-jarvis-device-cv` muss passen) sowie last_auth_at, reconnects,
+  sync_ok_count, last_sync_at.
+- **Kopplung**: Chris erzeugt im Dashboard einen Einmal-Code (10 min, einmalig, an sein Konto gebunden) → `echo <Code> | npm run device:pair -- --name "Chris PC"
+  --type desktop` → das Gerät erzeugt seine Identität, die Cloud gibt EIN Credential aus (nur Hash gespeichert), der Code ist verbraucht. Das Credential wird
+  nie angezeigt/geloggt; `npm run device:status` zeigt nur Gerät/Konto/Typ/Schutz.
+- **Lokale Speicherung** (`device-vault.js`): `.secrets/device/` (gitignored) – credential.enc / identity.enc mit AES-256-GCM, Schlüssel `vault.key` unter
+  Windows per **DPAPI (CurrentUser)** geschützt (über die mitgelieferte Windows PowerShell, Daten nur per stdin). Einschränkung: auf Nicht-Windows-Rechnern
+  liegt der Schlüssel als Datei mit Rechten 600 (kein OS-Tresor angebunden). TF-073-Klartextdateien werden beim ersten Lesen verschlüsselt übernommen.
+- **Sync per Geräte-Credential** (`local-state.js`): ist Chris' DESKTOP gekoppelt (gleiche Cloud), gleicht der lokale Kern zuerst mit dem Geräte-Credential ab
+  und fällt bei 401/403/404/405 auf JARVIS_SYNC_TOKEN zurück (danach 60 min Pause für den Geräte-Weg); `JARVIS_SYNC_AUTH=legacy|device` erzwingt eine Variante.
+  /api/state akzeptiert `x-jarvis-device` nur für Chris' aktiven DESKTOP (Verkäufer-Geräte → 403 DEVICE_SYNC_FORBIDDEN). mail-requests.js nutzt weiter Legacy.
+- **Fähigkeiten pro Gerätetyp** (Allowlist, parameterlos, keine Shell/kein exec(command)/keine Pfade aus der Cloud): DESKTOP get_agent_status, get_system_status,
+  sync_jarvis_state, read_jarvis_project_status (nur Kopfzeile/TF-Nr. aus PROJECT_STATE.md), run_predefined_jarvis_health_check (nur 127.0.0.1/api/health +
+  lokaler Sync-Status) + device.ping/status/heartbeat; PHONE nur ping/status/get_agent_status/heartbeat. Nicht unterstützt → 400 DEVICE_ACTION_UNSUPPORTED
+  (Cloud und Agent). Zusatzfelder command/cmd/script/args/path/file/params… → 400 ARBITRARY_COMMAND_BLOCKED.
+- **Dateizugriff** (`device-workspace.js`): nur feste Dateien im Jarvis-Repository (Chris' Rechner: dieses Repo; `JARVIS_WORKSPACE_DIRS` nur explizit).
+  Blockiert: ../-Traversal, absolute Pfade/Laufwerke, UNC/\?\, NTFS-Streams, Symlink-/Junction-Ausbruch (realpath), .secrets/.env/.git/.ssh/data/exports/
+  workspace/memory/deploy, Token-/Schlüsseldateien, C:\Windows, AppData/Browser-Profile, Anmeldedaten.
+- **Migrationsstatus** (`GET /api/devices/migration`, Owner-Ansicht «GERÄTE»): LEGACY_SYNC_ACTIVE | DEVICE_CREDENTIAL_ACTIVE | READY_TO_RETIRE_LEGACY.
+  READY nur wenn ALLE erfüllt: Netlify-Geräte-API live, Chris-DESKTOP gekoppelt, Credential authentifiziert, Sync über Credential, ≥ 3 Wiederverbindungen,
+  Widerruf getestet (automatisch erkannt, wenn ein widerrufenes Chris-Gerät sich anmeldet), «ohne Rückschritt» von Chris bestätigt. Aktuell: **NO**.
+- Verkäufer (giuliano, mario, damiano, Kudoshin): gleiches Modell, KEINE Fake-Geräte; bis zur eigenen Kopplung `DEVICE_NOT_PAIRED`, nie ein Fallback auf Chris.
+- JARVIS_SERVER_CONTROL_TOKEN unverändert und getrennt (Geräte-Credential öffnet keine VPS-Steuerung, Control-Token kein Geräte-Kanal).
+- Audit (jarvis-devices/audit) zusätzlich: device.authenticated (je Wiederverbindung), device.auth_blocked (revoked/bad_credential/credential_version_mismatch),
+  device.action_result, blocked_arbitrary_command, device.state_sync blocked_cross_user, device.migration_confirmed – nie Credentials, Codes, Inhalte.
+- VPS-Dockerfiles (mail-worker, repair) kopieren jetzt device-vault.js (local-state importiert es) – nötig beim NÄCHSTEN Build; laufende Dienste unverändert,
+  daher kein Neustart.
+- Provision unverändert: 60 % = 6000 bps für Giuliano/Mario/Damiano/Kudoshin, Chris 0, 3500-bps-Historie unverändert (in tf074 erneut geprüft).
+- Tests: `test/tf074.test.js` (10) + `npm run test:tf074`. Gesamtsuite sequenziell 950 / 937 pass / 1 fail / 12 skip – der 1 Fehler = crm-browser-053 N
+  Timeout unter Volllast, Einzellauf 4/4 grün. Secret-Scan 0 Treffer.
+- CALLING_DRY_RUN=true. 0 echte Mails, 0 Anrufe, 0 Zahlungen, 0 Kundenwebsites verändert.
+- **Offen**: Netlify-Produktionsdeploy (Credits) → danach Chris' PC koppeln, Sync über Credential beobachten, Widerruf mit Testgerät, «ohne Rückschritt»
+  bestätigen. Erst bei READY_TO_RETIRE_LEGACY = YES und ausdrücklicher Anweisung den Legacy-Token ablösen.
 
 ## TF-073 – GERÄTE-ISOLATION PRO BENUTZER + 60 % PROVISION VERIFIZIERT (2026-10-16, Code 04d9d9f, CODE READY, Netlify NICHT live (Deploy-Credits erschöpft), VPS: kein Dienst neu gestartet)
 - **ACTIVE COMMISSION: 60 % = 6000 bps** (neue Verkäufe) für Giuliano, Mario, Damiano, Kudoshin; Chris 0. Logik unverändert aus TF-072 (`pricing.js`

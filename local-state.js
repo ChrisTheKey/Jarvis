@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { emptyState, sanitizeState, mergeNotifications, mergeConversation, mergeDismissed, addDismissed, withoutDismissed, LIMITS, redact } from "./shared-state.js";
 import { personaVersion } from "./persona-version.js";
 import { KIND_TEXT } from "./human-contact.js";
+import { loadDeviceAuth } from "./device-vault.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -122,6 +123,18 @@ export function cloudContextPrefix(turns) {
 
 // ---------- Cloud-Abgleich ----------
 
+// TF-074: Übergang JARVIS_SYNC_TOKEN (Legacy, nur Chris) → Geräte-Credential. Ist Chris' DESKTOP gekoppelt (Geräte-Tresor .secrets/device/,
+// gleiche Cloud), gleicht der Kern zuerst mit dem Geräte-Credential ab und fällt nur bei 401/403/404/405 (z. B. Netlify noch ohne
+// Geräte-API) auf den Legacy-Token zurück. JARVIS_SYNC_AUTH=legacy|device erzwingt eine Variante. Der Legacy-Token wird nie gelöscht.
+export const DEVICE_DIR = path.join(SECRETS, "device");
+export function deviceSyncAuth({ dir = DEVICE_DIR, url, load = loadDeviceAuth } = {}) {
+  try {
+    const a = load(dir);
+    if (!a || a.owner_user_id !== "chris" || (a.device_type && a.device_type !== "pc")) return null;
+    if (url && a.cloud && new URL(url).origin !== new URL(a.cloud).origin) return null;
+    return a;
+  } catch { return null; }
+}
 export function syncConfig() {
   let file = {};
   try { file = JSON.parse(fs.readFileSync(SYNC_FILE, "utf8")); } catch {}
@@ -129,7 +142,10 @@ export function syncConfig() {
   const workerToken = process.env.JARVIS_MAIL_WORKER_TOKEN || "";
   const token = process.env.JARVIS_SYNC_TOKEN || file.token || workerToken;
   const origin = (process.env.JARVIS_SYNC_URL || file.url || (process.env.JARVIS_WEB_ORIGIN || "https://chrisjarvis.netlify.app").split(",")[0]).trim().replace(/\/+$/, "");
-  return { token, workerToken, url: /\/api\/state$/.test(origin) ? origin : origin + "/api/state" };
+  const url = /\/api\/state$/.test(origin) ? origin : origin + "/api/state";
+  const authMode = ["legacy", "device"].includes(process.env.JARVIS_SYNC_AUTH) ? process.env.JARVIS_SYNC_AUTH : "auto";
+  const device = authMode === "legacy" || workerToken ? null : deviceSyncAuth({ url });
+  return { token, workerToken, url, authMode, device };
 }
 
 // Einmalig einen zufälligen Sync-Token lokal anlegen (nie im Repository, nie als Argument).
@@ -145,12 +161,25 @@ export function ensureSyncToken() {
 export async function syncWithCloud({ local, fetchFn = globalThis.fetch, config = syncConfig(), now = () => new Date(), force = false, log = () => {} } = {}) {
   const s = local.read();
   const st = s.syncStatus || {};
-  if (!config.token) return { ok: false, skipped: "kein JARVIS_SYNC_TOKEN" };
+  const auths = [];
+  // Nach einem Rückfall (Gerät widerrufen/gesperrt, Geräte-API noch nicht live) den Geräte-Weg 60 min aussetzen – kein Audit-Rauschen.
+  const devicePaused = config.authMode === "auto" && !!config.token && st.deviceFallbackAt && +now() - Date.parse(st.deviceFallbackAt) < 60 * 60_000;
+  if (config.device?.headers && config.authMode !== "legacy" && !devicePaused) auths.push({ kind: "device", headers: config.device.headers });
+  if (config.token && config.authMode !== "device") auths.push({ kind: "legacy", headers: { "x-jarvis-sync": config.token } });
+  if (!auths.length) return { ok: false, skipped: "kein JARVIS_SYNC_TOKEN" };
   if (!force && st.nextAttemptAt && Date.parse(st.nextAttemptAt) > +now()) return { ok: false, skipped: "backoff" };
+  let used = null, fallback = null;
   try {
     const payload = sanitizeState({ ...s, personaVersion: s.personaVersion || personaVersion() });
-    const r = await fetchFn(config.url, { method: "POST", headers: { "content-type": "application/json", "x-jarvis-sync": config.token },
-      body: JSON.stringify({ op: "sync", state: payload }), signal: AbortSignal.timeout(20_000) });
+    let r;
+    for (const [i, a] of auths.entries()) {
+      r = await fetchFn(config.url, { method: "POST", headers: { "content-type": "application/json", ...a.headers },
+        body: JSON.stringify({ op: "sync", state: payload }), signal: AbortSignal.timeout(20_000) });
+      used = a.kind;
+      // Nur Berechtigungs-/Routing-Fehler des Geräte-Wegs fallen auf Legacy zurück – Serverfehler nicht (kein doppeltes Schreiben).
+      if (r.ok || i === auths.length - 1 || ![401, 403, 404, 405].includes(r.status)) break;
+      fallback = `device_http_${r.status}`;
+    }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const remote = sanitizeState(await r.json());
     local.update((cur) => {
@@ -161,14 +190,15 @@ export async function syncWithCloud({ local, fetchFn = globalThis.fetch, config 
       // Status des Mail-Workers mit send_authority (z. B. VPS) übernehmen, wenn er neuer ist als der lokale Stand.
       if (remote.business?.updatedAt && !(cur.business?.updatedAt >= remote.business.updatedAt)) cur.business = remote.business;
       if (remote.sales?.updatedAt && !(cur.sales?.updatedAt >= remote.sales.updatedAt)) cur.sales = remote.sales;
-      cur.syncStatus = { ok: true, lastSuccessAt: now().toISOString(), failures: 0, nextAttemptAt: null, error: null };
+      cur.syncStatus = { ok: true, lastSuccessAt: now().toISOString(), failures: 0, nextAttemptAt: null, error: null, auth: used, deviceFallback: fallback,
+        deviceFallbackAt: fallback ? now().toISOString() : used === "device" ? null : (devicePaused ? st.deviceFallbackAt : null) };
       return cur;
     });
-    return { ok: true };
+    return { ok: true, auth: used, ...(fallback ? { fallback } : {}) };
   } catch (e) {
     const failures = (st.failures || 0) + 1;
     const next = new Date(+now() + Math.min(60, 2 ** (failures - 1)) * 60_000).toISOString();
-    try { local.update((cur) => { cur.syncStatus = { ...cur.syncStatus, ok: false, failures, nextAttemptAt: next, error: String(e.message).slice(0, 120), lastErrorAt: now().toISOString() }; return cur; }); } catch {}
+    try { local.update((cur) => { cur.syncStatus = { ...cur.syncStatus, ok: false, failures, nextAttemptAt: next, error: String(e.message).slice(0, 120), lastErrorAt: now().toISOString(), auth: used }; return cur; }); } catch {}
     log("warn", "sync_failed", { error: e.message, failures });
     return { ok: false, error: e.message };
   }

@@ -10,6 +10,8 @@ export default createDeviceHandler({
   getStore: netlifyDeviceStore,
   getAuthStore: netlifyAuthStore,
   resolveActor: (req) => resolveActor(req, { env, getAuthStore: netlifyAuthStore }),
+  env,
+  deployed: true, // TF-074: läuft diese Function, ist die Geräte-API live (Migrationsstatus device_api_live)
 });
 
 export const config = { path: ["/api/devices", "/api/devices/*"] };

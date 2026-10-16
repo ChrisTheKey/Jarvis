@@ -4,6 +4,8 @@
 import { createStateHandler, netlifyBlobStore } from "../../shared-state.js";
 import { resolveActor, netlifyAuthStore } from "../../auth-core.js";
 import { VN_SELLER_ID, LEGACY_VN_SELLER_ID } from "../../seller-identity.js";
+import { createStateDeviceAuth } from "../../device-api.js";
+import { netlifyDeviceStore } from "../../device-core.js";
 
 const env = (k) => globalThis.Netlify?.env?.get(k) ?? process.env[k];
 const blobs = async (name) => (await import("@netlify/blobs")).getStore({ name, consistency: "strong" });
@@ -26,6 +28,8 @@ export default createStateHandler({
   getStore: async () => netlifyBlobStore(await blobs("jarvis-state")),
   resolveActor: (req) => resolveActor(req, { env, getAuthStore: netlifyAuthStore }),
   getUserStore: userStore,
+  // TF-074: Chris' gekoppelter DESKTOP darf statt JARVIS_SYNC_TOKEN mit seinem eigenen Geräte-Credential abgleichen (Legacy bleibt parallel).
+  verifyDevice: createStateDeviceAuth({ getStore: netlifyDeviceStore, getAuthStore: netlifyAuthStore }),
 });
 
 export const config = { path: "/api/state" };

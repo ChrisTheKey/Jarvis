@@ -39,6 +39,10 @@
     "test:tf071": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf071.test.js test/onboarding-066.test.js test/onboarding-browser-066.test.js",
     "test:tf072": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf072.test.js test/tf072-browser.test.js test/crm-detail-059.test.js test/commission-063.test.js test/commission-064.test.js",
     "test:tf073": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf073.test.js test/tf072.test.js test/auth-063.test.js test/scope-063.test.js test/commission-064.test.js",
+    "test:tf074": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf074.test.js test/tf073.test.js test/shared-state.test.js test/server-control.test.js test/commission-064.test.js",
+    "device:pair": "node device-agent.js --pair-stdin",
+    "device:status": "node device-agent.js --status",
+    "device:agent": "node device-agent.js",
     "payments-reconcile": "node payment-reconcile.js"
   },
   "dependencies": {

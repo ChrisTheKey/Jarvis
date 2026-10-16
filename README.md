@@ -135,6 +135,17 @@ Der Server ist nur auf deinem eigenen Rechner erreichbar (localhost) und lehnt A
 - Persona: `persona.md` ist die einzige Quelle. Die Cloud-Fassung erzeugt `npm run build:persona` (läuft auch beim Netlify-Build); Abschnitte zwischen `<!-- nur-lokal -->`-Markierungen gelten nur auf dem PC.
 - Einrichtung: `npm run setup-sync` legt einen Sync-Token in `.secrets/jarvis_sync.json` an und zeigt ihn an. In Netlify als `JARVIS_SYNC_TOKEN` eintragen (neben `JARVIS_PASSWORD` und `ANTHROPIC_API_KEY`) und neu deployen.
 
+### Geräte-Credential für den lokalen Jarvis (TF-074)
+
+- Jeder Benutzer koppelt nur EIGENE Geräte (kein Mesh, kein Quer-Zugriff, keine OWNER-Ausnahme). Chris' PC wird ein Gerät `owner_user_id = chris`, Typ DESKTOP.
+- Koppeln (erst wenn `/api/devices` auf Netlify live ist): im Dashboard «EIGENES GERÄT KOPPELN» → Einmal-Code (10 min, einmalig), dann im Jarvis-Ordner
+  `echo <Code> | npm run device:pair -- --name "Chris PC" --type desktop`. Das Credential wird nie angezeigt; `npm run device:status` zeigt nur Gerät/Konto/Typ/Schutz.
+- Lokal liegt es nur im Geräte-Tresor `.secrets/device/` (AES-256-GCM; Schlüssel unter Windows per DPAPI an das Windows-Konto gebunden, sonst Datei mit Rechten 600).
+- Der lokale Kern gleicht danach automatisch mit dem Geräte-Credential ab und fällt bei 401/403/404/405 auf `JARVIS_SYNC_TOKEN` zurück (Übergang, nur Chris).
+  `JARVIS_SYNC_AUTH=legacy|device` erzwingt eine Variante. Migrationsstand: Owner-Ansicht «GERÄTE» bzw. `GET /api/devices/migration`.
+- Agent (`npm run device:agent`) verbindet sich nur ausgehend per HTTPS und führt nur benannte Fähigkeiten aus (DESKTOP: get_agent_status, get_system_status,
+  sync_jarvis_state, read_jarvis_project_status, run_predefined_jarvis_health_check; PHONE: Status/Heartbeat). Keine Shell, keine freien Pfade.
+
 ### Vertrieb: genau zwei Angebote
 
 `sales.js` ordnet jeden Lead ausschliesslich einer von drei Klassen zu – aus belegten Audit-Befunden (`websiteIssues` mit `type`, `url`, `evidence`, `severity`, `detectedAt`), nie erfunden:

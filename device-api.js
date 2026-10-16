@@ -14,12 +14,16 @@
 //   POST /api/devices/{id}/release        widerrufenes/gesperrtes Gerät für eine explizite Neu-Kopplung freigeben (Eigentümerwechsel)
 // Gerät (nur ausgehend, kein Cookie):
 //   POST /api/devices/pair/complete       { flow, pairing_code, device_fp, device_name, device_type } → einmalig { device_id, device_credential }
-//   POST /api/devices/channel             x-jarvis-device + x-jarvis-device-fp; { op: poll | result | rotate }
+//   POST /api/devices/channel             x-jarvis-device + x-jarvis-device-fp (+ x-jarvis-device-cv); { op: poll | result | rotate }
+// TF-074 (Owner, nur Anzeige/Bestätigung – löscht/rotiert nie den Legacy-Token):
+//   GET  /api/devices/migration           Übergang JARVIS_SYNC_TOKEN → Geräte-Credential (LEGACY_SYNC_ACTIVE | DEVICE_CREDENTIAL_ACTIVE | READY_TO_RETIRE_LEGACY)
+//   POST /api/devices/migration           { confirm: "no_regression" } – Chris bestätigt, dass sein lokaler Jarvis ohne Rückschritt läuft
+// Gerät → /api/state: createStateDeviceAuth() prüft dasselbe Credential; nur Chris' DESKTOP darf Chris' Owner-State abgleichen.
 //
 // Fremde Geräte (auch für Chris): immer 403 DEVICE_FORBIDDEN – gleiche Antwort für "gibt es nicht" und "gehört jemand anderem".
 import { USERS, isOwner, sha256Hex, userRecord } from "./auth-core.js";
-import { DEVICE_TYPES, PAIRING_FLOW, PAIRING_TTL_MS, MAX_OPEN_PAIRINGS, MAX_DEVICES_PER_USER, SESSION_TTL_MS, DEVICE_ACTIONS, DEVICE_HEADER, DEVICE_FP_HEADER,
-  FP_RE, authorizeDeviceAccess, publicDevice, adminDevice, cleanDeviceName, cleanResult, parseDeviceCredential, credentialMatches, isDeviceId, isPairingCode,
+import { PAIRING_FLOW, PAIRING_TTL_MS, MAX_OPEN_PAIRINGS, MAX_DEVICES_PER_USER, SESSION_TTL_MS, DEVICE_HEADER, DEVICE_FP_HEADER, DEVICE_CV_HEADER,
+  ONLINE_MS, ARBITRARY_FIELDS, OWNER_ID, normalizeDeviceType, capabilitiesFor, migrationStatus, emptyMigration, FP_RE, authorizeDeviceAccess, publicDevice, adminDevice, cleanDeviceName, cleanResult, parseDeviceCredential, credentialMatches, isDeviceId, isPairingCode,
   isSessionToken, isCommandId, newDeviceId, newCommandId, newDeviceSecret, newPairingCode, newSessionToken, emptyDevices, emptyPairings, emptyDeviceSessions,
   emptyCommands, emptyDeviceAudit } from "./device-core.js";
 
@@ -53,7 +57,66 @@ export async function terminateUserDevices(store, { user_id, actor_user_id, reas
   return { devices: ids.size, sessions, commands };
 }
 
-export function createDeviceHandler({ getStore, getAuthStore, resolveActor, now = () => new Date() }) {
+// TF-074: EINE Geräte-Authentifizierung für Kanal und /api/state. Prüft Credential (nur Hash), Geräte-Identität, Credential-Version,
+// Gerätestatus und Kontostatus. Wiederverbindungen (erste Meldung oder nach > ONLINE_MS Pause) werden gezählt und auditiert.
+export function createDeviceVerifier({ getStore, getAuthStore, now = () => new Date() }) {
+  async function accountActive(user_id) {
+    if (!getAuthStore) return false; // fail closed
+    try { const { state } = await (await getAuthStore()).users.get(); return userRecord(state, user_id).active; } catch { return false; }
+  }
+  const unauth = { ok: false, status: 401, code: "DEVICE_UNAUTHORIZED", error: "Gerät nicht berechtigt." };
+  return async function verify(req, { purpose = "channel" } = {}) {
+    const cred = parseDeviceCredential(req.headers.get(DEVICE_HEADER));
+    const fp = req.headers.get(DEVICE_FP_HEADER), cv = req.headers.get(DEVICE_CV_HEADER);
+    if (!cred || typeof fp !== "string" || !FP_RE.test(fp)) return unauth;
+    const store = await getStore(), t = now();
+    const d = ((await store.devices.get()).state || emptyDevices()).devices?.[cred.device_id];
+    if (!d) return unauth;
+    if (!(await credentialMatches(d, cred.secret)) || d.device_fp !== fp) {
+      // Widerrufenes Gerät meldet sich: blockiert (credential_hash ist gelöscht). Für Chris' Übergang = Widerruf nachweislich getestet.
+      const revoked = d.status === "revoked";
+      await deviceAudit(store, { actor_user_id: null, action: "device.auth_blocked", device_id: d.device_id, owner_user_id: d.owner_user_id, purpose, result: revoked ? "revoked" : "bad_credential" }, t);
+      if (revoked && d.owner_user_id === OWNER_ID) await update(store, "migration", (m) => { m.revocation_verified_at ||= t.toISOString(); }, emptyMigration).catch(() => {});
+      return unauth;
+    }
+    if (cv != null && String(cv) !== String(d.credential_version || 1)) {
+      await deviceAudit(store, { actor_user_id: null, action: "device.auth_blocked", device_id: d.device_id, owner_user_id: d.owner_user_id, purpose, result: "credential_version_mismatch" }, t);
+      return unauth;
+    }
+    if (d.status !== "active") return { ok: false, status: 403, code: d.status === "revoked" ? "DEVICE_REVOKED" : "DEVICE_DISABLED", error: d.status === "revoked" ? "Gerät widerrufen." : "Gerät deaktiviert." };
+    if (!(await accountActive(d.owner_user_id))) {
+      await terminateUserDevices(store, { user_id: d.owner_user_id, actor_user_id: null, reason: "account_disabled", now: t });
+      return { ok: false, status: 403, code: "ACCOUNT_DISABLED", error: "Zugang deaktiviert." };
+    }
+    const reconnect = !d.last_seen_at || +t - Date.parse(d.last_seen_at) >= ONLINE_MS;
+    await update(store, "devices", (doc) => {
+      const x = doc.devices?.[d.device_id];
+      if (!x || x.status !== "active") return false;
+      x.last_seen_at = t.toISOString(); x.last_auth_at = t.toISOString();
+      if (reconnect) x.reconnects = (x.reconnects || 0) + 1;
+    }, emptyDevices);
+    if (reconnect) await deviceAudit(store, { actor_user_id: d.owner_user_id, action: "device.authenticated", device_id: d.device_id, owner_user_id: d.owner_user_id, purpose, result: "success" }, t);
+    return { ok: true, device: d, store, now: t };
+  };
+}
+
+// TF-074: /api/state mit Geräte-Credential – nur Chris' aktiver DESKTOP (Owner-State gehört Chris). Verkäufer-Geräte: 403, nie Chris' Zustand.
+export function createStateDeviceAuth(opts) {
+  const verify = createDeviceVerifier(opts);
+  return async (req) => {
+    const v = await verify(req, { purpose: "state_sync" });
+    if (!v.ok) return v;
+    if (v.device.owner_user_id !== OWNER_ID || v.device.device_type !== "pc") {
+      await deviceAudit(v.store, { actor_user_id: v.device.owner_user_id, action: "device.state_sync", device_id: v.device.device_id, owner_user_id: v.device.owner_user_id, result: "blocked_cross_user" }, v.now);
+      return { ok: false, status: 403, code: "DEVICE_SYNC_FORBIDDEN", error: "Dieses Gerät darf den Owner-Zustand nicht abgleichen." };
+    }
+    return { ok: true, device_id: v.device.device_id, owner_user_id: v.device.owner_user_id,
+      onSynced: async () => update(v.store, "devices", (doc) => { const x = doc.devices?.[v.device.device_id]; if (!x) return false; x.sync_ok_count = (x.sync_ok_count || 0) + 1; x.last_sync_at = v.now.toISOString(); }, emptyDevices).catch(() => {}) };
+  };
+}
+
+export function createDeviceHandler({ getStore, getAuthStore, resolveActor, now = () => new Date(), env = () => undefined, deployed = false }) {
+  const verifyDevice = createDeviceVerifier({ getStore, getAuthStore, now });
   const audit = async (entry) => deviceAudit(await getStore(), entry, now());
   const readBody = async (req) => { try { return JSON.parse((await req.text()).slice(0, 4000) || "{}"); } catch { return null; } };
   async function accountActive(user_id) {
@@ -108,8 +171,8 @@ export function createDeviceHandler({ getStore, getAuthStore, resolveActor, now 
     const block = async (status, code, error, extra = {}) => { await audit({ actor_user_id: extra.user_id || null, action: "device.pair_complete", owner_user_id: extra.user_id || null, result: code.toLowerCase() }); return reply(status, { error, code }); };
     if (body.flow !== PAIRING_FLOW || !isPairingCode(body.pairing_code)) return block(403, "PAIRING_INVALID", "Kopplungs-Code ungültig.");
     if (typeof body.device_fp !== "string" || !FP_RE.test(body.device_fp)) return reply(400, { error: "Geräte-Identität fehlt.", code: "BAD_DEVICE" });
-    const name = cleanDeviceName(body.device_name);
-    if (!name || !DEVICE_TYPES.includes(body.device_type)) return reply(400, { error: "device_name (2–60 Zeichen) und device_type pc|phone nötig.", code: "BAD_DEVICE" });
+    const name = cleanDeviceName(body.device_name), device_type = normalizeDeviceType(body.device_type);
+    if (!name || !device_type) return reply(400, { error: "device_name (2–60 Zeichen) und device_type desktop|pc|phone nötig.", code: "BAD_DEVICE" });
     const store = await getStore(), t = now(), hash = await sha256Hex(body.pairing_code);
     // Einmalig: Code atomar (etag) verbrauchen, bevor ein Gerät entsteht. Jeder weitere Versuch → PAIRING_USED.
     let why = null, user_id = null;
@@ -131,37 +194,28 @@ export function createDeviceHandler({ getStore, getAuthStore, resolveActor, now 
       if (same.some((d) => d.status === "active")) { conflict = same.find((d) => d.status === "active").owner_user_id === user_id ? "DEVICE_ALREADY_PAIRED" : "DEVICE_OWNED_ELSEWHERE"; return false; }
       if (same.some((d) => d.owner_user_id !== user_id && !d.released_at)) { conflict = "DEVICE_OWNED_ELSEWHERE"; return false; }
       doc.devices ||= {};
-      doc.devices[device_id] = { device_id, owner_user_id: user_id, device_type: body.device_type, device_name: name, created_at: t.toISOString(), last_seen_at: null,
-        status: "active", device_fp: body.device_fp, credential_hash, credential_rotated_at: t.toISOString() };
+      doc.devices[device_id] = { device_id, owner_user_id: user_id, device_type, device_name: name, created_at: t.toISOString(), last_seen_at: null,
+        status: "active", device_fp: body.device_fp, credential_hash, credential_version: 1, credential_rotated_at: t.toISOString() };
     }, emptyDevices);
     if (conflict) return block(conflict === "DEVICE_ALREADY_PAIRED" ? 409 : 403, conflict, conflict === "DEVICE_ALREADY_PAIRED" ? "Gerät ist bereits gekoppelt." : "Gerät gehört einem anderen Konto.", { user_id });
-    await audit({ actor_user_id: user_id, action: "device.paired", device_id, owner_user_id: user_id, device_type: body.device_type, result: "success" });
-    // Das Secret verlässt den Server genau EINMAL – nur an den Agenten, nie in Listen, Logs oder Audit.
-    return reply(200, { device_id, owner_user_id: user_id, device_credential: `${device_id}.${secret}` });
+    await audit({ actor_user_id: user_id, action: "device.paired", device_id, owner_user_id: user_id, device_type, result: "success" });
+    // Das Secret verlässt den Server genau EINMAL – nur an den Agenten, nie in Listen, Logs oder Audit. Der Kopplungs-Code ist verbraucht.
+    return reply(200, { device_id, owner_user_id: user_id, device_type, credential_version: 1, device_credential: `${device_id}.${secret}` });
   }
 
   // ---------- Geräte-Kanal (Agent, nur ausgehend) ----------
   async function channel(req, body) {
-    const cred = parseDeviceCredential(req.headers.get(DEVICE_HEADER));
-    const fp = req.headers.get(DEVICE_FP_HEADER);
     const unauth = reply(401, { error: "Gerät nicht berechtigt.", code: "DEVICE_UNAUTHORIZED" });
-    if (!cred || typeof fp !== "string" || !FP_RE.test(fp)) return unauth;
-    const store = await getStore();
-    const d = (await devices()).devices?.[cred.device_id];
-    if (!d || !(await credentialMatches(d, cred.secret)) || d.device_fp !== fp) return unauth;
-    if (d.status !== "active") return reply(403, { error: d.status === "revoked" ? "Gerät widerrufen." : "Gerät deaktiviert.", code: d.status === "revoked" ? "DEVICE_REVOKED" : "DEVICE_DISABLED" });
-    if (!(await accountActive(d.owner_user_id))) {
-      await terminateUserDevices(store, { user_id: d.owner_user_id, actor_user_id: null, reason: "account_disabled", now: now() });
-      return reply(403, { error: "Zugang deaktiviert.", code: "ACCOUNT_DISABLED" });
-    }
-    const t = now();
-    await update(store, "devices", (doc) => { const x = doc.devices?.[d.device_id]; if (!x || x.status !== "active") return false; x.last_seen_at = t.toISOString(); }, emptyDevices);
+    const v = await verifyDevice(req, { purpose: "channel" });
+    if (!v.ok) return reply(v.status, { error: v.error, code: v.code });
+    const { device: d, store, now: t } = v;
     if (body.op === "rotate") {
-      const secret = newDeviceSecret(), credential_hash = await sha256Hex(secret);
-      const ok = await update(store, "devices", (doc) => { const x = doc.devices?.[d.device_id]; if (!x || x.status !== "active" || x.credential_hash !== d.credential_hash) return false; x.credential_hash = credential_hash; x.credential_rotated_at = t.toISOString(); }, emptyDevices);
+      // Neues Secret + Version + 1; das alte Credential ist danach sofort ungültig (Hash ersetzt).
+      const secret = newDeviceSecret(), credential_hash = await sha256Hex(secret), credential_version = (d.credential_version || 1) + 1;
+      const ok = await update(store, "devices", (doc) => { const x = doc.devices?.[d.device_id]; if (!x || x.status !== "active" || x.credential_hash !== d.credential_hash) return false; x.credential_hash = credential_hash; x.credential_version = credential_version; x.credential_rotated_at = t.toISOString(); }, emptyDevices);
       if (!ok) return unauth;
-      await audit({ actor_user_id: d.owner_user_id, action: "device.credential_rotated", device_id: d.device_id, owner_user_id: d.owner_user_id, result: "success" });
-      return reply(200, { device_id: d.device_id, device_credential: `${d.device_id}.${secret}` });
+      await audit({ actor_user_id: d.owner_user_id, action: "device.credential_rotated", device_id: d.device_id, owner_user_id: d.owner_user_id, credential_version, result: "success" });
+      return reply(200, { device_id: d.device_id, credential_version, device_credential: `${d.device_id}.${secret}` });
     }
     if (body.op === "poll") {
       const sess = ((await store.sessions.get()).state || emptyDeviceSessions()).sessions || {};
@@ -178,15 +232,17 @@ export function createDeviceHandler({ getStore, getAuthStore, resolveActor, now 
           out.push({ command_id: x.command_id, action_id: x.action_id, owner_user_id: x.owner_user_id, requesting_user_id: x.requesting_user_id });
         }
       }, emptyCommands);
-      return reply(200, { device_id: d.device_id, owner_user_id: d.owner_user_id, commands: out });
+      return reply(200, { device_id: d.device_id, owner_user_id: d.owner_user_id, device_type: d.device_type, commands: out });
     }
     if (body.op === "result") {
       if (!isCommandId(body.command_id)) return reply(400, { error: "command_id ungültig." });
+      let action_id = null;
       const ok = await update(store, "commands", (c) => {
         const x = (c.commands || []).find((y) => y.command_id === body.command_id);
         if (!x || x.device_id !== d.device_id || x.status !== "delivered") return false;
-        x.status = body.ok === true ? "done" : "failed"; x.done_at = t.toISOString(); x.result = cleanResult(body.result);
+        x.status = body.ok === true ? "done" : "failed"; x.done_at = t.toISOString(); x.result = cleanResult(body.result); action_id = x.action_id;
       }, emptyCommands);
+      if (ok) await audit({ actor_user_id: d.owner_user_id, action: "device.action_result", device_id: d.device_id, owner_user_id: d.owner_user_id, action_id, result: body.ok === true ? "done" : "failed" });
       return ok ? reply(200, { ok: true }) : reply(404, { error: "Befehl unbekannt.", code: "UNKNOWN_COMMAND" });
     }
     return reply(400, { error: "op: poll | result | rotate." });
@@ -227,6 +283,12 @@ export function createDeviceHandler({ getStore, getAuthStore, resolveActor, now 
     const action_id = typeof body.action_id === "string" ? body.action_id : "";
     const g = await gate(actor, device_id, "device.action", action_id);
     if (g.res) return g.res;
+    // Keine freien Befehle/Pfade über Zusatzfelder – Fähigkeiten sind benannt und parameterlos.
+    const extra = Object.keys(body).filter((k) => ARBITRARY_FIELDS.includes(k.toLowerCase()));
+    if (extra.length) {
+      await audit({ actor_user_id: actor.user_id, action: "device.action", device_id, owner_user_id: g.device.owner_user_id, action_id, result: "blocked_arbitrary_command" });
+      return reply(400, { error: "Freie Befehle oder Pfade sind nicht erlaubt.", code: "ARBITRARY_COMMAND_BLOCKED" });
+    }
     const s = await sessionOf(body.session_id, g.device, actor.user_id);
     if (!s) return reply(403, { error: "Keine offene Geräte-Sitzung.", code: "SESSION_INVALID" });
     const t = now(), command_id = newCommandId();
@@ -243,7 +305,7 @@ export function createDeviceHandler({ getStore, getAuthStore, resolveActor, now 
     if (g.res) return g.res;
     const cmds = (((await (await getStore()).commands.get()).state || emptyCommands()).commands || []).filter((x) => x.device_id === device_id).slice(-20)
       .map((x) => ({ command_id: x.command_id, action_id: x.action_id, status: x.status, created_at: x.created_at, done_at: x.done_at || null, result: x.result || null }));
-    return reply(200, { device: publicDevice(g.device, now()), commands: cmds, actions: Object.entries(DEVICE_ACTIONS).map(([id, a]) => ({ action_id: id, label: a.label })) });
+    return reply(200, { device: publicDevice(g.device, now()), commands: cmds, actions: capabilitiesFor(g.device.device_type) });
   }
 
   // ---------- Owner: Monitoring/Admin (keine Fernsteuerung) ----------
@@ -290,6 +352,18 @@ export function createDeviceHandler({ getStore, getAuthStore, resolveActor, now 
     if (route === "admin") {
       if (!isOwner(actor)) { await audit({ actor_user_id: actor.user_id, action: "device.admin_list", result: "forbidden" }); return reply(403, { error: "Nur der Owner.", code: "FORBIDDEN" }); }
       return reply(200, { devices: Object.values((await devices()).devices || {}).map((d) => adminDevice(d, now())), note: "Nur Metadaten – keine Geräte-Steuerung für fremde Geräte." });
+    }
+    if (route === "migration") {
+      if (!isOwner(actor)) { await audit({ actor_user_id: actor.user_id, action: "device.migration", result: "forbidden" }); return reply(403, { error: "Nur der Owner.", code: "FORBIDDEN" }); }
+      const store = await getStore();
+      if (req.method === "POST") {
+        const b = (await readBody(req)) || {};
+        if (b.confirm !== "no_regression") return reply(400, { error: "confirm: no_regression.", code: "BAD_CONFIRM" });
+        await update(store, "migration", (m) => { m.no_regression_confirmed_at = now().toISOString(); m.no_regression_confirmed_by = actor.user_id; }, emptyMigration);
+        await audit({ actor_user_id: actor.user_id, action: "device.migration_confirmed", owner_user_id: OWNER_ID, result: "no_regression" });
+      }
+      const status = migrationStatus({ devices: await devices(), migration: (await store.migration.get()).state, legacy_configured: !!env("JARVIS_SYNC_TOKEN"), api_live: deployed });
+      return reply(200, status);
     }
     if (route === "pair/start") {
       if (req.method !== "POST") return reply(405, { error: "Nur POST." });

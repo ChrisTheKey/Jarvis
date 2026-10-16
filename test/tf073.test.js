@@ -1,4 +1,5 @@
 // TF-073: Geräte-Isolation pro Benutzer (kein Mesh, keine Fremd-Steuerung, auch nicht für Chris/OWNER) + Provision 60 % (Prüfung).
+process.env.JARVIS_DEVICE_KEY_PROTECTION ||= "file"; // TF-074: Geräte-Tresor im Test ohne DPAPI (DPAPI selbst: tf074)
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
