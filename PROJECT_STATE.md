@@ -2,7 +2,42 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-16 (TF-071)
+Letzte Aktualisierung: 2026-10-16 (TF-072)
+
+## TF-072 – DIREKTE CRM-FEHLERLINKS + 60 % VERKÄUFERPROVISION (2026-10-16, Code d81cb2b, Repair + CRM LIVE, Netlify NICHT live, Mail/Calling/Contacts/VN NICHT neu gestartet)
+- **Provision**: aktueller Satz **60 % = 6000 bps** für Giuliano, Mario, Damiano, Kudoshin (Chris 0) – **gültig für NEUE Verkäufe ab TF-072**
+  (`pricing.js` COMMISSION_BPS_SCHEDULE: bis 2026-10-16T15:00Z 3500, danach 6000; SELLER_COMMISSION_BPS = einzige Quelle, auth-core/
+  commission-ledger RATE_BPS daraus, keine doppelte Verkäuferkonfiguration). Betrag = Preis × bps / 10000 in Minor Units (kaufmännisch):
+  CH CHECK 150 → 90.00 CHF, CH FIX 480 → 288.00 CHF, VN CHECK 990000 → 594000 VND, VN FIX 3900000 → 2340000 VND.
+- **Historie bleibt**: bestehende Provisionseinträge behalten ihren gespeicherten Satz (commission_rate_bps bzw. vor TF-072 rate_bps =
+  damals 3500); PAYABLE/REVERSED/ausbezahlte Einträge werden nie neu berechnet. Reihenfolge `frozenRateBps`: Eintrag → beim Auftrag
+  gespeicherter Satz → Satz zum Auftragszeitpunkt. Neue Aufträge (CH CHECK/FIX, VN über order-intake) und VN-Auftragsanfragen speichern
+  `commission_rate_bps` (6000) bei der Erstellung; Snapshot-Allowlist (server-control) + publicRepair/Check150Orders reichen ihn durch.
+- **Dashboard** VERKÄUFE & PROVISIONEN: je Auftrag Verkäufer, Angebot, Preis, Währung, Provisionssatz, Provision, Zahlungs-, Auftrags-,
+  Provisionsstatus; Verkäufer-Tabelle mit Satz «60 %». Verkäufer sehen weiter nur ihre eigene Provision (RBAC unverändert).
+- **CRM-Fehlerlinks**: jeder Befund trägt `affected_url` = genau die geprüfte Seite (site-findings normalizeIssue; ältere Befunde → `page`),
+  sonst null. CRM-Detail (alle Befunde + Top 2) und VN-Anrufansicht (Kudoshin/Chris: Website, Fehler, Auswirkung, betroffene Seite) zeigen
+  je Fehler «Betroffene Seite» + «Fehler öffnen» (neuer Tab, rel noopener noreferrer), Link-/Bildfehler zusätzlich «Ziel öffnen».
+  Unbekannt → «Direktlink nicht verfügbar» (nie Startseite, nie erraten). `safePublicUrl`: nur http(s), keine Zugangsdaten/Ports,
+  kein localhost/.local/.internal, keine privaten/reservierten IPv4, keine IPv6-Literale, kaputte URLs → null. Nur Anzeige, kein Abruf.
+  Calling-Agent: `get_current_lead` liefert `issue_links` NUR des aktuellen Leads (max. 5), Lead-Ansicht `issues`; kein Schreiben von URLs,
+  keine Website-Änderung, keine Zugangsdaten. Fremde Leads weiter 403.
+- **Tests**: neu tf072 (10) + tf072-browser (2); 063/064/068/070/auth-063/vn-order-064 auf 6000 bps bzw. Historie angepasst.
+  `npm run test:tf072` 32/32 (zwei Browserfälle unter Volllast per Einzellauf bestätigt). Gesamtsuite sequenziell **931 / 917 pass / 2 fail /
+  12 skip**; die 2 Fehler = crm-browser-053 M/N Timeouts (PC-CPU 100 % durch Chrome-GPU-Prozess), Einzellauf 4/4 grün. Secret-Scan 0 Treffer,
+  alle Netlify-Functions + Edge-Function importierbar, Persona-Build ok. netlify-cli offline build nicht möglich (Installation > 15 min).
+- **Deploy**: Push d81cb2b (origin = HEAD). Repair → d81cb2b (deploy-repair.sh, MAIL_WORKER_UNTOUCHED=YES). CRM → d81cb2b (deploy-crm.sh
+  build|start, healthy, Image enthält jetzt pricing.js, MAIL/CONTACTS_WORKER_UNTOUCHED=YES). Mail-Worker bewusst NICHT neu (nur additives
+  Snapshot-Feld; Satz-Fallback über Auftragszeitpunkt ergibt dasselbe), Calling (liest nur /api/calling), Contacts, VN unverändert.
+  ssh-agent war nach Windows-Neustart gestoppt → `Start-Service ssh-agent` genügte.
+- **NETLIFY = BLOCKER**: ~10 min nach Push d81cb2b liefert chrisjarvis.netlify.app weiter den Stand VOR TF-071 (access.js, access.css,
+  onboarding-ui.js, crm.js, crm-model.js, crm.css, i18n.js, owner-admin.js ≠ HEAD). Seit TF-071 wird kein Commit mehr veröffentlicht;
+  Code-seitig keine Ursache gefunden (Functions/Edge importierbar). Kein Netlify-Zugang auf dem PC, keine GitHub-Statusmeldungen von Netlify.
+  **Chris: im Netlify-UI Deploys prüfen (Auto-Publish gesperrt? Build fehlgeschlagen? Build-Minuten?) und d81cb2b veröffentlichen.**
+  Geschützte APIs ohne Sitzung 401 (crm, calling, sales, auth/me, payments, server-control).
+  **Bis Netlify live: keinen Verkauf/Auftrag anlegen** – die alte Netlify-Provisionslogik würde einen neuen Eintrag mit 3500 bps speichern,
+  den TF-072 danach als historischen Satz beibehält (Produktion: 0 Aufträge, 0 Provisionseinträge → aktuell nichts betroffen).
+- CALLING_DRY_RUN=true, Zahlungsüberwachung unverändert. 0 echte Mails, 0 Anrufe, 0 Zahlungen, 0 Kundenwebsites verändert.
 
 ## TF-071 – HOSTING-/CMS-ERKENNUNG VOR DEM SICHEREN ZUGANG (2026-10-16, Code f3668fb, Repair + Mail LIVE, Netlify NICHT live bestätigt, Calling/CRM/Contacts/VN NICHT neu gestartet)
 - **Nur FIX mit Onboarding** (CHECK unverändert, keine Erkennung). Vor der ERSTEN Zugangs-Anfrage (ACCESS_REQUESTED, platformStep):
