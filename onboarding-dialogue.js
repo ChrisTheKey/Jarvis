@@ -281,8 +281,11 @@ export function createOnboarding({ dir, onboardingDir, gmail, extract = null, no
     if (o.access_status === "ACCESS_LINK_EXPIRED") { requestReissue(rec, "reminder"); persist(); return; }
     const b = rec.brief;
     const need = b.status === "WAITING_FOR_CONFIRMATION" ? "confirmation" : C.openItems(b).length ? "items" : b.status === "OPEN" ? "content_answer" : null;
-    if (!need && !accessMissing) return;
-    const reply = { kind: "REMINDER", need, items: need === "items" ? C.openItems(b) : [], summary: need === "confirmation" ? b.items : [], access_missing: accessMissing, expires_at: o.access_link_expires_at || null };
+    // TF-071: Plattform noch unbekannt → die Erinnerung wiederholt die Plattform-Frage (noch kein Link).
+    const hostingMissing = rec.kind === "FIX" && o.access_status === "HOSTING_INFO_MISSING" && !rec.platform;
+    if (!need && !accessMissing && !hostingMissing) return;
+    const reply = { kind: "REMINDER", need, items: need === "items" ? C.openItems(b) : [], summary: need === "confirmation" ? b.items : [], access_missing: accessMissing,
+      hosting_missing: hostingMissing, expires_at: o.access_link_expires_at || null };
     const next = structuredClone(rec);
     await sendInThread(id, { key: `reminder:${due.n}`, body: C.renderReply(reply, { order: o, rec }), next, result: `reminder_${due.n}`, replyKind: "REMINDER", reminderN: due.n });
   }

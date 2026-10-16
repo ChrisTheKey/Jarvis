@@ -13,17 +13,19 @@
 //   - Kundenmail = UNTRUSTED DATA. Preis-/Rabatt-/Refund-/Rechts-/Bank-/Vertragsfragen, Abbruch und Prompt-Injection → Chris.
 import { offerInfo, formatMoney } from "./pricing.js";
 import { VN_SIGNATURE } from "./sender-profiles.js";
+import { parsePlatformAnswer, cleanStated, cleanPlatform, HOSTING_QUESTION_DE, HOSTING_QUESTION_VI, HOSTING_NO_PW_DE, HOSTING_NO_PW_VI } from "./hosting-detect.js";
 
 export const ONBOARDING_CLASS = "CUSTOMER_ONBOARDING_DIALOGUE";
 export const ONBOARDING_STATES = Object.freeze(["WAITING_FOR_PAYMENT", "READY_FOR_ONBOARDING", "WAITING_FOR_ACCESS", "WAITING_FOR_CUSTOMER_INFO",
-  "WAITING_FOR_CLARIFICATION", "WAITING_FOR_CONFIRMATION", "ONBOARDING_COMPLETE", "WAITING_CUSTOMER_MANUAL_REVIEW", "MANUAL_REVIEW_REQUIRED",
+  "WAITING_FOR_CLARIFICATION", "WAITING_FOR_CONFIRMATION", "WAITING_FOR_HOSTING_INFO", "ONBOARDING_COMPLETE", "WAITING_CUSTOMER_MANUAL_REVIEW", "MANUAL_REVIEW_REQUIRED",
   "CUSTOMER_STOP_REQUESTED", "CANCELLATION_REVIEW_REQUIRED", "ONBOARDING_AI_PAUSED", "COMPLETED"]);
 // Zustände, in denen kein automatischer Dialog mehr läuft (Chris entscheidet bzw. erledigt).
 export const HALT_STATES = Object.freeze(["MANUAL_REVIEW_REQUIRED", "CUSTOMER_STOP_REQUESTED", "CANCELLATION_REVIEW_REQUIRED", "COMPLETED"]);
 export const BRIEF_STATUSES = Object.freeze(["OPEN", "CLARIFICATION_NEEDED", "WAITING_FOR_CONFIRMATION", "CONFIRMED", "NO_CONTENT_CHANGES", "COMPLETED"]);
 export const BRIEF_DONE = Object.freeze(["CONFIRMED", "NO_CONTENT_CHANGES", "COMPLETED"]);
 // Was der Dialog über den Zugang weiss – nie mehr (keine Zugangsdaten, kein Tresor-Inhalt).
-export const ACCESS_STATUSES = Object.freeze(["NOT_REQUIRED", "ACCESS_MISSING", "ACCESS_LINK_SENT", "ACCESS_LINK_EXPIRED", "ACCESS_RECEIVED", "ACCESS_PROFILE_READY"]);
+// TF-071: HOSTING_INFO_MISSING = Plattform/Hosting nicht sicher erkannt – Jarvis fragt zuerst danach, noch KEIN Link.
+export const ACCESS_STATUSES = Object.freeze(["NOT_REQUIRED", "HOSTING_INFO_MISSING", "ACCESS_MISSING", "ACCESS_LINK_SENT", "ACCESS_LINK_EXPIRED", "ACCESS_RECEIVED", "ACCESS_PROFILE_READY"]);
 export const ANSWER_CLASSES = Object.freeze(["ACCESS_QUESTION", "CONTENT_CHANGE", "CORRECTION", "CONTACT_UPDATE", "ADDRESS_UPDATE", "NO_CONTENT_CHANGES",
   "CONFIRMATION", "CLARIFICATION", "CANCELLATION_REQUEST", "PAYMENT_QUESTION", "LEGAL_QUESTION", "SENSITIVE_CREDENTIAL_SENT", "OTHER"]);
 export const CHANGE_KINDS = Object.freeze(["phone", "email", "address", "opening_hours", "text_replacement", "spelling_correction", "removal", "addition", "other"]);
@@ -303,7 +305,9 @@ export function briefExport(rec) {
   return { v: 1, order_id: rec.order_id, kind: rec.kind, market: rec.market, status: b.status || "OPEN",
     customer_requested_content_changes: b.customer_requested_content_changes ?? null, confirmed_at: b.confirmed_at || null,
     changes: confirmed ? (b.items || []).filter((i) => i.customer_confirmed && !i.missing?.length).map(publicItem) : [],
-    manual: HALT_STATES.includes(rec.state) && rec.state !== "COMPLETED", updated_at: rec.updated_at || null };
+    manual: HALT_STATES.includes(rec.state) && rec.state !== "COMPLETED",
+    platform: cleanStated(rec.platform), // TF-071: Kundenangabe zur Plattform – nur feste Wörter, nie Kundentext/Zugangsdaten
+    updated_at: rec.updated_at || null };
 }
 
 // ---------- Zustand ----------
@@ -319,6 +323,7 @@ export function deriveState(rec, order = null) {
   if (b.status === "CLARIFICATION_NEEDED") return "WAITING_FOR_CLARIFICATION";
   if (b.status === "OPEN") return "WAITING_FOR_CUSTOMER_INFO";
   const acc = order?.access_status || rec.access_status;
+  if (rec.kind === "FIX" && acc === "HOSTING_INFO_MISSING" && !rec.platform) return "WAITING_FOR_HOSTING_INFO"; // TF-071
   if (rec.kind === "FIX" && !["ACCESS_RECEIVED", "ACCESS_PROFILE_READY"].includes(acc)) return "WAITING_FOR_ACCESS";
   return "ONBOARDING_COMPLETE";
 }
@@ -326,7 +331,7 @@ export function awaitingOf(rec, order = null) {
   const s = deriveState(rec, order);
   if (["MANUAL_REVIEW_REQUIRED", "CANCELLATION_REVIEW_REQUIRED", "WAITING_CUSTOMER_MANUAL_REVIEW", "CUSTOMER_STOP_REQUESTED"].includes(s)) return "chris";
   if (s === "ONBOARDING_AI_PAUSED") return "jarvis";
-  if (["WAITING_FOR_ACCESS", "WAITING_FOR_CUSTOMER_INFO", "WAITING_FOR_CLARIFICATION", "WAITING_FOR_CONFIRMATION"].includes(s)) return "customer";
+  if (["WAITING_FOR_ACCESS", "WAITING_FOR_HOSTING_INFO", "WAITING_FOR_CUSTOMER_INFO", "WAITING_FOR_CLARIFICATION", "WAITING_FOR_CONFIRMATION"].includes(s)) return "customer";
   if (s === "COMPLETED") return "nothing";
   return order && !order.terminal ? "jarvis" : "nothing";
 }
@@ -347,8 +352,11 @@ export function decide({ rec, order, text, pre, extraction = null, now = new Dat
   const access = order?.access_status || r.access_status || "NOT_REQUIRED";
   const accessMissing = r.kind === "FIX" && ["ACCESS_MISSING", "ACCESS_LINK_SENT", "ACCESS_LINK_EXPIRED"].includes(access);
   const linkExpired = r.kind === "FIX" && access === "ACCESS_LINK_EXPIRED";
+  // TF-071: Plattform/Hosting noch unbekannt → noch kein Link; Hinweise fragen nach der Plattform statt auf einen Link zu verweisen.
+  const hostingMissing = () => r.kind === "FIX" && access === "HOSTING_INFO_MISSING" && !r.platform;
+  const linkPending = () => r.kind === "FIX" && access === "HOSTING_INFO_MISSING" && !!r.platform;
   const halt = (state, reason, result) => { r.state = state; r.manual_reason = reason; return { rec: r, reply: null, escalate: reason, reissue: null, result }; };
-  const finish = (reply, result, extra = {}) => { r.state = deriveState(r, order); b.awaiting = awaitingOf(r, order); b.missing_items = openItems(b).length; return { rec: r, reply, escalate: null, reissue: null, result, ...extra }; };
+  const finish = (reply, result, extra = {}) => { if (reply) Object.assign(reply, { hosting_missing: hostingMissing(), link_pending: linkPending() }); r.state = deriveState(r, order); b.awaiting = awaitingOf(r, order); b.missing_items = openItems(b).length; return { rec: r, reply, escalate: null, reissue: null, result, ...extra }; };
 
   switch (pre.cls) {
     case "SENSITIVE_CREDENTIAL_SENT":
@@ -362,12 +370,23 @@ export function decide({ rec, order, text, pre, extraction = null, now = new Dat
     case "LEGAL_QUESTION": return halt("MANUAL_REVIEW_REQUIRED", "Rechtliche Frage bzw. Rechtstext soll formuliert werden – keine Rechtsberatung, Chris prüft.", "legal_review");
     case "EMPTY": return finish(null, "empty_ignored");
   }
+  // TF-071: Antwort auf die Plattform-Frage («WordPress bei Hostpoint», «Wix», «FTP bei Infomaniak») – deterministisch, nur bekannte
+  // Wörter (nie Kundentext, nie Zugangsdaten – diese wurden oben bereits abgefangen). Reine Plattform-Antwort → keine eigene Antwort,
+  // der sichere Link (passend zum Zugangsweg) folgt vom Repair-Service im selben Thread.
+  if (hostingMissing()) {
+    const p = parsePlatformAnswer(coreText(text));
+    if (p) {
+      r.platform = cleanStated(p); r.platform_at = t;
+      if (p.platform_only && !["NO_CONTENT_CHANGES", "CONFIRMATION", "YES_WITHOUT_DETAILS", "CORRECTION_WANTED"].includes(pre.cls)) return finish(null, "platform_received");
+    }
+  }
   if (pre.cls === "PAYMENT_QUESTION") {
     if (pre.manual) return halt("MANUAL_REVIEW_REQUIRED", "Preis-/Zahlungsthema (Rabatt, Refund, Bank, Rechnung, Vertrag) – nie autonom, Chris prüft.", "payment_review");
     return finish({ kind: "PRICE_INFO" }, "price_explained");
   }
   if (pre.cls === "ACCESS_QUESTION") {
     if (r.kind !== "FIX") return finish({ kind: "CHECK_NO_ACCESS" }, "check_no_access_needed");
+    if (hostingMissing() || linkPending()) return finish({ kind: "ACCESS_HELP", expired: false, expires_at: null }, "access_help");
     if (!accessMissing) return finish({ kind: "ACCESS_RECEIVED_INFO" }, "access_already_received");
     return finish({ kind: "ACCESS_HELP", expired: linkExpired, expires_at: order?.access_link_expires_at || null }, "access_help",
       { reissue: linkExpired && (r.reissues || 0) < MAX_AUTO_REISSUES ? "customer_request" : null });
@@ -442,6 +461,9 @@ export const NO_PASSWORD_DE = "Bitte senden Sie keine Passwörter oder Zugangsda
 export const NO_PASSWORD_VI = "Vui lòng không gửi mật khẩu hoặc thông tin đăng nhập qua email. Chỉ sử dụng đường liên kết bảo mật cho việc này.";
 export const SENSITIVE_DE = "Aus Sicherheitsgründen übernehme ich Zugangsdaten nicht aus E-Mails. Bitte verwenden Sie dafür den sicheren Zugangslink aus meiner vorherigen Nachricht.";
 export const SENSITIVE_VI = "Vì lý do bảo mật, chúng tôi không sử dụng thông tin đăng nhập được gửi qua email. Vui lòng dùng đường liên kết truy cập bảo mật trong email trước của chúng tôi.";
+// TF-071: noch kein sicherer Link verschickt (Plattform wird zuerst geklärt).
+export const SENSITIVE_NOLINK_DE = "Aus Sicherheitsgründen übernehme ich Zugangsdaten nicht aus E-Mails. Für den Zugang erhalten Sie von mir einen sicheren Link, über den Sie ihn verschlüsselt übermitteln.";
+export const SENSITIVE_NOLINK_VI = "Vì lý do bảo mật, chúng tôi không sử dụng thông tin đăng nhập được gửi qua email. Chúng tôi sẽ gửi cho anh/chị một đường liên kết bảo mật để cung cấp quyền truy cập dưới dạng mã hóa.";
 
 // Inhaltsfrage für die erste FIX-Nachricht (§13/§14/§16) – wird an die bestehende Zugangs-Anfrage angehängt.
 export function contentQuestionLines(locale) {
@@ -488,6 +510,17 @@ export function buildCheckIntroMail(order) {
 // Neuer sicherer Link (abgelaufener Link, §6/§29) – wird vom Repair-Service mit dem frischen One-Time-Link gebaut.
 export function buildReissueMail(order, { link, expires_at, reason = "reminder" }) {
   const loc = localeOf(order);
+  // TF-071: übermittelter Zugang liess sich nicht prüfen (ACCESS_VALIDATION_FAILED) – gelöscht, nie erneut versucht, neuer Link.
+  if (reason === "validation_failed") {
+    if (vi(loc)) return { subject: `Sửa lỗi website ${order.domain} – vui lòng gửi lại quyền truy cập`, body: [greetVi(order), "",
+      "Rất tiếc, chúng tôi không thể đăng nhập bằng quyền truy cập anh/chị đã gửi (ví dụ mật khẩu không đúng hoặc tài khoản thiếu quyền cần thiết). Vì lý do bảo mật, thông tin này đã được xóa và sẽ không được thử lại.",
+      "", "Vui lòng kiểm tra quyền truy cập tạm thời và gửi lại qua đường liên kết bảo mật mới, chỉ dành cho đơn hàng này" + (expires_at ? ` (có hiệu lực đến ${viDate(expires_at)}, chỉ dùng được một lần):` : " (chỉ dùng được một lần):"),
+      link, "", NO_PASSWORD_VI, "", VN_SIGNATURE].join("\n") };
+    return { subject: `Ihre Website-Reparatur ${order.domain} – Zugang bitte erneut übermitteln`, body: [greetDe(order), "",
+      "leider konnte ich mich mit dem übermittelten Zugang nicht anmelden (zum Beispiel falsches Passwort oder fehlende Rechte des Benutzers). Aus Sicherheitsgründen wurde er gelöscht und wird nicht erneut versucht.",
+      "", "Bitte prüfen Sie den temporären Zugang und übermitteln Sie ihn erneut über Ihren neuen, nur für diesen Auftrag gültigen Link" + (expires_at ? ` (gültig bis ${deDate(expires_at)}, nur einmal verwendbar):` : " (nur einmal verwendbar):"),
+      link, "", NO_PASSWORD_DE, "", SIG_DE].join("\n") };
+  }
   if (vi(loc)) return { subject: `Sửa lỗi website ${order.domain} – đường liên kết bảo mật mới`, body: [greetVi(order), "",
     ...(reason === "sensitive" ? [SENSITIVE_VI, "Vì thông tin đăng nhập đã được gửi qua email, chúng tôi khuyên anh/chị nên đổi mật khẩu đó.", ""] : []),
     "Đường liên kết bảo mật trước đây đã hết hạn. Đây là đường liên kết mới, chỉ dành cho đơn hàng này" + (expires_at ? ` (có hiệu lực đến ${viDate(expires_at)}, chỉ dùng được một lần):` : " (chỉ dùng được một lần):"),
@@ -570,8 +603,13 @@ export function renderReply(reply, { order = {}, rec = {} } = {}) {
   const o = { contact_name: order.contact_name || rec.contact_name || null, company: order.company || rec.company || null, domain: order.domain || rec.domain || "" };
   const head = V ? [greetVi(o), ""] : [greetDe(o), ""];
   const tail = V ? ["", VN_SIGNATURE] : ["", SIG_DE];
-  const accessHint = (missing) => (missing ? (V ? ["", "Ngoài ra, chúng tôi vẫn cần quyền truy cập an toàn qua đường liên kết trong email trước. " + NO_PASSWORD_VI]
-    : ["", "Zusätzlich brauche ich noch den sicheren Website-Zugang über den Link aus meiner vorherigen Nachricht. " + NO_PASSWORD_DE]) : []);
+  const hostingAsk = () => (V ? ["Để gửi cho anh/chị cách truy cập an toàn phù hợp, chúng tôi cần biết thêm:", HOSTING_QUESTION_VI, HOSTING_NO_PW_VI]
+    : ["Damit ich Ihnen den passenden sicheren Zugangsweg senden kann, brauche ich noch eine Angabe:", HOSTING_QUESTION_DE, HOSTING_NO_PW_DE]);
+  const linkFollows = () => (V ? "Đường liên kết bảo mật để cấp quyền truy cập sẽ được gửi trong một email riêng. " + NO_PASSWORD_VI
+    : "Den sicheren Link für den Website-Zugang erhalten Sie in einer separaten Nachricht. " + NO_PASSWORD_DE);
+  const accessHint = (missing) => (reply.hosting_missing ? ["", ...hostingAsk()] : reply.link_pending ? ["", linkFollows()]
+    : missing ? (V ? ["", "Ngoài ra, chúng tôi vẫn cần quyền truy cập an toàn qua đường liên kết trong email trước. " + NO_PASSWORD_VI]
+      : ["", "Zusätzlich brauche ich noch den sicheren Website-Zugang über den Link aus meiner vorherigen Nachricht. " + NO_PASSWORD_DE]) : []);
   let body;
   switch (reply.kind) {
     case "ASK": {
@@ -602,6 +640,14 @@ export function renderReply(reply, { order = {}, rec = {} } = {}) {
         : ["vielen Dank. Bitte schreiben Sie mir, welche Inhalte genau geändert werden sollen (zum Beispiel neue Telefonnummer, Adresse oder alter Text → neuer Text)."];
       break;
     case "SECURE_LINK_HINT":
+      // TF-071: noch kein Link verschickt (Plattform unbekannt bzw. Link folgt) → nicht auf «den Link» verweisen.
+      if (reply.hosting_missing || reply.link_pending) {
+        body = V ? [SENSITIVE_NOLINK_VI, "Vì thông tin đăng nhập đã được gửi qua email, chúng tôi khuyên anh/chị nên đổi mật khẩu đó.", "", ...(reply.hosting_missing ? hostingAsk() : [linkFollows()]),
+          "", "Nếu email của anh/chị còn có yêu cầu thay đổi nội dung, vui lòng gửi lại các yêu cầu đó mà không kèm thông tin đăng nhập."]
+          : [SENSITIVE_NOLINK_DE, "Da die Zugangsdaten per E-Mail übertragen wurden, empfehle ich, das betreffende Passwort zu ändern.", "", ...(reply.hosting_missing ? hostingAsk() : [linkFollows()]),
+            "", "Falls Ihre Nachricht auch Änderungswünsche zu Inhalten enthielt, senden Sie mir diese bitte nochmals ohne Zugangsdaten."];
+        break;
+      }
       body = V ? [SENSITIVE_VI, "Vì thông tin đăng nhập đã được gửi qua email, chúng tôi khuyên anh/chị nên đổi mật khẩu đó.",
         ...(reply.reissue ? ["Đường liên kết trước đã hết hạn – chúng tôi sẽ gửi ngay một đường liên kết bảo mật mới trong email riêng."] : []),
         "", "Nếu email của anh/chị còn có yêu cầu thay đổi nội dung, vui lòng gửi lại các yêu cầu đó mà không kèm thông tin đăng nhập."]
@@ -610,6 +656,8 @@ export function renderReply(reply, { order = {}, rec = {} } = {}) {
           "", "Falls Ihre Nachricht auch Änderungswünsche zu Inhalten enthielt, senden Sie mir diese bitte nochmals ohne Zugangsdaten."];
       break;
     case "ACCESS_HELP":
+      if (reply.hosting_missing) { body = hostingAsk(); break; }
+      if (reply.link_pending) { body = [linkFollows()]; break; }
       body = V ? (reply.expired ? ["Đường liên kết bảo mật trước đã hết hạn – chúng tôi sẽ gửi ngay một đường liên kết mới trong email riêng.", "", NO_PASSWORD_VI]
         : ["Anh/chị vui lòng mở đường liên kết bảo mật trong email trước của chúng tôi" + (reply.expires_at ? ` (có hiệu lực đến ${viDate(reply.expires_at)})` : "") + " và làm theo hướng dẫn trong biểu mẫu. Cách an toàn nhất là tạo một tài khoản tạm thời chỉ với các quyền cần thiết.", "", NO_PASSWORD_VI])
         : (reply.expired ? ["Ihr bisheriger sicherer Link ist abgelaufen – Sie erhalten gleich in einer separaten Nachricht einen neuen Link.", "", NO_PASSWORD_DE]
@@ -642,7 +690,8 @@ export function renderReply(reply, { order = {}, rec = {} } = {}) {
       else if (qs.length) parts.push(...(V ? ["Để tiếp tục, chúng tôi vẫn cần thêm thông tin:", ...qs.map((x) => `- ${x}`)] : ["damit ich weitermachen kann, brauche ich noch folgende Angaben:", ...qs.map((x) => `- ${x}`)]));
       else if (reply.need === "content_answer") parts.push(...(V ? ["Chúng tôi muốn hỏi lại: ngoài các lỗi kỹ thuật, anh/chị có muốn sửa thêm nội dung nào trên website không? Nếu không, chỉ cần trả lời «Không»."]
         : ["kurze Rückfrage: Gibt es neben den technischen Fehlern noch Inhalte, die korrigiert werden sollen? Falls nicht, genügt eine kurze Antwort «Nein»."]));
-      if (reply.access_missing) parts.push(...(parts.length ? [""] : []), ...(V ? ["Chúng tôi vẫn cần quyền truy cập an toàn qua đường liên kết trong email trước" + (reply.expires_at ? ` (có hiệu lực đến ${viDate(reply.expires_at)}).` : "."), NO_PASSWORD_VI]
+      if (reply.hosting_missing) parts.push(...(parts.length ? [""] : []), ...hostingAsk());
+      else if (reply.access_missing) parts.push(...(parts.length ? [""] : []), ...(V ? ["Chúng tôi vẫn cần quyền truy cập an toàn qua đường liên kết trong email trước" + (reply.expires_at ? ` (có hiệu lực đến ${viDate(reply.expires_at)}).` : "."), NO_PASSWORD_VI]
         : ["Für die Reparatur brauche ich noch den sicheren Website-Zugang über den Link aus meiner vorherigen Nachricht" + (reply.expires_at ? ` (gültig bis ${deDate(reply.expires_at)}).` : "."), NO_PASSWORD_DE]));
       body = parts;
       break;
@@ -656,12 +705,12 @@ export function renderReply(reply, { order = {}, rec = {} } = {}) {
 export const ONBOARDING_FILTERS = Object.freeze({
   open: (s) => !["ONBOARDING_COMPLETE", "COMPLETED"].includes(s.state),
   waiting_customer: (s) => s.awaiting === "customer",
-  waiting_access: (s) => s.state === "WAITING_FOR_ACCESS" || (s.kind === "FIX" && ["missing", "link_sent", "link_expired"].includes(s.access)),
+  waiting_access: (s) => ["WAITING_FOR_ACCESS", "WAITING_FOR_HOSTING_INFO"].includes(s.state) || (s.kind === "FIX" && ["hosting_missing", "missing", "link_sent", "link_expired"].includes(s.access)),
   waiting_confirmation: (s) => s.state === "WAITING_FOR_CONFIRMATION",
   manual_review: (s) => s.awaiting === "chris",
   ready: (s) => s.state === "ONBOARDING_COMPLETE",
 });
-const ACCESS_WORD = { NOT_REQUIRED: "not_required", ACCESS_MISSING: "missing", ACCESS_LINK_SENT: "link_sent", ACCESS_LINK_EXPIRED: "link_expired", ACCESS_RECEIVED: "received", ACCESS_PROFILE_READY: "checked" };
+const ACCESS_WORD = { NOT_REQUIRED: "not_required", HOSTING_INFO_MISSING: "hosting_missing", ACCESS_MISSING: "missing", ACCESS_LINK_SENT: "link_sent", ACCESS_LINK_EXPIRED: "link_expired", ACCESS_RECEIVED: "received", ACCESS_PROFILE_READY: "checked" };
 export function publicOnboarding(rec, order = null) {
   if (!rec) return null;
   const b = rec.brief || {};
@@ -675,5 +724,7 @@ export function publicOnboarding(rec, order = null) {
     last_customer_reply_at: b.last_customer_reply_at || null, last_jarvis_reply_at: b.last_jarvis_reply_at || null,
     reminders: rec.reminders?.count || 0, manual_reason: awaitingOf(rec, order) === "chris" ? String(rec.manual_reason || "").slice(0, 160) || null : null,
     changes: requestedChanges(b),
+    // TF-071: Hosting/CMS/Zugangsweg/Konfidenz/Zugangsstatus – nur feste Wörter (Allowlist), nie Zugangsdaten.
+    platform: rec.kind === "FIX" ? cleanPlatform(order?.platform || (rec.platform ? { ...rec.platform, confidence: "HIGH" } : null)) : null,
   };
 }

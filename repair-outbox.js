@@ -22,7 +22,8 @@ import path from "node:path";
 export const OUTBOX_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE"]);
 export const ONBOARDING_CLASS = "CUSTOMER_ONBOARDING_DIALOGUE";
 const ORDER_ID_RE = /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/;
-export const OUTBOX_PURPOSES = Object.freeze(["first", "reissue", "host_key", "check_intro"]);
+// TF-071: hosting_question (Plattform-Frage vor dem Link), revalidate (neuer Link nach ungültigem Zugang).
+export const OUTBOX_PURPOSES = Object.freeze(["first", "reissue", "host_key", "check_intro", "hosting_question", "revalidate"]);
 export const OUTBOX_PENDING = "OUTBOX_PENDING";
 export const OUTBOX_RESULTS = Object.freeze(["sent", "failed", "unclear", "rejected"]);
 export const CONSUMER_FILE = "consumer.json";

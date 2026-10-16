@@ -159,6 +159,8 @@ export function applyAccessSubmission(store, s, { workerDir = store.dir, now = n
   const loc = order.market === "VN" ? "vi-VN" : "de-CH"; // TF-064: Freigabetext in der Sprache des Auftrags
   if (sub.consent !== true || sub.consent_text !== consentText(order.domain, loc)) return deny("Reparaturfreigabe fehlt");
   if (!ACCESS_TYPES.includes(sub.access_type)) return deny("Zugangsart unbekannt");
+  // TF-071: Link für einen bestimmten Zugangsweg → nur dessen Zugangsart (wie in der Cloud geprüft, hier erneut).
+  if (order.platform?.connector_type && order.platform.access_type && sub.access_type !== order.platform.connector_type) return deny("Zugangsart passt nicht zum Auftrag");
   if (!paymentGateForOrder(store, order).satisfied) return deny("Zahlungsschwelle nicht erfüllt");
   try { openEnvelope(sub.envelope, accessKeys(workerDir).privateKeyPem); } // nur Prüfung – Klartext wird sofort verworfen
   catch { return deny("Zugangsdaten nicht entschlüsselbar"); }

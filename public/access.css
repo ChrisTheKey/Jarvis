@@ -1,6 +1,7 @@
 :root { --bg: #f6f7f9; --fg: #1c2330; --muted: #5b6474; --line: #d4d9e1; --accent: #0b5cad; --ok: #1b7a3a; --err: #b42318; --card: #fff; }
 @media (prefers-color-scheme: dark) { :root { --bg: #11151c; --fg: #e8ecf2; --muted: #a2abba; --line: #2c3442; --accent: #6aa8f0; --ok: #5cc98a; --err: #f08a80; --card: #171d26; } }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; } /* TF-071: ausgeblendete Felder des festen Zugangswegs */
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; overflow-x: hidden; }
 main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
 h1 { font-size: 1.5rem; margin: 0 0 4px; }

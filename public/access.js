@@ -52,6 +52,53 @@ const VI_ERR = { consent: "Vui lòng xác nhận quyền cung cấp truy cập v
   port: "Cổng chỉ gồm chữ số (ví dụ 22).", fp: "Fingerprint có dạng SHA256:… (43 ký tự). Nếu không chắc: để trống.", send: "Gửi thất bại. Vui lòng thử lại.",
   crypto: "Mã hóa hoặc gửi thất bại. Vui lòng thử lại.", hkConsent: "Vui lòng xác nhận rằng anh/chị đã so sánh fingerprint.",
   hkReject: "Cảm ơn anh/chị đã báo – chúng tôi sẽ KHÔNG kết nối và sẽ liên hệ trực tiếp với anh/chị. Đường liên kết này hiện không còn hiệu lực." };
+// TF-071: Link für einen bestimmten Zugangsweg (access_kind) → nur dessen Felder, feste Zugangsart, passende Beschriftungen.
+const KIND_DE = {
+  WORDPRESS_ADMIN: { hint: "Bitte einen temporären WordPress-Benutzer mit der Rolle «Administrator» anlegen (Benutzer → Neu hinzufügen) – nicht Ihr eigenes Passwort.", host: "Admin-Login-Adresse (z. B. https://ihre-domain.ch/wp-admin)", user: "Temporärer Benutzername", secret: "Temporäres Passwort" },
+  CMS_ADMIN: { hint: "Bitte einen temporären Administrator nur für diesen Auftrag anlegen.", host: "Login-Adresse des Website-Systems", user: "Temporärer Benutzername", secret: "Temporäres Passwort" },
+  CPANEL: { hint: "Am besten einen eigenen, temporären cPanel-Zugang einrichten.", host: "cPanel-Login-Adresse", user: "Benutzername", secret: "Passwort" },
+  PLESK: { hint: "Am besten einen eigenen, temporären Plesk-Zugang einrichten.", host: "Plesk-Login-Adresse", user: "Benutzername", secret: "Passwort" },
+  SFTP: { hint: "Bitte einen temporären SFTP-Benutzer nur für das Website-Verzeichnis anlegen.", host: "Server (Host)", user: "SFTP-Benutzer", secret: "Passwort" },
+  SHOPIFY_STAFF: { hint: "Bitte laden Sie uns in Shopify als Mitarbeiter ein (Einstellungen → Benutzer und Berechtigungen) – kein Inhaber-Passwort, kein Passwort nötig.", host: "Shop-Adresse (z. B. ihr-shop.myshopify.com)" },
+  WIX_COLLABORATOR: { hint: "Bitte laden Sie uns in Wix als Mitarbeiter ein (Einstellungen → Rollen & Berechtigungen) – kein Passwort nötig.", host: "Name bzw. Adresse der Website" },
+  WEBFLOW_COLLABORATOR: { hint: "Bitte laden Sie uns in Webflow als Collaborator ein – kein Passwort nötig.", host: "Name bzw. Adresse der Site" },
+  SQUARESPACE_CONTRIBUTOR: { hint: "Bitte laden Sie uns in Squarespace als Mitwirkenden ein (Berechtigungen) – kein Passwort nötig.", host: "Name bzw. Adresse der Website" },
+  NETLIFY_TEAM: { hint: "Bitte laden Sie uns in Ihr Netlify-Team bzw. zur Site ein – kein Passwort nötig.", host: "Name der Netlify-Site" },
+  VERCEL_TEAM: { hint: "Bitte laden Sie uns in Ihr Vercel-Team bzw. Projekt ein – kein Passwort nötig.", host: "Name des Vercel-Projekts" },
+  GITHUB_COLLABORATOR: { hint: "Bitte laden Sie uns im GitHub-Repository als Collaborator ein – nie Ihr GitHub-Passwort.", host: "Repository (z. B. firma/website)" },
+};
+const KIND_VI = {
+  WORDPRESS_ADMIN: { hint: "Vui lòng tạo một tài khoản WordPress tạm thời với vai trò «Quản trị viên» (Thành viên → Thêm mới) – không dùng mật khẩu riêng của anh/chị.", host: "Địa chỉ đăng nhập quản trị (VD: https://ten-mien.vn/wp-admin)", user: "Tên đăng nhập tạm thời", secret: "Mật khẩu tạm thời" },
+  CMS_ADMIN: { hint: "Vui lòng tạo một tài khoản quản trị tạm thời chỉ cho đơn hàng này.", host: "Địa chỉ đăng nhập hệ thống website", user: "Tên đăng nhập tạm thời", secret: "Mật khẩu tạm thời" },
+  CPANEL: { hint: "Tốt nhất là tạo một quyền truy cập cPanel riêng, tạm thời.", host: "Địa chỉ đăng nhập cPanel", user: "Tên đăng nhập", secret: "Mật khẩu" },
+  PLESK: { hint: "Tốt nhất là tạo một quyền truy cập Plesk riêng, tạm thời.", host: "Địa chỉ đăng nhập Plesk", user: "Tên đăng nhập", secret: "Mật khẩu" },
+  SFTP: { hint: "Vui lòng tạo một tài khoản SFTP tạm thời chỉ cho thư mục website.", host: "Máy chủ (host)", user: "Tài khoản SFTP", secret: "Mật khẩu" },
+  SHOPIFY_STAFF: { hint: "Vui lòng mời chúng tôi làm nhân viên trong Shopify (Cài đặt → Người dùng và quyền) – không cần mật khẩu.", host: "Địa chỉ cửa hàng (VD: cua-hang.myshopify.com)" },
+  WIX_COLLABORATOR: { hint: "Vui lòng mời chúng tôi làm cộng tác viên trong Wix – không cần mật khẩu.", host: "Tên hoặc địa chỉ website" },
+  WEBFLOW_COLLABORATOR: { hint: "Vui lòng mời chúng tôi làm cộng tác viên trong Webflow – không cần mật khẩu.", host: "Tên hoặc địa chỉ site" },
+  SQUARESPACE_CONTRIBUTOR: { hint: "Vui lòng mời chúng tôi làm cộng tác viên trong Squarespace – không cần mật khẩu.", host: "Tên hoặc địa chỉ website" },
+  NETLIFY_TEAM: { hint: "Vui lòng mời chúng tôi vào team hoặc site Netlify – không cần mật khẩu.", host: "Tên site Netlify" },
+  VERCEL_TEAM: { hint: "Vui lòng mời chúng tôi vào team hoặc dự án Vercel – không cần mật khẩu.", host: "Tên dự án Vercel" },
+  GITHUB_COLLABORATOR: { hint: "Vui lòng mời chúng tôi làm cộng tác viên trong repository GitHub – không bao giờ dùng mật khẩu GitHub của anh/chị.", host: "Repository (VD: cong-ty/website)" },
+};
+const ALL_FIELDS = ["host", "user", "secret", "port", "root", "hostKey", "passphrase", "provider", "stack", "notes"];
+let kindFields = null; // null = freie Auswahl wie bisher
+function toggleField(id, on, label = null) {
+  const input = $(id), lab = document.querySelector(`label[for="${id}"]`);
+  input.hidden = !on; if (lab) { lab.hidden = !on; if (label) lab.textContent = label; }
+  const next = input.nextElementSibling;
+  if (next?.classList?.contains("hint")) next.hidden = !on;
+}
+function applyKind(kind, fields, connector) {
+  const K = (VI ? KIND_VI : KIND_DE)[kind] || {};
+  kindFields = fields.filter((f) => ALL_FIELDS.includes(f));
+  $("type").value = connector; $("type").disabled = true; $("type").hidden = true;
+  const lt = document.querySelector('label[for="type"]'); if (lt) lt.hidden = true;
+  const ol = document.querySelector("#form .note ol"); if (ol) ol.hidden = true;
+  $("typeHint").textContent = K.hint || "";
+  for (const f of ALL_FIELDS) toggleField(f, kindFields.includes(f), K[f] || null);
+  $("serverFields").hidden = !["port", "root", "hostKey", "passphrase", "provider", "stack"].some((f) => kindFields.includes(f));
+}
 const tr = (de, key, ...a) => (VI ? (typeof VI_ERR[key] === "function" ? VI_ERR[key](...a) : VI_ERR[key]) : de);
 function applyVi() {
   if (!VI) return;
@@ -84,8 +131,11 @@ async function start() {
   $("expires").textContent = dateText(info.expires_at);
   $("dom").value = info.domain;
   $("consentText").textContent = info.consent_text;
-  const hint = () => { $("typeHint").textContent = (VI ? VI_HINTS : HINTS)[$("type").value] || ""; $("serverFields").hidden = !SERVER_TYPES.has($("type").value); };
-  $("type").addEventListener("change", hint); hint();
+  if (info.access_kind && Array.isArray(info.fields) && info.access_types?.length === 1) applyKind(info.access_kind, info.fields, info.access_types[0]);
+  else {
+    const hint = () => { $("typeHint").textContent = (VI ? VI_HINTS : HINTS)[$("type").value] || ""; $("serverFields").hidden = !SERVER_TYPES.has($("type").value); };
+    $("type").addEventListener("change", hint); hint();
+  }
   show("form");
 }
 
@@ -96,17 +146,18 @@ $("form").addEventListener("submit", async (ev) => {
   if (!$("consent").checked) return err(tr("Bitte bestätigen Sie die Berechtigung und die Reparaturfreigabe.", "consent"));
   const dom = normDom($("dom").value);
   if (dom !== info.domain) return err(tr(`Die Domain muss genau ${info.domain} lauten.`, "domain", info.domain));
-  const server = SERVER_TYPES.has($("type").value);
+  // TF-071: mit festem Zugangsweg nur dessen Felder; sonst wie bisher (Server-Felder nur bei SFTP/SSH/Hosting).
+  const has = (id) => (kindFields ? kindFields.includes(id) : !["port", "root", "hostKey", "passphrase", "provider", "stack"].includes(id) || SERVER_TYPES.has($("type").value));
   const port = $("port").value.trim(), hostKey = $("hostKey").value.trim();
-  if (server && port && !/^\d{1,5}$/.test(port)) return err(tr("Der Port besteht nur aus Ziffern (z. B. 22).", "port"));
-  if (server && hostKey && !/^(SHA256:)?[A-Za-z0-9+/]{43}=?$/i.test(hostKey)) return err(tr("Der Fingerprint hat die Form SHA256:… (43 Zeichen). Wenn unsicher: leer lassen.", "fp"));
+  if (has("port") && port && !/^\d{1,5}$/.test(port)) return err(tr("Der Port besteht nur aus Ziffern (z. B. 22).", "port"));
+  if (has("hostKey") && hostKey && !/^(SHA256:)?[A-Za-z0-9+/]{43}=?$/i.test(hostKey)) return err(tr("Der Fingerprint hat die Form SHA256:… (43 Zeichen). Wenn unsicher: leer lassen.", "fp"));
   $("send").disabled = true;
   try {
-    const val = (id) => (server ? $(id).value.trim() || null : null);
-    const payload = { access_type: $("type").value, host: $("host").value.trim() || null, username: $("user").value.trim() || null,
-      secret: $("secret").value || null, notes: $("notes").value.trim() || null,
-      port: val("port"), remote_root: val("root"), ssh_host_key_sha256: val("hostKey"), passphrase: server ? $("passphrase").value || null : null,
-      website_stack_hint: server ? $("stack").value : null, provider_name: val("provider") };
+    const val = (id) => (has(id) ? $(id).value.trim() || null : null);
+    const payload = { access_type: $("type").value, host: val("host"), username: val("user"),
+      secret: has("secret") ? $("secret").value || null : null, notes: val("notes"),
+      port: val("port"), remote_root: val("root"), ssh_host_key_sha256: val("hostKey"), passphrase: has("passphrase") ? $("passphrase").value || null : null,
+      website_stack_hint: has("stack") ? $("stack").value : null, provider_name: val("provider") };
     const envelope = await sealForVps(info.public_key, payload);
     const r = await api({ op: "submit", token, access_type: payload.access_type, access_domain: dom, consent: true, envelope });
     if (!r.ok) { $("send").disabled = false; return err(VI ? VI_ERR.send : r.body?.error || "Übermittlung fehlgeschlagen. Bitte erneut versuchen."); }

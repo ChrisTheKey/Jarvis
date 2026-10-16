@@ -9,6 +9,7 @@ import { paymentGateForOrder } from "./payments.js";
 import { orderKind, localeOf } from "./onboarding-core.js";
 import { writeOrdersExport } from "./onboarding-store.js";
 import { canonicalSellerId } from "./seller-identity.js";
+import { cleanPlatform } from "./hosting-detect.js";
 
 const KEEP_TERMINAL_MS = 30 * 86_400_000;
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
@@ -19,8 +20,25 @@ export function accessStatusOf(o, now = new Date()) {
   if (o.access?.ok === true || o.access_profile?.profile_status === "PROFILE_READY") return "ACCESS_PROFILE_READY";
   if (["RECEIVED", "DESTROYED"].includes(o.access_intake?.status)) return "ACCESS_RECEIVED";
   if (o.access_request?.sent_at) return Date.parse(o.access_request.expires_at || 0) > +now ? "ACCESS_LINK_SENT" : "ACCESS_LINK_EXPIRED";
+  // TF-071: Plattform/Hosting noch nicht geklärt → noch kein Link (Jarvis fragt zuerst nach der Plattform).
+  if (o.platform_required && !o.platform?.access_type) return "HOSTING_INFO_MISSING";
   return "ACCESS_MISSING";
 }
+
+// TF-071 Zugangsstatus fürs CRM/Dashboard (§11) – nur für FIX-Aufträge mit Plattform-Erkennung, feste Wörter.
+const READY_STATES = new Set(["BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY"]);
+export function accessFlowStatus(o) {
+  if (orderKind(o.offer_class) !== "FIX" || !o.platform_required) return null;
+  if (READY_STATES.has(o.state)) return "READY_FOR_REPAIR";
+  if (o.access?.ok === true) return "ACCESS_VALIDATED";
+  if (o.access_intake?.status === "RECEIVED") return "ACCESS_RECEIVED";
+  if (o.access_validation?.status === "ACCESS_VALIDATION_FAILED") return "ACCESS_VALIDATION_FAILED";
+  if (o.access_request?.sent_at || o.platform?.access_type) return "WAITING_FOR_SECURE_ACCESS";
+  if (o.state === "WAITING_FOR_HOSTING_INFO") return "WAITING_FOR_HOSTING_INFO";
+  if (o.platform?.status === "HOSTING_UNKNOWN") return "HOSTING_UNKNOWN";
+  return "DETECTING_PLATFORM";
+}
+export const platformExport = (o) => (orderKind(o.offer_class) === "FIX" && o.platform_required ? cleanPlatform({ ...(o.platform || {}), access_flow: accessFlowStatus(o) }) : null);
 
 export function onboardingOrderEntry(store, o, { now = new Date(), kind }) {
   const cancelled = o.state === REPAIR_CANCELLED || o.state === CHECK150_CANCELLED;
@@ -39,6 +57,7 @@ export function onboardingOrderEntry(store, o, { now = new Date(), kind }) {
     access_status: accessStatusOf(o, now), access_link_expires_at: kind === "FIX" && o.access_request?.sent_at ? o.access_request.expires_at || null : null,
     reissues: kind === "FIX" ? { ...(o.onboarding_reissues || {}) } : {},
     brief_gate: o.state === "WAITING_FOR_CUSTOMER_BRIEF" ? "WAITING" : o.customer_brief?.status || null,
+    platform: kind === "FIX" ? platformExport(o) : null, // TF-071: nur feste Wörter (Hosting/CMS/Zugangsweg/Konfidenz/Status)
   };
 }
 

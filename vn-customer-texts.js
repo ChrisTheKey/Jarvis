@@ -4,6 +4,7 @@
 import { offerFor, formatMoney } from "./pricing.js";
 import { VN_SIGNATURE } from "./sender-profiles.js";
 import { contentQuestionLines, NO_PASSWORD_VI } from "./onboarding-core.js";
+import { accessGuide, hostingQuestionLines } from "./hosting-detect.js";
 
 export const isVnOrder = (o) => o?.market === "VN";
 const CHECK = offerFor("VN", "CHECK"), FIX = offerFor("VN", "FIX");
@@ -166,8 +167,29 @@ export function buildVnCheckDeliveryDraft(order, reportText, inline) {
 }
 
 // ---------- Check & Reparatur (VN FIX): Zugang, Host-Key, Bericht, Liefermail ----------
-export function buildVnAccessRequestMail(order, { link = null, expires_at = null, onboarding = false } = {}) {
+export function buildVnAccessRequestMail(order, { link = null, expires_at = null, onboarding = false, access_kind = null, askContent = true } = {}) {
   const until = expires_at ? vnDate(expires_at) : null;
+  const guide = access_kind ? accessGuide(access_kind, "vi-VN") : null; // TF-071: hướng dẫn theo cách truy cập đã xác định
+  if (onboarding && !askContent) {
+    // TF-071: câu hỏi về nền tảng + nội dung đã được gửi trong cùng chuỗi email – giờ chỉ còn đường liên kết bảo mật phù hợp.
+    const body = [
+      greet(order),
+      "",
+      "Cảm ơn anh/chị đã cung cấp thông tin.",
+      "",
+      `Để sửa lỗi website ${order.domain}, chúng tôi cần một quyền truy cập tạm thời và an toàn qua đường liên kết cá nhân, chỉ có hiệu lực cho đơn hàng này` + (until ? ` (có hiệu lực đến ${until}, chỉ dùng được một lần):` : " (chỉ dùng được một lần):"),
+      link || "(đường liên kết sẽ được gửi riêng)",
+      "",
+      ...(guide ? [guide, ""] : []),
+      "Quan trọng: Vui lòng KHÔNG gửi mật khẩu qua email. " + NO_PASSWORD_VI,
+      "Trong biểu mẫu, anh/chị cũng xác nhận đồng ý cho việc sửa lỗi đã thỏa thuận.",
+      "",
+      "Trước thay đổi đầu tiên, chúng tôi sẽ sao lưu toàn bộ website; khi hoàn tất, anh/chị sẽ nhận được một báo cáo dễ hiểu.",
+      "",
+      VN_SIGNATURE,
+    ].join("\n");
+    return { subject: `Sửa lỗi website ${order.domain} – quyền truy cập an toàn`, body };
+  }
   if (onboarding) {
     // TF-066: Onboarding-Start (§14) – vollständig Vietnamesisch: sicherer Link, keine Passwörter per E-Mail, Inhaltsfrage.
     const [q, ...rest] = contentQuestionLines("vi-VN");
@@ -182,7 +204,8 @@ export function buildVnAccessRequestMail(order, { link = null, expires_at = null
       link || "(đường liên kết sẽ được gửi riêng)",
       "",
       "Quan trọng: Vui lòng KHÔNG gửi mật khẩu qua email. " + NO_PASSWORD_VI,
-      "An toàn nhất: mời chúng tôi làm cộng tác viên hoặc tạo một tài khoản tạm thời chỉ với các quyền cần thiết (không dùng mật khẩu chính). Trong biểu mẫu, anh/chị cũng xác nhận đồng ý cho việc sửa lỗi đã thỏa thuận.",
+      guide ? `${guide} Trong biểu mẫu, anh/chị cũng xác nhận đồng ý cho việc sửa lỗi đã thỏa thuận.`
+        : "An toàn nhất: mời chúng tôi làm cộng tác viên hoặc tạo một tài khoản tạm thời chỉ với các quyền cần thiết (không dùng mật khẩu chính). Trong biểu mẫu, anh/chị cũng xác nhận đồng ý cho việc sửa lỗi đã thỏa thuận.",
       "",
       `2. ${q}`,
       ...rest,
@@ -218,6 +241,30 @@ export function buildVnAccessRequestMail(order, { link = null, expires_at = null
     VN_SIGNATURE,
   ].join("\n");
   return { subject: `Sửa lỗi website ${order.domain} – cần quyền truy cập an toàn`, body };
+}
+// TF-071: câu hỏi về nền tảng/hosting (email đầu tiên của đơn hàng khi không xác định được một cách chắc chắn). Không có đường
+// liên kết, không hỏi tên đăng nhập/mật khẩu; kèm câu hỏi về nội dung (TF-066).
+export function buildVnHostingQuestionMail(order) {
+  const [hq, , nopw] = hostingQuestionLines("vi-VN");
+  const [q, ...rest] = contentQuestionLines("vi-VN");
+  const body = [
+    greet(order),
+    "",
+    `Cảm ơn anh/chị – chúng tôi đã nhận được khoản thanh toán đầu tiên cho dịch vụ «${VN_FIX_NAME}», mức thanh toán cần thiết đã đạt.`,
+    "",
+    `Để gửi cho anh/chị cách truy cập an toàn phù hợp cho việc sửa lỗi website ${order.domain}, trước tiên chúng tôi có hai câu hỏi ngắn:`,
+    "",
+    `1. ${hq}`,
+    "",
+    nopw,
+    "Sau đó, anh/chị sẽ nhận được đường liên kết bảo mật để cấp quyền truy cập trong một email riêng.",
+    "",
+    `2. ${q}`,
+    ...rest,
+    "",
+    VN_SIGNATURE,
+  ].join("\n");
+  return { subject: `Sửa lỗi website ${order.domain} – câu hỏi ngắn trước khi bắt đầu`, body };
 }
 export function buildVnHostKeyConfirmationMail(order, { link = null, expires_at = null } = {}) {
   const until = expires_at ? vnDate(expires_at) : null;

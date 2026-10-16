@@ -28,6 +28,7 @@ import { wordpressAdapter } from "../repair-adapters/wordpress.js";
 import { cleanRepair, cleanCheck150 } from "../server-control.js";
 import { onboardingTexts } from "../public/onboarding-ui.js";
 import { setup as salesSetup, makeReq } from "./tf063-helpers.js";
+import { detectPlatform } from "../hosting-detect.js";
 
 const T0 = new Date("2026-10-16T08:00:00Z");
 const H = 3600_000;
@@ -188,7 +189,9 @@ function world({ extract = fakeExtract(), domain = DOMAIN, site = SITE } = {}) {
   const onbDir = path.join(ob, "onboarding");
   const mk = () => createOnboarding({ dir: mail, onboardingDir: onbDir, gmail: g, extract, now, notify: async (x) => { notes.push(x); }, log: (...a) => logs.push(JSON.stringify(a)) });
   let onb = mk();
-  const runRepair = (opts) => runRepairOrders({ ...opts, adapters: { static: w.adapter }, router: w.router, preflight: w.preflight, browserValidator: w.browserValidator, auditor: w.auditor });
+  // TF-071: die Lab-Website gilt als sicher erkannt (Webflow, HIGH) → Zugangsweg mit Zugangsart «other» wie in diesen Bestands-Tests.
+  const platformDetector = async () => detectPlatform({ html: '<html data-wf-site="lab"><meta name="generator" content="Webflow">', cname: ["proxy-ssl.webflow.com"] });
+  const runRepair = (opts) => runRepairOrders({ ...opts, adapters: { static: w.adapter }, router: w.router, preflight: w.preflight, browserValidator: w.browserValidator, auditor: w.auditor, platformDetector });
   const runCheck150 = (opts) => runCheck150Orders({ ...opts, auditor: w.auditor });
   const W = {
     state, ob, mail, store, g, c, w, notes, logs, extract, onbDir, now,

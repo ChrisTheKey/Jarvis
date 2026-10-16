@@ -61,6 +61,7 @@ const readOrder = (store, id) => store.read(REPAIR_ORDERS_FILE, { orders: {} }).
 
 test("Zustandsmodell entspricht der Vorgabe", () => {
   assert.deepEqual(ORDER_STATES, ["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "ACCESS_CHECK", "ACCESS_REQUESTED",
+    "WAITING_FOR_HOSTING_INFO", // TF-071: Plattform-Frage vor dem sicheren Link
     "ACCESS_PROFILE_PREFLIGHT", "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS_PROFILE", // TF-043
     "WAITING_FOR_CUSTOMER_BRIEF", // TF-066: Brief-Gate vor dem Backup
     "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"]); // TF-055

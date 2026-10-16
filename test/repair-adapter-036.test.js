@@ -287,7 +287,13 @@ test("Repair-Module können keine Mail senden: kein Gmail-Import, kein Send-Aufr
   const sendAt = src.indexOf("gmail.sendDraft(");
   assert.ok(sendAt > src.indexOf("const sendLinkMail = async") && sendAt < src.indexOf("async function step("), "Send nur im Helfer sendLinkMail");
   const uses = [...src.matchAll(/await sendLinkMail\(order, "(\w+)"/g)].map((m) => m[1]);
-  assert.deepEqual(uses, ["access_request", "host_key_request"]);
+  // TF-071: zusätzlich die Plattform-Frage (ohne Link, CUSTOMER_ONBOARDING_DIALOGUE) – nur im Helfer platformStep, den NUR ACCESS_REQUESTED aufruft.
+  assert.deepEqual(uses, ["hosting_question", "access_request", "host_key_request"]);
+  const hq = src.indexOf('await sendLinkMail(order, "hosting_question"');
+  assert.ok(hq > src.indexOf("const platformStep = async") && hq < src.indexOf("const validationFailed = async"), "Plattform-Frage nur in platformStep");
+  assert.ok(src.slice(hq, hq + 200).includes("withLink: false, messageClass: ONBOARDING_CLASS"), "Plattform-Frage ohne Link als Onboarding-Dialog");
+  const callers = [...src.matchAll(/await platformStep\(order, t\)/g)].map((m) => [...src.slice(0, m.index).matchAll(/if \(order\.state === "(\w+)"\)/g)].at(-1)[1]);
+  assert.deepEqual(callers, ["ACCESS_REQUESTED"], "platformStep nur aus ACCESS_REQUESTED");
   for (const [field, state] of [["access_request", "ACCESS_REQUESTED"], ["host_key_request", "HOST_KEY_CONFIRMATION_REQUIRED"]]) {
     const at = src.indexOf(`await sendLinkMail(order, "${field}"`);
     const steps = [...src.slice(0, at).matchAll(/if \(order\.state === "(\w+)"\)/g)];
