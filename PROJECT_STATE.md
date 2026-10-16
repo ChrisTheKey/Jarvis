@@ -2,7 +2,83 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-15 (TF-066)
+Letzte Aktualisierung: 2026-10-16 (TF-068)
+
+## TF-068 – VIETNAM CALLING + CRM + PAYMENTS + COMMISSIONS (2026-10-16, Netlify via Push, Dienst jarvis-calling neu (NOT_CONFIGURED, DRY_RUN), Mail/Repair/CRM/Contacts/VN NICHT neu gestartet)
+- **Bestand**: HEAD = origin = 582ca0f vor Beginn. TF-066 auf Netlify live verifiziert (onboarding-ui.js / calling-ui.js byte-gleich HEAD,
+  `/api/sales?view=onboarding` ohne Sitzung 401). TF-063…067 erhalten. workspace/memory/chris.md und /opt/fiverr nicht angefasst.
+- **Recht VN (Recherche 2026-10-16)**: Decree 91/2020/ND-CP gilt weiter (in Kraft seit 01.10.2020); keine in Kraft getretene Änderung gefunden –
+  das Ministerium für öffentliche Sicherheit konsultiert einen ERSATZ-Erlass (Pflicht zur registrierten Anrufer-Identität für Geschäfts-/
+  Werbeanrufe, kein Verbergen der Rufnummer). Kernregeln: Opt-in (vorherige Zustimmung, kein Opt-out), 08:00–17:00 sofern nicht anders mit
+  dem Nutzer vereinbart, höchstens 1 Werbeanruf je Nummer in 24 h, nationale Sperrliste «Danh sách không quảng cáo» (DNC) beachten,
+  Ablehnung beendet jeden weiteren Kontakt. KI-Offenlegung: keine ausdrückliche VN-Regel gefunden → Agent legt immer offen. Datenschutz:
+  Law on Personal Data Protection (2025) beachten. Primärtext nicht vollständig geprüft → **BLOCKED_PENDING_LEGAL_REVIEW** ist Standard,
+  bis Chris eine Rechtsprüfung mit Referenz erfasst (`legal.set`). Keine Anrufe auf Vermutung.
+- **Calling (calling-core.js / calling-api.js)**: CALLING_MARKETS = VN; CH-Leads → CH_CALLING_DISABLED (bleiben im CRM, Verkäuferzuordnung
+  unverändert). Start (campaign.start/call.start) NUR SALES_AGENT_VN (Lap); OWNER (Chris) 403 OWNER_MONITOR_ONLY, darf Überwachung, Vorschau,
+  Limits, Audit, Pause/Stop aller Kampagnen, **Notstopp** (`emergency.stop` – alle Kampagnen STOPPED, aktive Gespräche aufgelegt, neue Anrufe
+  gesperrt bis `emergency.release`, beides mit Pflicht-Begründung + Audit). Giuliano/Mario/Damiano 403.
+- **Eligibility VN** (Reihenfolge): DNC/Opt-out/Anruf-DNC → Nummer → Archiv/kein Interesse → nationale Sperrliste (dnc_registry LISTED) →
+  Nachweis (validateConsentEvidence: lead_id, market, phone = aktuelle Lead-Nummer, consent_status GRANTED, consent_source nur
+  WRITTEN_FORM|EMAIL_REPLY|WEB_FORM_DOUBLE_OPT_IN|SMS_REPLY|CUSTOMER_CONTRACT|RECORDED_CALLBACK_REQUEST, consent_timestamp, consent_scope enthält
+  ADVERTISING_CALLS, consent_evidence_reference, verified_at, revoked_at leer) ODER im Anruf erbetener Rückruf (mit call_id) → sonst
+  CALL_CONSENT_UNKNOWN → DNC-Register-Abgleich NOT_LISTED ≤ 30 Tage (sonst DNC_REGISTRY_NOT_CHECKED) → Rechtsfreigabe (sonst
+  BLOCKED_PENDING_LEGAL_REVIEW) → Rückruf fällig → 24-h-Frequenz je Nummer (Hash, Verlauf + aktiv; FREQUENCY_LIMIT_24H) → Zeitfenster
+  (Start nur, wenn das Gespräch mit Höchstdauer vor 17:00 endet: letzter Start 16:50; sonst WAITING_FOR_ALLOWED_HOURS). Wiederholung nach
+  NO_ANSWER/BUSY/VOICEMAIL in VN frühestens 24 h später. Job trägt max_call_seconds (bis Fensterende, ≤ 600 s).
+- **Owner-Konfiguration** (`/api/calling`, auditiert): `consent.record` (Telefon + verified_at setzt der Server, Quelle Telefonbuch/Website →
+  400), `consent.revoke` (Owner oder Lap im Scope, wirkt sofort, Positionen CANCELLED), `dnc_registry.record` (NOT_LISTED|LISTED + Referenz),
+  `legal.set` (APPROVED|BLOCKED_PENDING_LEGAL_REVIEW + Referenz). Stand: 0 Nachweise erfasst, Rechtsprüfung offen → 0 anrufbare Leads.
+- **Leadlisten**: `GET /api/calling?view=lists&list=ALL_LEADS|CALL_ELIGIBLE_LEADS|CALL_BLOCKED_LEADS|DO_NOT_CONTACT` (nur Scope, nur VN) +
+  CRM-Kennzeichnung call_flag CALL_ALLOWED|CALL_BLOCKED|CONSENT_UNKNOWN|DO_NOT_CONTACT im Lead-Detail. Kampagnen nur aus CALL_ELIGIBLE_LEADS,
+  Vorschau mit BLOCKED_FREQUENCY/BLOCKED_LEGAL, Bestätigung Pflicht. Modi EINZELN/SEQUENZ/PARALLEL, Default 1, Max 5, Provider-Limit gewinnt,
+  keine Nummer doppelt aktiv, Tageslimit 50 (Owner änderbar).
+- **Stimme**: VN-TTS cartesia/sonic-3.6 (LiveKit Inference; im Typ-Katalog von @livekit/agents 1.9.3 nicht gelistet, Modellname wird
+  durchgereicht), Fallback sonic-3.5 vi. Voice-ID: einziger gefundener Kandidat «Minh – Conversational Partner» 0e58d60a-2f1a-4252-81bd-3db6af45fb41
+  (männlich, vi) nur aus einer Drittanbieter-Liste (docs.slng.ai), NICHT in der Cartesia-Voice-Library bestätigt, nicht probegehört →
+  VERIFIED_VOICES.VN leer → **VOICE_NOT_VERIFIED**. Echte VN-Anrufe zusätzlich nur mit verifizierter Stimme UND LIVEKIT_CALLER_ID_VN
+  (Server, Dienst und Agent prüfen). Agent-Instruktionen: kurze Sätze, natürliche Pausen, Unterbrechungen zulassen, Zahlen/Preise ausgeschrieben,
+  auf jede KI-Frage sofort ehrlich «trợ lý tự động (AI)».
+- **CRM-Tools des Agenten** (`op tool`, Agent → 127.0.0.1/tool → Dienst → /api/calling): get_current_lead, record_call_outcome, record_call_summary,
+  mark_interested, request_callback, mark_not_interested, mark_do_not_call. Nur AKTIVER Anruf, lead_id muss = Lead des Anrufs (sonst 403
+  CROSS_LEAD + Audit), Allowlist/Parameter streng (sonst 400), idempotency_key je Aufruf, Audit je Aktion. DNC über das Tool sofort
+  (Anruf-DNC, Positionen CANCELLED, crm.setDoNotContact) und durch nichts überschreibbar. Ergebnis/Rückruf/Zusammenfassung fliessen beim
+  Anrufende über crm.addCall ins CRM (Dry Run nie). Kein Zugriff auf andere Leads, Zahlungen oder Passwörter.
+- **Call History** je Anruf: call_id, lead_id, seller_id (lap), market VN, started_at, ended_at, duration_s, outcome, short_summary, callback_at,
+  consent_evidence_reference, phone_hash (kein Klartext), cost (nur wenn der Provider liefert, sonst NO_PROVIDER_DATA). Keine Aufnahme, kein Transkript.
+- **Zahlungseingang** (`payment-monitor.js` rein, `payment-reconcile.js` VPS-CLI, `/api/payments` Netlify): Adapter signierter Webhook (Stripe-
+  Signaturschema t=/v1=, HMAC-SHA256, 300 s Toleranz), camt.053-Kontoauszugsimport (nur CRDT + BOOK, Datei-SHA nur einmal), read-only Bank-API
+  (kein Adapter angebunden). Verbuchung nur mit eindeutiger Transaktions-ID, Betrag, CHF|VND, Zeitpunkt, settled, GENAU EINER Auftrags-ID,
+  existierendem Auftrag, gleicher Währung → recordPayment (Referenz provider:txid). Sonst PAYMENT_REVIEW_REQUIRED (payment_monitor.json
+  reviews). Keine Namenszuordnung, Refunds nie automatisch. Zahlungsschwelle → bestehende Gates (TF-066 Onboarding genau einmal).
+  **Status: PAYMENT_MONITOR_NOT_CONFIGURED** (kein Provider konfiguriert; `/api/payments` Webhook → 503). Aktivierung später: Netlify
+  PAYMENT_MONITOR_PROVIDER + Secret, VPS `node payment-reconcile.js pull|import-camt <datei>` (Modul kommt mit dem nächsten Repair-/Mail-Deploy).
+- **Provision/Verkäufe**: 35 % = 3500 bps aus Preis (CH 52.50/168.00 CHF, VN 346500/1365000 VND). Auszahlung nur MARKIEREN
+  (`commission.payout`, OWNER: Betrag, Währung des Verkäufers, Zeitpunkt ≤ jetzt, Referenz eindeutig, Summe ≤ auszahlbar − ausbezahlt,
+  Teilzahlungen) → PAYOUT_RECORDED + Audit; nie Überweisung. Verkäufer-Korrektur weiter nur OWNER vor PAYABLE (optional reason im Audit).
+  `/api/sales?view=sales_overview` (nur OWNER): je Verkäufer (inkl. Direktkunde Chris) und je Währung Aufträge, abgeschlossen, Zahlungen,
+  Umsatz, Provision ausstehend/fällig/storniert/ausbezahlt/offen; je Auftrag order_id, Kunde, lead_id, seller_id, market, offer, price,
+  currency, confirmed_at, payment_status, fulfillment_status, commission_status.
+- **UI**: Owner «VERKÄUFE & PROVISIONEN» (ZUGÄNGE) inkl. Auszahlungsformular + Zahlungsüberwachungs-Status; CALLING AGENT für Chris nur
+  Überwachung (kein STARTEN, NOTSTOPP, Rechts-/Stimmen-/Caller-ID-Status, Kosten, Audit). Lap (vi-VN): Trợ lý gọi điện mit Kiểm tra pháp lý,
+  Giọng nam tiếng Việt, Chi phí, Lịch gọi lại, «Đơn hàng của tôi», Hoa hồng inkl. «Đã chi trả». CRM-Call-Sektion nur bei VN-Leads.
+- **Deploy**: Push 3d2da59 (origin = HEAD) → Netlify live (calling-ui/owner-admin/sales-app/crm/i18n byte-gleich HEAD; `/api/payments` GET ohne
+  Sitzung 401, Webhook-POST 503 PAYMENT_MONITOR_NOT_CONFIGURED; `/api/calling` ohne Sitzung 401, falscher Dienst-Schlüssel 401;
+  `?view=sales_overview` ohne Sitzung 401). VPS: NUR jarvis-calling via `deploy-calling.sh fiverr build|start` (Start 08:19:22 UTC, healthy,
+  restarts 0, configured false, dry_run true, recording OFF, 0 pull_failed). Mail 20:14:01, Repair 20:14:46, CRM 07:30:08, Contacts, VN-Discovery:
+  StartedAt/Restarts unverändert (UNTOUCHED=YES). payment-reconcile.js liegt erst mit dem nächsten Repair-/Mail-Deploy im Container (bewusst
+  kein Neustart, Überwachung ohnehin nicht konfiguriert).
+- TF-058-Recheck: vor TF-068 1820 erledigt / 11793 offen, danach 1830 / 11783 (nicht zurückgesetzt).
+- **Tests**: neu tf068 (13: Rollen, Consent, Zeitfenster 07:59/08:00/16:55/17:00, 24 h API, Owner-Konfiguration/Leadlisten, CRM-Tools inkl.
+  Cross-lead 403, Stimme, Webhook-Signatur/Duplikat, Abgleich/Review, camt.053, Provision + Refund, Auszahlungen, Verkaufsübersicht/Isolation)
+  + calling-browser-068 (Chromium: Lap vi-VN, Chris Überwachung/Notstopp, VERKÄUFE & PROVISIONEN); calling-065 an TF-068 angepasst
+  (Anforderung geändert: VN-only, Lap startet, Nachweis). `npm run test:tf068` 35/35. Gesamtsuite sequenziell 901 / 888 pass / 1 fail / 12 skip –
+  der eine Fehler (onboarding-066 §54 THREAD-SICHERHEIT, OUTBOX_PENDING statt «abgelehnt») tritt identisch auf dem unveränderten Stand 582ca0f
+  auf (vorbestehend, zeitabhängig, nicht TF-068). Secret-Scan 0 Treffer (Test-Secrets zur Laufzeit zusammengesetzt). Netlify-Functions alle importierbar.
+- **Offen für echte Anrufe**: LIVEKIT_URL/API_KEY/API_SECRET, LIVEKIT_SIP_TRUNK_VN, LIVEKIT_CALLER_ID_VN (registrierte Nummer), verifizierte
+  männliche VN-Voice-ID (in VERIFIED_VOICES eintragen + CALLING_TTS_VOICE_VN), Rechtsprüfung (`legal.set`), echte Einwilligungsnachweise +
+  DNC-Register-Abgleich je Lead, danach ausdrücklich genehmigter Testanruf → erst dann CALLING_DRY_RUN=false.
+- 0 echte Anrufe, 0 Zahlungen, 0 Aufträge, 0 Mails, 0 Kundenwebsites verändert. workspace/memory/chris.md und /opt/fiverr nicht angefasst.
 
 ## TF-066 – AUTOMATISCHER KUNDEN-ONBOARDING-DIALOG (2026-10-15, Code d943487, Mail LIVE, Repair LIVE, Netlify via Push, CRM/Contacts/Calling/VN NICHT neu gestartet)
 - **Start** nur bei bestätigtem Auftrag UND erfüllter Zahlungsschwelle (CH 75/240 CHF, VN 495000/1950000 VND, payments.js). Kaufzusage ohne
