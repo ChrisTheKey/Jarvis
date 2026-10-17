@@ -13,7 +13,8 @@ import { safeEqual } from "./shared-state.js";
 import { resolveActor, isOwner, deny, forbidden } from "./auth-core.js";
 import { canSeeLead, sellerOf, leadMarket, emptyAssignments } from "./sales-scope.js";
 import { LEAD_ID_RE } from "./lead-crm.js";
-import { issueLinks } from "./public/crm-model.js";
+import { issueLinks, crmActive, issueDetails, DETAIL_WORDS_DE } from "./public/crm-model.js";
+import { DETAIL_WORDS_VI, ISSUE_TYPE_TEXT } from "./public/i18n.js";
 import { migrateCallingControl, migrateCallingHistory, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import {
   SCHEMA, MARKETS, MODES, CALL_OUTCOMES, FINAL_OUTCOMES, REACHED_OUTCOMES, NO_ANSWER_OUTCOMES, DEFAULTS, LIMIT_BOUNDS, FORBIDDEN_CLIENT_FIELDS,
@@ -24,8 +25,14 @@ import {
 
 // TF-072: Direktlinks der verifizierten Fehler EINES Leads (betroffene Seite + ggf. Ziel; nur sichere öffentliche http(s)-Adressen aus der
 // gescopten CRM-Sicht, unbekannt → null). Nur lesen: der Calling-Flow schreibt nie URLs und ändert nie Website-Inhalte.
-export const callIssueLinks = (l, max = 10) => issueLinks(l, max).map((x) => ({ title: x.title, text: x.text, type: x.type, category: x.category, severity: x.severity,
-  affected_url: x.affected_url, target_url: x.target_url }));
+// TF-076: zusätzlich je Fehler die verständliche Beschreibung (Fehler, Position, Beleg, Auswirkung) – VN-Lead vietnamesisch, sonst Deutsch.
+export const callIssueLinks = (l, max = 10) => {
+  const vi = l?.market === "VN";
+  const det = issueDetails(l, max, vi ? DETAIL_WORDS_VI : DETAIL_WORDS_DE, (f) => (vi && f.type && ISSUE_TYPE_TEXT["vi-VN"][f.type]) || f.text || "");
+  return issueLinks(l, max).map((x, i) => ({ title: x.title, text: x.text, type: x.type, category: x.category, severity: x.severity,
+    affected_url: x.affected_url, target_url: x.target_url, short_title: det[i]?.short_title || null, page_location: det[i]?.page_location || null,
+    evidence: det[i]?.evidence || null, impact: det[i]?.impact || null, verified_at: det[i]?.verified_at || null }));
+};
 
 // TF-068 Rollen: Kudoshin (SALES_AGENT_VN; TF-070, vormals lap) darf Kampagnen/Einzelanrufe STARTEN. Chris (OWNER) überwacht, konfiguriert, sieht Statistik/Audit und
 // hat den Notstopp – startet aber KEINE eigenen Kampagnen (403). Alle anderen 403. Nur Markt VN (CH-Calling deaktiviert).
@@ -159,7 +166,8 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
   const readAssignments = async () => (getSalesStore ? (await (await getSalesStore("assignments")).get()).state : null) || emptyAssignments();
   async function allLeads() {
     const [v, vn] = await Promise.all([(await getViewStore()).get(), getVnViewStore ? (await getVnViewStore()).get() : { state: null }]);
-    return [...(v.state?.leads || []).map((l) => ({ ...l, market: "CH" })), ...(vn.state?.leads || []).map((l) => ({ ...l, market: "VN" }))];
+    // TF-076: nur aktive CRM-Leads (≥ 1 verifizierter Website-Fehler) – ein Lead ohne Fehler kommt nie in eine Anrufliste.
+    return [...(v.state?.leads || []).map((l) => ({ ...l, market: "CH" })), ...(vn.state?.leads || []).map((l) => ({ ...l, market: "VN" }))].filter(crmActive);
   }
   // System-Aufträge in die bestehende CRM-/VN-Warteschlange (gleiche crm.*-Allowlist, Akteur system:calling). Der jeweilige Dienst übernimmt sie.
   async function enqueueCrm(market, actions, t) {

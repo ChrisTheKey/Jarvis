@@ -226,7 +226,9 @@ test("Backfill: Kandidaten ohne DNC/archiviert, eine Website je Schritt, Checkpo
   // CRM-Sicht übernimmt den Voll-Audit automatisch.
   const by = Object.fromEntries(view(s).leads.map((l) => [l.lead_id, l]));
   assert.equal(by["firma-001.ch"].errors.audit, "FULL"); assert.equal(by["firma-001.ch"].errors.count, 1);
-  assert.equal(by["firma-000.ch"].errors.audit, "FULL"); assert.equal(by["firma-000.ch"].errors.count, 0);
+  // TF-076: vollständig geprüft ohne Fehler → nicht im aktiven CRM (bleibt Prüfkandidat, Zustand NO_VERIFIED_ERRORS).
+  assert.equal(by["firma-000.ch"], undefined);
+  const z = buildCrmLead("firma-000.ch", src()); assert.equal(z.errors.audit, "FULL"); assert.equal(z.errors.count, 0); assert.equal(z.admission, "NO_VERIFIED_ERRORS");
   assert.equal(by["firma-003.ch"].errors.audit, "PARTIAL", "unvollständig → nur Mindestzahl");
   assert.equal(fs.readdirSync(s.data).filter((f) => f.includes(".tmp-")).length, 0, "keine Temp-Reste");
 });

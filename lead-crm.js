@@ -14,8 +14,8 @@
 //
 // Nichts hier sendet, ruft an oder erstellt Entwürfe. Do Not Contact wirkt sofort im CRM (keine Anruf-Empfehlung, kein Follow-up,
 // keine Outreach-Queue) und – über lead-registry.js registryBlock – auf neue Cold-Entwürfe des Mail-Workers.
-import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines, issueLink } from "./public/crm-model.js";
-import { siteHealth, httpStatusOf, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES } from "./site-findings.js";
+import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines, issueLink, crmAdmission, ADMISSION_STATES } from "./public/crm-model.js";
+import { siteHealth, httpStatusOf, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES, AREAS } from "./site-findings.js";
 import { buildIndex, findId, normCompany } from "./lead-db.js";
 import { displayCategory } from "./category-labels.js";
 
@@ -56,7 +56,9 @@ const VISIBLE_EXTRA = { broken_link: "Ein Link führt auf eine Fehlerseite", bro
 const SEVERITIES = ["critical", "high", "medium", "low"];
 const pageOfEvidence = (e) => (typeof e?.evidence === "string" ? e.evidence.match(/\((?:verlinkt|eingebunden) auf (https?:\/\/[^\s)]+)\)/)?.[1] : null) || null;
 // TF-059: belegte Fakten aus der Audit-Evidence (Linktext, HTTP-Status, Bereich) – kein Evidence-Text selbst.
-const evidenceFacts = (e) => (e ? { label: str(e.label, 40), http_status: httpStatusOf(e), location: str(e.location, 60), viewport: Number.isInteger(e.viewport) ? e.viewport : null } : {});
+// TF-076: zusätzlich Seitenbereich + Überschrift (Position auf der Seite), nur wenn der Auditor sie belegt hat.
+const evidenceFacts = (e) => (e ? { label: str(e.label, 40), http_status: httpStatusOf(e), location: str(e.location, 60), viewport: Number.isInteger(e.viewport) ? e.viewport : null,
+  area: oneOf(e.area, AREAS), heading: str(e.heading, 40) } : {});
 const refKey = (t, u) =>`${t}|${String(u || "").replace(/#.*$/, "").replace(/\/+$/, "")}`;
 export function findingsOf(review, regLead) {
   const out = [];
@@ -208,7 +210,8 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   // Ohne Cold-/Registry-Befund: die belegten historischen Befunde (Status AUDIT, nicht „bestätigt“ – nie Grundlage für einen Entwurf).
   if (!findings.length && hist) findings = hist.verified_findings.filter((f) => str(f?.text, 240)).map((f) => ({ key: str(f.key, 80), text: str(f.text, 240), page: httpUrl(f.page),
     status: "AUDIT", confirmed: false, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) || iso(hist.last_verified_at), type: str(f.type, 40), target: httpUrl(f.target),
-    label: str(f.label, 40), http_status: httpStatusOf(f), location: str(f.location, 60), viewport: Number.isInteger(f.viewport) ? f.viewport : null }));
+    label: str(f.label, 40), http_status: httpStatusOf(f), location: str(f.location, 60), viewport: Number.isInteger(f.viewport) ? f.viewport : null,
+    area: oneOf(f.area, AREAS), heading: str(f.heading, 40) }));
   // TF-055: Website-Zustand – vollständiger Audit (passiv bzw. nach Reparatur) oder nur Teilprüfung („mindestens“). Je Domain.
   const sf = domain ? src.siteFindings?.domains?.[domain] : null;
   const errors = siteHealth({ full: sf?.full || null, incomplete: sf?.partial || null, repair: domain ? src.repairFindings?.orders?.[domain] || null : null,
@@ -253,13 +256,21 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   lead.priority = priorityOf(lead);
   lead.follow_up = followUpBucket(lead, now);
   lead.call_recommended = callRecommended(lead);
+  // TF-076: Aufnahme ins aktive CRM (crm-model.js crmAdmission). Nur VPS-intern (nie in der Cloud-Allowlist): Zustand für Zähler/Bericht.
+  // Fehlgeschlagen = letzter Hintergrund-Audit technisch gescheitert und kein vollständiger Audit vorhanden.
+  lead.admission = crmAdmission(lead, { auditFailed: !!sf?.last_error && !(sf?.full?.complete === true) }).state;
   return lead;
 }
 const REACHED = new Set(["CALLBACK_REQUESTED", "SPOKE_TO_EMPLOYEE", "SPOKE_TO_DECISION_MAKER", "INTERESTED", "NOT_INTERESTED", "DO_NOT_CALL"]);
+// TF-076: Die Sicht enthält NUR aktive CRM-Leads (≥ 1 verifizierter Website-Fehler, bzw. Kunde). Kandidaten ohne verifizierten Fehler
+// (sauber geprüft, Audit unvollständig/fehlgeschlagen/ausstehend) bleiben Prüfkandidaten (crmUniverse, Hintergrund-Audit, DNC-Aktionen),
+// ihre Daten in lead_crm.json/site_findings.json bleiben unverändert – sie erscheinen nur nicht als Verkaufs-Lead. excluded = Zähler je Zustand.
 export function buildCrmView(src = {}, now = new Date()) {
   const ids = crmUniverse(src, now);
-  const leads = [...ids].map((id) => buildCrmLead(id, src, now));
-  return { generated_at: now.toISOString(), total: leads.length, leads };
+  const all = [...ids].map((id) => buildCrmLead(id, src, now));
+  const leads = [], excluded = Object.fromEntries(ADMISSION_STATES.filter((s) => !["VERIFIED_ERRORS", "CUSTOMER"].includes(s)).map((s) => [s, 0]));
+  for (const l of all) { if (l.admission === "VERIFIED_ERRORS" || l.admission === "CUSTOMER") leads.push(l); else excluded[l.admission] = (excluded[l.admission] || 0) + 1; }
+  return { generated_at: now.toISOString(), total: leads.length, candidates: all.length, excluded, leads };
 }
 
 // ---------- Aktionen (Allowlist) ----------
@@ -404,7 +415,8 @@ const cleanErrorItem = (f) => {
     category: oneOf(f.category, ISSUE_CATEGORIES, "other"), text: str(f.text, 140), page: httpUrl(f.page), target: httpUrl(f.target), severity: oneOf(f.severity, SEVERITIES),
     verified_at: iso(f.verified_at), source: oneOf(f.source, FINDING_SOURCES), manual: f.manual === true,
     label: str(f.label, 40), http_status: Number.isInteger(f.http_status) && f.http_status >= 100 && f.http_status <= 599 ? f.http_status : null,
-    location: str(f.location, 60), viewport: Number.isInteger(f.viewport) && f.viewport >= 200 && f.viewport <= 4000 ? f.viewport : null };
+    location: str(f.location, 60), viewport: Number.isInteger(f.viewport) && f.viewport >= 200 && f.viewport <= 4000 ? f.viewport : null,
+    area: oneOf(f.area, AREAS), heading: str(f.heading, 40) };
   const lines = issueLines(x);
   // TF-072: Direktlink auf die betroffene Seite (affected_url, ältere Befunde aus page) + Ziel bei Link-/Bild-Fehlern – nur sichere
   // öffentliche http(s)-Adressen (safePublicUrl), unbekannt → null. Nie erfunden, nie die Startseite als Ersatz.

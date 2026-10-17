@@ -2,7 +2,7 @@
 // Reines ES-Modul ohne DOM: Browser (crm.js, sales-app.js, login.js) UND Netlify-Funktion (CSV-Kopfzeilen). Firmennamen, Domains,
 // Telefonnummern und Kundeninhalte werden nie übersetzt; interne Codes werden nie direkt angezeigt (immer über die Label-Tabellen).
 import { STAGE_LABEL, CALL_LABEL, CONTACT_LABEL, DRAFT_LABEL, FOLLOW_UP_LABEL, AUDIT_LABEL, ISSUE_LABEL, SEVERITY_LABEL, HISTORY_LABEL, CONTACT_FORM_LABEL,
-  CARDS, PIPELINE_CARDS, ERROR_CARDS, SORTS, ERR_WORDS_DE, ISSUE_WORDS_DE, CSV_COLUMNS } from "./crm-model.js";
+  CARDS, PIPELINE_CARDS, ERROR_CARDS, SORTS, ERR_WORDS_DE, ISSUE_WORDS_DE, CSV_COLUMNS, DETAIL_WORDS_DE } from "./crm-model.js";
 
 export const LOCALES = Object.freeze(["de-CH", "vi-VN"]);
 // TF-064: Anzeige von Beträgen (nur Darstellung – Preise kommen immer vom Server/pricing.js): CHF 150.00 bzw. 990.000 ₫.
@@ -63,6 +63,33 @@ export const ISSUE_WORDS_VI = Object.freeze({ home: "Trang chủ", unknownPage: 
   buttonFail: "không hoạt động", mobile: (s) => `Di động / ${s}`, areaUnknown: "Khu vực không xác định", overlap: "chữ bị chồng lên nội dung", cut: "bị cắt",
   atPx: (v) => ` ở ${v} px`, pageRender: "Hiển thị trang", desktopWidth: "Hiển thị khổ máy tính, bị thu nhỏ", shifted: "hiển thị bị lệch", siteCall: "Truy cập website",
   loop: "Vòng lặp chuyển hướng – không tải được", cert: "Trình duyệt hiện cảnh báo chứng chỉ", error: "Lỗi" });
+// TF-076: verständliche Fehlerbeschreibung (crm-model.js issueDetail) auf Vietnamesisch – gleiche Struktur wie DETAIL_WORDS_DE.
+export const DETAIL_WORDS_VI = Object.freeze({
+  area: { header: "Phần đầu trang", nav: "Menu chính", main: "Phần nội dung", aside: "Thanh bên", footer: "Chân trang (footer)" },
+  section: (h) => `Mục «${h}»`, sep: " → ", quote: (s) => `«${s}»`, whole: "Toàn bộ website (khi truy cập)", wholePage: "Toàn trang",
+  unknownPos: "Không xác định tự động được vị trí chính xác", noPos: "Không có thông tin vị trí", linkWord: "Liên kết", imageWord: "Hình", mailWord: "Liên kết email",
+  title: { broken_link: "Liên kết bị hỏng", contact_page_broken: "Không mở được trang liên hệ", broken_image: "Hình ảnh không tải được", broken_mailto: "Liên kết email bị lỗi",
+    contact_form_broken: "Biểu mẫu liên hệ không gửi được", button_broken: "Nút không hoạt động", mobile_text_overlap: "Chữ bị chồng trên điện thoại",
+    mobile_content_cut_off: "Nội dung bị cắt trên điện thoại", no_mobile_viewport: "Chưa tối ưu cho điện thoại", visible_layout_error: "Lỗi hiển thị",
+    redirect_loop: "Website không tải được", https_certificate: "Trình duyệt cảnh báo bảo mật" },
+  link: (label, target, status) => `Liên kết${label ? ` «${label}»` : ""} dẫn tới ${target || "một trang con"}. ${status ? `Trang đích trả về HTTP ${status} (trang lỗi).` : "Không truy cập được trang đích."}`,
+  contactLink: (label, target, status) => `Liên kết tới trang liên hệ${label ? ` («${label}»)` : ""} dẫn tới ${target || "trang liên hệ"}. ${status ? `Trang này trả về HTTP ${status} (trang lỗi).` : "Không truy cập được trang này."}`,
+  image: (file, status) => `Hình${file ? ` «${file}»` : ""} trỏ tới một tệp ${status ? `trả về HTTP ${status}` : "không tải được"}. Hình không hiển thị.`,
+  mailto: "Liên kết email không chứa địa chỉ email hợp lệ. Bấm vào sẽ không mở được email đúng tới doanh nghiệp.",
+  form: "Khi kiểm tra, biểu mẫu liên hệ không gửi được (lặp lại được).",
+  button: (l) => `Nút${l ? ` «${l}»` : ""} không phản hồi khi kiểm tra.`,
+  overlap: (vp) => `Trên điện thoại${vp ? ` (rộng ${vp} px)` : ""}, chữ bị chồng lên nội dung khác.`,
+  cutoff: (vp) => `Trên điện thoại${vp ? ` (rộng ${vp} px)` : ""}, nội dung bị cắt.`,
+  viewport: "Trang không có thiết lập cho điện thoại (viewport). Điện thoại hiển thị trang thu nhỏ theo khổ máy tính.",
+  layout: "Khu vực này hiển thị bị lệch.", loop: "Khi truy cập, website chuyển hướng liên tục (vòng lặp). Trang không tải được.",
+  cert: "Khi mở website, trình duyệt báo lỗi chứng chỉ bảo mật.",
+  impact: { broken_link: "Khách truy cập gặp trang lỗi thay vì nội dung cần xem.", contact_page_broken: "Khách khó tìm trang liên hệ – có thể mất yêu cầu liên hệ.",
+    broken_image: "Trang thiếu hình ảnh và trông không hoàn chỉnh.", broken_mailto: "Khách không gửi được email qua liên kết này.",
+    contact_form_broken: "Yêu cầu gửi qua biểu mẫu không tới được doanh nghiệp.", button_broken: "Khách không thể tiếp tục qua nút này.",
+    mobile_text_overlap: "Trên điện thoại, chữ khó đọc.", mobile_content_cut_off: "Trên điện thoại, thiếu một phần nội dung.",
+    no_mobile_viewport: "Trên điện thoại, trang khó đọc và khó dùng.", visible_layout_error: "Trang trông bị lỗi ở vị trí này.",
+    redirect_loop: "Khách hoàn toàn không xem được website.", https_certificate: "Nhiều khách sẽ rời đi khi thấy cảnh báo." },
+});
 // Kurztexte je Befund-Typ (VN-Leads tragen den Typ; der Text wird je Sprache angezeigt).
 export const ISSUE_TYPE_TEXT = Object.freeze({
   "de-CH": { broken_link: "Ein Link führt auf eine Fehlerseite", contact_page_broken: "Der Link zur Kontaktseite führt auf eine Fehlerseite", broken_image: "Ein Bild wird nicht angezeigt",
@@ -112,6 +139,9 @@ const DE = {
   // TF-072: Direktlinks je Fehler (CRM-Detail + Anrufansicht) – nur geprüfte öffentliche http(s)-Adressen, nie erfunden.
   "link.err": "Fehler", "link.page": "Betroffene Seite", "link.open": "Fehler öffnen", "link.target": "Ziel öffnen", "link.none": "Direktlink nicht verfügbar",
   "link.impact": "Auswirkung", "sec.callIssues": "Fehler für das Gespräch",
+  // TF-076: Anrufer-Ansicht je verifiziertem Fehler (oben im Lead-Detail und in der Anrufansicht).
+  "sec.verifiedErrors": (n) => `Verifizierte Website-Fehler (${n})`, "det.err": "FEHLER", "det.page": "SEITE", "det.pos": "POSITION", "det.why": "WARUM FEHLER",
+  "det.impact": "AUSWIRKUNG", "det.seen": "Festgestellt", "det.none": "Kein aktuell verifizierter Fehler – dieser Lead gehört nicht ins aktive CRM.",
   "impact.contact": "Anfragen oder Bestellungen können verloren gehen", "impact.navigation": "Besucher kommen auf der Website nicht weiter",
   "impact.http": "Besucher landen auf einer Fehlerseite", "impact.images": "Inhalte werden unvollständig angezeigt",
   "impact.mobile": "Auf dem Handy schlecht nutzbar", "impact.other": "Sichtbarer Darstellungsfehler",
@@ -201,6 +231,8 @@ const VI = {
   "fact.source": "Trang nguồn", "fact.element": "Thành phần", "fact.target": "Đích", "fact.result": "Quan sát được", "fact.http": "Mã HTTP", "fact.page": "Trang bị ảnh hưởng: ",
   "link.err": "Lỗi", "link.page": "Trang bị ảnh hưởng", "link.open": "Mở lỗi", "link.target": "Mở trang đích", "link.none": "Không có liên kết trực tiếp",
   "link.impact": "Ảnh hưởng", "sec.callIssues": "Lỗi để trao đổi khi gọi",
+  "sec.verifiedErrors": (n) => `Lỗi website đã xác minh (${n})`, "det.err": "LỖI", "det.page": "TRANG", "det.pos": "VỊ TRÍ", "det.why": "VÌ SAO LÀ LỖI",
+  "det.impact": "ẢNH HƯỞNG", "det.seen": "Phát hiện lúc", "det.none": "Không có lỗi nào được xác minh hiện tại – khách hàng này không thuộc CRM đang hoạt động.",
   "impact.contact": "Yêu cầu hoặc đơn hàng của khách có thể bị mất", "impact.navigation": "Khách truy cập không thể tiếp tục trên website",
   "impact.http": "Khách truy cập gặp trang lỗi", "impact.images": "Nội dung hiển thị không đầy đủ",
   "impact.mobile": "Khó sử dụng trên điện thoại", "impact.other": "Lỗi hiển thị có thể nhìn thấy",
@@ -279,7 +311,7 @@ export function createI18n(locale) {
   const vi = loc === "vi-VN";
   return {
     locale: loc, t, L, vi,
-    errWords: vi ? ERR_WORDS_VI : ERR_WORDS_DE, issueWords: vi ? ISSUE_WORDS_VI : ISSUE_WORDS_DE,
+    errWords: vi ? ERR_WORDS_VI : ERR_WORDS_DE, issueWords: vi ? ISSUE_WORDS_VI : ISSUE_WORDS_DE, detailWords: vi ? DETAIL_WORDS_VI : DETAIL_WORDS_DE,
     tz: vi ? "Asia/Ho_Chi_Minh" : "Europe/Zurich", dateLocale: loc,
     category: (c) => (c ? L.category[c] || c : null),
     reason: (r) => { const m = String(r || "").match(/^([+-]?\d+)\s+(.*)$/); return m ? `${m[1]} ${L.reasons[m[2]] || m[2]}` : r; },

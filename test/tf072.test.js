@@ -258,7 +258,8 @@ test("TF-072 API: Kudoshin-Anfrage speichert 6000 bps; Dashboard je Auftrag Satz
   assert.equal(pulled.body.requests[0].commission_rate_bps, 6000);
   // Dashboard (Owner): Aufträge mit Verkäufer, Angebot, Preis, Währung, Satz, Provision, Zahlungs- und Provisionsstatus.
   const vnL = (await s.stores.vnView.get()).state.leads.find((l) => l.lead_id === lead.lead_id);
-  const snap = { repair: { orders: [snapOrder("VNFIX-20261017-ddddd1", vnL.domain, "VN_REPAIR_FIX", "VN", "VND", 3900000, AFTER, { commission_rate_bps: 6000 })] } };
+  // Auftrag NACH der Provisions-Aktivierung (eligible_from = jetzt) – fester Zeitpunkt wäre ab 2026-10-17 08:00 UTC «historisch» (Datumsfalle, TF-076 behoben).
+  const snap = { repair: { orders: [snapOrder("VNFIX-20261017-ddddd1", vnL.domain, "VN_REPAIR_FIX", "VN", "VND", 3900000, new Date(Date.now() + 60_000).toISOString(), { commission_rate_bps: 6000 })] } };
   const { state, etag } = await s.stores.control.get();
   assert.ok(await s.stores.control.set({ ...(state || {}), snapshot: snap }, etag));
   const so = await s.json(await sales(makeReq("/api/sales?view=sales_overview", s.as("chris"))));

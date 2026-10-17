@@ -22,7 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CRM_FILE, CRM_AUDIT_FILE, normalizeCrmState, emptyCrmState, buildCrmView, buildCrmLead, crmUniverse, applyCrmAction, cleanCrmLead, CRM_ACTIONS } from "./lead-crm.js";
-import { crmStats } from "./public/crm-model.js";
+import { crmStats, compactCrmLead } from "./public/crm-model.js";
 import { crmAgentToken } from "./crm-api.js";
 import { SITE_FINDINGS_FILE, REPAIR_FINDINGS_FILE } from "./site-findings.js";
 
@@ -35,6 +35,29 @@ export const BACKUP_DIR = "crm_backups";
 export const BACKUP_FILES = Object.freeze([CRM_FILE, CRM_AUDIT_FILE, "lead_contact_directory.json"]);
 export const VIEW_RESEND_MS = 30 * 60_000;
 export const STALE_REQUEST_MS = 5 * 60_000;
+export const ADMISSION_FILE = "crm_admission.json";
+
+// TF-076: idempotenter Abgleich des aktiven CRM mit der Aufnahmeregel (≥ 1 verifizierter Fehler). Löscht NICHTS: die Sicht filtert ohnehin
+// zur Laufzeit; hier wird nur festgehalten, welche Kandidaten (seit wann, mit welchem Zustand) ausserhalb des aktiven CRM stehen
+// (crm_admission.json, Rückverfolgbarkeit) + eine Audit-Zeile ohne personenbezogene Daten. Erneuter Lauf mit gleichem Stand = gleiches Ergebnis.
+export function admissionSync({ dataDir, sources, now = new Date(), write = true }) {
+  const src = { ...sources(), crm: loadCrm(dataDir, now) };
+  const v = buildCrmView(src, now);
+  let prev = { excluded: {} }; try { prev = JSON.parse(fs.readFileSync(path.join(dataDir, ADMISSION_FILE), "utf8")); } catch {}
+  const active = new Set(v.leads.map((l) => l.lead_id));
+  const excluded = {};
+  for (const id of crmUniverse(src, now)) {
+    if (active.has(id)) continue;
+    const st = buildCrmLead(id, src, now).admission;
+    const was = prev.excluded?.[id];
+    excluded[id] = { state: st, since: was?.state === st ? was.since : now.toISOString() };
+  }
+  const readmitted = Object.keys(prev.excluded || {}).filter((id) => active.has(id)).length;
+  const newly = Object.keys(excluded).filter((id) => !prev.excluded?.[id]).length;
+  const doc = { schema: 1, updated_at: now.toISOString(), candidates: v.candidates, active: v.total, excluded_counts: v.excluded, excluded };
+  if (write) { writeAtomic(path.join(dataDir, ADMISSION_FILE), JSON.stringify(doc)); audit(dataDir, { action: "crm.admissionSync", source: "tf076", outcome: "success", candidates: v.candidates, active: v.total, excluded: v.excluded, newly_excluded: newly, readmitted }); }
+  return { candidates: v.candidates, active: v.total, excluded: v.excluded, newly_excluded: newly, readmitted, written: write };
+}
 
 // ---------- Lock: genau ein Schreiber für lead_crm.json (Dienst, CLI, Tests – auch über Prozess-/Containergrenzen) ----------
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -167,7 +190,8 @@ export function createCrmAgent({ dataDir, sources, url, token, fetchFn = globalT
   const view = () => {
     const t = now();
     const v = buildCrmView({ ...sources(), crm: loadCrm(dataDir, t) }, t);
-    const leads = v.leads.map(cleanCrmLead).filter(Boolean);
+    // TF-076: nur aktive Leads (buildCrmView); errors.top weglassen (= items[0..1], Netlify-Limit 6 MB).
+    const leads = v.leads.map(cleanCrmLead).filter(Boolean).map(compactCrmLead);
     const fp = crypto.createHash("sha256").update(JSON.stringify(leads.map(({ follow_up, ...l }) => l))).digest("hex").slice(0, 24);
     return { fp, body: { leads, total: leads.length, generated_at: v.generated_at, stats: crmStats(leads, t), backup: backupSummary(dataDir) } };
   };
@@ -236,12 +260,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const ids = v.leads.map((l) => l.lead_id), crmEntries = Object.keys(loadCrm(DATA, t).leads).length;
       const audits = {}; for (const l of v.leads) audits[l.errors.audit] = (audits[l.errors.audit] || 0) + 1;
       const doms = v.leads.map((l) => l.domain).filter(Boolean);
-      log({ event: "report", leads: v.total, duplicates: ids.length - new Set(ids).size, domain_duplicates: doms.length - new Set(doms).size, crm_entries: crmEntries, ...st,
+      log({ event: "report", leads: v.total, candidates: v.candidates, excluded: v.excluded, view_bytes: JSON.stringify(v.leads.map(cleanCrmLead).filter(Boolean).map(compactCrmLead)).length, duplicates: ids.length - new Set(ids).size, domain_duplicates: doms.length - new Set(doms).size, crm_entries: crmEntries, ...st,
         with_findings_total: v.leads.filter((l) => l.findings_total > 0).length, audits, backup: backupSummary(DATA),
         history: { badges: v.leads.reduce((a, l) => (l.history_badge ? ((a[l.history_badge] = (a[l.history_badge] || 0) + 1), a) : a), {}),
           stale: v.leads.filter((l) => l.history_badge && l.errors.audit === "STALE").length, no_email: v.leads.filter((l) => l.history_badge && !l.email).length,
           ...(await import("./discovery-history.js").then((h) => { const s = h.readHistory(DATA), q = h.readRecheck(DATA); const out = {}; for (const d of Object.values(q.done)) out[d.outcome] = (out[d.outcome] || 0) + 1;
             return { entries: Object.keys(s.leads).length, recheck_pending: q.pending.length, recheck_done: out }; })) } });
+      return 0;
+    }
+    if (args.includes("--admission")) {
+      // TF-076: --dry-run zählt nur; ohne --dry-run wird crm_admission.json (Rückverfolgbarkeit) + Audit-Zeile geschrieben. Nur Zahlen im Log.
+      log({ event: "admission", ...admissionSync({ dataDir: DATA, sources, write: !args.includes("--dry-run") }) });
       return 0;
     }
     if (args.includes("--history-migrate")) {
@@ -284,7 +313,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         const hw = createHistoryWorker({ dataDir: DATA, mailDir: MAIL, sources, auditor: createAuditor(RECHECK_AUDIT_OPTIONS), slot, log });
         hw.run(() => stop).catch((e) => log({ event: "history_stopped", error: String(e?.message || e).slice(0, 120) }));
       }
+      let admissionAt = 0;
       while (!stop) {
+        // TF-076: Aufnahme-Stand stündlich festhalten (Recheck ohne Fehler → NO_VERIFIED_ERRORS seit …; nur Zahlen im Log).
+        if (Date.now() - admissionAt > 60 * 60_000) {
+          admissionAt = Date.now();
+          try { const a = admissionSync({ dataDir: DATA, sources }); log({ event: "admission", active: a.active, excluded: a.excluded, newly_excluded: a.newly_excluded, readmitted: a.readmitted }); }
+          catch (e) { log({ event: "admission_failed", error: String(e?.message || e).slice(0, 120) }); }
+        }
         let r = { hot: false, status: 0 };
         try { if (agent) r = await agent.pollOnce(); } catch (e) { log({ event: "iteration_failed", error: String(e?.message || e).slice(0, 160) }); }
         try {

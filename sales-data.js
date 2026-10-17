@@ -2,16 +2,20 @@
 // die Edge-Function (Verkäufer-Kontext). Ohne Node-Abhängigkeiten; Netlify-Blobs-Adapter in netlifySalesData().
 import { scopeLeads, canSeeLead, emptyAssignments } from "./sales-scope.js";
 import { netlifyBlobStore } from "./shared-state.js";
+import { crmActive } from "./public/crm-model.js";
 
 export function createSalesData({ getViewStore, getVnViewStore = null, getSalesStore, getControlStore = null }) {
   const read = async (get) => (get ? (await (await get()).get()).state : null);
-  async function leads() {
+  async function allLeads() {
     const [v, vn] = await Promise.all([read(getViewStore), read(getVnViewStore)]);
     return [...(v?.leads || []).map((l) => ({ ...l, market: "CH" })), ...(vn?.leads || []).map((l) => ({ ...l, market: "VN" }))];
   }
+  // TF-076: nur aktive CRM-Leads (≥ 1 verifizierter Website-Fehler) – Verkäufer-Zähler, Chat-Kontext, neue Aufträge.
+  const leads = async () => (await allLeads()).filter(crmActive);
   const assignments = async () => (await read(() => getSalesStore("assignments"))) || emptyAssignments();
   return {
     leads, assignments,
+    allLeads, // Provisions-Zuordnung bestehender Aufträge: nie an der Aufnahmeregel scheitern lassen
     vnView: () => read(getVnViewStore),
     snapshot: async () => (await read(getControlStore))?.snapshot || null,
     async scoped(actor) { return scopeLeads(actor, await leads(), await assignments()); },

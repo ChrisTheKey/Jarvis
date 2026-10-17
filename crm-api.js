@@ -12,7 +12,7 @@
 import crypto from "node:crypto";
 import { safeEqual } from "./shared-state.js";
 import { validateCrmAction, cleanCrmLead, CRM_ACTIONS, LEAD_ID_RE } from "./lead-crm.js";
-import { crmToCsv, filterLeads, sortLeads, crmStats, FILTER_KEYS } from "./public/crm-model.js";
+import { crmToCsv, filterLeads, sortLeads, crmStats, FILTER_KEYS, crmActive, compactCrmLead } from "./public/crm-model.js";
 import { verifyBackup, BACKUP_FORMAT } from "./backup.js";
 import { resolveActor, can, isOwner, deny, forbidden } from "./auth-core.js";
 import { scopeLeads, canSeeLead, leadMarket, fairDistribution, applyDistribution, distributionReport, emptyAssignments } from "./sales-scope.js";
@@ -58,12 +58,17 @@ export function cleanVnLeads(list, chLeads = []) {
   const seen = new Set(), out = [];
   for (const raw of Array.isArray(list) ? list : []) {
     const l = cleanCrmLead({ ...raw, market: "VN" });
-    if (!l || l.market !== "VN" || (l.domain && (chDomains.has(l.domain) || seen.has(l.domain)))) continue;
+    // TF-076: Aufnahmeregel auch serverseitig in der Cloud (nie nur im Browser): ohne verifizierten Fehler kein aktiver Lead.
+    if (!l || l.market !== "VN" || !crmActive(l) || (l.domain && (chDomains.has(l.domain) || seen.has(l.domain)))) continue;
     if (l.domain) seen.add(l.domain);
-    out.push(l);
+    out.push(compactCrmLead(l));
   }
   return out;
 }
+// TF-076: CH-Sicht für den Speicher – Allowlist, Aufnahmeregel (≥ 1 verifizierter Fehler), errors.top weglassen (6-MB-Limit).
+export const cleanChLeads = (list) => (Array.isArray(list) ? list : []).map((l) => cleanCrmLead({ ...l, market: "CH" })).filter((l) => l && crmActive(l)).map(compactCrmLead);
+// Lesen: auch ein vor TF-076 gespeicherter Stand liefert nie einen Lead ohne verifizierten Fehler (Liste, Detail, Zähler, CSV, Schreib-Scope).
+export const activeLeads = (list) => (Array.isArray(list) ? list : []).filter(crmActive);
 
 export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore = null, getVnQueueStore = null, getSalesStore = null, getAuthStore = null,
   getBackupStore = null, env, now = () => new Date(), newId = () => crypto.randomUUID() }) {
@@ -104,10 +109,10 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
   const readVnView = async () => (getVnViewStore ? (await (await getVnViewStore()).get()).state : null);
   const readAssignments = async () => (getSalesStore ? (await (await getSalesStore("assignments")).get()).state : null) || emptyAssignments();
   const readSalesConfig = async () => (getSalesStore ? (await (await getSalesStore("config")).get()).state : null) || {};
-  const chLeadsOf = (v) => (v?.leads || []).map((l) => ({ ...l, market: "CH" }));
+  const chLeadsOf = (v) => activeLeads(v?.leads).map((l) => ({ ...l, market: "CH" }));
   async function allLeads() {
     const [v, vn] = await Promise.all([readView(), readVnView()]);
-    return { v, vn, leads: [...chLeadsOf(v), ...(vn?.leads || [])] };
+    return { v, vn, leads: [...chLeadsOf(v), ...activeLeads(vn?.leads)] };
   }
   // Agent-Pull/Result für eine Warteschlange (CH- oder VN-Dienst).
   async function agentPull(mut, body, storeView) {
@@ -147,7 +152,8 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
     if (r.status === 200 && lead && lead.lead_id === leadId) await patch(lead);
     return reply(r.status, r.body);
   }
-  const patchLeadIn = (getStore, market) => (lead) => patchStore(getStore, (v) => { if (!v || !Array.isArray(v.leads)) return null; const i = v.leads.findIndex((l) => l.lead_id === lead.lead_id); if (i < 0) return null; v.leads[i] = { ...lead, market }; return v; });
+  const patchLeadIn = (getStore, market) => (lead) => patchStore(getStore, (v) => { if (!v || !Array.isArray(v.leads)) return null; const i = v.leads.findIndex((l) => l.lead_id === lead.lead_id); if (i < 0) return null;
+    if (!crmActive(lead)) v.leads.splice(i, 1); else v.leads[i] = compactCrmLead({ ...lead, market }); return v; });
 
   // TF-070: CRM-Schreibaufträge des Kontos «lap» gehören Kudoshin – einmal je Instanz, idempotent (Audit bleibt unverändert).
   const migrateIdentity = migrateOnce(async () => {
@@ -210,7 +216,7 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
       if (req.method !== "POST") return reply(405, { error: "Agent: nur POST." });
       if (body.op === "pull") {
         const r = await agentPull(mutate, body, async (v) => {
-          const leads = v.leads.map((l) => cleanCrmLead({ ...l, market: "CH" })).filter(Boolean);
+          const leads = cleanChLeads(v.leads);
           const t = now();
           const b = v.backup && typeof v.backup === "object" ? { last_at: iso(v.backup.last_at), offsite_ok: v.backup.offsite_ok === true, generations: Number.isInteger(v.backup.generations) ? Math.min(v.backup.generations, 1000) : 0 } : null;
           const ok = await patchView(() => ({ leads, total: leads.length, generated_at: iso(v.generated_at) || t.toISOString(), received_at: t.toISOString(), backup: b }));
@@ -302,7 +308,7 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
         generated_at: markets.includes("CH") ? v?.generated_at || null : vn?.generated_at || null, received_at: markets.includes("CH") ? v?.received_at || null : vn?.received_at || null,
         total: leads.length, stats: crmStats(leads, now()), backup: owner ? v?.backup || null : null, leads, ...r.body,
         online: markets.includes("CH") ? r.body.online : vnOnline, online_vn: vnOnline,
-        ...(owner ? { vn_status: vn?.status || null, vn_total: vn?.leads?.length || 0 } : {}) });
+        ...(owner ? { vn_status: vn?.status || null, vn_total: activeLeads(vn?.leads).length } : {}) });
     }
 
     const val = validateCrmAction(body, { now: now() });

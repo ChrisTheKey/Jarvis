@@ -337,7 +337,9 @@ test("P: CRM-Notizen/Anrufe bleiben erhalten (Migration fasst lead_crm.json nie 
   assert.equal(by[d].notes[0].text, "Rückruf vereinbart"); assert.equal(by[d].call_history.length, 1); assert.equal(by["firma-003.ch"].notes[0].text, "Alt");
   fs.writeFileSync(path.join(s.data, SITE_FINDINGS_FILE), JSON.stringify({ schema: 1, domains: { [d]: { full: fullAuditEntry({ reachable: true,
     coverage: { links_found: 1, links_checked: 1, images_found: 0, images_checked: 0 }, issues: [] }, { domain: d, audited_at: ago(0.1) }) } } }));
-  assert.ok(s.by()[d], "behoben, aber mit Notizen → bleibt sichtbar");
+  // TF-076: erfolgreicher Recheck ohne Fehler → nicht mehr im aktiven CRM; Notizen/Anrufe bleiben in lead_crm.json, der Lead bleibt Prüfkandidat.
+  assert.equal(s.by()[d], undefined, "behoben → kein aktiver Verkaufs-Lead mehr");
+  assert.equal(loadCrm(s.data).leads[d].notes[0].text, "Rückruf vereinbart", "Historie bleibt");
   assert.ok(crmUniverse({ ...s.sources(), crm: loadCrm(s.data) }, NOW).has(d));
 });
 

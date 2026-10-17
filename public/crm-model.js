@@ -78,7 +78,37 @@ export function errorLong(l, w = ERR_WORDS_DE) {
 }
 export const errorBucket = (l) => { const n = errorCount(l); return n == null ? null : n === 0 ? "0" : n <= 2 ? "1-2" : n <= 5 ? "3-5" : "6+"; };
 export const ERROR_BUCKETS = Object.freeze(["0", "1-2", "3-5", "6+"]);
-export const topIssues = (l) => (Array.isArray(errs(l).top) ? errs(l).top : []).slice(0, 2);
+// TF-076: die Übertragung lässt errors.top weg (= die ersten zwei Einträge von items) – dann aus items abgeleitet.
+export const topIssues = (l) => { const e = errs(l); return (Array.isArray(e.top) && e.top.length ? e.top : Array.isArray(e.items) ? e.items : []).slice(0, 2); };
+
+// ---------- TF-076: CRM-Aufnahmeregel (EINE Definition für VPS-Sicht, VN-Sicht, Cloud-Speicher/-Lesen, Calling, Zähler) ----------
+// Aktiver CRM-Lead = erfolgreich geprüft UND ≥ 1 aktuell verifizierter, für Besucher sichtbarer Website-Fehler (errors.items aus
+// site-findings.js siteHealth: nur gezählte, reproduzierbare Typen, RESOLVED fällt heraus). Ein unvollständiger/fehlgeschlagener Audit ist
+// NIE „sauber“: er bleibt ausserhalb des aktiven CRM, bis ein erfolgreicher Audit einen Fehler belegt. Ausnahme nur Kunden (Auftrag/
+// Kundenhistorie bleibt sichtbar, auch wenn die Reparatur alle Fehler behoben hat). Historie (lead_crm.json, Audits) wird nie gelöscht.
+export const ADMISSION_STATES = Object.freeze(["VERIFIED_ERRORS", "CUSTOMER", "NO_VERIFIED_ERRORS", "AUDIT_INCOMPLETE", "AUDIT_FAILED", "AUDIT_RETRY_REQUIRED"]);
+export const verifiedErrorCount = (l) => { const e = errs(l); if (e.audit === "NONE") return 0; const items = Array.isArray(e.items) ? e.items.filter((f) => f && f.status !== "RESOLVED").length : 0;
+  return Math.max(items, Number.isInteger(e.count) ? e.count : 0); };
+// auditFailed: der letzte Audit-Versuch ist technisch gescheitert (Timeout, DNS, HTTP-Fehler, Absturz) – nur der VPS weiss das.
+export function crmAdmission(l, { auditFailed = false } = {}) {
+  const e = errs(l), n = verifiedErrorCount(l);
+  if (n >= 1) return { active: true, state: "VERIFIED_ERRORS", count: n };
+  // Kunde bzw. Lead mit Reparaturauftrag (errors.repair): Auftrag, Zahlung, Provision und Kundenhistorie bleiben sichtbar.
+  if (l?.customer === true || (e.repair && typeof e.repair === "object")) return { active: true, state: "CUSTOMER", count: 0 };
+  // 0 Fehler aus einem VOLLSTÄNDIGEN Audit (aktuell oder veraltet) = geprüft und sauber.
+  if ((e.audit === "FULL" || (e.audit === "STALE" && !!e.full_checked_at)) && Number.isInteger(e.count)) return { active: false, state: "NO_VERIFIED_ERRORS", count: 0 };
+  if (auditFailed) return { active: false, state: "AUDIT_FAILED", count: 0 };
+  if (e.audit === "PARTIAL" || e.audit === "STALE") return { active: false, state: "AUDIT_INCOMPLETE", count: 0 };
+  return { active: false, state: "AUDIT_RETRY_REQUIRED", count: 0 };
+}
+export const crmActive = (l) => !!l && crmAdmission(l).active;
+// Übertragung/Speicher (Netlify-Limit 6 MB je Anfrage/Antwort): errors.top ist immer items[0..1] → weglassen, topIssues leitet es ab.
+export function compactCrmLead(l) {
+  const e = l?.errors;
+  if (!e || !Array.isArray(e.top) || !e.top.length || !Array.isArray(e.items) || !e.items.length) return l;
+  const same = e.top.every((f, i) => f?.key && e.items[i]?.key === f.key);
+  return same ? { ...l, errors: { ...e, top: [] } } : l;
+}
 
 // ---------- TF-059: konkrete CRM-Fehlerzeile (NUR intern für Chris – der Cold-Mail-Kundentext bleibt kurz und natürlich) ----------
 // QUELLSEITE → ELEMENT, darunter ZIEL → TATSÄCHLICH BEOBACHTET. Nur belegte Werte: unbekannter HTTP-Status → „Zielseite nicht
@@ -180,6 +210,70 @@ export function issueLinks(lead, max = 40) {
   return currentIssues(lead, max).map((f) => ({ key: f.key || null, type: f.type || null, category: ISSUE_CATEGORIES.includes(f.category) ? f.category : "other", severity: f.severity || null,
       text: f.text || null, title: f.crm_title || f.text, detail: f.crm_detail || null, ...issueLink(f) }));
 }
+
+// ---------- TF-076: verständliche Fehlerbeschreibung je verifiziertem Befund (Verkäufer-tauglich, nur belegte Fakten) ----------
+// FEHLER (short_title) · SEITE (affected_url) · POSITION (page_location) · WARUM FEHLER (evidence) · AUSWIRKUNG (impact) · verified_at.
+// Position nur aus belegten Audit-Fakten: Seitenbereich (area: header/nav/main/aside/footer), nächste Überschrift (heading), Linktext/
+// Bild-Alt-Text (label), benannter Bereich (location). Unbekannt → ehrlicher Ersatztext, nie ein erfundener Selektor/Abschnitt.
+export const ISSUE_AREAS = Object.freeze(["header", "nav", "main", "aside", "footer"]);
+export const DETAIL_WORDS_DE = Object.freeze({
+  area: { header: "Kopfbereich", nav: "Hauptmenü", main: "Inhaltsbereich", aside: "Seitenleiste", footer: "Footer" },
+  section: (h) => `Abschnitt «${h}»`, sep: " → ", quote: (s) => `«${s}»`, whole: "Gesamte Website (beim Aufruf)", wholePage: "Ganze Seite",
+  unknownPos: "Genaue Position nicht automatisch bestimmbar", noPos: "Position nicht verfügbar", linkWord: "Link", imageWord: "Bild", mailWord: "E-Mail-Link",
+  title: { broken_link: "Kaputter Link", contact_page_broken: "Kontaktseite nicht erreichbar", broken_image: "Bild wird nicht geladen", broken_mailto: "Fehlerhafter E-Mail-Link",
+    contact_form_broken: "Kontaktformular sendet nicht", button_broken: "Button ohne Funktion", mobile_text_overlap: "Text überlappt auf dem Handy",
+    mobile_content_cut_off: "Inhalt auf dem Handy abgeschnitten", no_mobile_viewport: "Nicht für Handys angepasst", visible_layout_error: "Darstellungsfehler",
+    redirect_loop: "Website lädt nicht", https_certificate: "Sicherheitswarnung im Browser" },
+  link: (label, target, status) => `Der Link${label ? ` «${label}»` : ""} verweist auf ${target || "eine Unterseite"}. ${status ? `Die Zielseite liefert HTTP ${status} (Fehlerseite).` : "Die Zielseite ist nicht erreichbar."}`,
+  contactLink: (label, target, status) => `Der Link zur Kontaktseite${label ? ` («${label}»)` : ""} verweist auf ${target || "die Kontaktseite"}. ${status ? `Diese liefert HTTP ${status} (Fehlerseite).` : "Diese ist nicht erreichbar."}`,
+  image: (file, status) => `Das Bild${file ? ` «${file}»` : ""} verweist auf eine Datei, die ${status ? `HTTP ${status} liefert` : "nicht geladen werden kann"}. Das Bild wird nicht angezeigt.`,
+  mailto: "Der E-Mail-Link enthält keine gültige E-Mail-Adresse. Ein Klick öffnet keine korrekte E-Mail an die Firma.",
+  form: "Das Kontaktformular konnte bei der Prüfung reproduzierbar nicht abgesendet werden.",
+  button: (l) => `Der Button${l ? ` «${l}»` : ""} reagiert bei der Prüfung nicht.`,
+  overlap: (vp) => `Auf dem Handy${vp ? ` (${vp} px Breite)` : ""} überlappt Text mit anderen Inhalten.`,
+  cutoff: (vp) => `Auf dem Handy${vp ? ` (${vp} px Breite)` : ""} ist Inhalt abgeschnitten.`,
+  viewport: "Die Seite hat keine Handy-Einstellung (viewport). Smartphones zeigen sie verkleinert in Desktop-Breite.",
+  layout: "Der Bereich wird verschoben dargestellt.", loop: "Beim Aufruf leitet die Website endlos weiter (Weiterleitungsschleife). Die Seite lädt nicht.",
+  cert: "Beim Öffnen meldet der Browser ein Problem mit dem Sicherheitszertifikat.",
+  impact: { broken_link: "Besucher landen auf einer Fehlerseite statt beim gewünschten Inhalt.", contact_page_broken: "Interessenten finden die Kontaktseite nicht – Anfragen können verloren gehen.",
+    broken_image: "Auf der Seite fehlt ein Bild; sie wirkt unvollständig.", broken_mailto: "Besucher können über diesen Link keine E-Mail senden.",
+    contact_form_broken: "Anfragen über das Formular kommen nicht an.", button_broken: "Besucher kommen über diesen Button nicht weiter.",
+    mobile_text_overlap: "Auf dem Handy ist der Text schwer lesbar.", mobile_content_cut_off: "Auf dem Handy fehlen Teile des Inhalts.",
+    no_mobile_viewport: "Auf dem Handy ist die Seite schwer lesbar und bedienbar.", visible_layout_error: "Die Seite wirkt an dieser Stelle fehlerhaft.",
+    redirect_loop: "Besucher sehen die Website gar nicht.", https_certificate: "Viele Besucher brechen beim Warnhinweis ab." },
+});
+const pathOrUrl = (t, page) => { const x = urlOf(t); if (!x) return null; const p = urlOf(page); return p && hostOf(x) === hostOf(p) ? pathText(x) : cut(`${hostOf(x)}${x.pathname === "/" ? "" : pathText(x)}`, 60); };
+const fileOf = (t) => { const x = urlOf(t); if (!x) return null; const s = x.pathname.split("/").filter(Boolean).pop() || ""; let d = s; try { d = decodeURIComponent(s); } catch {} return d ? cut(d, 40) : null; };
+const short40 = (s) => (typeof s === "string" && s.trim() ? cut(s.trim().replace(/\s+/g, " "), 40) : null);
+const SITE_WIDE = new Set(["redirect_loop", "https_certificate"]);
+// Position aus belegten Fakten: Bereich → Überschrift → Element. Ganz ohne Fakten: Ersatztext (Seite bekannt) bzw. „nicht verfügbar“.
+export function issuePosition(f = {}, w = DETAIL_WORDS_DE) {
+  if (SITE_WIDE.has(f.type)) return { text: w.whole, known: true };
+  if (f.type === "no_mobile_viewport") return { text: w.wholePage, known: true };
+  const area = ISSUE_AREAS.includes(f.area) ? w.area[f.area] : null, heading = short40(f.heading), label = short40(f.label), loc = short40(f.location);
+  const element = ["broken_link", "contact_page_broken", "broken_mailto"].includes(f.type) ? (label ? w.quote(label) : null)
+    : f.type === "broken_image" ? (label ? `${w.imageWord} ${w.quote(label)}` : null) : loc ? w.quote(loc) : null;
+  // Kopfbereich/Menü/Footer sind für den Anrufer eindeutig; im Inhalt ist „Abschnitt «Team»“ genauer als „Inhaltsbereich“.
+  const where = ["header", "nav", "footer"].includes(f.area) ? area : heading ? w.section(heading) : area;
+  const parts = [where, element].filter(Boolean);
+  if (parts.length) return { text: parts.join(w.sep), known: true };
+  // Typisierter Befund (Seite geprüft, Stelle nicht bestimmbar) vs. älterer Befund ohne Typ/Positionsdaten.
+  return { text: f.type ? w.unknownPos : w.noPos, known: false };
+}
+export function issueDetail(f = {}, w = DETAIL_WORDS_DE, fallbackText = typeof f.text === "string" ? f.text : "") {
+  const status = Number.isInteger(f.http_status) && f.http_status >= 100 && f.http_status <= 599 ? f.http_status : null;
+  const label = short40(f.label), page = f.affected_url !== undefined ? f.affected_url : f.page, tgt = pathOrUrl(f.target_url ?? f.target, page);
+  const vp = Number.isInteger(f.viewport) ? f.viewport : null;
+  const ev = { broken_link: () => w.link(label, tgt, status), contact_page_broken: () => w.contactLink(label, tgt, status), broken_image: () => w.image(fileOf(f.target_url ?? f.target), status),
+    broken_mailto: () => w.mailto, contact_form_broken: () => w.form, button_broken: () => w.button(short40(f.location)), mobile_text_overlap: () => w.overlap(vp),
+    mobile_content_cut_off: () => w.cutoff(vp), no_mobile_viewport: () => w.viewport, visible_layout_error: () => w.layout, redirect_loop: () => w.loop, https_certificate: () => w.cert }[f.type];
+  const pos = issuePosition(f, w);
+  return { error_type: typeof f.type === "string" ? f.type : null, short_title: w.title[f.type] || fallbackText || null,
+    // Ohne Typ (ältere Befunde): der gespeicherte, bereits verifizierte Kurztext – nichts hinzuerfunden.
+    plain_language_description: ev ? ev() : fallbackText || null, evidence: ev ? ev() : fallbackText || null,
+    impact: w.impact[f.type] || null, page_location: pos.text, location_known: pos.known, ...issueLink(f), verified_at: typeof f.verified_at === "string" ? f.verified_at : null };
+}
+export const issueDetails = (lead, max = 40, w = DETAIL_WORDS_DE, textOf = (f) => f.text || "") => currentIssues(lead, max).map((f) => ({ key: f.key || null, ...issueDetail(f, w, textOf(f)) }));
 
 // Reparatur-Stand (nach CHF-480): „Automatisch repariert + 2 manuelle Punkte offen“.
 export function repairLine(l, w = ERR_WORDS_DE) {

@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { createAuditor } from "./site-auditor.js";
 import { fullAuditEntry, siteHealth, normDomain } from "./site-findings.js";
 import { normalizeCrmState, applyCrmAction, effectiveStage, cleanCrmLead, CRM_SCHEMA } from "./lead-crm.js";
-import { priorityOf, followUpBucket, callRecommended, CALL_STATUSES, CONTACT_STATUSES } from "./public/crm-model.js";
+import { priorityOf, followUpBucket, callRecommended, CALL_STATUSES, CONTACT_STATUSES, crmActive, compactCrmLead } from "./public/crm-model.js";
 import { displayCategory, categoryKey } from "./category-labels.js";
 import { ISSUE_TYPE_TEXT } from "./public/i18n.js";
 
@@ -229,7 +229,8 @@ export function buildVnLead(base, crmEntry, now = new Date()) {
 }
 export function buildVnView(store, now = new Date(), units = null) {
   const crm = store.crm(now), base = store.leads().leads;
-  const leads = Object.values(base).map((b) => buildVnLead(b, crm.leads[b.domain], now)).filter(Boolean);
+  // TF-076: nur aktive Leads (≥ 1 verifizierter Fehler) – die Basisdaten bleiben unverändert in vn_leads.json.
+  const leads = Object.values(base).map((b) => buildVnLead(b, crm.leads[b.domain], now)).filter((l) => l && crmActive(l)).map(compactCrmLead);
   const st = rollDay(store.state(), now);
   return { generated_at: now.toISOString(), leads, status: { audited_today: st.audits_today, daily_limit: VN_DAILY_WEBSITE_AUDITS, day: st.day, units_total: 34,
     cursor_unit: units?.[st.cursor?.unit || 0]?.name || null, cycle: st.cycle || 0, indexed_domains: Object.keys(store.index().domains).length, last_audit_at: st.last_audit_at } };
@@ -237,7 +238,8 @@ export function buildVnView(store, now = new Date(), units = null) {
 // CRM-Aufträge der Cloud (nur VN-Leads) anwenden – gleiche Allowlist/Prüfung wie CH (lead-crm.js applyCrmAction).
 export function applyVnRequest(store, req, now = new Date()) {
   const crm = store.crm(now);
-  const view = new Map(buildVnView(store, now).leads.map((l) => [l.lead_id, l]));
+  // Alle bekannten VN-Leads (auch ausserhalb des aktiven CRM): DNC/Notizen dürfen nie an der Aufnahmeregel scheitern.
+  const view = new Map(Object.values(store.leads().leads).map((b) => buildVnLead(b, crm.leads[b.domain], now)).filter(Boolean).map((l) => [l.lead_id, l]));
   const r = applyCrmAction(crm, req, { now, lookup: (id) => view.get(id) || null });
   if (r.ok && !r.duplicate) store.saveCrm(crm);
   return { ...r, lead: r.ok ? buildVnLead(store.leads().leads[r.lead_id], crm.leads[r.lead_id], now) : null };

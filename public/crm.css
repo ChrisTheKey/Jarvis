@@ -122,3 +122,17 @@
 .crm-onb-list { display: grid; gap: 10px; }
 .crm-onb-list h4 { margin: 4px 0 0; }
 .crm-onb .crm-hist small { display: inline; margin-left: 6px; }
+/* TF-076: Anrufer-Karten je verifiziertem Fehler (FEHLER · SEITE · POSITION · WARUM FEHLER · AUSWIRKUNG · Fehler öffnen) */
+.crm-errtop { margin: 8px 0 10px; }
+.crm-icards { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.crm-icard { border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.crm-icard.manual { border-left-color: var(--cyan); }
+.crm-icrow { display: grid; grid-template-columns: 118px 1fr; gap: 8px; font-size: 13px; line-height: 1.35; }
+.crm-icrow .lbl { color: var(--muted); font-size: 11px; letter-spacing: .04em; padding-top: 2px; }
+.crm-icrow .val { overflow-wrap: anywhere; }
+.crm-icrow.pos.unknown .val { color: var(--muted); font-style: italic; }
+.crm-icrow .crm-iurl { color: var(--cyan-2); font-family: var(--mono); word-break: break-all; }
+.crm-icrow .crm-inone { color: var(--muted); font-style: italic; }
+.crm-icacts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.crm-icacts small { color: var(--muted); }
+@media (max-width: 860px) { .crm-icrow { grid-template-columns: 1fr; gap: 0; } }

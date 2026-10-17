@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { setup, makeReq, ORIGIN, CONTROL, env } from "./tf063-helpers.js";
+import { setup, makeReq, ORIGIN, CONTROL, env, verifiedErrors } from "./tf063-helpers.js";
 import { memoryStore } from "../shared-state.js";
 import { authStoreFrom } from "../auth-core.js";
 import { createCallingHandler, callingAgentToken } from "../calling-api.js";
@@ -29,7 +29,7 @@ const evidence = (lead_id, phone, x = {}) => ({ lead_id, market: "VN", phone, co
   consent_scope: ["ADVERTISING_CALLS"], consent_evidence_reference: `FORM-${lead_id}`, verified_at: "2026-10-02T08:00:00.000Z", revoked_at: null, ...x });
 const REG = { result: "NOT_LISTED", checked_at: "2026-10-10T08:00:00.000Z" };
 const LEGAL = { status: "APPROVED" };
-const vnLead = { lead_id: "b.vn", market: "VN", phone_tel: "tel:+842438267898" };
+const vnLead = { lead_id: "b.vn", market: "VN", phone_tel: "tel:+842438267898", errors: verifiedErrors("b.vn") }; // TF-076: mit verifiziertem Fehler
 const full = { evidence: evidence("b.vn", "+842438267898"), dnc_registry: REG };
 
 async function world({ consentIdx = [], legal = true, t0 = VN("10:00") } = {}) {

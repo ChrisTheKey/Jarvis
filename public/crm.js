@@ -4,7 +4,7 @@
 // automatische Aktion, kein Senden, kein Anruf, keine SMS/WhatsApp. Alle Inhalte per textContent (nie innerHTML mit Daten).
 // Sprache: de-CH (Standard, unverändert) oder vi-VN (setLocale) – Firmennamen, Domains, Telefonnummern und Kundeninhalte bleiben wie sie sind.
 import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, CARDS, SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
-  ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts, issueLink, currentIssues } from "./crm-model.js";
+  ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts, issueLink, currentIssues, issueDetail } from "./crm-model.js";
 import { createI18n } from "./i18n.js";
 import { callingTexts, leadCallBox } from "./calling-ui.js";
 import { onboardingTexts, leadOnboardingBox, onboardingPanel } from "./onboarding-ui.js";
@@ -57,13 +57,26 @@ const issueLinkRow = (f) => { const x = issueLink(f); return el("div", { class: 
   x.affected_url ? [link(x.affected_url, x.affected_url.replace(/^https?:\/\//, ""), "crm-iurl"), " ", link(x.affected_url, t("link.open"), "crm-btn sm primary crm-iopen")]
     : el("span", { class: "crm-inone" }, t("link.none")),
   x.target_url ? [" ", link(x.target_url, t("link.target"), "crm-btn sm crm-itarget")] : ""); };
-// Kompakte Anrufansicht (Kudoshin/Chris, VN-Lead): Website, je verifiziertem Fehler Kurztext, Auswirkung, betroffene Seite + Direktlink.
+// TF-076: Anrufer-Karte je verifiziertem Fehler – FEHLER · SEITE · POSITION · WARUM FEHLER · AUSWIRKUNG · [Fehler öffnen]. Nur belegte Fakten
+// (crm-model.js issueDetail); unbekannte Position → ehrlicher Ersatztext, unbekannte/unsichere Seite → „Direktlink nicht verfügbar“.
+const issueCard = (f) => {
+  const d = issueDetail(f, I.detailWords, I.issueText(f));
+  const impact = d.impact || t(`impact.${ISSUE_CATEGORIES.includes(f.category) ? f.category : "other"}`);
+  const row = (k, v, cls = "") => el("div", { class: `crm-icrow ${cls}` }, el("span", { class: "lbl" }, k), el("span", { class: "val" }, v));
+  return el("li", { class: `crm-icard${f.manual ? " manual" : ""}`, "data-type": d.error_type || "" },
+    row(t("det.err"), el("b", {}, d.short_title || lines(f).title), "err"),
+    row(t("det.page"), d.affected_url ? link(d.affected_url, d.affected_url.replace(/^https?:\/\//, ""), "crm-iurl") : el("span", { class: "crm-inone" }, t("link.none")), "page"),
+    row(t("det.pos"), d.page_location, `pos${d.location_known ? "" : " unknown"}`),
+    row(t("det.why"), d.evidence || "–", "why"),
+    row(t("det.impact"), impact, "impact"),
+    el("div", { class: "crm-icacts" }, d.affected_url ? link(d.affected_url, t("link.open"), "crm-btn sm primary crm-iopen") : "",
+      d.target_url ? [" ", link(d.target_url, t("link.target"), "crm-btn sm crm-itarget")] : "",
+      d.verified_at ? el("small", {}, `${t("det.seen")}: ${fmt(d.verified_at)}`) : ""));
+};
+const issueCards = (l, max = 40) => { const xs = currentIssues(l, max); return xs.length ? el("ol", { class: "crm-icards" }, xs.map(issueCard)) : el("p", { class: "crm-note" }, t("det.none")); };
+// Kompakte Anrufansicht (Kudoshin/Chris, VN-Lead): Website + dieselben Fehler-Karten (nur der aktuelle Lead).
 function callIssuesBox(l) {
-  const xs = currentIssues(l, 10);
-  return el("div", { class: "crm-callissues" }, el("div", {}, `${t("kv.website")}: `, link(l.website, l.domain || l.website || "–")),
-    xs.length ? el("ol", { class: "crm-find crm-cilist" }, xs.map((f) => el("li", {}, el("b", {}, `${t("link.err")}: ${lines(f).title}`),
-      el("small", {}, `${t("link.impact")}: ${t(`impact.${ISSUE_CATEGORIES.includes(f.category) ? f.category : "other"}`)}`), issueLinkRow(f))))
-      : el("p", { class: "crm-note" }, noTop(l)));
+  return el("div", { class: "crm-callissues" }, el("div", {}, `${t("kv.website")}: `, link(l.website, l.domain || l.website || "–")), issueCards(l, 10));
 }
 // TF-058: historischer Discovery-Fund (nur Anzeige – daraus entsteht nie ein Entwurf).
 const histBadge = (l) => (I.L.history[l.history_badge] ? badge(`hist-${l.history_badge}`, I.L.history[l.history_badge]) : "");
@@ -220,7 +233,7 @@ function renderDrawer() {
       ...(e.audit === "PARTIAL" ? [[t("kv.hint"), t("hint.partial")]] : []),
       ...(repairLine(l, I.errWords) ? [[t("kv.repair"), repairLine(l, I.errWords)]] : [])]),
     el("h5", {}, t("h.top")),
-    e.top?.length ? el("ol", { class: "crm-find crm-topd" }, e.top.map((f, i) => { const x = lines(f); return el("li", {}, el("b", {}, `#${i + 1} ${x.title}`),
+    topIssues(l).length ? el("ol", { class: "crm-find crm-topd" }, topIssues(l).map((f, i) => { const x = lines(f); return el("li", {}, el("b", {}, `#${i + 1} ${x.title}`),
       x.detail ? el("small", { class: "id" }, x.detail) : "", el("small", {}, factLine(f) || `${t("fact.page")}${pageText(f)}`),
       el("small", {}, t("sevLine", sev(f), I.L.issue[f.category] || t("other"), fmt(f.verified_at))), issueLinkRow(f)); }))
       : el("p", {}, noTop(l)),
@@ -237,8 +250,10 @@ function renderDrawer() {
     el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", t("priority", level(l), l.priority?.score ?? 0)), " ", histBadge(l), " ", cfBadge(l)),
     l.history_badge ? el("p", { class: "crm-note" }, t("histNote")) : "",
     blocked ? el("div", { class: "crm-dnc-banner" }, `${t("dncBanner")}${l.dnc_source && l.dnc_source !== "crm" ? t("dncSource", src) : ""}`) : "",
-    el("small", {}, (l.priority?.reasons || []).map(I.reason).join(" · ") || t("noReasons")),
     qa, status,
+    // TF-076: verifizierte Fehler ganz oben – der Anrufer muss nicht suchen.
+    el("section", { class: "crm-errtop" }, el("h4", {}, t("sec.verifiedErrors", currentIssues(l).length)), issueCards(l)),
+    el("small", {}, (l.priority?.reasons || []).map(I.reason).join(" · ") || t("noReasons")),
     el("h4", {}, t("sec.contact")),
     kv([[t("kv.email"), mailLink(l)], [t("kv.phone"), telLink(l)], [t("kv.first"), l.first_name], [t("kv.last"), l.last_name], [t("kv.role"), l.role],
       [l.region ? t("kv.region") : t("kv.place"), place(l) || "–"], [t("kv.category"), cat(l)]]),

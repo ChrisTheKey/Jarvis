@@ -9,6 +9,7 @@
 //   - DNC/Opt-out/Suppression sperrt sofort und dauerhaft. Keine Aufzeichnung. KI gibt sich immer als automatisierter Assistent zu erkennen.
 import { createHash } from "node:crypto";
 import { MARKET_PRICES } from "./pricing.js";
+import { crmActive, topIssues } from "./public/crm-model.js";
 
 // TF-068 (nicht verhandelbar):
 //   - Der Agent ruft NUR Vietnam an (CALLING_MARKETS). CH-Leads bleiben im CRM, werden aber nie vom Agenten angerufen (CH_CALLING_DISABLED).
@@ -144,6 +145,8 @@ export function eligibility(lead, { consent = null, dncSet = null, now = new Dat
   if (!lead || typeof lead !== "object") return r("BLOCKED", "BLOCKED_OTHER", "UNKNOWN_LEAD");
   const market = marketOf(lead);
   if (isDnc(lead, consent, dncSet)) return r("BLOCKED", "BLOCKED_DNC", "DNC");
+  // TF-076: ohne ≥ 1 verifizierten Website-Fehler kein Anruf (zusätzlich zu allen Rechts-/Einwilligungs-Sperren, die bleiben).
+  if (!crmActive(lead)) return r("BLOCKED", "BLOCKED_OTHER", "NO_VERIFIED_ERRORS");
   if (!CALLING_MARKETS.includes(market)) return r("BLOCKED", "BLOCKED_OTHER", "CH_CALLING_DISABLED"); // CH: keine Outbound-Calls durch den Agenten
   if (!e164Of(lead)) return r("BLOCKED", "BLOCKED_OTHER", "NO_PHONE");
   if (lead.archived) return r("BLOCKED", "BLOCKED_OTHER", "ARCHIVED");
@@ -314,7 +317,7 @@ export const formatSpoken = (amount, currency) => (currency === "VND" ? `${Strin
 export function verifiedFindings(lead) {
   const out = [];
   for (const f of lead?.findings || []) if (f?.confirmed === true && f.text) out.push(clean(f.text, 200));
-  for (const f of lead?.errors?.top || []) if (f && (f.crm_title || f.title)) out.push(clean(f.crm_title || f.title, 200));
+  for (const f of topIssues(lead)) if (f && (f.crm_title || f.title)) out.push(clean(f.crm_title || f.title, 200));
   return [...new Set(out)].slice(0, 3);
 }
 export function buildLeadContext(lead, history = []) {

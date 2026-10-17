@@ -51,6 +51,11 @@ test("B: neuer Lead erscheint automatisch (Kontaktverzeichnis/Cold-Register wäc
   const s = svc(5);
   assert.equal(view(s).total, 5);
   bump(path.join(s.data, "lead_contact_directory.json"), (d) => { d.leads["neu-firma.ch"] = { lead_id: "neu-firma.ch", company_name: "Neu GmbH", domain: "neu-firma.ch", email: "info@neu-firma.ch", draft_status: "DRAFT" }; });
+  // TF-076: ohne verifizierten Website-Fehler noch kein aktiver CRM-Lead (nur Prüfkandidat) – erst der Audit mit Fehler nimmt ihn auf.
+  assert.equal(view(s).total, 5);
+  assert.equal(buildCrmLead("neu-firma.ch", { ...s.sources(), crm: loadCrm(s.data) }).admission, "AUDIT_RETRY_REQUIRED");
+  fs.writeFileSync(path.join(s.data, "site_findings.json"), JSON.stringify({ schema: 1, domains: { "neu-firma.ch": { domain: "neu-firma.ch", full: { domain: "neu-firma.ch", complete: true, audited_at: new Date().toISOString(),
+    findings: [{ key: "link|neu-firma.ch/alt", type: "broken_link", category: "http", text: "Link führt auf eine Fehlerseite", page: "https://neu-firma.ch/", target: "https://neu-firma.ch/alt", severity: "medium", status: "OPEN" }] } } } }));
   const v = view(s);
   assert.equal(v.total, 6);
   const l = v.leads.find((x) => x.lead_id === "neu-firma.ch");
@@ -286,7 +291,7 @@ test("Cloud: Ende-zu-Ende Notiz/Stufe – Auftrag, Abholung, atomare Speicherung
   // Browser darf keine Agent-Operationen
   assert.equal((await h.user("POST", { op: "pull", view: { leads: [] } })).status, 400);
   // Cloud speichert nur Allowlist-Felder
-  await h.handler(new Request("https://jarvis.test/api/crm", { method: "POST", headers: { "x-jarvis-crm": crmAgentToken(h.control) }, body: JSON.stringify({ op: "pull", view: { leads: [{ lead_id: "x.ch", company: "X", secret_token: "abc", gmail_draft_id: "r1", phone_tel: "tel:+999", draft_url: "javascript:alert(1)", website: "javascript:alert(1)" }] } }) }));
+  await h.handler(new Request("https://jarvis.test/api/crm", { method: "POST", headers: { "x-jarvis-crm": crmAgentToken(h.control) }, body: JSON.stringify({ op: "pull", view: { leads: [{ lead_id: "x.ch", company: "X", errors: { audit: "FULL", count: 1, items: [{ key: "k", type: "broken_link", text: "Link führt auf eine Fehlerseite", page: "https://x.ch/", status: "OPEN" }] }, secret_token: "abc", gmail_draft_id: "r1", phone_tel: "tel:+999", draft_url: "javascript:alert(1)", website: "javascript:alert(1)" }] } }) }));
   const stored = h.vs.peek().leads[0];
   assert.equal("secret_token" in stored, false); assert.equal("gmail_draft_id" in stored, false); assert.equal(stored.phone_tel, null); assert.equal(stored.draft_url, null); assert.equal(stored.website, null);
 });

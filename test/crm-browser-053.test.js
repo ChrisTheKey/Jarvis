@@ -161,7 +161,7 @@ test("K: Desktop (1440×900) – Fehler-Spalte (genau vs. „≥“), Top 2 sepa
   const srv = await startServer({ prepare });
   try {
     const { page, errors, posts } = await openCrm(browser, srv, { viewport: { width: 1440, height: 900 } });
-    await page.waitForFunction(() => document.querySelectorAll("#crmMain tbody tr").length === 387, null, { timeout: 90_000 });
+    await page.waitForFunction(() => document.querySelectorAll("#crmMain tbody tr").length === 386, null, { timeout: 90_000 });
     assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 1440 });
     const heads = await page.locator(".crm-table th").allTextContents();
     for (const h of ["Firma", "Website", "Fehler", "Wichtigste Fehler", "Ansprechpartner", "Telefon", "Status", "Nächster Schritt"]) assert.ok(heads.includes(h), h);
@@ -172,20 +172,21 @@ test("K: Desktop (1440×900) – Fehler-Spalte (genau vs. „≥“), Top 2 sepa
     assert.match(await cell("firma-001.ch", errCol), /^≥2\s/, "Teilprüfung: nur Mindestzahl");
     assert.match(await cell("firma-001.ch", errCol), /Teilprüfung/i);
     assert.match(await cell("firma-023.ch", errCol), /1 \(veraltet\)/);
-    assert.match(await cell("firma-022.ch", errCol), /^0\s/);
+    // TF-076: firma-022 = vollständig geprüft ohne Fehler → nicht im aktiven CRM (387 Kandidaten, 386 aktiv).
+    assert.equal(await page.locator('#crmMain tr[data-id="firma-022.ch"]').count(), 0);
     assert.match(await cell("firma-024.ch", errCol), /^2\s/, "nach Reparatur: nur offene (manuelle) Punkte");
     // TF-059: konkret Quellseite → Element (darunter Ziel → Ergebnis) statt nur Kurztext.
     const top = await page.locator(`#crmMain tr[data-id="firma-021.ch"] td:nth-child(${topCol}) li .it`).allTextContents();
     assert.deepEqual(top, ["Startseite → Link zu /kontakt", "Startseite → Website-Aufruf"]);
-    assert.match(await cell("firma-022.ch", topCol), /Keine aktuell verifizierten Fehler/);
     // Zähler
     const card = async (label) => Number(await page.locator(`#crmErrCards .crm-card:has-text("${label}") b`).textContent());
-    assert.equal(await card("Vollständig geprüft"), 3);
+    assert.equal(await card("Vollständig geprüft"), 2);
+    assert.equal(await card("0 verifizierte Fehler"), 0);
     assert.equal(await card("6+ Fehler"), 1);
     assert.ok(await card("Nur teilgeprüft") > 300);
     // Filter: Audit, Fehler, Wichtiges Problem, Suche kombiniert
     await page.selectOption("#crmF_audit", "FULL");
-    assert.equal(await page.locator("#crmMain tbody tr").count(), 3);
+    assert.equal(await page.locator("#crmMain tbody tr").count(), 2);
     await page.selectOption("#crmF_errors", "6+");
     assert.deepEqual(await page.locator("#crmMain tbody tr").evaluateAll((rs) => rs.map((r) => r.dataset.id)), ["firma-021.ch"]);
     await page.selectOption("#crmF_errors", ""); await page.selectOption("#crmF_audit", "STALE");
@@ -197,9 +198,9 @@ test("K: Desktop (1440×900) – Fehler-Spalte (genau vs. „≥“), Top 2 sepa
     assert.equal(await page.locator("#crmMain tbody tr").count(), 1);
     await page.fill("#crmF_q", "");
     await page.click('#crmErrCards .crm-card:has-text("Vollständig geprüft")');
-    assert.equal(await page.locator("#crmMain tbody tr").count(), 3);
+    assert.equal(await page.locator("#crmMain tbody tr").count(), 2);
     await page.click('#crmErrCards .crm-card:has-text("Vollständig geprüft")');
-    assert.equal(await page.locator("#crmMain tbody tr").count(), 387);
+    assert.equal(await page.locator("#crmMain tbody tr").count(), 386);
     await shot(page, "crm055-desktop.png");
     // Detail: Website-Zustand
     await page.click('#crmMain tr[data-id="firma-021.ch"]');
@@ -230,7 +231,7 @@ test("L: Mobile (390×844) – Karte FEHLER + WICHTIGSTE 2 + Ansprechpartner/Tel
   const srv = await startServer({ prepare });
   try {
     const { page, errors } = await openCrm(browser, srv, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
-    await page.waitForFunction(() => document.querySelectorAll("#crmMain li.crm-lcard").length === 387, null, { timeout: 90_000 });
+    await page.waitForFunction(() => document.querySelectorAll("#crmMain li.crm-lcard").length === 386, null, { timeout: 90_000 });
     assert.deepEqual(await noOverflow(page), { doc: true, crm: true, w: 390 });
     const card = page.locator('#crmMain li[data-id="firma-021.ch"]');
     const t = await card.innerText();

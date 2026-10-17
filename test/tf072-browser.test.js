@@ -45,6 +45,13 @@ test("TF-072 CRM-Detail (Chris, CH): je Fehler betroffene Seite + «Fehler öffn
       assert.deepEqual(targets, [`${H}/angebot/alt`, `${H}/img/team.jpg`, `${H}/kontakt/`].sort());
       const d = await page.locator("#crmDrawer").innerText();
       assert.match(d, /Fehler: Startseite → «Kontakt»/); assert.match(d, /Betroffene Seite:/);
+      // TF-076: Anrufer-Karten ganz oben – FEHLER · SEITE · POSITION · WARUM FEHLER · AUSWIRKUNG, je Fehler einzeln.
+      const top = page.locator("#crmDrawer .crm-errtop");
+      assert.equal(await top.locator(".crm-icard").count(), 3);
+      const tt = await top.innerText();
+      for (const x of ["FEHLER", "SEITE", "POSITION", "WARUM FEHLER", "AUSWIRKUNG", "Kontaktseite nicht erreichbar", "Kaputter Link", "Bild wird nicht geladen", "«Alt»", "HTTP 404"]) assert.ok(tt.includes(x), x);
+      assert.deepEqual((await linkInfo(page, "#crmDrawer .crm-errtop a.crm-iopen")).map((x) => x.href), [`${H}/`, `${H}/angebot/`, `${H}/leistungen/`]);
+      assert.ok(await page.evaluate(() => { const a = document.querySelector("#crmDrawer .crm-errtop"), b = [...document.querySelectorAll("#crmDrawer h4")].find((h) => /Kontakt/.test(h.textContent)); return !!a && !!b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) > 0; }), "Fehler vor den Kontaktdaten");
       assert.ok(await page.evaluate(() => document.getElementById("crmDrawer").scrollWidth <= document.getElementById("crmDrawer").clientWidth + 1), "kein Querscrollen");
       // Unbekannte Seite: kein Link, ehrlicher Hinweis, nie die Startseite als Ersatz.
       await page.click('#crmMain tr[data-id="firma-022.ch"]');
@@ -86,7 +93,8 @@ test("TF-072 Anrufansicht Kudoshin (vi-VN, Mobile): Website, Fehler, Auswirkung,
         .catch(async (e) => { console.log("DRAWER:", (await page.evaluate(() => document.getElementById("crmDrawer").innerText)).slice(0, 3000), errors); throw e; });
       const box = page.locator("#crmDrawer .crm-callissues");
       const t = await box.innerText();
-      for (const s of ["Website", d0, "Lỗi:", "Ảnh hưởng:", "Trang bị ảnh hưởng", "Mở lỗi", "Không có liên kết trực tiếp", "Yêu cầu hoặc đơn hàng của khách có thể bị mất"]) assert.ok(t.includes(s), s);
+      // TF-076: gleiche Anrufer-Karten wie im Detail (LỖI · TRANG · VỊ TRÍ · VÌ SAO LÀ LỖI · ẢNH HƯỞNG).
+      for (const s of ["Website", d0, "LỖI", "TRANG", "VỊ TRÍ", "VÌ SAO LÀ LỖI", "ẢNH HƯỞNG", "Liên kết email bị lỗi", "Mở lỗi", "Không có liên kết trực tiếp", "Khách không gửi được email qua liên kết này."]) assert.ok(t.includes(s), s);
       const opens = await linkInfo(page, "#crmDrawer .crm-callissues a.crm-iopen");
       assert.deepEqual(opens.map((x) => x.href), [`https://${d0}/lien-he`, `https://${d0}/dich-vu`], "zwei bekannte Seiten einzeln, Reihenfolge wie Priorität");
       for (const x of opens) { assert.equal(x.target, "_blank"); assert.equal(x.rel, "noopener noreferrer"); assert.equal(x.text, "Mở lỗi"); }

@@ -8,6 +8,7 @@ WORKDIR /app
 COPY calling/package.json calling/package-lock.json ./calling/
 RUN cd calling && npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY calling-core.js pricing.js ./
+COPY public/crm-model.js ./public/
 COPY calling/service.js calling/agent.js ./calling/
 COPY deploy/vps/calling-derive-token.mjs ./deploy/vps/
 RUN printf '{"type":"module","private":true}\n' > package.json

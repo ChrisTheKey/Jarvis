@@ -73,7 +73,8 @@ test("D: DRAFT_CREATED weiterhin genau einmal (Registry + Review + Verzeichnis +
 test("E: gleiche Domain in Registry + Review + Verzeichnis → genau 1 CRM-Lead; abweichende ID derselben Firma → kein zweiter Datensatz", () => {
   const s = scenario((src) => {
     src.registry.leads["same-e.ch"] = regLead("same-e.ch", { status: "WAITING_FOR_DRAFT", gmail_draft_status: "queued" });
-    src.reviews["same-e.ch"] = { lead_id: "same-e.ch", domain: "same-e.ch", company: "Same E GmbH", recipient: "info@same-e.ch", draft_mode: COLD, status: "queued", customer_findings: [], issue_evidence: [] };
+    // TF-076: aktiver CRM-Lead nur mit verifiziertem Fehler.
+    src.reviews["same-e.ch"] = { lead_id: "same-e.ch", domain: "same-e.ch", company: "Same E GmbH", recipient: "info@same-e.ch", draft_mode: COLD, status: "queued", customer_findings: [{ key: "contact", text: "Der Link zur Kontaktseite führt auf eine Fehlerseite" }], issue_evidence: [] };
     src.directory.leads["same-e.ch"] = { lead_id: "same-e.ch", company_name: "Same E GmbH", domain: "same-e.ch", email: "info@same-e.ch", phone: "+41 31 999 99 99", phone_normalized: "+41319999999", phone_confidence: "high" };
     // Derselbe Betrieb unter anderer ID (geschäftliche Adresse als ID, www-Domain) – Registry führt ihn bereits.
     src.registry.leads["dup-e.ch"] = regLead("dup-e.ch");

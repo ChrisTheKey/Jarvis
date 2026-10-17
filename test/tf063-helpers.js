@@ -21,6 +21,10 @@ export const PW = { giuliano: "Giuliano-Passwort-01", mario: "Mario-Passwort-000
 export const CANTONS = ["ZH", "BE", "LU", "SG", "AG", "TI", "VD", "GE", "BS", "GR", "TG", "SO"];
 export const CATS = ["Restaurant", "Treuhand", "Coiffeur", "Hotel", "Geschäft", "Handwerk", "Arztpraxis", "IT"];
 
+// TF-076: aktive CRM-Leads tragen ≥ 1 verifizierten Website-Fehler (vollständiger Audit) – sonst gehören sie nicht ins aktive CRM.
+export const verifiedErrors = (domain) => { const f = { key: `link|${domain}/alt`, type: "broken_link", category: "http", text: "Link «Angebot» führt auf eine Fehlerseite",
+  page: `https://${domain}/`, target: `https://${domain}/alt`, label: "Angebot", http_status: 404, severity: "medium", verified_at: "2026-10-14T08:00:00.000Z", status: "OPEN", source: "full_audit" };
+  return { audit: "FULL", count: 1, exact: true, checked_at: f.verified_at, full_checked_at: f.verified_at, scope: "Test", top: [f], items: [f], resolved: 0, manual_open: 0, repair: null }; };
 // Synthetische CH-Leads (CRM-Sicht) mit gemischten Prioritäten, Kontaktdaten, Kantonen und Branchen.
 export function chLeads(n = 900) {
   const out = [];
@@ -31,7 +35,7 @@ export function chLeads(n = 900) {
       category: CATS[(i * 5) % CATS.length], first_name: i % 4 === 0 ? "Anna" : null, last_name: i % 4 === 0 ? "Muster" : null,
       findings: Array.from({ length: (i % 4) }, (_, k) => ({ key: `k${k}`, text: k === 0 && i % 2 ? "Der Link zur Kontaktseite führt auf eine Fehlerseite" : "Ein Bild wird nicht angezeigt", confirmed: true, status: "BESTÄTIGT" })),
       sales_stage: i % 50 === 7 ? "CUSTOMER" : i % 40 === 3 ? "NOT_INTERESTED" : "NEW", customer: i % 50 === 7, do_not_contact: i % 30 === 11, dnc_source: i % 30 === 11 ? "opt_out" : null,
-      archived: false, contact_status: "NOT_CONTACTED", call_status: "NOT_CALLED", notes: [], call_history: [], updated_at: "2026-10-14T08:00:00Z" };
+      archived: false, contact_status: "NOT_CONTACTED", call_status: "NOT_CALLED", notes: [], call_history: [], updated_at: "2026-10-14T08:00:00Z", errors: verifiedErrors(domain) };
     l.findings_total = l.findings.length; l.findings_confirmed = l.findings.length;
     l.priority = priorityOf(l);
     out.push(cleanCrmLead(l));
@@ -45,7 +49,7 @@ export function vnLeads(n = 20) {
     const l = { lead_id: domain, market: "VN", company: `Công ty ${i}`, domain, website: `https://${domain}/`, email: i % 2 ? `lienhe@${domain}` : null, phone: "+84 24 3826 7898", phone_tel: "tel:+842438267898",
       region: i % 2 ? "Đà Nẵng" : "Cà Mau", region_code: i % 2 ? "VN-DN" : "VN-CM", category: "Hotel", language: "vi",
       findings: [{ key: "x", text: "Một liên kết dẫn tới trang lỗi", confirmed: true, status: "AUDIT" }], findings_total: 1, findings_confirmed: 1,
-      sales_stage: "NEW", contact_status: "NOT_CONTACTED", call_status: "NOT_CALLED", notes: [], call_history: [], do_not_contact: i === 3, dnc_source: i === 3 ? "crm" : null };
+      sales_stage: "NEW", contact_status: "NOT_CONTACTED", call_status: "NOT_CALLED", notes: [], call_history: [], do_not_contact: i === 3, dnc_source: i === 3 ? "crm" : null, errors: verifiedErrors(domain) };
     l.priority = priorityOf(l);
     out.push(cleanCrmLead(l));
   }

@@ -60,7 +60,7 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
   // Provisionsbuch ableiten und (nur bei Änderung) speichern.
   async function ledger() {
     const d = await data();
-    const [snapshot, leads, asg] = await Promise.all([d.snapshot(), d.leads(), d.assignments()]);
+    const [snapshot, leads, asg] = await Promise.all([d.snapshot(), d.allLeads ? d.allLeads() : d.leads(), d.assignments()]);
     const byDomain = new Map(leads.filter((l) => l.domain).map((l) => [l.domain, l]));
     const resolveSeller = (o) => {
       const l = o.domain ? byDomain.get(normDom(o.domain)) : null;

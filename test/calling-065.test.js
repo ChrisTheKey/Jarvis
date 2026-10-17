@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { setup, makeReq, ORIGIN, CONTROL, env } from "./tf063-helpers.js";
+import { setup, makeReq, ORIGIN, CONTROL, env, verifiedErrors } from "./tf063-helpers.js";
 import { memoryStore } from "../shared-state.js";
 import { authStoreFrom } from "../auth-core.js";
 import { createCallingHandler, callingAgentToken } from "../calling-api.js";
@@ -95,7 +95,8 @@ test("TF-065/068 51 Scope: Kudoshin CH 403, Kudoshin eigener VN-Lead ok, Telefon
 
 // ---------------- 52 ELIGIBILITY ----------------
 test("TF-065/068 52 Berechtigung: CH nie, VN nur mit Nachweis + Register + Rechtsfreigabe, Zeitfenster – kein force", () => {
-  const ch = { lead_id: "a.ch", market: "CH", phone_tel: "tel:+41311234567", customer: true }, vn = { lead_id: "b.vn", market: "VN", phone_tel: "tel:+842438267898" };
+  // TF-076: nur Leads mit verifiziertem Website-Fehler sind überhaupt Anruf-Kandidaten.
+  const ch = { lead_id: "a.ch", market: "CH", phone_tel: "tel:+41311234567", customer: true, errors: verifiedErrors("a.ch") }, vn = { lead_id: "b.vn", market: "VN", phone_tel: "tel:+842438267898", errors: verifiedErrors("b.vn") };
   const ok = evidenceFor("b.vn", "+842438267898");
   const e = (l, consent, now = T0, legal = { status: "APPROVED" }) => eligibility(l, { consent, now, legal });
   assert.equal(e(ch, { call_consent: { at: "2026-10-01T08:00:00Z", source: "X" } }).code, "CH_CALLING_DISABLED", "CH: keine Outbound-Calls durch den Agenten");

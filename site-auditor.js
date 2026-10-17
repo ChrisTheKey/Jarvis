@@ -15,6 +15,41 @@ const BROKEN = (status) => status === 404 || status === 410 || status >= 500;
 const tags = (html, name) => html.match(new RegExp(`<${name}\\b[^>]*>`, "gi")) || [];
 const text = (html) => html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
 
+// TF-076: Position eines Elements im HTML (nur für die CRM-Anzeige „Footer → «Impressum»“): Seitenbereich (header/nav/main/aside/footer –
+// HTML5-Element oder eindeutige id/class/role wie „footer“, „main-nav“) und die letzte Überschrift (h1–h4) davor. Nur Struktur, kein Seitentext
+// ausser der Überschrift selbst (max. 40 Zeichen). Unbestimmbar → kein Feld (nie geraten).
+const AREA_TAG = { header: "header", nav: "nav", main: "main", aside: "aside", footer: "footer" };
+const areaOfAttrs = (tag) => {
+  const v = ` ${attr(tag, "id") || ""} ${attr(tag, "class") || ""} ${attr(tag, "role") || ""} `.toLowerCase();
+  if (/[\s_-](footer|site-footer|colophon|contentinfo)[\s_-]/.test(v)) return "footer";
+  if (/[\s_-](nav|navbar|navigation|menu|mainmenu)[\s_-]/.test(v)) return "nav";
+  if (/[\s_-](header|masthead|banner)[\s_-]/.test(v)) return "header";
+  if (/[\s_-](sidebar|aside|complementary)[\s_-]/.test(v)) return "aside";
+  return null;
+};
+export function createLocator(html = "") {
+  const ev = [];
+  const re = /<(\/?)(header|nav|main|aside|footer|div|section|ul)\b[^>]*>|<(h[1-4])\b[^>]*>([\s\S]*?)<\/\3\s*>/gi;
+  for (let m; (m = re.exec(html)); ) {
+    if (m[3]) { const h = text(m[4]).trim(); if (h) ev.push({ at: m.index, heading: h.slice(0, 40) }); continue; }
+    const name = m[2].toLowerCase();
+    ev.push({ at: m.index, close: m[1] === "/", name, area: m[1] === "/" ? null : AREA_TAG[name] || areaOfAttrs(m[0]) });
+  }
+  return (offset) => {
+    const stack = []; let heading = null;
+    for (const e of ev) {
+      if (e.at >= offset) break;
+      if (e.heading) { heading = e.heading; continue; }
+      if (!e.close) { stack.push(e); continue; }
+      for (let i = stack.length - 1; i >= 0; i--) if (stack[i].name === e.name) { stack.length = i; break; }
+    }
+    const areas = stack.map((x) => x.area).filter(Boolean);
+    // Footer schlägt ein Menü im Footer („Footer → «Impressum»“), sonst der innerste benannte Bereich.
+    const area = areas.includes("footer") ? "footer" : areas.at(-1) || null;
+    return { ...(area ? { area } : {}), ...(heading && !["header", "nav", "footer"].includes(area) ? { heading } : {}) };
+  };
+}
+
 // robots.txt: Regeln für „*“ bzw. JarvisSiteCheck; fehlt die Datei, ist alles erlaubt.
 export function parseRobots(body = "") {
   const groups = [];
@@ -158,19 +193,30 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     if (years.length && Math.max(...years) <= year - 3) add("outdated_content", page.url, `Copyright-Angabe ${Math.max(...years)} im Seiteninhalt`, "low");
 
     // Fehlerhafte E-Mail-Links (nur der HTML-Text wird gelesen, nichts wird gesendet).
-    const badMail = tags(html, "a").map((t) => attr(t, "href") || "").filter((h) => /^mailto:/i.test(h))
-      .map((h) => { try { return decodeURIComponent(h.slice(7).split("?")[0]).trim(); } catch { return h.slice(7); } })
+    const locate = createLocator(html);
+    const mailOf = (h) => { try { return decodeURIComponent(h.slice(7).split("?")[0]).trim(); } catch { return h.slice(7); } };
+    const badMail = tags(html, "a").map((t) => attr(t, "href") || "").filter((h) => /^mailto:/i.test(h)).map(mailOf)
       .filter((m) => !/^[^\s@<>(),;:]+@[^\s@<>(),;:]+\.[a-z]{2,}$/i.test(m));
-    if (badMail.length) add("broken_mailto", page.url, `Ungültige mailto-Adresse im Link: ${[...new Set(badMail)].slice(0, 2).map((m) => `"${m || "(leer)"}"`).join(", ")}`, "medium", { page: page.url });
+    if (badMail.length) {
+      // TF-076: Linktext + Bereich des ersten fehlerhaften E-Mail-Links (Linktext nur, wenn er keine Adresse ist).
+      const first = [...html.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/gi)].find((m) => { const h = attr(m[0], "href") || ""; return /^mailto:/i.test(h) && mailOf(h) === badMail[0]; });
+      const lbl = first ? text(first[0]).trim() : "";
+      add("broken_mailto", page.url, `Ungültige mailto-Adresse im Link: ${[...new Set(badMail)].slice(0, 2).map((m) => `"${m || "(leer)"}"`).join(", ")}`, "medium",
+        { page: page.url, ...(lbl && !lbl.includes("@") ? { label: lbl.slice(0, 60) } : {}), ...(first ? locate(first.index) : {}) });
+    }
 
     // 3) Interne Links und Bilder – nur echte HTTP-Fehler zählen, Netzaussetzer nicht.
     const links = [];
     // Sichtbarer Linktext je Ziel (erster Treffer) – damit der Kundentext sagen kann, WELCHER Link nicht funktioniert.
-    const linkText = new Map();
-    for (const a of html.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) || []) {
-      const href = attr(a, "href"), label = text(a).trim();
-      if (!href || !label) continue;
-      try { const u = new URL(href, page.url); u.hash = ""; if (!linkText.has(u.href)) linkText.set(u.href, label.slice(0, 60)); } catch {}
+    const linkText = new Map(), linkPos = new Map();
+    for (const m of html.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/gi)) {
+      const a = m[0], href = attr(a, "href"), label = text(a).trim();
+      if (!href) continue;
+      try {
+        const u = new URL(href, page.url); u.hash = "";
+        if (!linkPos.has(u.href)) linkPos.set(u.href, locate(m.index)); // TF-076: Bereich/Überschrift des ersten Vorkommens
+        if (label && !linkText.has(u.href)) linkText.set(u.href, label.slice(0, 60));
+      } catch {}
     }
     for (const t of tags(html, "a")) {
       const href = attr(t, "href");
@@ -204,7 +250,7 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
       if (BROKEN(r.status)) {
         const isContact = u === contactUrl;
         add(isContact ? "contact_page_broken" : "broken_link", u, `HTTP ${r.status} (verlinkt auf ${page.url})`, isContact ? "high" : "medium",
-          { page: page.url, ...(linkText.get(u) ? { label: linkText.get(u) } : {}) });
+          { page: page.url, ...(linkText.get(u) ? { label: linkText.get(u) } : {}), ...(linkPos.get(u) || {}) });
       } else if (r.status < 400) {
         if (u === contactUrl) pages.contact = r.html;
         if (u === impressumUrl) pages.impressum = r.html;
@@ -213,13 +259,23 @@ export function createAuditor({ fetchFn = globalThis.fetch, delayMs = 1500, time
     }
     const imgUrls = [...new Set(imgs.map((t) => attr(t, "src")).filter((s) => s && !/^data:/i.test(s)).map((s) => { try { return new URL(s, page.url).href; } catch { return null; } }).filter(Boolean))];
     coverage.images_found = imgUrls.length;
+    // TF-076: Alt-Text + Bereich/Überschrift des ersten Vorkommens je Bild-URL.
+    const imgInfo = new Map();
+    for (const m of html.matchAll(/<img\b[^>]*>/gi)) {
+      const src = attr(m[0], "src");
+      if (!src || /^data:/i.test(src)) continue;
+      let u; try { u = new URL(src, page.url).href; } catch { continue; }
+      if (imgInfo.has(u)) continue;
+      const alt = (attr(m[0], "alt") || "").replace(/\s+/g, " ").trim();
+      imgInfo.set(u, { ...(alt ? { label: alt.slice(0, 60) } : {}), ...locate(m.index) });
+    }
     for (const u of imgUrls.slice(0, maxImages)) {
       if (Date.now() > deadline) { coverage.deadline_hit = true; break; }
       if (new URL(u).hostname === new URL(page.url).hostname && !allowed(new URL(u).pathname)) { coverage.images_skipped++; continue; }
       const r = await get(u, { redirect: "follow", body: false });
       if (r.error) { coverage.images_unverified++; continue; }
       coverage.images_checked++;
-      if (BROKEN(r.status)) add("broken_image", u, `Bild liefert HTTP ${r.status} (eingebunden auf ${page.url})`, "medium", { page: page.url });
+      if (BROKEN(r.status)) add("broken_image", u, `Bild liefert HTTP ${r.status} (eingebunden auf ${page.url})`, "medium", { page: page.url, ...(imgInfo.get(u) || {}) });
     }
 
     return result(true, { finalUrl: page.url, title, pages, contactUrl, impressumUrl, teamUrl, coverage });

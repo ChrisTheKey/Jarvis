@@ -48,6 +48,10 @@ export const httpStatusOf = (i) => {
   return Number.isInteger(s) && s >= 100 && s <= 599 ? s : null;
 };
 const viewportOf = (v) => (Number.isInteger(v) && v >= 200 && v <= 4000 ? v : null);
+// TF-076: Position auf der Seite (nur belegt, vom Auditor aus dem HTML): Seitenbereich + nächste Überschrift davor.
+export const AREAS = Object.freeze(["header", "nav", "main", "aside", "footer"]);
+const areaOf = (a) => (AREAS.includes(a) ? a : null);
+const heading40 = (h) => (typeof h === "string" && h.trim() && !/https?:|www\.|[<>{}]/i.test(h) ? h.replace(/\s+/g, " ").trim().slice(0, 40) : null);
 const pageName = (u) => {
   const p = pathOf(u); if (p == null) return null;
   let seg = p.split("/").filter(Boolean).pop() || "";
@@ -105,6 +109,7 @@ export function normalizeIssue(i, { verified_at = null, source = "full_audit", s
     page, affected_url: page, target, severity: SEVERITIES.includes(i.severity) ? i.severity : "medium",
     // TF-059: CRM-interne Fakten (nur wenn belegt): Linktext, HTTP-Status, Bereich/Element, Viewport-Breite. Nie Seiteninhalt.
     label: label40(i.label), http_status: httpStatusOf(i), location: VISUAL.has(i.type) ? short(i.location, 60) : null, viewport: viewportOf(i.viewport),
+    area: areaOf(i.area), heading: heading40(i.heading),
     verified_at: iso(verified_at) || iso(i.detectedAt) || iso(i.verified_at) || null, status: status === "RESOLVED" ? "RESOLVED" : "OPEN",
     source: FINDING_SOURCES.includes(source) ? source : "full_audit", manual: manual === true,
   };
@@ -119,7 +124,7 @@ export function dedupeFindings(list = []) {
     if (!prev) { out.set(f.key, { ...f }); continue; }
     const better = compareFindings(f, prev) < 0;
     const merged = better ? { ...f } : { ...prev };
-    for (const k of ["label", "http_status", "location", "viewport"]) merged[k] ??= (better ? prev : f)[k] ?? null; // belegte Fakten nicht verlieren
+    for (const k of ["label", "http_status", "location", "viewport", "area", "heading"]) merged[k] ??= (better ? prev : f)[k] ?? null; // belegte Fakten nicht verlieren
     merged.status = prev.status === "OPEN" || f.status === "OPEN" ? "OPEN" : "RESOLVED";
     merged.manual = (prev.status === "OPEN" && prev.manual) || (f.status === "OPEN" && f.manual) || false;
     merged.verified_at = maxIso(prev.verified_at, f.verified_at);
@@ -154,7 +159,7 @@ export function partialFindings(list = []) {
   return rankFindings(dedupeFindings((Array.isArray(list) ? list : []).map((f) => {
     if (!f?.text) return null;
     const n = f.type && TYPES[f.type] ? normalizeIssue({ type: f.type, url: f.target || f.page, page: f.page || null, severity: f.severity, label: f.label, location: f.location,
-      http_status: f.http_status, viewport: f.viewport,
+      http_status: f.http_status, viewport: f.viewport, area: f.area, heading: f.heading,
       reproducible: VISUAL.has(f.type) ? true : undefined, detectedAt: f.verified_at, customer_text_short: f.text }, { verified_at: f.verified_at, source: "cold" }) : null;
     if (n) return n;
     if (f.type && !TYPES[f.type]) return null; // bekannter, aber nicht gezählter Typ
