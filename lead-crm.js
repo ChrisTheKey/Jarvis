@@ -18,7 +18,7 @@ import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_S
 import { siteHealth, httpStatusOf, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES, AREAS } from "./site-findings.js";
 import { buildIndex, findId, normCompany } from "./lead-db.js";
 import { displayCategory } from "./category-labels.js";
-import { phonebookFromRecord, PHONEBOOK_STATES, PROVIDER_NOT_CONFIGURED } from "./phonebook-compliance.js";
+import { phonebookFromRecord, phonebookFromCache, normalizeSwissPhone, PHONEBOOK_STATES, PHONEBOOK_REASONS, PROVIDER_NOT_CONFIGURED, MULTISOURCE } from "./phonebook-compliance.js";
 
 export const CRM_FILE = "lead_crm.json";
 export const CRM_AUDIT_FILE = "crm_audit.jsonl";
@@ -283,7 +283,10 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   const cfOnly = cfSrc?.lead_source === "CONTACT_FORM" && !reg && !dir && !rv && !hist;
   const cfMarket = cfOnly && cfSrc.market === "VN" ? "VN" : "CH";
   // Telefonbuch-Sternchen: nur aus einem ausdrücklichen, strukturierten Beleg (phonebook-compliance.js) – dann ist die Nummer nicht anrufbar.
-  const phonebook = phonebookFromRecord(dir, dir?.phone_normalized || null);
+  let phonebook = phonebookFromRecord(dir, dir?.phone_normalized || null);
+  // TF-078: Ergebnis des Anbieters (multisource) je Nummer aus dem Cache. Ein Sternchen aus irgendeiner Quelle gewinnt immer.
+  const cached = phonebookFromCache(src.phonebookCache, normalizeSwissPhone(dir?.phone_normalized || dir?.phone || (cfOnly ? cfSrc.phone_e164 : null)), now);
+  if (cached && phonebook.status !== "PHONEBOOK_STAR_PRESENT" && (cached.status === "PHONEBOOK_STAR_PRESENT" || phonebook.status === "PHONEBOOK_STAR_UNKNOWN")) phonebook = cached;
   const cfTel = cfOnly && cfSrc.phone_e164 ? (cfMarket === "VN" ? telHrefVn(cfSrc.phone_e164) : telHref(cfSrc.phone_e164)) : null;
   const calls = Array.isArray(crm?.call_history) ? crm.call_history : [];
   const lastCall = calls.filter((c) => c.result !== "WRONG_NUMBER").map((c) => c.at).sort().at(-1) || null;
@@ -297,7 +300,8 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     phone: str(dir?.phone || (cfOnly ? cfSrc.phone : null), 30), phone_tel: phonebook.status === "PHONEBOOK_STAR_PRESENT" ? null : telHref(dir?.phone_normalized) || cfTel,
     phone_confidence: oneOf(dir?.phone_confidence, ["high", "medium"]),
     ...(cfOnly && cfMarket === "VN" ? { market: "VN" } : {}),
-    phonebook: { status: phonebook.status, provider: src.phonebookProvider?.configured ? "PHONEBOOK_PROVIDER_CONFIGURED" : PROVIDER_NOT_CONFIGURED },
+    phonebook: { status: phonebook.status, provider: src.phonebookProvider?.configured ? "PHONEBOOK_PROVIDER_CONFIGURED" : PROVIDER_NOT_CONFIGURED,
+      ...(phonebook.source === MULTISOURCE ? { source: MULTISOURCE, checked_at: phonebook.checked_at || null, reason: phonebook.reason || null } : {}) },
     first_name: str(dir?.first_name, 60), last_name: str(dir?.last_name, 60), role: str(dir?.role, 60),
     canton: str(reg?.canton || hist?.canton, 2), municipality: str(reg?.municipality || hist?.municipality, 60), category: str(displayCategory(reg?.category_label || reg?.category || hist?.category), 40), language: str(reg?.language, 2),
     website_reachable: dir?.enrichment?.status === "done" ? true : dir?.enrichment?.status === "failed" ? false : null,
@@ -519,7 +523,9 @@ export function cleanErrors(e) {
 }
 const cleanPhonebook = (p) => {
   const status = oneOf(p?.status, PHONEBOOK_STATES, "PHONEBOOK_STAR_UNKNOWN"), provider = oneOf(p?.provider, ["PHONEBOOK_PROVIDER_CONFIGURED", PROVIDER_NOT_CONFIGURED], PROVIDER_NOT_CONFIGURED);
-  return status === "PHONEBOOK_STAR_UNKNOWN" && provider === PROVIDER_NOT_CONFIGURED ? null : { status, provider };
+  const source = p?.source === MULTISOURCE ? MULTISOURCE : null;
+  if (status === "PHONEBOOK_STAR_UNKNOWN" && provider === PROVIDER_NOT_CONFIGURED && !source) return null;
+  return { status, provider, ...(source ? { source, checked_at: iso(p.checked_at), reason: oneOf(p.reason, PHONEBOOK_REASONS) } : {}) };
 };
 export function cleanCrmLead(l) {
   if (!l || typeof l !== "object" || !LEAD_ID_RE.test(String(l.lead_id || ""))) return null;

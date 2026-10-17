@@ -25,6 +25,7 @@ import { CRM_FILE, CRM_AUDIT_FILE, normalizeCrmState, emptyCrmState, buildCrmVie
 import { crmStats, compactCrmLead } from "./public/crm-model.js";
 import { crmAgentToken } from "./crm-api.js";
 import { SITE_FINDINGS_FILE, REPAIR_FINDINGS_FILE } from "./site-findings.js";
+import { PHONEBOOK_CACHE_FILE, multisourceConfig, multisourceLookup, normalizePhonebookCache, emptyPhonebookCache, providerStatus, runPhonebookBackfill, inspectSchema, normalizeSwissPhone } from "./phonebook-compliance.js";
 
 const HISTORY_FILE = "discovery_issue_history.json"; // = discovery-history.js HISTORY_FILE (dort importiert dieses Modul den Lock)
 
@@ -113,7 +114,7 @@ export function audit(dir, entry) {
 }
 
 // ---------- Quellen (nur lesen; nach Grösse+Änderungszeit gecacht; kaputte/halb geschriebene Datei → letzter guter Stand) ----------
-export function createSourceReader({ dataDir, mailDir, repairDir = null }) {
+export function createSourceReader({ dataDir, mailDir, repairDir = null, env = process.env }) {
   const cache = new Map();
   const read = (file, fallback) => {
     let st; try { st = fs.statSync(file); } catch { cache.delete(file); return fallback; }
@@ -132,6 +133,9 @@ export function createSourceReader({ dataDir, mailDir, repairDir = null }) {
     history: read(path.join(dataDir, HISTORY_FILE), { leads: {} }), // TF-058: historische Funde (CRM-eigen, niedrigste Priorität)
     // TF-075A: Kontaktformular-Anfragen je zugeordnetem Lead (nur Status-Wörter, keine Adressen/Inhalte; Schreiber: Mail-Worker).
     contactForms: read(path.join(mailDir, "mail_worker", "contact_forms_public.json"), { leads: {} }),
+    // TF-078: Telefonbuch-Ergebnisse je Nummer (nur phone_hash + Status, Schreiber: --phonebook-backfill) + Anbieter-Zustand ohne Schlüssel.
+    phonebookCache: read(path.join(dataDir, PHONEBOOK_CACHE_FILE), null),
+    phonebookProvider: { configured: multisourceConfig(env).configured },
   });
 }
 
@@ -175,6 +179,62 @@ export async function crmBackup({ dataDir, publicKeyPem, now = new Date(), uploa
   writeAtomic(statusFile, JSON.stringify(next, null, 2));
   return { skipped: false, status: next };
 }
+// TF-078: Anbieter-Zustand für die Owner-Sicht (kein Schlüssel, keine Nummern).
+export const loadPhonebookCache = (dataDir) => { try { return normalizePhonebookCache(JSON.parse(fs.readFileSync(path.join(dataDir, PHONEBOOK_CACHE_FILE), "utf8"))); } catch { return emptyPhonebookCache(); } };
+export const phonebookSummary = (dataDir, now = new Date(), env = process.env) => providerStatus(loadPhonebookCache(dataDir), multisourceConfig(env), now);
+export const PHONEBOOK_LOCK = "phonebook.lock";
+
+// TF-078: gestaffelte Telefonbuch-Prüfung der aktiven CH-Leads (nur verifizierte Fehler-Leads/Kunden/Kontaktformular = buildCrmView).
+// Ohne Schlüssel: keine Abfrage. Ohne bestätigtes Werbe-Feld: KEIN Backfill (jede Abfrage wäre UNKNOWN = Kosten ohne Nutzen) – ausser
+// ausdrücklich --allow-unconfirmed. Ergebnis + Nutzung landen im Cache (fortsetzbar). Nur Zähler im Rückgabewert.
+export async function phonebookBackfill({ dataDir, sources, env = process.env, now = () => new Date(), fetchFn = globalThis.fetch, dryRun = false, allowUnconfirmed = false }) {
+  const config = multisourceConfig(env);
+  if (!config.configured) return { ok: false, code: "PHONEBOOK_PROVIDER_NOT_CONFIGURED", env: "MULTISOURCE_API_KEY" };
+  if (!config.fieldConfirmed && !allowUnconfirmed && !dryRun) return { ok: false, code: "PROMO_FIELD_NOT_CONFIRMED", env: ["MULTISOURCE_NOPROMO_FIELD", "MULTISOURCE_NOPROMO_SEMANTICS"] };
+  const t = now();
+  const src = { ...sources(), crm: loadCrm(dataDir, t) };
+  const leads = buildCrmView(src, t).leads.filter((l) => !l.archived).map((l) => {
+    const dir = src.directory?.leads?.[l.lead_id];
+    return { lead_id: l.lead_id, market: l.market || "CH", do_not_contact: l.do_not_contact, phone: dir?.phone_normalized || dir?.phone || l.phone || null };
+  });
+  // Eigener Lock (phonebook.lock): nie zwei Läufe gleichzeitig (Tageslimit), blockiert lead_crm.json-Schreiber nicht.
+  const lockFile = path.join(dataDir, PHONEBOOK_LOCK);
+  try { fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 }); }
+  catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    let held = null; try { held = JSON.parse(fs.readFileSync(lockFile, "utf8")); } catch {}
+    if (held && Date.now() - held.at < 30 * 60_000) return { ok: false, code: "ALREADY_RUNNING" };
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: Date.now() }), { mode: 0o600 });
+  }
+  try {
+    const cache = loadPhonebookCache(dataDir);
+    const save = () => writeAtomic(path.join(dataDir, PHONEBOOK_CACHE_FILE), JSON.stringify(cache));
+    const sum = await runPhonebookBackfill({ leads, cache, now, dryRun, maxPerRun: config.maxPerRun, maxPerDay: config.maxPerDay,
+      lookup: (e164) => multisourceLookup(e164, { config, fetchFn }), onProgress: (s) => { if (s.looked_up % 10 === 0) save(); } });
+    if (!dryRun) { save(); audit(dataDir, { action: "phonebook.backfill", source: "tf078", outcome: sum.stopped || "success", looked_up: sum.looked_up, by_status: sum.by_status, due: sum.due }); }
+    return { ok: true, field_confirmed: config.fieldConfirmed, max_per_run: config.maxPerRun, max_per_day: config.maxPerDay, ...sum, usage: providerStatus(cache, config, now()) };
+  } finally { try { fs.rmSync(lockFile, { force: true }); } catch {} }
+}
+// TF-078: Schema-Diagnose mit GENAU EINER Abfrage – Ausgabe nur HTTP-Status + Feldnamen + Kandidaten-Hinweis, nie Werte.
+export async function phonebookDiagnose({ dataDir, sources, env = process.env, number = null, fetchFn = globalThis.fetch, now = new Date() }) {
+  const config = multisourceConfig(env);
+  if (!config.configured) return { ok: false, code: "PHONEBOOK_PROVIDER_NOT_CONFIGURED", env: "MULTISOURCE_API_KEY" };
+  let e164 = normalizeSwissPhone(number);
+  if (!e164) {
+    const src = { ...sources(), crm: loadCrm(dataDir, now) };
+    for (const l of buildCrmView(src, now).leads) {
+      const d = src.directory?.leads?.[l.lead_id];
+      const n = (l.market || "CH") === "CH" ? normalizeSwissPhone(d?.phone_normalized || d?.phone) : null;
+      if (n) { e164 = n; break; }
+    }
+  }
+  if (!e164) return { ok: false, code: "NO_TEST_NUMBER" };
+  const cache = loadPhonebookCache(dataDir);
+  if (cache.usage.rate_limited_until && Date.parse(cache.usage.rate_limited_until) > +now) return { ok: false, code: "RATE_LIMITED" };
+  const r = await multisourceLookup(e164, { config: { ...config, field: null, semantics: null }, fetchFn, raw: true });
+  return { ok: r.http_status != null && r.http_status < 300, status_reason: r.reason, ...inspectSchema(r.body ?? null, r.http_status), configured_field: config.field, configured_semantics: config.semantics };
+}
+
 export const backupSummary = (dataDir) => { try { const s = JSON.parse(fs.readFileSync(path.join(dataDir, BACKUP_STATUS), "utf8")); return { last_at: s.last_at || null, offsite_ok: !!s.offsite_ok, generations: s.generations || 0 }; } catch { return null; } };
 
 // ---------- Agent: holt CRM-Aufträge ab, meldet Ergebnis + aktuelle Sicht (nur Allowlist-Felder) ----------
@@ -193,7 +253,7 @@ export function createCrmAgent({ dataDir, sources, url, token, fetchFn = globalT
     // TF-076: nur aktive Leads (buildCrmView); errors.top weglassen (= items[0..1], Netlify-Limit 6 MB).
     const leads = v.leads.map(cleanCrmLead).filter(Boolean).map(compactCrmLead);
     const fp = crypto.createHash("sha256").update(JSON.stringify(leads.map(({ follow_up, ...l }) => l))).digest("hex").slice(0, 24);
-    return { fp, body: { leads, total: leads.length, generated_at: v.generated_at, stats: crmStats(leads, t), backup: backupSummary(dataDir) } };
+    return { fp, body: { leads, total: leads.length, generated_at: v.generated_at, stats: crmStats(leads, t), backup: backupSummary(dataDir), phonebook_provider: phonebookSummary(dataDir, t) } };
   };
   async function pollOnce() {
     let v = null, payload = {};
@@ -273,6 +333,19 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       log({ event: "admission", ...admissionSync({ dataDir: DATA, sources, write: !args.includes("--dry-run") }) });
       return 0;
     }
+    if (args.includes("--phonebook-backfill")) {
+      // TF-078: npm run phonebook:backfill [-- --dry-run]. Nur Zähler im Log (keine Nummern, Namen, Adressen, kein Schlüssel).
+      const r = await phonebookBackfill({ dataDir: DATA, sources, dryRun: args.includes("--dry-run"), allowUnconfirmed: args.includes("--allow-unconfirmed") });
+      log({ event: "phonebook_backfill", ...r });
+      return r.ok ? 0 : 2;
+    }
+    if (args.includes("--phonebook-diagnose")) {
+      // TF-078: npm run phonebook:diagnose [-- --number 0XXXXXXXXX]. Ohne --number: erste aktive CH-Nummer (nie ausgegeben).
+      const i = args.indexOf("--number");
+      const r = await phonebookDiagnose({ dataDir: DATA, sources, number: i >= 0 ? args[i + 1] : null });
+      log({ event: "phonebook_diagnose", ...r });
+      return r.ok ? 0 : 2;
+    }
     if (args.includes("--history-migrate")) {
       // TF-058: idempotent. --dry-run schreibt nichts. --import: lokal aus den verschlüsselten Backups extrahierte Minimaldaten (danach gelöscht).
       const { migrateHistory } = await import("./discovery-history.js");
@@ -333,7 +406,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       }
       return 0;
     }
-    console.log("Befehle: --service | --healthcheck | --report | --backup-now");
+    console.log("Befehle: --service | --healthcheck | --report | --backup-now | --phonebook-backfill [--dry-run] | --phonebook-diagnose [--number N]");
     return 1;
   };
   main().then((c) => process.exit(c), (e) => { console.error("Fehler: " + e.message); process.exit(1); });

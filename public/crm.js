@@ -95,7 +95,7 @@ const cfBadge = (l) => {
   return el("span", { class: "crm-cfbadges" }, badge(`cf-${c.status}`, [L.badge, c.matched && c.lead_source !== "CONTACT_FORM" ? L.matched : null, L[c.status]].filter(Boolean).join(" · ")),
     contactFormOpen(l) ? [" ", badge("cf-urgent", L.urgent)] : "", c.lead_source === "CONTACT_FORM" && contactFormOpen(l) ? [" ", badge(`cf-${c.call_eligibility}`, L[c.call_eligibility] || "")] : "");
 };
-const pbText = (l) => t(`pb.${l.phonebook?.status || "PHONEBOOK_STAR_UNKNOWN"}`);
+const pbText = (l) => t(`pb.${l.phonebook?.status || "PHONEBOOK_STAR_UNKNOWN"}`) + (l.phonebook?.source === "multisource" ? ` · ${t("pb.provider")}: multisource` : "");
 // TF-077B «E-Mail lossenden»: genau EIN Knopf je Lead (nur SERVER_SEND). Der Browser schickt nur lead_id + draft_ref – nie Empfänger/Text/Gmail-URL.
 function sendBox(l) {
   const st = sellerSendState(l, S.sends);
@@ -163,7 +163,7 @@ async function load() {
     if (status === 404) return setMeta(t("crm.e404"), true);
     if (status !== 200 || !body) return setMeta(t("crm.eStatus", status), true);
     S.leads = Array.isArray(body.leads) ? body.leads : [];
-    S.online = !!body.online; S.generated_at = body.generated_at; S.backup = body.backup; S.actor = body.actor || null; S.mail = body.mail || null; S.stats = body.stats || null;
+    S.online = !!body.online; S.generated_at = body.generated_at; S.backup = body.backup; S.pbProvider = body.phonebook_provider || null; S.actor = body.actor || null; S.mail = body.mail || null; S.stats = body.stats || null;
     await loadSends();
     render();
   } catch { setMeta(t("crm.unreachable"), true); }
@@ -182,7 +182,8 @@ function readFilters() {
 function visible() { readFilters(); return sortLeads(filterLeads(S.leads, S.filters), S.sort); }
 function render() {
   const now = new Date(), st = crmStats(S.leads, now);
-  setMeta(t("crm.meta", S.leads.length, fmt(S.generated_at), S.online) + (S.backup?.last_at ? t("crm.metaBackup", fmt(S.backup.last_at), S.backup.offsite_ok) : ""), !S.online);
+  setMeta(t("crm.meta", S.leads.length, fmt(S.generated_at), S.online) + (S.backup?.last_at ? t("crm.metaBackup", fmt(S.backup.last_at), S.backup.offsite_ok) : "")
+    + (S.actor?.role === "OWNER" && S.pbProvider ? ` · ${t("pb.status", S.pbProvider)}` : ""), !S.online);
   renderHot();
   const cards = $("crmCards");
   cards.replaceChildren(...Object.keys(CARDS).map((k) => el("button", { type: "button", class: `crm-card${k === "dnc" ? " dnc" : k === "follow_ups" ? " fu" : k === "customers" ? " ok" : ""}`,

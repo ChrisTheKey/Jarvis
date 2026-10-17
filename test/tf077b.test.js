@@ -597,7 +597,7 @@ test("Browser: «E-Mail lossenden» als einziger Mail-Knopf, Klick sendet nur le
       assert.deepEqual(mailButtons, ["E-Mail lossenden"], mailButtons.join("|"));
       assert.equal((await page.content()).includes("mail.google.com"), false, "keine Gmail-URL im DOM");
       assert.equal(await page.locator("#crmDrawer a[href^='mailto:']").count(), 0);
-      assert.match(await page.locator("#crmDrawer").innerText(), /Telefonbuch\s*NICHT GEPRÜFT/);
+      assert.match(await page.locator("#crmDrawer").innerText(), /Telefonbuch\s*Nicht geprüft/);
       // Klick → genau ein POST mit nur op/lead_id/draft_ref; Knopf sofort gesperrt («wird gesendet»).
       let reqs = [];
       fake = () => reqs;

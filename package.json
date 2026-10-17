@@ -43,7 +43,10 @@
     "device:pair": "node device-agent.js --pair-stdin",
     "device:status": "node device-agent.js --status",
     "device:agent": "node device-agent.js",
-    "payments-reconcile": "node payment-reconcile.js"
+    "payments-reconcile": "node payment-reconcile.js",
+    "phonebook:backfill": "node crm-service.js --phonebook-backfill",
+    "phonebook:diagnose": "node crm-service.js --phonebook-diagnose",
+    "test:tf078": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf078.test.js test/tf077b.test.js"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",

@@ -32,6 +32,14 @@ const AUDIT_KEEP = 500, REQUEST_KEEP = 100, BACKUP_KEEP = 30;
 const ID_RE = /^[0-9a-f-]{36}$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/;
 const iso = (v) => (typeof v === "string" && ISO_RE.test(v) ? v : null);
+// TF-078: Telefonbuch-Anbieter-Zustand (nur Owner-Sicht) – feste Felder, nie ein Schlüssel.
+const cleanProviderStatus = (p) => {
+  if (!p || typeof p !== "object") return null;
+  const n = (v) => (Number.isInteger(v) ? Math.max(0, Math.min(1_000_000, v)) : 0);
+  return { provider: "multisource", configured: p.configured === true, field_confirmed: p.field_confirmed === true, last_success_at: iso(p.last_success_at),
+    lookups_today: n(p.lookups_today), matches_today: n(p.matches_today), rate_limit: p.rate_limit === "LIMITED" ? "LIMITED" : "OK",
+    max_per_run: n(p.max_per_run), max_per_day: n(p.max_per_day) };
+};
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 const agentKey = (controlToken, label) => { const t = String(controlToken || "").trim(); return t.length >= 32 ? crypto.createHmac("sha256", t).update(label).digest("hex") : ""; };
@@ -227,7 +235,7 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
           const leads = cleanChLeads(v.leads);
           const t = now();
           const b = v.backup && typeof v.backup === "object" ? { last_at: iso(v.backup.last_at), offsite_ok: v.backup.offsite_ok === true, generations: Number.isInteger(v.backup.generations) ? Math.min(v.backup.generations, 1000) : 0 } : null;
-          const ok = await patchView(() => ({ leads, total: leads.length, generated_at: iso(v.generated_at) || t.toISOString(), received_at: t.toISOString(), backup: b }));
+          const ok = await patchView(() => ({ leads, total: leads.length, generated_at: iso(v.generated_at) || t.toISOString(), received_at: t.toISOString(), backup: b, phonebook_provider: cleanProviderStatus(v.phonebook_provider) }));
           return ok ? leads.length : false;
         });
         if (r instanceof Response) return r;
@@ -316,7 +324,7 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
       const markets = owner ? ["CH", "VN"] : actor.markets;
       return reply(200, { configured: true, empty: !v && !vn, actor: { user_id: actor.user_id, role: actor.role, locale: actor.locale, markets }, mail,
         generated_at: markets.includes("CH") ? v?.generated_at || null : vn?.generated_at || null, received_at: markets.includes("CH") ? v?.received_at || null : vn?.received_at || null,
-        total: leads.length, stats: crmStats(leads, now()), backup: owner ? v?.backup || null : null, leads, ...r.body,
+        total: leads.length, stats: crmStats(leads, now()), backup: owner ? v?.backup || null : null, phonebook_provider: owner ? v?.phonebook_provider || null : null, leads, ...r.body,
         online: markets.includes("CH") ? r.body.online : vnOnline, online_vn: vnOnline,
         ...(owner ? { vn_status: vn?.status || null, vn_total: activeLeads(vn?.leads).length } : {}) });
     }

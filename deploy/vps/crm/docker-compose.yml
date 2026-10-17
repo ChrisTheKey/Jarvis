@@ -15,7 +15,12 @@ services:
     image: jarvis-crm-worker:latest
     restart: unless-stopped
     # Nur JARVIS_CRM_AGENT_TOKEN (abgeleitet, gilt allein für /api/crm) und JARVIS_CRM_URL. Datei 600, von crm-remote.sh erzeugt.
-    env_file: ./.env
+    # TF-078: multisource.env (600, von Hand gepflegt, bleibt über Deploys erhalten – .env wird bei jedem Build neu abgeleitet):
+    # MULTISOURCE_API_KEY, optional MULTISOURCE_API_BASE_URL, MULTISOURCE_NOPROMO_FIELD + MULTISOURCE_NOPROMO_SEMANTICS (erst nach bestätigtem Feld),
+    # MULTISOURCE_MAX_LOOKUPS_PER_RUN / _PER_DAY. Leer = PHONEBOOK_PROVIDER_NOT_CONFIGURED.
+    env_file:
+      - ./.env
+      - ./multisource.env
     volumes:
       # CRM-Zustand + Kontaktverzeichnis (nur gelesen) – der Kontaktdienst schreibt hier sein Verzeichnis, dieser Dienst nur lead_crm.json.
       - /opt/jarvis-mail/data:/data/crm

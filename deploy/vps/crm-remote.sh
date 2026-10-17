@@ -37,6 +37,7 @@ case "$STEP" in
     sudo -n rm -rf "$R/app.new" && sudo -n mkdir -p "$R/app.new" && sudo -n tar -xzf "$APP_TGZ" -C "$R/app.new"
     NEW="$R/docker-compose.yml.new"; sudo -n cp "$R/app.new/deploy/vps/crm/docker-compose.yml" "$NEW"
     [ -f "$R/.env" ] || sudo -n install -m 600 /dev/null "$R/.env"
+    [ -f "$R/multisource.env" ] || sudo -n install -m 600 /dev/null "$R/multisource.env" # TF-078: nie überschrieben
     SERVICES="$(cd "$R" && D compose -p "$PROJECT" -f "$NEW" --project-directory "$R" config --services)"
     [ "$SERVICES" = "$SERVICE" ] || blocked "Compose definiert nicht genau den Service $SERVICE ($SERVICES)."
     CFG="$(cd "$R" && D compose -p "$PROJECT" -f "$NEW" --project-directory "$R" config --format json)"
@@ -73,6 +74,13 @@ case "$STEP" in
     ;;
   report) D exec "$CONTAINER" node crm-service.js --report ;;
   backup-now) D exec "$CONTAINER" node crm-service.js --backup-now ;;
+  phonebook-status)
+    # TF-078: nur JA/NEIN + Zähler – nie ein Wert aus multisource.env.
+    echo "MULTISOURCE_API_KEY gesetzt: $(sudo -n grep -cE '^MULTISOURCE_API_KEY=.{8,}' "$R/multisource.env" 2>/dev/null || echo 0) · Feld bestätigt: $(sudo -n grep -cE '^MULTISOURCE_NOPROMO_(FIELD|SEMANTICS)=.+' "$R/multisource.env" 2>/dev/null || echo 0)/2"
+    D exec "$CONTAINER" node -e 'import("./crm-service.js").then(m=>console.log(JSON.stringify(m.phonebookSummary("/data/crm"))))' ;;
+  phonebook-diagnose) D exec "$CONTAINER" node crm-service.js --phonebook-diagnose ;;
+  phonebook-backfill-dry) D exec "$CONTAINER" node crm-service.js --phonebook-backfill --dry-run ;;
+  phonebook-backfill) D exec "$CONTAINER" node crm-service.js --phonebook-backfill ;;
   *) blocked "Unbekannter STEP $STEP" ;;
 esac
 
