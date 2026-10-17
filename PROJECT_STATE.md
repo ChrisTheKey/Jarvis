@@ -1,8 +1,41 @@
-# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025 + COLD-DRAFT-QUALITY-050 + LEAD-CONTACT-DIRECTORY-051 + LEAD-CRM-053
+# PROJECT_STATE – ALWAYS-ONLINE-MAIL-021 + SWISS-REPAIR-022 + SWISS-STRICT-EMAIL-COMPLIANCE-024 + SWISS-COLD-LEAD-DRAFT-025 + COLD-DRAFT-QUALITY-050 + LEAD-CONTACT-DIRECTORY-051 + LEAD-CRM-053 + CRM-ADMISSION-076
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-16 (TF-075A)
+Letzte Aktualisierung: 2026-10-17 (TF-076)
+
+## TF-076 – AKTIVES CRM NUR MIT VERIFIZIERTEM FEHLER + GENAUE FEHLERORTE (2026-10-17, Code ee28c5b, CRM + VN LIVE, Netlify LIVE)
+- **ACTIVE CRM POLICY:** nur erfolgreich geprüfte Websites mit **≥ 1 aktuell verifiziertem, für Besucher sichtbarem Website-Fehler**
+  (`public/crm-model.js` crmAdmission/crmActive – EINE Definition). Erfolgreich geprüft ohne Fehler → `NO_VERIFIED_ERRORS` (nicht aktiv).
+  **Unvollständige/fehlgeschlagene Audits sind nie „sauber“:** `AUDIT_INCOMPLETE` / `AUDIT_FAILED` / `AUDIT_RETRY_REQUIRED`, nicht aktiv, bis ein
+  erfolgreicher Audit einen Fehler belegt. Ausnahme: Kunden bzw. Leads mit Reparaturauftrag (`CUSTOMER`) – Auftrag/Zahlung/Provision/Historie bleiben.
+- Serverseitig erzwungen (nie nur im Browser): VPS-CRM-Sicht (buildCrmView), VN-Sicht (buildVnView), Netlify /api/crm Speichern UND Lesen
+  (auch alter Speicherstand), /api/calling Leadliste + `eligibility` → `NO_VERIFIED_ERRORS` (zusätzlich zu Consent/DNC/Recht/Zeitfenster/Markt/Besitz),
+  sales-data (Zähler, Chat, neue Aufträge). Provisions-Zuordnung bestehender Aufträge liest weiter alle Leads (`allLeads`).
+  Recheck ohne Fehler → automatisch raus; neuer Fehler → wieder drin. Prüfkandidaten (crmUniverse) bleiben für Hintergrund-Audit und DNC-Aktionen.
+- **Nichts gelöscht:** lead_crm.json, site_findings.json, Historie unverändert. `node crm-service.js --admission [--dry-run]` schreibt idempotent
+  `crm_admission.json` (Zustand + seit wann je ausgeschlossenem Kandidaten) + Audit-Zeile (nur Zahlen); der Dienst aktualisiert stündlich.
+  Verkäufer-Zuweisungen unverändert (keine Umverteilung, kein Ersatz-Lead).
+- **Produktion 2026-10-17:** aktiv vorher **1784** → Null-Fehler (vollständig geprüft) **11** ausgeschlossen, unvollständige Audits **20**
+  ausgeschlossen (nicht als sauber gezählt), fehlgeschlagen 0, ungeprüft 0 → aktiv nachher **1753**. Chris sah ~7 – der Cloud-Stand war wegen 413 veraltet.
+- **6-MB-Grenze gelöst:** Übertragung ohne `errors.top` (= items[0..1], topIssues leitet ab) → Sicht 6.83 MB → **5.54 MB**, Pull mit Sicht wieder 200,
+  Health ohne `TOO_LARGE_STALE` → Cloud-CRM wieder aktuell (offener TF-075A-Punkt erledigt).
+- **CRM ERROR DISPLAY:** je Befund FEHLER · SEITE (exakte betroffene Seite) · POSITION · WARUM FEHLER (Beleg) · AUSWIRKUNG · [Fehler öffnen]
+  (`issueDetail`, de + vi). Ganz oben im Lead-Detail und in Kudoshins Anrufansicht; Calling-Agent `issue_links` mit short_title/page_location/evidence/impact.
+  Position nur belegt: Auditor erfasst jetzt Seitenbereich (header/nav/main/aside/footer, auch id/class), letzte Überschrift, Linktext, Bild-Alt-Text
+  → z. B. „Footer → «Impressum»“, „Abschnitt «Team» → Bild «Teamfoto»“. Ohne Ort: „Genaue Position nicht automatisch bestimmbar“; ältere Befunde ohne
+  Typ: „Position nicht verfügbar“. Nie erfundener Selektor/Sollwert. Direktlinks TF-072 unverändert (neuer Tab, noopener noreferrer, unsicher → kein Link).
+  Live: 3719 Befunde, 3716 mit Seitenlink, 0 unsichere Links, 2030 mit genauer Position; 1686 Ersatztext (Audits vor TF-076) – füllt sich mit dem
+  6-Tage-Recheck des Backfills.
+- Tests: `test/tf076.test.js` 13/13; Fixtures an die Regel angepasst (Leads tragen einen verifizierten Fehler); TF-072-API-Test-Datumsfalle behoben
+  (fester Auftragszeitpunkt 2026-10-17 08:00 UTC lag vor eligible_from = jetzt). Gesamtsuite sequenziell **993 / 981 pass / 0 fail / 12 skip**.
+  Secret-Scan 297 Dateien, 0 Treffer. Netlify-Functions + Edge importierbar, build-persona ok.
+- **Deploy:** Push ee28c5b (origin = HEAD) → Netlify LIVE nach ~90 s (crm.js, crm-model.js, i18n.js, crm.css, calling-ui.js, sales.html byte-gleich HEAD;
+  /api/crm, /api/calling, /api/sales ohne Sitzung 401, probe 200). CRM ee28c5b (deploy-crm.sh build|start, healthy), VN ee28c5b (deploy-vn.sh, healthy).
+  Mail, Repair, Calling, Contacts NICHT neu gestartet (StartedAt/Restarts unverändert). Dockerfile.calling kopiert jetzt public/crm-model.js (nötig beim
+  nächsten Calling-Build; Eligibility läuft in der Cloud). CALLING_DRY_RUN=true. 60 % / 6000 bps unverändert. Kontaktformular P0 unverändert.
+- **Offen:** Live-Klicktest als Chris/Verkäufer/Kudoshin nicht möglich (kein Owner-/Verkäufer-Passwort auf PC/VPS) – UI-Verhalten per Browser-Tests
+  belegt, Live-Daten per Container-Prüfung. 0 echte Mails, 0 Anrufe, 0 Zahlungen, 0 Kundenwebsites verändert.
 
 ## TF-075A – KONTAKTFORMULAR-ANFRAGEN = P0 + GMAIL-ANTWORTENTWURF (2026-10-16, CODE READY, Deploy siehe unten, Netlify NICHT live (Deploy-Credits erschöpft))
 - **Umfang bewusst eng:** NUR Kontaktformular-Anfragen. Das gestoppte breite TF-075 (Zugangsdaten-Annahme, Website-Zugriff, ZIP, Repair-Workflow)
