@@ -99,7 +99,8 @@ test("E: transaktionale Kunden-Mail (Repair-Outbox) wird von Cold-DNC und kaputt
   // Das CRM-Gate steckt nur in den Cold-Pfaden
   for (const f of ["repair-outbox.js", "email-permission.js", "sales.js", "repair-workflow.js", "check-150-workflow.js"]) assert.doesNotMatch(read(f), /registryBlock|crmDoNotContact|JARVIS_CRM_DIR|lead_crm/, f);
   const mw = read("mail-worker.js");
-  assert.equal((mw.match(/registryBlock\(/g) || []).length, 2, "nur Draft-Worker + Cloud-Einzelentwurf");
+  // TF-077B: + Verkäufer-Versand des vorbereiteten Cold-Entwurfs (SEND_PREPARED_LEAD_DRAFT) – ebenfalls ein Cold-Pfad, fail closed.
+  assert.equal((mw.match(/registryBlock\(/g) || []).length, 3, "nur Draft-Worker + Cloud-Einzelentwurf + Verkäufer-Versand");
 });
 
 test("F: CRM fehlt / unlesbar / ungültig / unbekanntes Schema → fail-safe: Cold Outreach angehalten, Queue bleibt queued, nichts dauerhaft blockiert", async () => {

@@ -83,7 +83,8 @@ test("Sicherheitsmodell unverändert: keine Shell, kein Dateizugriff, keine Secr
   assert.match(sc, /shell\.exec/, "shell.exec ist als DANGEROUS gelistet (immer 403)");
   // Cold-Lead-Entwürfe: nur Entwurf, nie Versand – auch aus der Cloud-Warteschlange (delivery draft = COLD_LEAD_DRAFT_ONLY).
   assert.match(read("mail-worker.js"), /if \(rq\.delivery === "draft"\) \{[\s\S]*mode: COLD_MODE/);
-  assert.match(read("mail-requests.js"), /delivery: delivery === "send" \? "send" : "draft"|const delivery = input\.delivery === "draft" \? "draft" : "send";/);
+  // TF-077B: + send_prepared (nur der vorbereitete Entwurf eines Leads, nie Text aus der Cloud); ohne delivery weiterhin "send" (nur Owner).
+  assert.match(read("mail-requests.js"), /delivery: delivery === "send" \? "send" : "draft"|const delivery = input\.delivery === "draft" \? "draft" : "send";|const delivery = DELIVERIES\.includes\(input\.delivery\) \? input\.delivery : "send";/);
   assert.match(read("netlify/edge-functions/cloud.js"), /delivery: delivery === "send" \? "send" : "draft"/, "Cloud: fehlt delivery → Entwurf, nie stiller Versand");
 });
 

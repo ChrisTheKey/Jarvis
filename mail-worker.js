@@ -31,6 +31,7 @@ import { evaluateSwissEmailPermission } from "./email-permission.js";
 import { readOrdersExport } from "./onboarding-store.js";
 import { senderProfileFor, VN_SIGNATURE } from "./sender-profiles.js";
 import { processContactForms, DEFAULT_CONTACT_FORM_CONFIG, CONTACT_FORM_DRAFT_MODE } from "./contact-form.js";
+import { draftRef, SERVER_SEND_USERS } from "./mail-access.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -303,12 +304,15 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       log("warn", "gmail_degraded", { stage, error: String(e.message || e).slice(0, 200) });
     };
     // 0) TF-075A P0: Kontaktformular-Anfragen VOR allem anderen (vor Cold-Sync, Antworten, Follow-ups, Erstkontakten, Cloud-Aufträgen
-    // und Cold-Entwürfen). FIFO, nur Gmail-ENTWURF (CONTACT_FORM_DRAFT_ONLY, nie state.actions → nie Send-Queue), genau einer je Anfrage.
+    // und Cold-Entwürfen). FIFO, nie state.actions (→ nie Send-Queue), genau eine Antwort je Anfrage. TF-077B: verifizierte Anfragen werden
+    // sofort automatisch beantwortet (CONTACT_FORM_REPLY_SENT); unverifizierte bleiben Entwurf (CONTACT_FORM_DRAFT_ONLY, Prüfung).
     let contactForms = null;
     try {
       contactForms = await processContactForms({ gmail, store, cfg: { ...DEFAULT_CONTACT_FORM_CONFIG, ...(cfg.contactForms || {}) }, sender: cfg.sender, vnSignature: VN_SIGNATURE,
         ownAddresses: [cfg.sender?.email, ...cfg.excludeAddresses].filter(Boolean), leads: () => contactLeads(store), orders: contactOrders, now: t, log, escalate,
-        isTransient: (e) => TRANSIENT_RE.test(String(e?.message || e)), readOnly: dry || readOnly });
+        isTransient: (e) => TRANSIENT_RE.test(String(e?.message || e)), readOnly: dry || readOnly,
+        // TF-077B: verifizierte Anfragen sofort automatisch beantworten (angefragte Antwort) – abschaltbar über contactForms.autoReply=false.
+        autoReply: cfg.contactForms?.autoReply !== false && !!cfg.sender?.name, sendGuard });
       if (contactForms.degraded) degrade("contact_form", { message: contactForms.degraded });
     } catch (e) { log("error", "contact_form_failed", { error: String(e.message).slice(0, 160) }); }
     // TF-025: von Chris manuell in Gmail versendete Cold-Entwürfe erkennen (nur eigene, eindeutig zugeordnete Threads).
@@ -364,7 +368,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     // Abgebrochene Vorbereitungen (Absturz zwischen Anlegen und Speichern) einem vorhandenen Entwurf zuordnen.
     for (const [key, a] of Object.entries(state.actions)) {
       if (a.status !== "creating") continue;
-      const found = Object.entries(reg.drafts || {}).find(([, d]) => d.mode !== CONTACT_FORM_DRAFT_MODE && d.createdAt >= a.at && (a.threadId ? d.threadId === a.threadId : normEmail(d.to) === a.to));
+      const found = Object.entries(reg.drafts || {}).find(([, d]) => !String(d.mode || "").startsWith("CONTACT_FORM_") && d.createdAt >= a.at && (a.threadId ? d.threadId === a.threadId : normEmail(d.to) === a.to));
       if (found) { state.actions[key] = { ...a, status: "prepared", draftId: found[0] }; state.prepared[found[0]] = { key, at: a.at, kind: a.kind }; }
       else if (t - new Date(a.at) > 10 * 60_000) delete state.actions[key]; // nichts entstanden → darf neu versucht werden
     }
@@ -633,6 +637,63 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       log("info", "cloud_request_" + status, { request_id: id, reason });
     };
     const saveInbox = () => { if (!readOnly && cloudResults.length) store.write(CLOUD_INBOX, { ...store.read(CLOUD_INBOX, {}), ...inbox }); };
+    // TF-077B SEND_PREPARED_LEAD_DRAFT («E-Mail lossenden» eines Verkäufers): genau DEN vorbereiteten Jarvis-Entwurf dieses Leads senden – sofort,
+    // ohne Text aus der Cloud. Erneut geprüft: Recht + Markt aus den serverseitigen Metadaten, Entwurf gehört dem Lead und ist der angezeigte
+    // (draft_ref), Empfänger = CRM-Adresse = Entwurfsadresse, Suppression/Opt-out (auch Domain), Lead-Datenbank/CRM-DNC (fail closed), Send-Lock.
+    // Idempotent je (Lead, draft_ref): bereits gesendet → nie erneut; unklarer Ausgang (Absturz während Gmail) → nie automatisch wiederholen.
+    state.sellerSends ||= {};
+    async function sendPrepared(id, rq, to) {
+      const m = rq.meta || {}, ref = rq.draft_ref;
+      const key = `seller-send:${m.lead_id}:${ref}`, prior = state.sellerSends[key];
+      if (!m.lead_id || !ref || m.market !== "CH" || !(SERVER_SEND_USERS.includes(m.actor_user_id) || m.actor_user_id === "chris")) return cloudSet(id, "blocked", "Unzulässiger Sendeauftrag.");
+      const regNow = gmail.listOwned();
+      const already = Object.values(regNow.sent || {}).find((x) => x.sellerSend && x.leadId === m.lead_id && x.draftRef === ref);
+      if (already || prior?.status === "sent") {
+        state.sellerSends[key] = { ...prior, status: "sent", at: prior?.at || already?.sentAt || t.toISOString() }; save();
+        return cloudSet(id, "sent", "Bereits gesendet – keine zweite Mail.");
+      }
+      const draft = Object.entries(regNow.drafts || {}).find(([, d]) => d.mode === COLD_MODE && d.leadId === m.lead_id && draftRef(d.messageId) === ref);
+      if (!draft) return cloudSet(id, "blocked", "Der vorbereitete Entwurf ist nicht mehr vorhanden oder wurde geändert.");
+      if (regNow.sending?.[draft[0]] || prior?.status === "sending") {
+        state.sellerSends[key] = { ...prior, status: "send_unknown" }; save();
+        log("warn", "seller_send_unknown", { lead_id: m.lead_id, draftId: draft[0] });
+        return cloudSet(id, "failed", "Versandstatus unklar – nicht wiederholt, Chris prüft.");
+      }
+      if (!EMAIL_RE.test(to) || normEmail(draft[1].to) !== to) return cloudSet(id, "blocked", "Empfänger stimmt nicht mit dem vorbereiteten Entwurf überein.");
+      const suppNow = { ...store.read("suppression.json", {}), ...supp };
+      const dom = to.split("@")[1] || "";
+      if (suppNow[to] || exclude.has(to) || (!FREEMAIL_RE.test(to) && Object.keys(suppNow).some((a) => a.split("@")[1] === dom && !FREEMAIL_RE.test(a))))
+        return cloudSet(id, "blocked", "Empfänger ist gesperrt (Abmeldung/Suppression).");
+      let db = null;
+      try { db = loadRegistry(store); } catch (e) { log("error", "lead_registry_read_failed", { error: e.message }); }
+      const why = db ? registryBlock(store, { lead_id: m.lead_id, email: to }, db) : CRM_UNAVAILABLE;
+      if (why === CRM_UNAVAILABLE) return log("warn", "seller_send_held_crm_unavailable", { lead_id: m.lead_id }); // bleibt offen, nächster Durchlauf
+      if (why) return cloudSet(id, "blocked", "Lead gesperrt: " + why);
+      const lock = await sendGuard.acquire({ key, request_id: id, messageId: draft[1].messageId || null });
+      if (!lock.ok) { if (lock.final) cloudSet(id, "blocked", "Bereits gesendet oder in Arbeit (Send-Lock)."); return; }
+      state.sellerSends[key] = { status: "sending", at: t.toISOString(), draftId: draft[0], request_id: id, by: m.actor_user_id };
+      save();
+      try {
+        const info = await gmail.sendPreparedLeadDraft(draft[0], { leadId: m.lead_id, to, draftRef: ref, refOf: draftRef, actor: m.actor_user_id });
+        state.sellerSends[key] = { ...state.sellerSends[key], status: "sent", sentAt: t.toISOString(), threadId: info.threadId || null };
+        save();
+        await sendGuard.done(key, "SENT");
+        contacted.add(to);
+        sends.push({ kind: "verkaeufer-mail", mailClass: "seller_prepared_send", to, threadId: info.threadId || null, window: null });
+        // Cold-Register: der Lead gilt als angeschrieben (wie ein manueller Versand – Rechtsgrundlage bleibt NONE, kein Follow-up-Funnel).
+        const cold = store.read(COLD_DRAFTS_FILE, { reviews: {} });
+        if (cold.reviews?.[m.lead_id]) { cold.reviews[m.lead_id] = { ...markManualSend(cold.reviews[m.lead_id], { messageId: info.messageId, threadId: info.threadId, sentAt: t.toISOString() }), seller_sent_by: m.actor_user_id }; store.write(COLD_DRAFTS_FILE, cold); }
+        log("info", "seller_send_sent", { lead_id: m.lead_id, by: m.actor_user_id, draftId: draft[0], threadId: info.threadId || null });
+        cloudSet(id, "sent", "Gesendet.");
+      } catch (err) {
+        // Nicht gesendet (Gmail hat abgelehnt bzw. der Entwurf existiert nicht mehr) – nie als SENT markieren; ein neuer Klick darf es erneut versuchen.
+        state.sellerSends[key] = { ...state.sellerSends[key], status: "failed", error: String(err.message).slice(0, 160) };
+        save();
+        await sendGuard.done(key, "FAILED");
+        log("error", "seller_send_failed", { lead_id: m.lead_id, error: String(err.message).slice(0, 160) });
+        cloudSet(id, "failed", "E-Mail konnte nicht gesendet werden.");
+      }
+    }
     for (const [id, e] of Object.entries(inbox)) {
       if (e.status !== "pending" || dry) continue;
       const rq = e.request || {};
@@ -640,6 +701,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       const text = `${rq.subject || ""} ${rq.body || ""}`;
       try {
         if (!rq.expires_at || Date.parse(rq.expires_at) <= +t) { cloudSet(id, "expired", "Abgelaufen, bevor der lokale Worker ihn prüfen konnte."); continue; }
+        if (rq.delivery === "send_prepared") { await sendPrepared(id, rq, to); continue; }
         if (!EMAIL_RE.test(to) || !rq.subject || !rq.body) { cloudSet(id, "blocked", "Empfänger, Betreff oder Text ungültig."); continue; }
         if (supp[to] || exclude.has(to)) { cloudSet(id, "blocked", "Empfänger ist gesperrt (Abmeldung/Suppression)."); continue; }
         // delivery "draft": nur ein Gmail-Entwurf, nie gesendet (kein state.actions-Eintrag, also nie in der Send-Queue).

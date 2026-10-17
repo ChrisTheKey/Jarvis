@@ -4,7 +4,8 @@
 // automatische Aktion, kein Senden, kein Anruf, keine SMS/WhatsApp. Alle Inhalte per textContent (nie innerHTML mit Daten).
 // Sprache: de-CH (Standard, unverändert) oder vi-VN (setLocale) – Firmennamen, Domains, Telefonnummern und Kundeninhalte bleiben wie sie sind.
 import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, CARDS, SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
-  ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts, issueLink, currentIssues, issueDetail } from "./crm-model.js";
+  ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts, issueLink, currentIssues, issueDetail,
+  sellerSendState, contactFormQueue, contactFormOpen } from "./crm-model.js";
 import { createI18n } from "./i18n.js";
 import { callingTexts, leadCallBox } from "./calling-ui.js";
 import { onboardingTexts, leadOnboardingBox, onboardingPanel } from "./onboarding-ui.js";
@@ -13,7 +14,8 @@ const $ = (id) => document.getElementById(id);
 const MOBILE = matchMedia("(max-width: 860px)");
 let I = createI18n(document.documentElement.dataset.locale || "de-CH");
 const t = (...a) => I.t(...a);
-const S = { leads: [], filters: {}, sort: "priority", card: "", sel: null, online: false, generated_at: null, backup: null, timer: null, facets: false, showAll: {}, actor: null };
+const S = { leads: [], filters: {}, sort: "priority", card: "", sel: null, online: false, generated_at: null, backup: null, timer: null, facets: false, showAll: {}, actor: null, mail: null,
+  sends: [], sendErr: {}, stats: null };
 
 function el(tag, attrs = {}, ...kids) {
   const x = document.createElement(tag);
@@ -32,7 +34,13 @@ const stop = (e) => e.stopPropagation();
 // Nur geprüfte Ziele: Website http(s) (Cloud-Allowlist), Telefon nur tel:+41…/+84… (VN), E-Mail nur Adresse, Entwurf nur mail.google.com.
 const link = (href, text, cls = "", blank = true) => href ? el("a", { class: cls, href, ...(blank ? { target: "_blank", rel: "noopener noreferrer" } : {}), onclick: stop }, text) : el("span", { class: cls }, text);
 const telLink = (l, cls = "", label = null) => l.phone_tel && !l.do_not_contact ? link(l.phone_tel, label || l.phone, cls, false) : el("span", { class: cls }, l.phone || "–");
-const mailLink = (l, cls = "", label = null) => l.email && !l.do_not_contact ? link(`mailto:${l.email}`, label || l.email, cls, false) : el("span", { class: cls }, l.email || "–");
+// TF-077/TF-077B: Mail-Aktionen je Benutzer (Server: /api/crm mail = mail-access.js). Chris: mailto wie bisher. Giuliano/Mario/Damiano: Adresse
+// nur als Text, einzige Mail-Aktion «E-Mail lossenden» (Server sendet den vorbereiteten Entwurf). Kudoshin: Postfach nicht verbunden – kein
+// Gmail-Link, nie Chris' Gmail. Ohne Policy: keine Aktion.
+const mailHref = (l) => { const m = S.mail; if (!l.email || l.do_not_contact || !m) return null; return m.mailto ? `mailto:${l.email}` : null; };
+const mailLink = (l, cls = "", label = null) => { const h = mailHref(l); return h ? link(h, label || l.email, cls, !h.startsWith("mailto:")) : el("span", { class: cls }, l.email || "–"); };
+const mailboxNote = () => (S.mail?.mode === "OWN_MAILBOX" ? el("p", { class: "crm-note crm-mailbox", "data-state": S.mail.state },
+  `${t("mail.mailbox")}: ${S.mail.mailbox} · ${S.mail.draft_requests ? t("mail.connected") : `${t("mail.notConnected")} (${S.mail.state})`}`) : "");
 const badge = (cls, text) => el("span", { class: `crm-badge ${cls}` }, text);
 const fmtDay = (v) => { const d = v ? new Date(v) : null; return d && !Number.isNaN(+d) ? d.toLocaleDateString(I.dateLocale, { timeZone: I.tz }) : "–"; };
 const place = (l) => [l.municipality, l.canton || l.region].filter(Boolean).join(" · ");
@@ -80,9 +88,64 @@ function callIssuesBox(l) {
 }
 // TF-058: historischer Discovery-Fund (nur Anzeige – daraus entsteht nie ein Entwurf).
 const histBadge = (l) => (I.L.history[l.history_badge] ? badge(`hist-${l.history_badge}`, I.L.history[l.history_badge]) : "");
-// TF-075A: Kontaktformular-Anfrage (zugeordnet) – CONTACT FORM · MATCHED · Status. Nur Status-Wörter, nie Mailinhalt.
-const cfBadge = (l) => (l.contact_form && I.L.contactForm?.[l.contact_form.status]
-  ? badge(`cf-${l.contact_form.status}`, [I.L.contactForm.badge, l.contact_form.matched ? I.L.contactForm.matched : null, I.L.contactForm[l.contact_form.status]].filter(Boolean).join(" · ")) : "");
+// TF-075A/TF-077B: Kontaktformular – KONTAKTFORMULAR · Status (NEU / ANTWORT GESENDET …) · SOFORT BEARBEITEN (offen) · RÜCKRUF / NICHT ANRUFBAR.
+const cfBadge = (l) => {
+  const c = l.contact_form, L = I.L.contactForm || {};
+  if (!c || !L[c.status]) return "";
+  return el("span", { class: "crm-cfbadges" }, badge(`cf-${c.status}`, [L.badge, c.matched && c.lead_source !== "CONTACT_FORM" ? L.matched : null, L[c.status]].filter(Boolean).join(" · ")),
+    contactFormOpen(l) ? [" ", badge("cf-urgent", L.urgent)] : "", c.lead_source === "CONTACT_FORM" && contactFormOpen(l) ? [" ", badge(`cf-${c.call_eligibility}`, L[c.call_eligibility] || "")] : "");
+};
+const pbText = (l) => t(`pb.${l.phonebook?.status || "PHONEBOOK_STAR_UNKNOWN"}`);
+// TF-077B «E-Mail lossenden»: genau EIN Knopf je Lead (nur SERVER_SEND). Der Browser schickt nur lead_id + draft_ref – nie Empfänger/Text/Gmail-URL.
+function sendBox(l) {
+  const st = sellerSendState(l, S.sends);
+  const can = (st === "DRAFT_READY" || st === "SEND_FAILED") && !l.do_not_contact;
+  const msg = el("span", { class: `crm-status crm-send-msg${st === "SEND_FAILED" || S.sendErr[l.lead_id] ? " bad" : st === "SENT" ? " ok" : ""}`, "aria-live": "polite" },
+    S.sendErr[l.lead_id] || (st === "SEND_FAILED" ? t("mail.sendFailed") : st === "NO_DRAFT" ? t("mail.noDraft") : ""));
+  const b = el("button", { type: "button", class: "crm-btn primary crm-send", "data-state": st, disabled: !can, title: t("mail.sendHint"),
+    onclick: async (e) => { e.stopPropagation(); if (b.disabled) return; b.disabled = true; b.dataset.state = "SEND_IN_PROGRESS"; b.textContent = t("mail.sending"); await sendPrepared(l); } },
+    st === "SENT" ? t("mail.sent") : st === "SEND_IN_PROGRESS" ? t("mail.sending") : t("mail.send"));
+  return el("span", { class: "crm-sendbox" }, b, " ", msg);
+}
+async function loadSends() {
+  if (!S.mail?.send_prepared) { S.sends = []; return; }
+  try { const r = await fetch("/api/mail-requests", { cache: "no-store", credentials: "same-origin" }); const j = r.ok ? await r.json() : null; if (j) S.sends = Array.isArray(j.requests) ? j.requests : []; } catch {}
+}
+async function sendPrepared(l) {
+  delete S.sendErr[l.lead_id];
+  try {
+    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ op: "send_lead_draft", lead_id: l.lead_id, draft_ref: l.draft_ref }) });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j?.request) { S.sendErr[l.lead_id] = `${t("mail.sendFailed")}${j?.code ? ` – ${I.codeMsg(j.code, j.error)}` : ""}`; renderDrawer(); return; }
+    S.sends = [...S.sends.filter((x) => x.request_id !== j.request.request_id), { ...j.request, created_at: new Date().toISOString() }];
+    renderDrawer();
+    // Ergebnis des Mail-Workers abwarten (höchstens ~3 min); «gesendet» erst, wenn der Worker es meldet.
+    for (let i = 0; i < 60 && sellerSendState(S.leads.find((x) => x.lead_id === l.lead_id) || l, S.sends) === "SEND_IN_PROGRESS"; i++) {
+      await new Promise((res) => setTimeout(res, 3000));
+      await loadSends();
+      if (S.sel === l.lead_id) renderDrawer();
+    }
+  } catch { S.sendErr[l.lead_id] = t("mail.sendFailed"); }
+  if (S.sel === l.lead_id) renderDrawer();
+}
+// TF-077B: KONTAKTFORMULAR – SOFORT BEARBEITEN (ganz oben, vor allen Karten): offene Anfragen im eigenen Bereich, älteste zuerst.
+function renderHot() {
+  const box = $("crmHot");
+  if (!box) return;
+  const q = contactFormQueue(S.leads), st = S.stats || crmStats(S.leads);
+  const owner = S.actor?.role === "OWNER";
+  box.replaceChildren(
+    el("div", { class: "crm-hot-h" }, el("h3", {}, t("cf.head")), badge("cf-count", String(q.length)), el("small", {}, t("cf.counts", st.verified_error_leads ?? 0, st.contact_form_hot ?? q.length))),
+    q.length ? el("ul", { class: "crm-hot-list" }, q.map((l) => el("li", { class: "crm-hot-item", "data-id": l.lead_id },
+      el("div", { class: "row" }, el("b", {}, l.company || l.contact_form.name || l.email || l.lead_id), " ", cfBadge(l)),
+      el("small", {}, `${t("cf.received")}: ${fmt(l.contact_form.open_since || l.contact_form.received_at)}`),
+      l.contact_form.summary ? el("p", { class: "crm-hot-msg" }, l.contact_form.summary) : "",
+      el("div", { class: "crm-hot-meta" }, l.website ? link(l.website, l.domain || l.website) : "–", " · ", telLink(l), " · ", el("span", {}, l.email || "–"),
+        owner && l.seller ? ` · ${t("cf.seller")}: ${l.seller}` : ""),
+      el("button", { type: "button", class: "crm-btn primary", onclick: () => openLead(l.lead_id) }, t("cf.open")))))
+      : el("p", { class: "crm-note" }, t("cf.none")));
+}
 const stageBadge = (l) => l.do_not_contact ? badge("dnc", t("dnc")) : badge(`st-${l.sales_stage}`, I.L.stage[l.sales_stage] || "–");
 const errMsg = (status, body) => (body?.code ? I.codeMsg(body.code, body.error) : I.vi ? t("act.err", status) : body?.error || t("act.err", status));
 
@@ -100,7 +163,8 @@ async function load() {
     if (status === 404) return setMeta(t("crm.e404"), true);
     if (status !== 200 || !body) return setMeta(t("crm.eStatus", status), true);
     S.leads = Array.isArray(body.leads) ? body.leads : [];
-    S.online = !!body.online; S.generated_at = body.generated_at; S.backup = body.backup; S.actor = body.actor || null;
+    S.online = !!body.online; S.generated_at = body.generated_at; S.backup = body.backup; S.actor = body.actor || null; S.mail = body.mail || null; S.stats = body.stats || null;
+    await loadSends();
     render();
   } catch { setMeta(t("crm.unreachable"), true); }
 }
@@ -119,6 +183,7 @@ function visible() { readFilters(); return sortLeads(filterLeads(S.leads, S.filt
 function render() {
   const now = new Date(), st = crmStats(S.leads, now);
   setMeta(t("crm.meta", S.leads.length, fmt(S.generated_at), S.online) + (S.backup?.last_at ? t("crm.metaBackup", fmt(S.backup.last_at), S.backup.offsite_ok) : ""), !S.online);
+  renderHot();
   const cards = $("crmCards");
   cards.replaceChildren(...Object.keys(CARDS).map((k) => el("button", { type: "button", class: `crm-card${k === "dnc" ? " dnc" : k === "follow_ups" ? " fu" : k === "customers" ? " ok" : ""}`,
     "aria-pressed": String(S.card === k || (k === "all" && !S.card)), onclick: () => { S.card = k === "all" ? "" : S.card === k ? "" : k; renderList(); renderCardsPressed(); } },
@@ -220,8 +285,17 @@ function renderDrawer() {
   const qa = el("div", { class: "crm-qa" },
     l.website ? link(l.website, t("btn.website"), "crm-btn") : "",
     l.draft_url ? link(l.draft_url, t("btn.gmail"), "crm-btn") : "",
-    !blocked && l.phone_tel ? link(l.phone_tel, t("btn.call"), "crm-btn primary", false) : "",
-    !blocked && l.email ? link(`mailto:${l.email}`, t("btn.mail"), "crm-btn", false) : "");
+    S.mail?.send_prepared && l.market !== "VN" ? sendBox(l) : "",
+    !blocked && l.phone_tel ? link(l.phone_tel, t("btn.call"), "crm-btn primary", false) : "");
+  // TF-077: kein allgemeiner E-Mail-Knopf oben mehr (für niemanden). Gmail-Entwurf nur mit draft_url – der Server liefert sie nur Chris.
+  // TF-077B: Giuliano/Mario/Damiano – genau EIN Mail-Knopf «E-Mail lossenden» (sendBox), keine Gmail-URL.
+  const c = l.contact_form;
+  const cfBox = c?.lead_source === "CONTACT_FORM" ? el("section", { class: `crm-cfbox${contactFormOpen(l) ? " open" : ""}` }, el("h4", {}, t("cf.head")), cfBadge(l),
+    kv([[t("cf.received"), fmt(c.open_since || c.received_at)], [t("cf.msg"), c.summary || "–"], [t("cf.reply"), (I.L.contactForm || {})[c.status] || "–"],
+      [t("cf.call"), (I.L.contactForm || {})[c.call_eligibility] || "–"], ...(c.callback_evidence ? [[t("cf.callback"), c.callback_evidence]] : []),
+      ...(c.email && c.email !== l.email ? [[t("kv.email"), c.email]] : []), ...(c.phone && c.phone !== l.phone ? [[t("kv.phone"), c.phone]] : [])]),
+    c.inbound ? el("p", { class: "crm-note" }, t("cf.inbound")) : "",
+    contactFormOpen(l) ? el("div", { class: "crm-qa" }, el("button", { type: "button", class: "crm-btn", disabled: dis, onclick: () => act("crm.resolveContactForm", { lead_id: l.lead_id }) }, t("cf.done"))) : "") : "";
   // TF-055 Website-Zustand: Zahl + Audit-Art + Zeitpunkt, die zwei wichtigsten Fehler, danach ALLE aktuell verifizierten Fehler.
   const e = l.errors || { audit: "NONE", top: [], items: [] };
   const sev = (f) => I.L.severity[f.severity] || "–";
@@ -250,12 +324,13 @@ function renderDrawer() {
     el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", t("priority", level(l), l.priority?.score ?? 0)), " ", histBadge(l), " ", cfBadge(l)),
     l.history_badge ? el("p", { class: "crm-note" }, t("histNote")) : "",
     blocked ? el("div", { class: "crm-dnc-banner" }, `${t("dncBanner")}${l.dnc_source && l.dnc_source !== "crm" ? t("dncSource", src) : ""}`) : "",
-    qa, status,
+    qa, status, cfBox,
     // TF-076: verifizierte Fehler ganz oben – der Anrufer muss nicht suchen.
     el("section", { class: "crm-errtop" }, el("h4", {}, t("sec.verifiedErrors", currentIssues(l).length)), issueCards(l)),
     el("small", {}, (l.priority?.reasons || []).map(I.reason).join(" · ") || t("noReasons")),
     el("h4", {}, t("sec.contact")),
-    kv([[t("kv.email"), mailLink(l)], [t("kv.phone"), telLink(l)], [t("kv.first"), l.first_name], [t("kv.last"), l.last_name], [t("kv.role"), l.role],
+    mailboxNote(),
+    kv([[t("kv.email"), mailLink(l)], [t("kv.phone"), telLink(l)], [t("pb.label"), pbText(l)], [t("kv.first"), l.first_name], [t("kv.last"), l.last_name], [t("kv.role"), l.role],
       [l.region ? t("kv.region") : t("kv.place"), place(l) || "–"], [t("kv.category"), cat(l)]]),
     el("h4", {}, t("sec.website")),
     kv([[t("kv.website"), link(l.website, l.website || "–")], [t("kv.reachable"), l.website_reachable === true ? t("yes") : l.website_reachable === false ? t("reach.no") : t("reach.unknown")],
@@ -331,6 +406,9 @@ function noteForm(l, dis) {
 function draftForm(l, blocked) {
   const out = el("p", { class: "crm-status", "aria-live": "polite" });
   if (!l.email) return el("p", { class: "crm-note" }, t("draft.noEmail"));
+  // TF-077: Jarvis-Entwürfe nur mit verbundener eigener Mailbox (Server prüft ebenfalls) – nie über Chris' Gmail.
+  if (!S.mail?.draft_requests) return el("p", { class: "crm-note crm-mailbox", "data-state": S.mail?.state || "MAIL_ACTIONS_DISABLED" },
+    S.mail?.mode === "OWN_MAILBOX" ? `${t("mail.notConnected")} (${S.mail.state}) – ${S.mail.mailbox}` : t("mail.disabled"));
   const subj = el("input", { maxlength: "200", required: true }), body = el("textarea", { maxlength: "5000", required: true });
   return el("form", { class: "crm-form", onsubmit: async (e) => {
     e.preventDefault();
@@ -441,6 +519,8 @@ function build() {
       el("button", { type: "button", class: "crm-btn", id: "crmOnbBtn", onclick: toggleOnboarding }, onboardingTexts(I.locale).panel),
       el("button", { type: "button", class: "crm-btn", onclick: close }, t("btn.close"))),
     el("div", { id: "crmOnbSlot" }),
+    // TF-077B: KONTAKTFORMULAR – SOFORT BEARBEITEN – sichtbar ganz oben, vor allen Karten und der Liste.
+    el("section", { class: "crm-hot", id: "crmHot", "aria-live": "polite" }),
     el("div", { class: "crm-cards pipe", id: "crmPipeCards", role: "group", "aria-label": t("aria.pipe") }),
     el("div", { class: "crm-cards", id: "crmCards", role: "group", "aria-label": t("aria.cards") }),
     el("div", { class: "crm-cards errs", id: "crmErrCards", role: "group", "aria-label": t("aria.errs") }),

@@ -14,10 +14,11 @@
 //
 // Nichts hier sendet, ruft an oder erstellt Entwürfe. Do Not Contact wirkt sofort im CRM (keine Anruf-Empfehlung, kein Follow-up,
 // keine Outreach-Queue) und – über lead-registry.js registryBlock – auf neue Cold-Entwürfe des Mail-Workers.
-import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines, issueLink, crmAdmission, ADMISSION_STATES } from "./public/crm-model.js";
+import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines, issueLink, crmAdmission, ADMISSION_STATES, ACTIVE_ADMISSIONS } from "./public/crm-model.js";
 import { siteHealth, httpStatusOf, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES, AREAS } from "./site-findings.js";
 import { buildIndex, findId, normCompany } from "./lead-db.js";
 import { displayCategory } from "./category-labels.js";
+import { phonebookFromRecord, PHONEBOOK_STATES, PROVIDER_NOT_CONFIGURED } from "./phonebook-compliance.js";
 
 export const CRM_FILE = "lead_crm.json";
 export const CRM_AUDIT_FILE = "crm_audit.jsonl";
@@ -103,7 +104,7 @@ export function normalizeCrmState(s, now = new Date()) {
 export const newCrmEntry = (lead_id, now = new Date()) => ({
   lead_id, sales_stage: null, contact_status: null, call_status: "NOT_CALLED", last_contact_at: null, next_action: null, next_action_at: null,
   notes: [], call_history: [], do_not_contact: false, do_not_contact_at: null, do_not_contact_reason: null, archived: false, archived_at: null,
-  created_at: now.toISOString(), updated_at: now.toISOString(),
+  contact_form_handled_at: null, created_at: now.toISOString(), updated_at: now.toISOString(),
 });
 
 // ---------- Sicht: Quellen + CRM zur Laufzeit zusammenführen ----------
@@ -119,11 +120,67 @@ export const qualifiedPreDraft = (l) => !!l && PRE_DRAFT_STATUSES.has(l.status) 
   && (Array.isArray(l.customer_visible_findings) ? l.customer_visible_findings : []).some((f) => str(typeof f === "string" ? f : f?.text, 240));
 // TF-058: historischer Discovery-Fund – Firma, Domain, Audit-Zeitpunkt und ≥ 1 belegter, für Besucher sichtbarer Befund.
 export const HISTORY_BADGES = Object.freeze(["HISTORICAL", "REVERIFIED"]);
-// TF-075A: Kontaktformular-Anfrage zu diesem Lead (nur zugeordnete Anfragen; Status-Wörter, nie Mailinhalt/Header).
-export const CONTACT_FORM_STATUSES = Object.freeze(["NEW", "DRAFT_CREATED", "REVIEW_REQUIRED"]);
+// TF-075A: Kontaktformular-Anfrage zu diesem Lead (Status-Wörter, nie Mailinhalt/Header).
+// TF-077B CONTACT_FORM_P0: zusätzlich lead_source/priority_class/priority_at, Einsendungs-Kennung (Hash), Zustand, Verifizierung, Kurzfassung,
+// Rückrufwunsch (nur ausdrücklich, mit Beleg) und – vom CRM berechnet – offen/erledigt (open, open_since, resolution) + Anruf-Kennzeichen.
+export const CONTACT_FORM_STATUSES = Object.freeze(["NEW", "DRAFT_CREATED", "REVIEW_REQUIRED", "REPLY_SENT"]);
+export const CONTACT_FORM_RESOLUTIONS = Object.freeze(["CONTACT_FORM_HANDLED", "CUSTOMER_REACHED", "CALLBACK_SCHEDULED", "NOT_INTERESTED", "ORDER_CREATED", "DNC"]);
+export const CONTACT_FORM_CALL = Object.freeze(["CALLBACK_REQUESTED", "CALL_NOT_CURRENTLY_ELIGIBLE"]);
 export function cleanContactForm(c) {
   if (!c || typeof c !== "object" || !CONTACT_FORM_STATUSES.includes(c.status)) return null;
-  return { status: c.status, matched: c.matched === true, received_at: iso(c.received_at), count: Number.isInteger(c.count) ? Math.max(1, Math.min(1000, c.count)) : 1 };
+  const out = { status: c.status, matched: c.matched === true, received_at: iso(c.received_at), count: Number.isInteger(c.count) ? Math.max(1, Math.min(1000, c.count)) : 1 };
+  if (c.lead_source !== "CONTACT_FORM") return out;
+  return { ...out, lead_source: "CONTACT_FORM", priority_class: "CONTACT_FORM_P0", priority_at: iso(c.priority_at),
+    submission_id: typeof c.submission_id === "string" && /^cf:[0-9a-f]{24}$/.test(c.submission_id) ? c.submission_id : null,
+    contact_form_status: typeof c.contact_form_status === "string" && /^CONTACT_FORM_[A-Z_]{2,40}$/.test(c.contact_form_status) ? c.contact_form_status : null,
+    verified: c.verified === true, inbound: c.inbound === true, summary: text(c.summary, 200), name: str(c.name, 120),
+    email: typeof c.email === "string" && EMAIL_RE.test(c.email) && c.email.length <= 200 ? c.email : null,
+    phone: typeof c.phone === "string" && /^[+0-9 ()\/.-]{6,30}$/.test(c.phone) ? c.phone : null,
+    reply_sent_at: iso(c.reply_sent_at), callback_requested: c.callback_requested === true, callback_evidence: c.callback_requested === true ? str(c.callback_evidence, 120) : null,
+    callback_phone_match: c.callback_phone_match === true, open: c.open === true, open_since: iso(c.open_since), resolution: oneOf(c.resolution, CONTACT_FORM_RESOLUTIONS),
+    resolved_at: iso(c.resolved_at), call_eligibility: oneOf(c.call_eligibility, CONTACT_FORM_CALL, "CALL_NOT_CURRENTLY_ELIGIBLE") };
+}
+// Kontaktformular-Einträge je CRM-Lead. Eine nicht zugeordnete Anfrage, deren Adresse/Domain die Lead-Datenbank doch kennt, wird auf DIESEN
+// Lead gelegt (nie ein zweiter Datensatz). Gecacht je gelesener Datei.
+const cfCache = new WeakMap();
+const mergeCf = (a, b) => { const [x, y] = [a, b].sort((p, q) => String(p.received_at).localeCompare(String(q.received_at)));
+  return { ...y, matched: !!(x.matched || y.matched), count: (x.count || 1) + (y.count || 1), priority_at: [x.priority_at, y.priority_at].filter(Boolean).sort()[0] || null,
+    submissions: [...(x.submissions || []), ...(y.submissions || [])].sort((p, q) => String(p.received_at).localeCompare(String(q.received_at))).slice(-10) }; };
+export function contactFormLeads(src = {}) {
+  const raw = src.contactForms?.leads;
+  if (!raw || typeof raw !== "object") return {};
+  const hit = cfCache.get(raw);
+  if (hit) return hit;
+  const leads = src.registry?.leads || {};
+  const idx = { ...buildIndex(leads), ids: new Set(Object.keys(leads)) };
+  const out = {};
+  for (const [id, c] of Object.entries(raw)) {
+    if (!c || typeof c !== "object" || !LEAD_ID_RE.test(id)) continue;
+    let target = id;
+    if (c.lead_source === "CONTACT_FORM" && !c.matched && !leads[id]) target = findId(idx, { domain: id.includes("@") || id.startsWith("cf-") ? "" : id, email: c.email || "" }) || id;
+    out[target] = out[target] ? mergeCf(out[target], c) : c;
+  }
+  cfCache.set(raw, out);
+  return out;
+}
+const CF_REACHED = new Set(["SPOKE_TO_EMPLOYEE", "SPOKE_TO_DECISION_MAKER", "INTERESTED"]);
+// Wann endet CONTACT_FORM_P0? Ausdrücklich erledigt / Kunde erreicht / Rückruf vereinbart (nach der Anfrage) – oder Kein Interesse / Auftrag / DNC.
+// Eine neue Einsendung NACH der Erledigung öffnet den Lead wieder (neue Interaktion). Die Historie bleibt (Einsendungen, Anrufe, Notizen).
+export function contactFormState(cf, lead, crm) {
+  const subs = [...new Set([...(Array.isArray(cf.submissions) ? cf.submissions.map((s) => iso(s?.received_at)) : []), iso(cf.received_at)].filter(Boolean))].sort();
+  const untimed = lead.do_not_contact ? "DNC" : lead.customer ? "ORDER_CREATED" : lead.sales_stage === "NOT_INTERESTED" || lead.call_status === "NOT_INTERESTED" ? "NOT_INTERESTED" : null;
+  // Reihenfolge = Vorrang bei gleichem Zeitpunkt (stabile Sortierung, der zuletzt eingefügte gewinnt): Kontaktstatus < Anruf < ausdrücklich erledigt.
+  const timed = [];
+  if (["REACHED", "MEETING"].includes(lead.contact_status) && iso(lead.last_contact_at)) timed.push(["CUSTOMER_REACHED", lead.last_contact_at]);
+  for (const c of lead.call_history || []) {
+    if (!iso(c.at)) continue;
+    if (c.result === "CALLBACK_REQUESTED" || c.follow_up_at) timed.push(["CALLBACK_SCHEDULED", c.at]);
+    else if (CF_REACHED.has(c.result)) timed.push(["CUSTOMER_REACHED", c.at]);
+  }
+  if (iso(crm?.contact_form_handled_at)) timed.push(["CONTACT_FORM_HANDLED", crm.contact_form_handled_at]);
+  const last = timed.sort((a, b) => a[1].localeCompare(b[1])).at(-1) || null;
+  const open = untimed ? [] : subs.filter((s) => !last || s > last[1]);
+  return { open: open.length > 0, open_since: open[0] || null, resolution: untimed || (open.length ? null : last?.[0] || null), resolved_at: untimed ? null : open.length ? null : last?.[1] || null };
 }
 const histValid = (h) => !!h && typeof h === "object" && LEAD_ID_RE.test(String(h.domain || "")) && !!str(h.company, 120) && !!iso(h.last_verified_at)
   && Array.isArray(h.verified_findings) && h.verified_findings.some((f) => str(f?.text, 240));
@@ -139,6 +196,8 @@ export function crmUniverse(src = {}, now = new Date()) {
   for (const [id, l] of Object.entries(leads)) if (CRM_REGISTRY_STATUSES.has(l?.status) || l?.customer_status === "customer" || qualifiedPreDraft(l)) ids.add(id);
   // Cold-Entwurf in der Queue (queued) zählt schon – nicht erst mit gmail_draft_id.
   for (const [id, r] of Object.entries(src.reviews || {})) if (r?.draft_mode === COLD_MODE && (r.gmail_draft_id || r.status === "queued")) ids.add(id);
+  // TF-077B: jede Kontaktformular-Anfrage mit gültiger Kundenadresse ist ein CRM-Lead (neu angelegt oder bestehender Lead befördert).
+  for (const [id, c] of Object.entries(contactFormLeads(src))) if (c.lead_source === "CONTACT_FORM") ids.add(id);
   // Dedupe wie die Lead-Datenbank (Domain / geschäftliche Adresse / Firma): ein Eintrag ausserhalb der Datenbank, der dort schon als
   // anderer CRM-Lead geführt wird, ist kein zweiter Datensatz. Mit eigenen CRM-Daten (Notizen, Anrufe) bleibt er sichtbar – nie Datenverlust.
   const idx = { ...buildIndex(leads), ids: new Set(Object.keys(leads)) };
@@ -161,7 +220,7 @@ export function crmUniverse(src = {}, now = new Date()) {
   }
   return new Set([...ids].filter((id) => {
     if (!LEAD_ID_RE.test(id)) return false;
-    if (leads[id] || src.crm?.leads?.[id]) return true;
+    if (leads[id] || src.crm?.leads?.[id] || contactFormLeads(src)[id]?.lead_source === "CONTACT_FORM") return true;
     const dir = src.directory?.leads?.[id], rv = src.reviews?.[id], h = dir || rv ? null : historyOf(src, id);
     const hit = findId(idx, { domain: dir?.domain || rv?.domain || h?.domain || (id.includes("@") ? "" : id), email: dir?.email || rv?.recipient || h?.business_email || (id.includes("@") ? id : ""),
       company: dir?.company_name || rv?.company || h?.company });
@@ -202,7 +261,8 @@ export function effectiveStage(entry, f) {
 }
 export function buildCrmLead(id, src = {}, now = new Date()) {
   const reg = src.registry?.leads?.[id] || null, dir = src.directory?.leads?.[id] || null, rv = src.reviews?.[id] || null, crm = src.crm?.leads?.[id] || null;
-  const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || (id.includes("@") ? "" : id)) || null;
+  const cfSrc = contactFormLeads(src)[id] || null;
+  const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || (id.includes("@") || id.startsWith("cf-") ? "" : id)) || null;
   const hist = historyOf(src, domain); // TF-058: niedrigste Priorität – füllt nur, was Registry/Review/Verzeichnis nicht kennen
   const histOnly = !!hist && !reg && !dir && !rv;
   const d = draftInfo(dir, rv, src.gmail, reg);
@@ -219,16 +279,25 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   const regDnc = !!(reg?.do_not_contact || reg?.opt_out || reg?.suppressed);
   const flags = { do_not_contact: !!crm?.do_not_contact || regDnc, customer: reg?.customer_status === "customer", not_interested: reg?.customer_status === "not_interested",
     manual_sent: d.status === "MANUALLY_SENT" || !!reg?.manual_send_detected, replied: reg?.reply_status === "replied", draft_status: d.status };
+  // TF-077B: Lead, der nur aus einer Kontaktformular-Anfrage besteht (CONTACT_FORM_INBOUND) – Firma/Name, Adresse, Telefon und Markt aus der Anfrage.
+  const cfOnly = cfSrc?.lead_source === "CONTACT_FORM" && !reg && !dir && !rv && !hist;
+  const cfMarket = cfOnly && cfSrc.market === "VN" ? "VN" : "CH";
+  // Telefonbuch-Sternchen: nur aus einem ausdrücklichen, strukturierten Beleg (phonebook-compliance.js) – dann ist die Nummer nicht anrufbar.
+  const phonebook = phonebookFromRecord(dir, dir?.phone_normalized || null);
+  const cfTel = cfOnly && cfSrc.phone_e164 ? (cfMarket === "VN" ? telHrefVn(cfSrc.phone_e164) : telHref(cfSrc.phone_e164)) : null;
   const calls = Array.isArray(crm?.call_history) ? crm.call_history : [];
   const lastCall = calls.filter((c) => c.result !== "WRONG_NUMBER").map((c) => c.at).sort().at(-1) || null;
   const contactAuto = flags.replied ? "REPLIED" : calls.some((c) => REACHED.has(c.result)) ? "REACHED" : calls.length ? "CALLED" : flags.manual_sent ? "EMAIL_SENT" : "NOT_CONTACTED";
   const lead = {
     lead_id: id,
-    company: str(dir?.company_name || reg?.company || rv?.company || hist?.company, 120),
+    company: str(dir?.company_name || reg?.company || rv?.company || hist?.company || (cfOnly ? cfSrc.company || cfSrc.name : null), 120),
     domain,
-    website: httpUrl(dir?.website_url) || httpUrl(reg?.website) || httpUrl(hist?.website) || (domain ? `https://${domain}/` : null),
-    email: [dir?.email, reg?.business_email, rv?.recipient, hist?.business_email].map((e) => String(e || "").trim().toLowerCase()).find((e) => EMAIL_RE.test(e)) || null,
-    phone: str(dir?.phone, 30), phone_tel: telHref(dir?.phone_normalized), phone_confidence: oneOf(dir?.phone_confidence, ["high", "medium"]),
+    website: httpUrl(dir?.website_url) || httpUrl(reg?.website) || httpUrl(hist?.website) || (cfOnly ? httpUrl(cfSrc.website) : null) || (domain ? `https://${domain}/` : null),
+    email: [dir?.email, reg?.business_email, rv?.recipient, hist?.business_email, cfOnly ? cfSrc.email : null].map((e) => String(e || "").trim().toLowerCase()).find((e) => EMAIL_RE.test(e)) || null,
+    phone: str(dir?.phone || (cfOnly ? cfSrc.phone : null), 30), phone_tel: phonebook.status === "PHONEBOOK_STAR_PRESENT" ? null : telHref(dir?.phone_normalized) || cfTel,
+    phone_confidence: oneOf(dir?.phone_confidence, ["high", "medium"]),
+    ...(cfOnly && cfMarket === "VN" ? { market: "VN" } : {}),
+    phonebook: { status: phonebook.status, provider: src.phonebookProvider?.configured ? "PHONEBOOK_PROVIDER_CONFIGURED" : PROVIDER_NOT_CONFIGURED },
     first_name: str(dir?.first_name, 60), last_name: str(dir?.last_name, 60), role: str(dir?.role, 60),
     canton: str(reg?.canton || hist?.canton, 2), municipality: str(reg?.municipality || hist?.municipality, 60), category: str(displayCategory(reg?.category_label || reg?.category || hist?.category), 40), language: str(reg?.language, 2),
     website_reachable: dir?.enrichment?.status === "done" ? true : dir?.enrichment?.status === "failed" ? false : null,
@@ -251,8 +320,16 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     crm_created_at: iso(crm?.created_at),
     updated_at: maxIso(iso(crm?.updated_at), iso(dir?.contact_enriched_at), iso(reg?.last_updated_at), iso(rv?.updated_at), iso(dir?.first_seen_at), iso(hist?.updated_at)),
   };
-  const cf = cleanContactForm(src.contactForms?.leads?.[id]);
+  const cf = cleanContactForm(cfSrc);
   if (cf) lead.contact_form = cf; // nur wenn vorhanden – kein Zusatzgewicht in der Sicht für Leads ohne Anfrage
+  if (cf?.lead_source === "CONTACT_FORM") {
+    const st = contactFormState(cfSrc, lead, crm);
+    // Rückruf nur mit ausdrücklichem Wunsch + verifizierter Anfrage + Formular-Nummer = Lead-Nummer; sonst NICHT ANRUFBAR (rechtliche Gates bleiben).
+    const leadE164 = /^tel:(\+\d{8,15})$/.exec(String(lead.phone_tel || ""))?.[1] || null;
+    const phoneMatch = !!cfSrc.phone_e164 && cfSrc.phone_e164 === leadE164;
+    const callable = cf.callback_requested && cf.verified && phoneMatch && !lead.do_not_contact && phonebook.status !== "PHONEBOOK_STAR_PRESENT";
+    lead.contact_form = cleanContactForm({ ...cfSrc, ...st, inbound: cfOnly, callback_phone_match: phoneMatch, call_eligibility: callable ? "CALLBACK_REQUESTED" : "CALL_NOT_CURRENTLY_ELIGIBLE" });
+  }
   lead.priority = priorityOf(lead);
   lead.follow_up = followUpBucket(lead, now);
   lead.call_recommended = callRecommended(lead);
@@ -268,8 +345,8 @@ const REACHED = new Set(["CALLBACK_REQUESTED", "SPOKE_TO_EMPLOYEE", "SPOKE_TO_DE
 export function buildCrmView(src = {}, now = new Date()) {
   const ids = crmUniverse(src, now);
   const all = [...ids].map((id) => buildCrmLead(id, src, now));
-  const leads = [], excluded = Object.fromEntries(ADMISSION_STATES.filter((s) => !["VERIFIED_ERRORS", "CUSTOMER"].includes(s)).map((s) => [s, 0]));
-  for (const l of all) { if (l.admission === "VERIFIED_ERRORS" || l.admission === "CUSTOMER") leads.push(l); else excluded[l.admission] = (excluded[l.admission] || 0) + 1; }
+  const leads = [], excluded = Object.fromEntries(ADMISSION_STATES.filter((s) => !ACTIVE_ADMISSIONS.includes(s)).map((s) => [s, 0]));
+  for (const l of all) { if (ACTIVE_ADMISSIONS.includes(l.admission)) leads.push(l); else excluded[l.admission] = (excluded[l.admission] || 0) + 1; }
   return { generated_at: now.toISOString(), total: leads.length, candidates: all.length, excluded, leads };
 }
 
@@ -297,6 +374,8 @@ export const CRM_ACTIONS = Object.freeze({
   "crm.setNextAction": { kind: "write", params: ["lead_id", "next_action", "next_action_at"], required: ["lead_id"], label: "Follow-up setzen" },
   "crm.setDoNotContact": { kind: "write", params: ["lead_id", "value", "reason"], required: ["lead_id", "value"], label: "Do Not Contact" },
   "crm.archive": { kind: "write", params: ["lead_id", "value"], required: ["lead_id", "value"], label: "Archivieren" },
+  // TF-077B: Kontaktformular-Anfrage ausdrücklich erledigt (CONTACT_FORM_HANDLED) – beendet P0 bis zur nächsten neuen Einsendung; Historie bleibt.
+  "crm.resolveContactForm": { kind: "write", params: ["lead_id"], required: ["lead_id"], label: "Kontaktformular erledigt" },
 });
 const ACTION_RE = /^crm\.[A-Za-z]{3,40}$/;
 export function validateCrmAction(input, { now = new Date() } = {}) {
@@ -392,6 +471,10 @@ export function applyCrmAction(state, req, { now = new Date(), lookup } = {}) {
     case "crm.archive":
       set("archived", p.value); set("archived_at", p.value ? t : null);
       break;
+    case "crm.resolveContactForm":
+      if (!cur.contact_form || cur.contact_form.lead_source !== "CONTACT_FORM") return fail("NO_CONTACT_FORM", "Dieser Lead hat keine Kontaktformular-Anfrage.");
+      set("contact_form_handled_at", t);
+      break;
   }
   e.updated_at = t;
   state.leads[lead_id] = e;
@@ -434,6 +517,10 @@ export function cleanErrors(e) {
     repair: r ? { state: oneOf(r.state, ["READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"]), completion: oneOf(r.completion, ["FULL", "WITH_MANUAL_ITEMS"]),
       at: iso(r.at), repaired: cnt(r.repaired), manual_open: cnt(r.manual_open) } : null };
 }
+const cleanPhonebook = (p) => {
+  const status = oneOf(p?.status, PHONEBOOK_STATES, "PHONEBOOK_STAR_UNKNOWN"), provider = oneOf(p?.provider, ["PHONEBOOK_PROVIDER_CONFIGURED", PROVIDER_NOT_CONFIGURED], PROVIDER_NOT_CONFIGURED);
+  return status === "PHONEBOOK_STAR_UNKNOWN" && provider === PROVIDER_NOT_CONFIGURED ? null : { status, provider };
+};
 export function cleanCrmLead(l) {
   if (!l || typeof l !== "object" || !LEAD_ID_RE.test(String(l.lead_id || ""))) return null;
   const n = (v, lo, hi) => (Number.isInteger(v) ? Math.max(lo, Math.min(hi, v)) : 0);
@@ -442,7 +529,10 @@ export function cleanCrmLead(l) {
     lead_id: l.lead_id, company: str(l.company, 120), domain: str(l.domain, 120) && /^[a-z0-9.-]{3,253}$/.test(l.domain) ? l.domain : null, website: httpUrl(l.website),
     email: typeof l.email === "string" && EMAIL_RE.test(l.email) && l.email.length <= 200 ? l.email : null,
     phone: typeof l.phone === "string" && /^[+0-9 ()\/.-]{6,30}$/.test(l.phone) ? l.phone : null,
-    phone_tel: typeof l.phone_tel === "string" && (/^tel:\+41\d{9}$/.test(l.phone_tel) || (l.market === "VN" && /^tel:\+84\d{9,10}$/.test(l.phone_tel))) ? l.phone_tel : null, phone_confidence: oneOf(l.phone_confidence, ["high", "medium"]),
+    phone_tel: l.phonebook?.status !== "PHONEBOOK_STAR_PRESENT" && typeof l.phone_tel === "string" && (/^tel:\+41\d{9}$/.test(l.phone_tel) || (l.market === "VN" && /^tel:\+84\d{9,10}$/.test(l.phone_tel))) ? l.phone_tel : null, phone_confidence: oneOf(l.phone_confidence, ["high", "medium"]),
+    // TF-077B: Telefonbuch-Status (nur Wort + Anbieter-Zustand). Ohne Beleg und ohne Anbieter (Normalfall) weggelassen (Sichtgrösse) –
+    // die Oberfläche zeigt dann «Telefonbuch: NICHT GEPRÜFT» (PHONEBOOK_STAR_UNKNOWN, nie CLEAR).
+    ...(cleanPhonebook(l.phonebook) ? { phonebook: cleanPhonebook(l.phonebook) } : {}),
     first_name: str(l.first_name, 60), last_name: str(l.last_name, 60), role: str(l.role, 60),
     // TF-063: Markt (CH Standard, VN nur von der Vietnam-Discovery) + VN-Region (Verwaltungseinheit auf Provinzebene, Stand 2025).
     market: oneOf(l.market, ["CH", "VN"], "CH"), region: l.market === "VN" ? str(l.region, 60) : null, region_code: l.market === "VN" && typeof l.region_code === "string" && /^VN-[A-Z0-9-]{2,24}$/.test(l.region_code) ? l.region_code : null,

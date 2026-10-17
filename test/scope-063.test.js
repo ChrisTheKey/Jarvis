@@ -82,16 +82,18 @@ test("TF-063 Kudoshin-Entwurf nur für eigenen VN-Lead, Empfänger serverseitig,
   const withMail = leads.find((l) => l.email && !l.do_not_contact), dnc = leads.find((l) => l.do_not_contact), noMail = leads.find((l) => !l.email && !l.do_not_contact);
   const giu = (await list(t, "giuliano")).leads[0].lead_id;
   const draft = (u, body) => t.json(t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies[u], body: { op: "lead_draft", ...body } })));
+  // TF-077: Kudoshins eigene Mailbox ist nicht verbunden → kein Entwurf (nie über Chris' Gmail), nichts in der Warteschlange.
   const ok = await t.json(await t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies.Kudoshin, body: { op: "lead_draft", lead_id: withMail.lead_id, subject: "Chào anh/chị", body: "Nội dung" } })));
-  assert.equal(ok.status, 201);
-  const q = t.stores.mail.peek().requests.at(-1);
-  assert.equal(q.recipient, withMail.email); assert.equal(q.delivery, "draft"); assert.equal(q.requested_by, "Kudoshin");
+  assert.equal(ok.status, 403);
+  assert.equal(ok.body.code, "KUDOSHIN_MAILBOX_NOT_CONNECTED");
+  assert.equal(ok.body.mailbox, "hathanhlap261096@gmail.com");
+  assert.ok(!(t.stores.mail.peek()?.requests || []).length, "nichts in der Warteschlange");
   assert.ok(!JSON.stringify(ok.body).includes(withMail.email), "Antwort verrät die Adresse nicht");
   const bad = await (await t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies.Kudoshin, body: { op: "lead_draft", lead_id: withMail.lead_id, recipient: "fremd@example.com", subject: "s", body: "b" } }))).json();
   assert.equal(bad.code, "BAD_PARAMS", "kein beliebiger Empfänger");
   assert.equal((await t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies.Kudoshin, body: { op: "lead_draft", lead_id: giu, subject: "s", body: "b" } }))).status, 403, "CH-Lead");
-  assert.equal((await t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies.Kudoshin, body: { op: "lead_draft", lead_id: dnc.lead_id, subject: "s", body: "b" } }))).status, 409, "DNC");
-  if (noMail) assert.equal((await t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies.Kudoshin, body: { op: "lead_draft", lead_id: noMail.lead_id, subject: "s", body: "b" } }))).status, 400);
+  assert.equal((await t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies.Kudoshin, body: { op: "lead_draft", lead_id: dnc.lead_id, subject: "s", body: "b" } }))).status, 403, "DNC (Mailbox nicht verbunden)");
+  if (noMail) assert.equal((await t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies.Kudoshin, body: { op: "lead_draft", lead_id: noMail.lead_id, subject: "s", body: "b" } }))).status, 403);
   assert.equal((await t.mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies.mario, body: { op: "lead_draft", lead_id: withMail.lead_id, subject: "s", body: "b" } }))).status, 403, "Mario nicht für VN");
   const mine = await t.json(await t.mail(makeReq("/api/mail-requests", { cookie: t.cookies.mario })));
   assert.equal(mine.body.requests.length, 0, "Mario sieht keine fremden Mailaufträge");

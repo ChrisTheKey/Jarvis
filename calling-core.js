@@ -145,6 +145,9 @@ export function eligibility(lead, { consent = null, dncSet = null, now = new Dat
   if (!lead || typeof lead !== "object") return r("BLOCKED", "BLOCKED_OTHER", "UNKNOWN_LEAD");
   const market = marketOf(lead);
   if (isDnc(lead, consent, dncSet)) return r("BLOCKED", "BLOCKED_DNC", "DNC");
+  // TF-077B: ausdrücklich belegtes Telefonbuch-Sternchen (search.ch tel:nopromo → PHONEBOOK_STAR_PRESENT) bzw. Verzeichnis-Status STAR → nie ein
+  // Anruf, auch nicht mit CONTACT_FORM_P0. «Nicht geprüft» (UNKNOWN) ist kein Beleg für «kein Sternchen» – die übrigen Sperren gelten weiter.
+  if (lead.phonebook?.status === "PHONEBOOK_STAR_PRESENT" || consent?.directory?.status === "STAR") return r("BLOCKED", "BLOCKED_DIRECTORY", "PHONEBOOK_STAR_PRESENT");
   // TF-076: ohne ≥ 1 verifizierten Website-Fehler kein Anruf (zusätzlich zu allen Rechts-/Einwilligungs-Sperren, die bleiben).
   if (!crmActive(lead)) return r("BLOCKED", "BLOCKED_OTHER", "NO_VERIFIED_ERRORS");
   if (!CALLING_MARKETS.includes(market)) return r("BLOCKED", "BLOCKED_OTHER", "CH_CALLING_DISABLED"); // CH: keine Outbound-Calls durch den Agenten
@@ -156,7 +159,13 @@ export function eligibility(lead, { consent = null, dncSet = null, now = new Dat
   if (consent?.evidence?.revoked_at) return r("BLOCKED", "BLOCKED_DNC", "CONSENT_REVOKED");
   // Im Anruf selbst erbetener Rückruf (vom System mit call_id dokumentiert) – Zeitpunkt vom Kunden genannt.
   const cb = consent?.requested_callback && isoOk(consent.requested_callback.at) && typeof consent.requested_callback.call_id === "string" ? consent.requested_callback : null;
-  const basis = ev.ok ? "CONSENT" : cb ? "REQUESTED_CALLBACK" : null;
+  // TF-077B: ausdrücklicher Rückrufwunsch in einer VERIFIZIERTEN Kontaktformular-Anfrage (Beleg: Einsendungs-Kennung + wörtliche Formulierung,
+  // Formular-Nummer = Lead-Nummer). Ein ausgefülltes Telefonfeld allein ist nie eine Grundlage. DNC-Register, Rechtsprüfung, Zeitfenster und
+  // Frequenz gelten unverändert (unten).
+  const cf = lead.contact_form;
+  const cfcb = cf?.lead_source === "CONTACT_FORM" && cf.callback_requested === true && cf.verified === true && cf.callback_phone_match === true
+    && typeof cf.submission_id === "string" && typeof cf.callback_evidence === "string" && isoOk(cf.received_at) ? cf : null;
+  const basis = ev.ok ? "CONSENT" : cb ? "REQUESTED_CALLBACK" : cfcb ? "CONTACT_FORM_CALLBACK" : null;
   // Öffentliche Nummer, Website-Fehler, Kudoshin-Klick oder Chris-Freigabe sind KEINE Grundlage.
   if (!basis) return r("BLOCKED", "BLOCKED_CONSENT", consent?.evidence ? ev.code : "CALL_CONSENT_UNKNOWN");
   const reg = consent?.dnc_registry;

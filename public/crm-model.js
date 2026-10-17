@@ -81,12 +81,44 @@ export const ERROR_BUCKETS = Object.freeze(["0", "1-2", "3-5", "6+"]);
 // TF-076: die Übertragung lässt errors.top weg (= die ersten zwei Einträge von items) – dann aus items abgeleitet.
 export const topIssues = (l) => { const e = errs(l); return (Array.isArray(e.top) && e.top.length ? e.top : Array.isArray(e.items) ? e.items : []).slice(0, 2); };
 
+// ---------- TF-077B: «E-Mail lossenden» (SEND_PREPARED_LEAD_DRAFT) – Zustand je Lead und Entwurf (nur Anzeige) ----------
+// requests = eigene Sendeaufträge (/api/mail-requests, Verkäufer-Sicht). Gesendet gilt nur, was der Mail-Worker als gesendet meldet bzw. was
+// das CRM als manuell/vom Verkäufer gesendet führt – nie aus dem Klick allein.
+export const SEND_STATES = Object.freeze(["NO_DRAFT", "DRAFT_READY", "SEND_IN_PROGRESS", "SENT", "SEND_FAILED"]);
+export function sellerSendState(lead, requests = []) {
+  if (!lead) return "NO_DRAFT";
+  const mine = (Array.isArray(requests) ? requests : []).filter((r) => r && r.delivery === "send_prepared" && r.lead_id === lead.lead_id);
+  if (lead.draft_status === "MANUALLY_SENT" || mine.some((r) => r.status === "sent")) return "SENT";
+  if (!lead.draft_ref) return "NO_DRAFT";
+  const cur = mine.filter((r) => r.draft_ref === lead.draft_ref).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).at(-1);
+  if (!cur) return "DRAFT_READY";
+  if (["pending", "processing", "accepted_local"].includes(cur.status)) return "SEND_IN_PROGRESS";
+  return "SEND_FAILED"; // failed / blocked / expired – nie fälschlich «gesendet»; ein neuer Klick ist ein sicherer neuer Versuch
+}
+
+// ---------- TF-077B: Kontaktformular CONTACT_FORM_P0 (höchste Priorität, eigener Abschnitt ganz oben) ----------
+export const contactFormOpen = (l) => !!l?.contact_form && l.contact_form.lead_source === "CONTACT_FORM" && l.contact_form.open === true && !l.archived;
+// Rangstufe der kanonischen Reihenfolge: 0 offene Kontaktformular-Anfrage · 1 ausdrücklicher Rückruf/heisser Lead · 2 übrige.
+const HOT_STAGES = ["INTERESTED", "CHECK_150_INTEREST", "REPAIR_480_INTEREST"];
+export function hotRank(l, now = new Date()) {
+  if (contactFormOpen(l)) return 0;
+  if (!l?.do_not_contact && (l?.call_status === "CALLBACK_REQUESTED" || HOT_STAGES.includes(l?.sales_stage) || l?.replied === true || ["TODAY", "OVERDUE"].includes(followUpBucket(l, now)))) return 1;
+  return 2;
+}
+// Innerhalb von P0: älteste unbeantwortete Anfrage zuerst (nichts wird vergessen), dann Eingang, dann Lead-ID (deterministisch).
+const cfOrder = (a, b) => String(a.contact_form?.open_since || a.contact_form?.received_at || "").localeCompare(String(b.contact_form?.open_since || b.contact_form?.received_at || ""))
+  || String(a.lead_id).localeCompare(String(b.lead_id));
+export const contactFormQueue = (list = []) => list.filter(contactFormOpen).sort(cfOrder);
+
 // ---------- TF-076: CRM-Aufnahmeregel (EINE Definition für VPS-Sicht, VN-Sicht, Cloud-Speicher/-Lesen, Calling, Zähler) ----------
 // Aktiver CRM-Lead = erfolgreich geprüft UND ≥ 1 aktuell verifizierter, für Besucher sichtbarer Website-Fehler (errors.items aus
 // site-findings.js siteHealth: nur gezählte, reproduzierbare Typen, RESOLVED fällt heraus). Ein unvollständiger/fehlgeschlagener Audit ist
 // NIE „sauber“: er bleibt ausserhalb des aktiven CRM, bis ein erfolgreicher Audit einen Fehler belegt. Ausnahme nur Kunden (Auftrag/
 // Kundenhistorie bleibt sichtbar, auch wenn die Reparatur alle Fehler behoben hat). Historie (lead_crm.json, Audits) wird nie gelöscht.
-export const ADMISSION_STATES = Object.freeze(["VERIFIED_ERRORS", "CUSTOMER", "NO_VERIFIED_ERRORS", "AUDIT_INCOMPLETE", "AUDIT_FAILED", "AUDIT_RETRY_REQUIRED"]);
+// TF-077B: CONTACT_FORM_INBOUND = eigener Pool für Kunden, die selbst das Kontaktformular abgeschickt haben – auch ohne Website-Fehler (eine
+// echte Anfrage wird nie verworfen). Das ist NICHT der Pool der gescrapten Fehler-Leads (VERIFIED_ERRORS); Zähler bleiben getrennt.
+export const ADMISSION_STATES = Object.freeze(["VERIFIED_ERRORS", "CUSTOMER", "CONTACT_FORM_INBOUND", "NO_VERIFIED_ERRORS", "AUDIT_INCOMPLETE", "AUDIT_FAILED", "AUDIT_RETRY_REQUIRED"]);
+export const ACTIVE_ADMISSIONS = Object.freeze(["VERIFIED_ERRORS", "CUSTOMER", "CONTACT_FORM_INBOUND"]);
 export const verifiedErrorCount = (l) => { const e = errs(l); if (e.audit === "NONE") return 0; const items = Array.isArray(e.items) ? e.items.filter((f) => f && f.status !== "RESOLVED").length : 0;
   return Math.max(items, Number.isInteger(e.count) ? e.count : 0); };
 // auditFailed: der letzte Audit-Versuch ist technisch gescheitert (Timeout, DNS, HTTP-Fehler, Absturz) – nur der VPS weiss das.
@@ -95,6 +127,7 @@ export function crmAdmission(l, { auditFailed = false } = {}) {
   if (n >= 1) return { active: true, state: "VERIFIED_ERRORS", count: n };
   // Kunde bzw. Lead mit Reparaturauftrag (errors.repair): Auftrag, Zahlung, Provision und Kundenhistorie bleiben sichtbar.
   if (l?.customer === true || (e.repair && typeof e.repair === "object")) return { active: true, state: "CUSTOMER", count: 0 };
+  if (l?.contact_form?.lead_source === "CONTACT_FORM") return { active: true, state: "CONTACT_FORM_INBOUND", count: 0 };
   // 0 Fehler aus einem VOLLSTÄNDIGEN Audit (aktuell oder veraltet) = geprüft und sauber.
   if ((e.audit === "FULL" || (e.audit === "STALE" && !!e.full_checked_at)) && Number.isInteger(e.count)) return { active: false, state: "NO_VERIFIED_ERRORS", count: 0 };
   if (auditFailed) return { active: false, state: "AUDIT_FAILED", count: 0 };
@@ -323,13 +356,17 @@ export function priorityOf(lead) {
   if (lead?.phone) add(2, "Telefon vorhanden");
   if (lead?.first_name && lead?.last_name) add(1, "Ansprechpartner vorhanden");
   if (findings.length >= 2) add(1, "2+ Befunde");
+  if (contactFormOpen(lead)) add(20, "Kontaktformular-Anfrage (P0)");
+  if (lead?.contact_form?.call_eligibility === "CALLBACK_REQUESTED" && contactFormOpen(lead)) add(3, "Rückruf erbeten");
   if (lead?.do_not_contact) add(-10, "Do Not Contact");
   if (lead?.sales_stage === "NOT_INTERESTED" || lead?.call_status === "NOT_INTERESTED") add(-5, "kein Interesse");
   const level = lead?.do_not_contact ? "LOW" : score >= 6 ? "HIGH" : score >= 3 ? "MEDIUM" : "LOW";
   return { score, level, reasons };
 }
 // Anruf-Empfehlung: nur mit Geschäftsnummer, nie bei Do Not Contact, abgeschlossenen Stufen oder „nicht anrufen“.
-export const callRecommended = (l) => !!l?.phone && !l.do_not_contact && !l.archived && !CLOSED_STAGES.includes(l.sales_stage) && !NO_CALL_STATUSES.includes(l.call_status);
+// TF-077B: ausdrücklich belegtes Telefonbuch-Sternchen → nie eine Anruf-Empfehlung (unabhängig von CONTACT_FORM_P0).
+export const callRecommended = (l) => !!l?.phone && !l.do_not_contact && !l.archived && !CLOSED_STAGES.includes(l.sales_stage) && !NO_CALL_STATUSES.includes(l.call_status)
+  && l.phonebook?.status !== "PHONEBOOK_STAR_PRESENT";
 // Outreach-Queue (nur Anzeige, nie Versand): offene Leads ohne Sperre.
 export const inOutreachQueue = (l) => !!l && !l.do_not_contact && !l.archived && ["NEW", "DRAFT_READY", "TO_CONTACT", "FOLLOW_UP"].includes(l.sales_stage);
 
@@ -348,6 +385,7 @@ export function searchMatch(l, q) {
 // Übersichtskarten = Schnellfilter (Zähler und Filter benutzen dieselbe Definition).
 export const CARDS = Object.freeze({
   all: { label: "Alle Leads", test: () => true },
+  contact_form: { label: "Kontaktformular – sofort", test: (l) => contactFormOpen(l) }, // TF-077B: CONTACT FORM HOT LEADS
   new: { label: "Neu", test: (l) => l.sales_stage === "NEW" },
   to_contact: { label: "Zu kontaktieren", test: (l) => !l.do_not_contact && ["DRAFT_READY", "TO_CONTACT"].includes(l.sales_stage) },
   contacted: { label: "Kontaktiert", test: (l) => ["CONTACTED", "FOLLOW_UP"].includes(l.sales_stage) },
@@ -364,7 +402,9 @@ export const CARDS = Object.freeze({
 // TF-058 Abzeichen historischer Discovery-Funde (low_score/no_contact/Backup/Recheck).
 export const HISTORY_LABEL = Object.freeze({ HISTORICAL: "HISTORISCHER FUND", REVERIFIED: "ERNEUT VERIFIZIERT" });
 // TF-075A: Kontaktformular-Anfrage (nur zugeordnete Leads): Abzeichen + Status.
-export const CONTACT_FORM_LABEL = Object.freeze({ badge: "CONTACT FORM", matched: "MATCHED", NEW: "NEW", DRAFT_CREATED: "DRAFT CREATED", REVIEW_REQUIRED: "REVIEW REQUIRED" });
+// TF-077B: deutsche Abzeichen (KONTAKTFORMULAR · NEU · ANTWORT GESENDET · SOFORT BEARBEITEN · RÜCKRUF · NICHT ANRUFBAR).
+export const CONTACT_FORM_LABEL = Object.freeze({ badge: "KONTAKTFORMULAR", matched: "ZUGEORDNET", NEW: "NEU", DRAFT_CREATED: "ENTWURF ERSTELLT", REVIEW_REQUIRED: "PRÜFEN",
+  REPLY_SENT: "ANTWORT GESENDET", urgent: "SOFORT BEARBEITEN", CALLBACK_REQUESTED: "RÜCKRUF", CALL_NOT_CURRENTLY_ELIGIBLE: "NICHT ANRUFBAR" });
 const yes = (v) => v === "1" || v === "yes" || v === true;
 const no = (v) => v === "0" || v === "no" || v === false;
 export function filterLeads(list = [], f = {}, now = new Date()) {
@@ -410,9 +450,12 @@ export const SORTS = Object.freeze({
   follow_up: { label: "Nächster Follow-up", cmp: (a, b) => (a.next_action_at ? 0 : 1) - (b.next_action_at ? 0 : 1) || String(a.next_action_at || "").localeCompare(String(b.next_action_at || "")) },
   updated: { label: "Zuletzt aktualisiert", cmp: (a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")) },
 });
-export function sortLeads(list = [], key = "priority") {
+// TF-077B kanonische Reihenfolge: offene Kontaktformular-Anfragen stehen IMMER zuoberst (älteste unbeantwortete zuerst) – in jeder Sortierung.
+// In der Standardsortierung (Priorität) folgen ausdrückliche Rückrufe/heisse Leads, dann die übrigen qualifizierten Leads.
+export function sortLeads(list = [], key = "priority", now = new Date()) {
   const s = SORTS[key] || SORTS.priority;
-  return [...list].sort((a, b) => s.cmp(a, b) || SORTS.company.cmp(a, b));
+  const rank = (l) => (s === SORTS.priority ? hotRank(l, now) : contactFormOpen(l) ? 0 : 1);
+  return [...list].sort((a, b) => rank(a) - rank(b) || (contactFormOpen(a) && contactFormOpen(b) ? cfOrder(a, b) : 0) || s.cmp(a, b) || SORTS.company.cmp(a, b));
 }
 // „Next best lead“: höchste Priorität unter den offenen, nicht gesperrten Leads (Anzeige – keine Aktion).
 export function nextBestLead(list = []) {
@@ -424,6 +467,10 @@ export function crmStats(list = [], now = new Date()) {
   out.archived = list.filter((l) => l.archived).length;
   out.all = list.filter((l) => !l.archived).length;
   out.follow_ups_overdue = list.filter((l) => followUpBucket(l, now) === "OVERDUE").length;
+  // TF-077B: getrennte Zähler – gescrapte Leads mit ≥ 1 verifiziertem Fehler vs. offene Kontaktformular-Anfragen (inkl. Inbound ohne Fehler).
+  out.verified_error_leads = list.filter((l) => !l.archived && verifiedErrorCount(l) >= 1).length;
+  out.contact_form_hot = list.filter(contactFormOpen).length;
+  out.contact_form_inbound = list.filter((l) => !l.archived && crmAdmission(l).state === "CONTACT_FORM_INBOUND").length;
   return out;
 }
 

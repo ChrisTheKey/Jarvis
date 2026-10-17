@@ -244,7 +244,9 @@ test("Empfänger: Header-Injection und mehrere Empfänger werden blockiert", () 
 // ---------- 25. Entwurf ----------
 test("Entwurf: gültige Anfrage → genau 1 Gmail-Entwurf (CONTACT_FORM_DRAFT_ONLY), nichts gesendet – auch mit compliant_auto", async () => {
   live({ sendMode: "compliant_auto" });
-  add(formMsg());
+  // TF-077B: ohne registriertes Formular/Empfangspostfach ist die Anfrage NICHT verifiziert → weiterhin nur Entwurf (REVIEW_REQUIRED).
+  const long = "Unsere Website lädt sehr langsam. Können Sie uns helfen? " + "Mehr Details folgen. ".repeat(12) + "GEHEIMES-ENDE";
+  add(formMsg({ message: long }));
   const r = await worker().tick();
   assert.equal(cfDrafts().length, 1);
   assert.equal(cfDrafts()[0].to, "anna@kunde-firma.ch");
@@ -255,7 +257,10 @@ test("Entwurf: gültige Anfrage → genau 1 Gmail-Entwurf (CONTACT_FORM_DRAFT_ON
   assert.ok(NEVER_SEND_MODES.includes(CONTACT_FORM_DRAFT_MODE));
   assert.throws(() => assertSendable("dr1", g.reg), /CONTACT_FORM_DRAFT_ONLY/, "gmail.js verweigert jeden Send");
   const stored = fs.readFileSync(path.join(dir, CONTACT_FORMS_FILE), "utf8");
-  assert.ok(!stored.includes("lädt sehr langsam"), "Mailtext wird nie gespeichert");
+  // TF-077B: nur eine Kurzfassung (≤ 200 Zeichen) für das CRM – nie der volle Mailtext.
+  assert.ok(!stored.includes("GEHEIMES-ENDE"), "voller Mailtext wird nie gespeichert");
+  assert.ok(items()[0].summary.length <= 200);
+  assert.equal(items()[0].verification, "CONTACT_FORM_REVIEW_REQUIRED");
 });
 
 test("Entwurf: dieselbe Nachricht zweimal / doppelte Zustellung desselben Anbieter-Events → weiterhin genau 1 Entwurf", async () => {
@@ -371,7 +376,10 @@ test("Zuordnung: unbekannte legitime Anfrage → UNMATCHED, Entwurf ohne fremden
   assert.deepEqual([it.match_state, it.lead_id, it.order_id, it.company], [MATCH.UNMATCHED, null, null, null]);
   assert.equal(cfDrafts().length, 1);
   assert.doesNotMatch(cfDrafts()[0].body, /Kunde Firma/);
-  assert.deepEqual(read(CONTACT_FORMS_PUBLIC_FILE).leads, {}, "ohne Zuordnung kein CRM-Abzeichen");
+  // TF-077B (geändert): eine legitime, nicht zugeordnete Anfrage legt einen eigenen CRM-Lead an (Domain der Geschäftsadresse) – nie den fremden Lead.
+  const pub = read(CONTACT_FORMS_PUBLIC_FILE).leads;
+  assert.deepEqual(Object.keys(pub), ["unbekannt-gmbh.ch"]);
+  assert.deepEqual([pub["unbekannt-gmbh.ch"].matched, pub["unbekannt-gmbh.ch"].priority_class, pub["unbekannt-gmbh.ch"].email], [false, "CONTACT_FORM_P0", "neu@unbekannt-gmbh.ch"]);
 });
 
 test("Zuordnung: nur ähnlicher Kundenname → nie verknüpft", () => {
@@ -387,11 +395,12 @@ test("CRM: CONTACT-FORM-Abzeichen nur mit Status-Wörtern, RBAC unverändert", (
   const pub = publicContactForms({ items: {
     a: { lead_id: "kunde-firma.ch", match_state: MATCH.LEAD, state: STATES.DRAFTED, received_at: "2026-10-16T08:00:00.000Z", customer_email: "anna@kunde-firma.ch" },
     b: { lead_id: null, match_state: MATCH.UNMATCHED, state: STATES.NEW, received_at: "2026-10-16T08:00:00.000Z", customer_email: "x@y.ch" } } });
-  assert.deepEqual(Object.keys(pub.leads), ["kunde-firma.ch"]);
-  assert.ok(!JSON.stringify(pub).includes("@"), "keine Adressen in der öffentlichen Sicht");
+  // TF-077B (geändert): auch die nicht zugeordnete Anfrage wird ein CRM-Lead (Domain y.ch); die Kundenadresse steht in der VPS-internen Sicht.
+  assert.deepEqual(Object.keys(pub.leads).sort(), ["kunde-firma.ch", "y.ch"]);
   const src = { registry: { leads: { "kunde-firma.ch": { lead_id: "kunde-firma.ch", domain: "kunde-firma.ch", status: "MANUALLY_SENT", company: "Kunde Firma AG" } } }, contactForms: pub };
   const lead = cleanCrmLead(buildCrmLead("kunde-firma.ch", src, T0));
-  assert.deepEqual(lead.contact_form, { status: "DRAFT_CREATED", matched: true, received_at: "2026-10-16T08:00:00.000Z", count: 1 });
+  assert.deepEqual([lead.contact_form.status, lead.contact_form.matched, lead.contact_form.received_at, lead.contact_form.count, lead.contact_form.priority_class, lead.contact_form.open],
+    ["DRAFT_CREATED", true, "2026-10-16T08:00:00.000Z", 1, "CONTACT_FORM_P0", true]);
   assert.equal(cleanCrmLead({ ...lead, contact_form: { status: "<script>", matched: true } }).contact_form, undefined);
   assert.equal("contact_form" in buildCrmLead("kunde-firma.ch", { ...src, contactForms: { leads: {} } }, T0), false, "ohne Anfrage kein Feld (Sichtgrösse)");
   const doc = { assignments: { "kunde-firma.ch": { assigned_user_id: "mario", market: "CH" } } };

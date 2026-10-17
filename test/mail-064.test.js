@@ -57,14 +57,20 @@ test("TF-064 Mail A: CH-Entwurf (Owner) – bestehende deutsche Signatur und Abm
   assert.equal(senderProfileFor(null, CH_SENDER).sender, CH_SENDER, "CH-Profil = cfg.sender (unverändert)");
 });
 
-test("TF-064 Mail B–H, J: Kudoshin-VN-Entwurf – exakt vietnamesische Kudoshin-Signatur + vi-Abmeldezeile, keine CH-Fusszeile, DRAFT_ONLY, Metadaten serverseitig", async () => {
+// TF-077: Entwürfe entstehen im einzigen verbundenen Gmail (Chris). Kudoshins eigene Mailbox ist nicht verbunden → sein Auftrag wird abgelehnt
+// (KUDOSHIN_MAILBOX_NOT_CONNECTED, nichts in der Warteschlange); das VN-Profil (Lap-Signatur) gilt weiter für VN-Entwürfe des Owners.
+test("TF-064 Mail B–H, J: VN-Entwurf – exakt vietnamesische Lap-Signatur + vi-Abmeldezeile, keine CH-Fusszeile, DRAFT_ONLY, Metadaten serverseitig", async () => {
   // J: Metadaten aus dem Browser werden abgelehnt; der Server setzt sie aus Session + Lead.
   assert.equal((await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", subject: "Website", body: VN_BODY, meta: { market: "CH" } }, as("Kudoshin")))).status, 400);
-  const r = await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", subject: "Website của anh/chị", body: VN_BODY }, as("Kudoshin")));
+  const k = await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", subject: "Website của anh/chị", body: VN_BODY }, as("Kudoshin")));
+  assert.equal(k.status, 403);
+  assert.equal((await k.json()).code, "KUDOSHIN_MAILBOX_NOT_CONNECTED");
+  assert.equal((await blob.get()).state, null, "kein Fallback auf Chris' Gmail");
+  const r = await handler(req("POST", { op: "lead_draft", lead_id: "vn-a.vn", subject: "Website của anh/chị", body: VN_BODY }, as("chris")));
   assert.equal(r.status, 201);
   const q = (await blob.get()).state.requests[0];
-  assert.deepEqual(q.meta, { actor_user_id: "Kudoshin", market: "VN", locale: "vi-VN", lead_id: "vn-a.vn" });
-  assert.deepEqual([q.recipient, q.delivery, q.requested_by], ["lienhe@vn-a.vn", "draft", "Kudoshin"]);
+  assert.deepEqual(q.meta, { actor_user_id: "chris", market: "VN", locale: "vi-VN", lead_id: "vn-a.vn" });
+  assert.deepEqual([q.recipient, q.delivery, q.requested_by], ["lienhe@vn-a.vn", "draft", "chris"]);
   await iterate();
   const d = draftTo("lienhe@vn-a.vn");
   assert.ok(d, "Entwurf angelegt (Lab-Gmail)");

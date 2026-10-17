@@ -301,10 +301,10 @@ test("TF-070 CRM-/Mail-Aufträge: «lap»-Aufträge gehören Kudoshin (Metadaten
   assert.deepEqual([stored.requested_by, stored.meta.actor_user_id, stored.meta.market], [K, K, "VN"]);
   assert.equal(senderProfileFor(stored.meta).id, "vn");
   assert.equal(migrateMailQueue(mailStore.peek()).changed, false);
-  // Neuer Entwurf: Metadaten actor Kudoshin bleiben erhalten (Grossbuchstaben erlaubt).
+  // TF-077: neuer Entwurf von Kudoshin → abgelehnt (eigene Mailbox nicht verbunden, kein Fallback auf Chris' Gmail); Bestand unverändert.
   const lead = (await json(await t.crm(makeReq("/api/crm", t.as(K))))).body.leads.find((l) => l.email && !l.do_not_contact);
   const draft = await json(await mail(makeReq("/api/mail-requests", { method: "POST", cookie: t.cookies[K], body: { op: "lead_draft", lead_id: lead.lead_id, subject: "Xin chào", body: "Nội dung thư" } })));
-  assert.ok([200, 201, 202].includes(draft.status), JSON.stringify(draft.body));
-  const nr = mailStore.peek().requests.at(-1);
-  assert.deepEqual([nr.requested_by, nr.meta?.actor_user_id, nr.meta?.market], [K, K, "VN"]);
+  assert.equal(draft.status, 403);
+  assert.equal(draft.body.code, "KUDOSHIN_MAILBOX_NOT_CONNECTED");
+  assert.equal(mailStore.peek().requests.length, 1);
 });

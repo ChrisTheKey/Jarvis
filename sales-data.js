@@ -8,7 +8,9 @@ export function createSalesData({ getViewStore, getVnViewStore = null, getSalesS
   const read = async (get) => (get ? (await (await get()).get()).state : null);
   async function allLeads() {
     const [v, vn] = await Promise.all([read(getViewStore), read(getVnViewStore)]);
-    return [...(v?.leads || []).map((l) => ({ ...l, market: "CH" })), ...(vn?.leads || []).map((l) => ({ ...l, market: "VN" }))];
+    // TF-077B: VN-Kontaktformular-Inbound-Leads liegen im CH-CRM, gehören aber zum Markt VN (Bereich Kudoshin).
+    const chMarket = (l) => (l.market === "VN" && l.contact_form?.lead_source === "CONTACT_FORM" && l.contact_form.inbound === true ? "VN" : "CH");
+    return [...(v?.leads || []).map((l) => ({ ...l, market: chMarket(l) })), ...(vn?.leads || []).map((l) => ({ ...l, market: "VN" }))];
   }
   // TF-076: nur aktive CRM-Leads (≥ 1 verifizierter Website-Fehler) – Verkäufer-Zähler, Chat-Kontext, neue Aufträge.
   const leads = async () => (await allLeads()).filter(crmActive);

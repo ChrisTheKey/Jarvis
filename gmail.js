@@ -26,12 +26,16 @@ const REGISTRY_FILE = path.join(SECRETS, "gmail_jarvis.json");
 const API = "https://gmail.googleapis.com/gmail/v1/users/me";
 const SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.labels"];
 export const LABEL = "JARVIS";
-// TF-025: Cold-Lead-Entwürfe – Jarvis legt sie an, sendet sie aber NIE (weder Worker, VPS, Kampagne noch Cloud-Queue).
-// Nur Chris versendet sie selbst in Gmail. Diese Sperre sitzt hier, auf der untersten Ebene vor jedem Send.
+// TF-025: Cold-Lead-Entwürfe – Jarvis legt sie an, sendet sie aber NIE von sich aus (weder Worker, VPS, Kampagne noch Cloud-Queue).
+// Diese Sperre sitzt hier, auf der untersten Ebene vor jedem Send (sendDraft). Versendet werden sie nur durch einen Menschen: Chris in Gmail
+// oder (TF-077B) ein berechtigter Verkäufer per Klick über sendPreparedLeadDraft – je Klick genau ein Lead, genau dieser Entwurf.
 export const COLD_DRAFT_MODE = "COLD_LEAD_DRAFT_ONLY";
 // TF-075A: Antwort-Entwürfe auf Kontaktformular-Anfragen – Jarvis legt sie an, sendet sie aber NIE (nur Chris manuell in Gmail).
 export const CONTACT_FORM_DRAFT_MODE = "CONTACT_FORM_DRAFT_ONLY";
 export const NEVER_SEND_MODES = Object.freeze([COLD_DRAFT_MODE, CONTACT_FORM_DRAFT_MODE]);
+// TF-077B: automatische Erstantwort auf eine VERIFIZIERTE Kontaktformular-Anfrage (angefragte Antwort, kein Marketing) – genau einmal je
+// Formular-Einsendung (contactFormKey), nur über contact-form.js. Unverifizierte Anfragen bleiben CONTACT_FORM_DRAFT_ONLY.
+export const CONTACT_FORM_AUTO_REPLY_MODE = "CONTACT_FORM_AUTO_REPLY";
 // Einzige automatisch sendbare Service-Klassen für echte, bezahlte Kundenaufträge (TF-041, nach Zahlungsschwelle).
 // TF-066: + CUSTOMER_ONBOARDING_DIALOGUE – transaktionaler Dialog zu einem bestätigten, bezahlten Auftrag (nur im Auftrags-Thread).
 export const SERVICE_MESSAGE_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE"]);
@@ -320,7 +324,7 @@ export async function createDraft(fields) {
   if (fields.threadId && info.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
   const reply = fields.inReplyTo ? { inReplyTo: fields.inReplyTo, references: fields.references } : {};
   const cold = fields.mode === COLD_DRAFT_MODE ? { mode: COLD_DRAFT_MODE, leadId: fields.leadId || null, draftHash: fields.draftHash || null, legalBasis: "NONE" }
-    : fields.mode === CONTACT_FORM_DRAFT_MODE ? { mode: CONTACT_FORM_DRAFT_MODE, contactFormKey: String(fields.contactFormKey || "").slice(0, 40) || null, messageClass: "CONTACT_FORM_INQUIRY" } : {};
+    : [CONTACT_FORM_DRAFT_MODE, CONTACT_FORM_AUTO_REPLY_MODE].includes(fields.mode) ? { mode: fields.mode, contactFormKey: String(fields.contactFormKey || "").slice(0, 40) || null, messageClass: "CONTACT_FORM_INQUIRY" } : {};
   // Service-Mails bezahlter Kundenaufträge (TF-041) tragen ihre Nachrichtenklasse – nie zusammen mit einem Cold-Entwurf.
   const service = !cold.mode && SERVICE_MESSAGE_CLASSES.includes(fields.messageClass) ? { messageClass: fields.messageClass,
     ...(ORDER_ID_RE.test(String(fields.orderId || "")) ? { orderId: fields.orderId } : {}) } : {}; // TF-066: Auftrag des Service-Threads
@@ -372,8 +376,24 @@ export const assertSendable = (draftId, reg = loadRegistry()) => {
   if (reg.drafts?.[draftId]?.mode === COLD_DRAFT_MODE) throw new Error(`Entwurf ${draftId} ist ein Cold-Lead-Entwurf (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie. Nur Chris entscheidet manuell in Gmail.`);
   if (reg.drafts?.[draftId]?.mode === CONTACT_FORM_DRAFT_MODE) throw new Error(`Entwurf ${draftId} ist eine Kontaktformular-Antwort (CONTACT_FORM_DRAFT_ONLY) – Jarvis sendet sie nie. Nur Chris sendet manuell in Gmail.`);
 };
-export const sendDraft = async (draftId, { window = null } = {}) => { assertSendable(draftId); return withSendLock(async () => {
-  assertSendable(draftId);
+export const sendDraft = async (draftId, { window = null } = {}) => { assertSendable(draftId); return withSendLock(() => { assertSendable(draftId); return sendOwned(draftId, { window }); }); };
+
+// TF-077B SEND_PREPARED_LEAD_DRAFT: der EINZIGE Weg, auf dem Jarvis einen Cold-Lead-Entwurf sendet – nur auf ausdrücklichen Klick eines
+// berechtigten Verkäufers («E-Mail lossenden», je Klick genau ein Lead; Mail-Worker hat Bereich, Suppression, DNC und Send-Lock geprüft).
+// Hier zusätzlich: Entwurf von Jarvis (Register + Label + IDs), Modus COLD_LEAD_DRAFT_ONLY, gehört genau diesem Lead, Empfänger = CRM-Adresse,
+// Referenz = aktuelle Message-ID (ein geänderter Entwurf wird nie mit einer alten Referenz gesendet). Gmail verbraucht den Entwurf beim
+// Senden – ein zweiter Aufruf scheitert an assertOwnedDraft, es entsteht nie eine zweite Mail.
+export const sendPreparedLeadDraft = (draftId, { leadId, to, draftRef: ref, refOf, actor = null } = {}) => withSendLock(async () => {
+  const entry = loadRegistry().drafts?.[draftId];
+  const norm = (s) => (String(s || "").match(/<([^>]+)>/)?.[1] || String(s || "")).trim().toLowerCase();
+  if (!entry || entry.mode !== COLD_DRAFT_MODE) throw new Error(`Entwurf ${draftId} ist kein vorbereiteter Jarvis-Lead-Entwurf – nicht gesendet.`);
+  if (!leadId || entry.leadId !== leadId) throw new Error(`Entwurf ${draftId} gehört nicht zu diesem Lead – nicht gesendet.`);
+  if (!to || norm(entry.to) !== norm(to)) throw new Error(`Entwurf ${draftId}: Empfänger stimmt nicht mit dem CRM überein – nicht gesendet.`);
+  if (typeof refOf !== "function" || !ref || refOf(entry.messageId) !== ref) throw new Error(`Entwurf ${draftId} wurde geändert – nicht gesendet.`);
+  return sendOwned(draftId, { extra: { mode: COLD_DRAFT_MODE, leadId, draftRef: ref, sellerSend: true, ...(actor ? { sentBy: String(actor).slice(0, 20) } : {}), legalBasis: "NONE" } });
+});
+
+async function sendOwned(draftId, { window = null, extra = {} } = {}) {
   if (window !== null && !SEND_WINDOW_IDS.includes(window)) throw new Error(`Unbekanntes Versandfenster ${window} – nicht gesendet.`);
   const reg = loadRegistry();
   const { entry } = await assertOwnedDraft(draftId, reg);
@@ -390,10 +410,11 @@ export const sendDraft = async (draftId, { window = null } = {}) => { assertSend
     delete r.drafts[draftId];
     delete r.sending[draftId];
     r.sent[sent.id] = { ...info, to: entry.to, subject: entry.subject, fromDraft: draftId, ...(window && { window }),
-      ...(entry.messageClass ? { messageClass: entry.messageClass } : {}), ...(entry.orderId ? { orderId: entry.orderId } : {}), sentAt: new Date().toISOString() };
+      ...(entry.messageClass ? { messageClass: entry.messageClass } : {}), ...(entry.orderId ? { orderId: entry.orderId } : {}),
+      ...(entry.mode === CONTACT_FORM_AUTO_REPLY_MODE ? { mode: entry.mode, contactFormKey: entry.contactFormKey || null } : {}), ...extra, sentAt: new Date().toISOString() };
   });
   return info;
-}); };
+}
 
 // Verwirft einen EIGENEN Entwurf (z. B. DISCARD DRAFT im Dashboard). Fremde Entwürfe: assertOwnedDraft lehnt ab, bevor Gmail gefragt wird.
 export async function deleteDraft(draftId) {

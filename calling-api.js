@@ -167,7 +167,10 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
   async function allLeads() {
     const [v, vn] = await Promise.all([(await getViewStore()).get(), getVnViewStore ? (await getVnViewStore()).get() : { state: null }]);
     // TF-076: nur aktive CRM-Leads (≥ 1 verifizierter Website-Fehler) – ein Lead ohne Fehler kommt nie in eine Anrufliste.
-    return [...(v.state?.leads || []).map((l) => ({ ...l, market: "CH" })), ...(vn.state?.leads || []).map((l) => ({ ...l, market: "VN" }))].filter(crmActive);
+    // TF-077B: Kontaktformular-Leads (CONTACT_FORM_INBOUND) zählen als aktiv; VN-Inbound aus dem CH-CRM bleibt Markt VN. Höchste Anrufpriorität
+    // über priority.score (P0) – alle Rechts-/Einwilligungs-/DNC-/Telefonbuch-Sperren in eligibility() bleiben unverändert wirksam.
+    const chMarket = (l) => (l.market === "VN" && l.contact_form?.lead_source === "CONTACT_FORM" && l.contact_form.inbound === true ? "VN" : "CH");
+    return [...(v.state?.leads || []).map((l) => ({ ...l, market: chMarket(l) })), ...(vn.state?.leads || []).map((l) => ({ ...l, market: "VN" }))].filter(crmActive);
   }
   // System-Aufträge in die bestehende CRM-/VN-Warteschlange (gleiche crm.*-Allowlist, Akteur system:calling). Der jeweilige Dienst übernimmt sie.
   async function enqueueCrm(market, actions, t) {

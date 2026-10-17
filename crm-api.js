@@ -18,6 +18,7 @@ import { resolveActor, can, isOwner, deny, forbidden } from "./auth-core.js";
 import { scopeLeads, canSeeLead, leadMarket, fairDistribution, applyDistribution, distributionReport, emptyAssignments } from "./sales-scope.js";
 import { csvLabelsFor } from "./public/i18n.js";
 import { migrateCrmQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
+import { mailAccessFor, leadForMail } from "./mail-access.js";
 
 export const REQUEST_TTL_MS = 3 * 60_000;
 export const LEASE_MS = 2 * 60_000;
@@ -66,7 +67,11 @@ export function cleanVnLeads(list, chLeads = []) {
   return out;
 }
 // TF-076: CH-Sicht für den Speicher – Allowlist, Aufnahmeregel (≥ 1 verifizierter Fehler), errors.top weglassen (6-MB-Limit).
-export const cleanChLeads = (list) => (Array.isArray(list) ? list : []).map((l) => cleanCrmLead({ ...l, market: "CH" })).filter((l) => l && crmActive(l)).map(compactCrmLead);
+// TF-077B: eine Kontaktformular-Anfrage aus Vietnam ohne bestehenden Lead (CONTACT_FORM_INBOUND, im CH-CRM-Dienst geführt) behält Markt VN
+// → Bereich Kudoshin/Chris, nie ein Schweizer Verkäufer.
+const vnInbound = (l) => l?.market === "VN" && l.contact_form?.lead_source === "CONTACT_FORM" && l.contact_form.inbound === true;
+const chMarket = (l) => (vnInbound(l) ? "VN" : "CH");
+export const cleanChLeads = (list) => (Array.isArray(list) ? list : []).map((l) => cleanCrmLead({ ...l, market: chMarket(l) })).filter((l) => l && crmActive(l)).map(compactCrmLead);
 // Lesen: auch ein vor TF-076 gespeicherter Stand liefert nie einen Lead ohne verifizierten Fehler (Liste, Detail, Zähler, CSV, Schreib-Scope).
 export const activeLeads = (list) => (Array.isArray(list) ? list : []).filter(crmActive);
 
@@ -109,10 +114,13 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
   const readVnView = async () => (getVnViewStore ? (await (await getVnViewStore()).get()).state : null);
   const readAssignments = async () => (getSalesStore ? (await (await getSalesStore("assignments")).get()).state : null) || emptyAssignments();
   const readSalesConfig = async () => (getSalesStore ? (await (await getSalesStore("config")).get()).state : null) || {};
-  const chLeadsOf = (v) => activeLeads(v?.leads).map((l) => ({ ...l, market: "CH" }));
+  const chLeadsOf = (v) => activeLeads(v?.leads).map((l) => ({ ...l, market: chMarket(l) }));
   async function allLeads() {
     const [v, vn] = await Promise.all([readView(), readVnView()]);
-    return { v, vn, leads: [...chLeadsOf(v), ...activeLeads(vn?.leads)] };
+    // Kontaktformular eines bestehenden VN-Leads (Zuordnung über einen VN-Auftrag): Anfrage an den VN-Lead hängen – nie ein zweiter Datensatz.
+    const ch = chLeadsOf(v), vnl = activeLeads(vn?.leads), vnIds = new Set(vnl.map((l) => l.lead_id));
+    const cfVn = new Map(ch.filter((l) => vnInbound(l) && vnIds.has(l.lead_id)).map((l) => [l.lead_id, l.contact_form]));
+    return { v, vn, leads: [...ch.filter((l) => !cfVn.has(l.lead_id)), ...vnl.map((l) => (cfVn.has(l.lead_id) ? { ...l, contact_form: { ...cfVn.get(l.lead_id), inbound: false } } : l))] };
   }
   // Agent-Pull/Result für eine Warteschlange (CH- oder VN-Dienst).
   async function agentPull(mut, body, storeView) {
@@ -153,7 +161,7 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
     return reply(r.status, r.body);
   }
   const patchLeadIn = (getStore, market) => (lead) => patchStore(getStore, (v) => { if (!v || !Array.isArray(v.leads)) return null; const i = v.leads.findIndex((l) => l.lead_id === lead.lead_id); if (i < 0) return null;
-    if (!crmActive(lead)) v.leads.splice(i, 1); else v.leads[i] = compactCrmLead({ ...lead, market }); return v; });
+    if (!crmActive(lead)) v.leads.splice(i, 1); else v.leads[i] = compactCrmLead({ ...lead, market: market === "CH" ? chMarket(lead) : market }); return v; });
 
   // TF-070: CRM-Schreibaufträge des Kontos «lap» gehören Kudoshin – einmal je Instanz, idempotent (Audit bleibt unverändert).
   const migrateIdentity = migrateOnce(async () => {
@@ -267,7 +275,9 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
     const owner = isOwner(actor);
     const asg = await readAssignments();
     const { v, vn, leads: everything } = await allLeads();
-    const leads = scopeLeads(actor, everything, asg);
+    // TF-077: Mail-Aktionen je Benutzer – ohne Gmail-Recht nie eine Gmail-Entwurfs-URL in Liste, Detail oder Auftragsergebnis.
+    const mail = mailAccessFor(actor);
+    const leads = scopeLeads(actor, everything, asg).map((l) => leadForMail(l, mail));
     const mine = (r) => owner || r.actor_user_id === actor.user_id;
     if (req.method === "GET") {
       const q = url.searchParams;
@@ -304,7 +314,7 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
         r.body.requests = [...(r.body.requests || []), ...(rv.body?.requests || [])];
       }
       const markets = owner ? ["CH", "VN"] : actor.markets;
-      return reply(200, { configured: true, empty: !v && !vn, actor: { user_id: actor.user_id, role: actor.role, locale: actor.locale, markets },
+      return reply(200, { configured: true, empty: !v && !vn, actor: { user_id: actor.user_id, role: actor.role, locale: actor.locale, markets }, mail,
         generated_at: markets.includes("CH") ? v?.generated_at || null : vn?.generated_at || null, received_at: markets.includes("CH") ? v?.received_at || null : vn?.received_at || null,
         total: leads.length, stats: crmStats(leads, now()), backup: owner ? v?.backup || null : null, leads, ...r.body,
         online: markets.includes("CH") ? r.body.online : vnOnline, online_vn: vnOnline,
@@ -328,7 +338,8 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
     if (val.action === "crm.getLead") return lead ? reply(200, { lead }) : reply(404, { error: "Unbekannter Lead.", code: "UNKNOWN_LEAD" });
     if (!can(actor, "crm.write")) return forbidden();
     // Schreiben: nur bekannte Leads im Scope, nur mit erreichbarem Dienst des Markts, Rate Limit, Audit (mit Akteur).
-    const mut = lead && leadMarket(lead) === "VN" ? mutateVn : mutate;
+    // TF-077B: VN-Inbound-Leads aus dem Kontaktformular und das Erledigen einer Anfrage führt der CH-CRM-Dienst (dort liegt die Anfrage).
+    const mut = lead && leadMarket(lead) === "VN" && !vnInbound(lead) && val.action !== "crm.resolveContactForm" ? mutateVn : mutate;
     const r = await mut((cur, t) => {
       const rid = newId();
       if (!lead) { cur.audit.push(auditEntry(t, { request_id: rid, actor_user_id: actor.user_id, action: val.action, lead_id: val.params.lead_id, outcome: "denied", code: "UNKNOWN_LEAD" }));

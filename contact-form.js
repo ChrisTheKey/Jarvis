@@ -1,4 +1,9 @@
-// TF-075A: Kontaktformular-Anfragen (CONTACT_FORM_INQUIRY) – höchste Mail-Priorität P0, Antwort ausschliesslich als Gmail-ENTWURF.
+// TF-075A: Kontaktformular-Anfragen (CONTACT_FORM_INQUIRY) – höchste Mail-Priorität P0.
+// TF-077B (CONTACT_FORM_P0): eine VERIFIZIERTE Anfrage wird sofort automatisch beantwortet (CONTACT_FORM_REPLY_SENT, genau eine Antwort je
+// Einsendung). Verifiziert = bekannter Anbieter mit Gmail-bestätigtem DKIM/DMARC UND registriertes Formular UND konfiguriertes Empfangspostfach
+// UND Submission-ID UND Kundenadresse aus Reply-To/Formularfeld (verificationOf). Fehlt etwas → CONTACT_FORM_REVIEW_REQUIRED: nur Entwurf
+// (CONTACT_FORM_DRAFT_ONLY, wie TF-075A), nie ein automatischer Versand. Jede Anfrage mit gültiger Kundenadresse legt einen CRM-Lead an bzw.
+// befördert den bestehenden (publicContactForms → contact_forms_public.json → CRM-Dienst, Abschnitt KONTAKTFORMULAR – SOFORT BEARBEITEN).
 //
 //   - Gelesen werden NUR Benachrichtigungen bekannter Formular-Anbieter (Allowlist: Absenderadresse UND DKIM/DMARC-Pass laut
 //     Gmail-eigenem Authentication-Results-Header UND – falls konfiguriert – Empfangspostfach/Formularname). Ein From-Header allein
@@ -11,11 +16,16 @@
 //     RFC-Message-ID / Gmail-ID, Claim „drafting“ vor dem Gmail-Aufruf, unklarer Absturz → nie wiederholen, Prüfung).
 //   - Warteschlange: FIFO (received_at, dann Gmail-ID). Ein defektes Element wird nach MAX_ATTEMPTS endgültig markiert und blockiert
 //     nie die nächsten.
-//   - Gespeichert (contact_forms.json): nur Metadaten (Anbieter, Formular, Zeit, IDs, Kundenadresse, Zuordnung, Status) – nie der Mailtext.
+//   - Gespeichert (contact_forms.json): Metadaten (Anbieter, Formular, Zeit, IDs, Kundenadresse, Zuordnung, Status) + für das CRM eine
+//     Kurzfassung der Nachricht (≤ 200 Zeichen), Name, validiertes Telefon und – nur bei ausdrücklichem Wunsch – den Rückruf-Beleg.
+//     Nie der volle Mailtext, nie Header.
 import crypto from "node:crypto";
 
 export const CONTACT_FORM_CLASS = "CONTACT_FORM_INQUIRY";
 export const CONTACT_FORM_DRAFT_MODE = "CONTACT_FORM_DRAFT_ONLY";
+export const CONTACT_FORM_AUTO_REPLY_MODE = "CONTACT_FORM_AUTO_REPLY"; // = gmail.js (sendbar, nur hier)
+export const PRIORITY_CLASS = "CONTACT_FORM_P0";
+export const VERIFICATION = Object.freeze({ VERIFIED: "CONTACT_FORM_VERIFIED", REVIEW: "CONTACT_FORM_REVIEW_REQUIRED" });
 export const CONTACT_FORMS_FILE = "contact_forms.json";
 // CRM-/Dashboard-Sicht (nur Lead-ID → Status-Wörter, keine Adressen/Inhalte) – liest der CRM-Dienst.
 export const CONTACT_FORMS_PUBLIC_FILE = "contact_forms_public.json";
@@ -46,6 +56,9 @@ export const STATES = Object.freeze({
   UNKNOWN_FORM: "CONTACT_FORM_UNKNOWN_FORM_REVIEW_REQUIRED",
   FAILED: "CONTACT_FORM_FAILED",
   DRAFT_UNKNOWN: "CONTACT_FORM_DRAFT_UNKNOWN",
+  SENDING: "CONTACT_FORM_REPLY_SENDING", // Antwort-Entwurf (AUTO_REPLY) liegt in Gmail, Versand steht aus bzw. läuft
+  SENT: "CONTACT_FORM_REPLY_SENT",
+  SEND_UNKNOWN: "CONTACT_FORM_SEND_UNKNOWN", // Absturz/Unklarheit während des Sendens – nie automatisch wiederholen
 });
 export const MATCH = Object.freeze({
   LEAD: "CONTACT_FORM_MATCHED_LEAD",
@@ -53,7 +66,9 @@ export const MATCH = Object.freeze({
   UNMATCHED: "CONTACT_FORM_UNMATCHED",
   REVIEW: "CONTACT_FORM_MATCH_REVIEW_REQUIRED",
 });
-const REVIEW_STATES = new Set([STATES.RECIPIENT_REVIEW, STATES.INVALID, STATES.UNKNOWN_FORM, STATES.FAILED, STATES.DRAFT_UNKNOWN]);
+const REVIEW_STATES = new Set([STATES.RECIPIENT_REVIEW, STATES.INVALID, STATES.UNKNOWN_FORM, STATES.FAILED, STATES.DRAFT_UNKNOWN, STATES.SEND_UNKNOWN]);
+// Ohne gültige Kundenadresse kein CRM-Lead (Prüfung bei Chris); alle anderen Anfragen erscheinen im CRM.
+const NO_LEAD_STATES = new Set([STATES.RECIPIENT_REVIEW, STATES.INVALID, STATES.UNKNOWN_FORM]);
 
 // Bekannte Formular-Anbieter. from: exakte Absenderadressen der Benachrichtigung; dkim: Domains, deren DKIM-/DMARC-Pass Gmail
 // bestätigen muss. Weitere Anbieter / eigene Weiterleitungen: config.json contactForms.providers (gleiches Schema).
@@ -127,7 +142,42 @@ const NAME_KEYS = ["name", "full_name", "your_name", "ihr_name", "vorname_nachna
 const MSG_KEYS = ["message", "nachricht", "anliegen", "ihre_nachricht", "comments", "comment", "anfrage", "noi_dung", "nội_dung", "tin_nhan", "tin_nhắn"];
 const SUBJECT_KEYS = ["subject", "betreff", "thema", "tieu_de", "tiêu_đề"];
 const FORMNAME_KEYS = ["form_name", "form", "formular"];
+const PHONE_KEYS = ["phone", "telefon", "tel", "telefonnummer", "phone_number", "mobile", "handy", "natel", "ihre_telefonnummer", "so_dien_thoai", "số_điện_thoại", "dien_thoai", "điện_thoại"];
+const CALLBACK_KEYS = ["rueckruf", "rückruf", "callback", "call_back", "rueckruf_erwuenscht", "rückruf_erwünscht", "goi_lai", "gọi_lại"];
 const pick = (f, keys) => { for (const k of keys) if (typeof f[k] === "string" && f[k].trim()) return f[k].trim(); return ""; };
+
+// TF-077B: Telefonnummer aus dem Formular – nur validiert (CH +41 9 Ziffern, VN +84 9–10 Ziffern), gehört ausschliesslich zu dieser Einsendung.
+export function normalizePhone(raw, market = "CH") {
+  const s = String(raw || "").trim();
+  if (!s || s.length > 30 || !/^[+0-9 ()\/.-]+$/.test(s)) return null;
+  let d = s.replace(/[^\d+]/g, "");
+  if (d.startsWith("00")) d = "+" + d.slice(2);
+  if (/^0\d{9,10}$/.test(d)) d = (market === "VN" ? "+84" : "+41") + d.slice(1);
+  if (/^\+41\d{9}$/.test(d) || /^\+84\d{9,10}$/.test(d)) return { display: s, e164: d };
+  return null;
+}
+// Ausdrücklicher Rückrufwunsch – nur eindeutige Formulierungen bzw. ein ausdrücklich angekreuztes Rückruf-Feld. Ein ausgefülltes Telefonfeld
+// allein ist NIE ein Rückrufwunsch und nie eine Werbe-Einwilligung. Verneinungen («bitte nicht anrufen») heben ihn auf.
+const CALLBACK_RE = /bitte\s+rufen\s+sie\s+(?:mich|uns)\s+(?:bitte\s+)?(?:zurück|an)\b|rufen\s+sie\s+(?:mich|uns)\s+bitte\s+(?:zurück|an)\b|bitte\s+um\s+(?:einen\s+)?rückruf|rückruf\s+(?:erwünscht|erbeten|gewünscht)|ich\s+bitte\s+um\s+rückruf|please\s+call\s+me(?:\s+back)?|call\s+me\s+back|vui\s+lòng\s+gọi\s+(?:lại\s+)?cho\s+tôi|xin\s+gọi\s+lại\s+cho\s+tôi|hãy\s+gọi\s+lại\s+cho\s+tôi/iu;
+const NO_CALL_RE = /nicht\s+(?:an)?rufen|keine\s+anrufe|kein\s+(?:rück)?ruf|bitte\s+nur\s+(?:per\s+)?(?:e-?mail|mail|schriftlich)|do\s+not\s+call|don'?t\s+call|đừng\s+gọi|không\s+gọi/iu;
+export function callbackRequest(fields = {}, message = "") {
+  const text = String(message || "").normalize("NFC");
+  if (NO_CALL_RE.test(text)) return null;
+  const box = pick(fields, CALLBACK_KEYS);
+  if (box && /^(ja|yes|true|x|on|1|có|bitte)$/i.test(box.trim())) return { source: "FORM_FIELD", evidence: `Rückruf-Feld: ${box.trim().slice(0, 20)}` };
+  const m = text.match(CALLBACK_RE);
+  return m ? { source: "FORM_MESSAGE", evidence: m[0].replace(/\s+/g, " ").slice(0, 80) } : null;
+}
+// Verifizierung für die AUTOMATISCHE Antwort (TF-077B §11). Ein From-Header allein genügt nie (DKIM/DMARC prüft classifyInbound vorher).
+export function verificationOf(item = {}) {
+  const missing = [];
+  if (!item.form_registered) missing.push("form_not_registered");
+  if (!item.site_verified) missing.push("form_site_not_verified");
+  if (!item.mailbox_verified) missing.push("receiving_mailbox_not_verified");
+  if (!item.submission_id) missing.push("no_submission_id");
+  if (!["reply_to", "form_field"].includes(item.recipient_source)) missing.push("customer_email_not_submitted");
+  return { verified: !missing.length, missing };
+}
 
 // Empfänger-Validierung: genau EINE syntaktisch saubere Adresse, keine Header-Injection, keine Anbieter-/No-reply-/eigene Adresse.
 export function validateCustomerEmail(raw, { cfg = {}, ownAddresses = [] } = {}) {
@@ -187,9 +237,26 @@ export function classifyInbound(msg = {}, { cfg = {}, ownAddresses = [] } = {}) 
   // Sind Formulare registriert, muss es eines davon sein.
   if ((cfg.forms || []).length && !form) return { contactForm: true, item: { ...base, state: STATES.UNKNOWN_FORM, reason: "form_not_registered" }, inquiry };
   const rec = selectCustomerEmail({ replyTo: msg.replyTo, fieldEmail: pick(fields, EMAIL_KEYS), form, cfg, ownAddresses });
-  const item = { ...base, form_market: form?.market === "VN" ? "VN" : form?.market === "CH" ? "CH" : null, form_lead_id: form?.lead_id || null, form_order_id: form?.order_id || null };
+  const form_market = form?.market === "VN" ? "VN" : form?.market === "CH" ? "CH" : null;
+  // TF-077B Identität: Website des Formulars = Netlify-Site aus dem Dashboard-Link der Benachrichtigung (bzw. Betreff «from <site>») muss der
+  // registrierten Site entsprechen – ein gleichnamiges Formular einer fremden (z. B. Kunden-)Website ist nie «unser» Formular.
+  const slug = (s) => lc(s).replace(/^https?:\/\//, "").replace(/\.netlify\.app\/?$/, "").replace(/\/.*$/, "");
+  const notifSite = body.match(/app\.netlify\.com\/(?:sites|projects)\/([a-z0-9-]{1,63})\//i)?.[1] || subject.match(/submission from\s+([a-z0-9-]{1,63})\s*\(/i)?.[1] || "";
+  const site_verified = !!form?.site && !!notifSite && slug(form.site) === slug(notifSite);
+  // Empfangspostfach: konfiguriert (receivingMailboxes, oben geprüft) – sonst Jarvis' eigenes Absenderpostfach als Delivered-To.
+  const own = ownAddresses.map(addrOf).filter(Boolean);
+  const mailbox_verified = boxes.length > 0 || (!!msg.deliveredTo && own.includes(addrOf(msg.deliveredTo)));
+  // TF-077B: CRM-Angaben dieser Einsendung (Kurzfassung, Name, validiertes Telefon, ausdrücklicher Rückrufwunsch) – nie der volle Text.
+  const phone = normalizePhone(pick(fields, PHONE_KEYS), form_market || "CH");
+  const cb = phone ? callbackRequest(fields, message) : null;
+  const item = { ...base, form_market, form_lead_id: form?.lead_id || null, form_order_id: form?.order_id || null,
+    form_registered: !!form, site_verified, mailbox_verified, form_site: lc(form?.site || "") || site || null,
+    summary: message.replace(/\s+/g, " ").trim().slice(0, 200), name: inquiry.name || null, phone: phone?.display || null, phone_e164: phone?.e164 || null,
+    callback_requested: !!cb, callback_evidence: cb ? `${cb.source}: ${cb.evidence}` : null };
   if (!rec.ok) return { contactForm: true, item: { ...item, state: STATES.RECIPIENT_REVIEW, reason: rec.reason }, inquiry };
-  return { contactForm: true, item: { ...item, state: STATES.NEW, customer_email: rec.email, recipient_source: rec.source }, inquiry };
+  const v = verificationOf({ ...item, recipient_source: rec.source });
+  return { contactForm: true, item: { ...item, state: STATES.NEW, customer_email: rec.email, recipient_source: rec.source,
+    verified: v.verified, verification: v.verified ? VERIFICATION.VERIFIED : VERIFICATION.REVIEW, verify_missing: v.missing }, inquiry };
 }
 
 export function idempotencyKey({ source_provider, submission_id, rfc_message_id, message_id }) {
@@ -268,42 +335,80 @@ export function languageOf({ match = {}, item = {}, text = "" }) {
 
 // ---------- Entwurf (feste Vorlage, keine erfundenen Fakten) ----------
 const quote = (s) => String(s || "").split("\n").slice(0, 40).map((l) => "> " + l).join("\n");
-export function composeReply({ lang = "de", inquiry = {}, sender = {}, vnSignature = "" }) {
+// TF-077B: bezieht sich auf den tatsächlichen Inhalt (zitiert die Nachricht, nennt einen zugeordneten Auftrag bzw. einen notierten Rückrufwunsch) –
+// keine Preise, keine Termine, keine Leistungsversprechen, keine Verkaufsbehauptungen.
+export function composeReply({ lang = "de", inquiry = {}, sender = {}, vnSignature = "", context = {} }) {
   const name = String(inquiry.name || "").replace(/[\r\n<>]/g, " ").trim().slice(0, 80);
+  const order = ORDER_ID_OK.test(String(context.order_id || "")) ? context.order_id : null;
   if (lang === "vi") {
     const subject = inquiry.subject ? `Re: ${inquiry.subject}` : "Phản hồi yêu cầu liên hệ của anh/chị";
     const body = [`Kính gửi ${name || "anh/chị"},`, "",
-      "Cảm ơn anh/chị đã liên hệ với chúng tôi qua biểu mẫu trên website. Chúng tôi đã nhận được yêu cầu và sẽ phản hồi chi tiết trong thời gian sớm nhất.", "",
+      "Cảm ơn anh/chị đã liên hệ với chúng tôi qua biểu mẫu trên website. Chúng tôi đã nhận được yêu cầu và sẽ phản hồi chi tiết trong thời gian sớm nhất.",
+      ...(order ? ["", `Yêu cầu của anh/chị liên quan đến đơn hàng ${order}.`] : []),
+      ...(context.callback ? ["", "Chúng tôi đã ghi nhận yêu cầu gọi lại của anh/chị."] : []), "",
       "Nội dung anh/chị đã gửi:", quote(inquiry.message), "", vnSignature].join("\n");
     return { subject, body: body.normalize("NFC").trim() };
   }
   const subject = inquiry.subject ? `Re: ${inquiry.subject}` : "Ihre Anfrage über unser Kontaktformular";
   const signature = sender.signature?.trim() || [sender.name, sender.company, sender.email].filter(Boolean).join("\n");
   const body = [name ? `Guten Tag ${name}` : "Guten Tag", "",
-    "Vielen Dank für Ihre Nachricht über unser Kontaktformular. Wir haben Ihre Anfrage erhalten und melden uns so rasch wie möglich ausführlich bei Ihnen.", "",
+    "Vielen Dank für Ihre Nachricht über unser Kontaktformular. Wir haben Ihre Anfrage erhalten und melden uns so rasch wie möglich ausführlich bei Ihnen.",
+    ...(order ? ["", `Ihre Anfrage betrifft Ihren Auftrag ${order}.`] : []),
+    ...(context.callback ? ["", "Ihren Rückrufwunsch haben wir notiert."] : []), "",
     "Ihre Nachricht:", quote(inquiry.message), "", "Freundliche Grüsse", ...(signature ? ["", signature] : [])].join("\n");
   return { subject, body: body.trim() };
 }
+const ORDER_ID_OK = /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/;
 
 // ---------- Ablage ----------
 export const loadContactForms = (store) => { const s = store.read(CONTACT_FORMS_FILE, {}) || {}; return { v: 1, ...s, items: s.items || {}, seen: s.seen || {} }; };
-export const STATUS_WORD = (state) => (state === STATES.DRAFTED ? "DRAFT_CREATED" : state === STATES.NEW || state === STATES.DRAFTING ? "NEW" : "REVIEW_REQUIRED");
-// Öffentliche Sicht für CRM/Dashboard: nur zugeordnete Leads, nur Status-Wörter und Zeiten.
+export const STATUS_WORD = (state) => (state === STATES.SENT ? "REPLY_SENT" : state === STATES.DRAFTED ? "DRAFT_CREATED"
+  : [STATES.NEW, STATES.DRAFTING, STATES.SENDING].includes(state) ? "NEW" : "REVIEW_REQUIRED");
+const LEAD_ID_OK = /^[a-z0-9][a-z0-9.@_+-]{2,252}$/;
+// Website des Kunden nur aus einer geschäftlichen Adressdomain (nie Freemail, nie geraten); das Formular selbst liegt auf unserer Website.
+const bizSite = (email) => { const d = domainOf(lc(email)); return d && !FREEMAIL_RE.test(d) && /^[a-z0-9.-]+\.[a-z]{2,24}$/.test(d) ? `https://${d}/` : null; };
+// CRM-Lead einer Anfrage: zugeordneter Lead (exakt) – sonst geschäftliche Domain der Kundenadresse – sonst die Adresse selbst. Nie über Namen.
+export function inquiryLeadId(it = {}) {
+  if (it.lead_id && [MATCH.LEAD, MATCH.ORDER].includes(it.match_state) && LEAD_ID_OK.test(it.lead_id)) return it.lead_id;
+  const e = lc(it.customer_email);
+  if (!e) return null;
+  const d = domainOf(e);
+  if (it.match_state !== MATCH.REVIEW && d && !FREEMAIL_RE.test(d) && LEAD_ID_OK.test(d)) return d;
+  return LEAD_ID_OK.test(e) ? e : `cf-${sha(e)}`;
+}
+// Sicht für den CRM-Dienst (contact_forms_public.json, nur VPS-intern; das CRM überträgt nur seine Allowlist in die Cloud): je Lead
+// CONTACT_FORM_P0-Metadaten der Anfragen mit gültiger Kundenadresse. Ohne Kundenadresse (Prüfung) → kein Lead.
 export function publicContactForms(st) {
   const leads = {};
-  for (const it of Object.values(st.items || {}).sort((a, b) => String(a.received_at).localeCompare(String(b.received_at)))) {
-    if (!it.lead_id || ![MATCH.LEAD, MATCH.ORDER].includes(it.match_state)) continue;
-    const prev = leads[it.lead_id];
-    leads[it.lead_id] = { status: STATUS_WORD(it.state), matched: true, received_at: it.received_at, count: (prev?.count || 0) + 1 };
+  for (const it of Object.values(st.items || {}).sort((a, b) => String(a.received_at).localeCompare(String(b.received_at)) || String(a.key).localeCompare(String(b.key)))) {
+    if (NO_LEAD_STATES.has(it.state) || !it.customer_email) continue;
+    const id = inquiryLeadId(it);
+    if (!id) continue;
+    const prev = leads[id];
+    const matched = !!it.lead_id && [MATCH.LEAD, MATCH.ORDER].includes(it.match_state);
+    leads[id] = {
+      status: STATUS_WORD(it.state), matched: matched || !!prev?.matched, received_at: it.received_at, count: (prev?.count || 0) + 1,
+      lead_source: "CONTACT_FORM", priority_class: PRIORITY_CLASS, priority_at: prev?.priority_at || it.created_at || it.received_at,
+      submission_id: it.key, contact_form_status: it.state, verified: it.verified === true, market: it.market === "VN" ? "VN" : "CH",
+      email: lc(it.customer_email), name: it.name || prev?.name || null, company: it.company || prev?.company || null, summary: it.summary || null,
+      phone: it.phone || prev?.phone || null, phone_e164: it.phone_e164 || prev?.phone_e164 || null, website: bizSite(it.customer_email),
+      callback_requested: it.callback_requested === true, callback_evidence: it.callback_requested ? it.callback_evidence || null : null,
+      reply_sent_at: it.state === STATES.SENT ? it.sent_at || null : prev?.reply_sent_at || null, order_id: it.order_id || prev?.order_id || null,
+      submissions: [...(prev?.submissions || []), { key: it.key, received_at: it.received_at, status: STATUS_WORD(it.state) }].slice(-10),
+    };
   }
-  return { v: 1, leads };
+  return { v: 2, leads };
 }
 
 // ---------- P0-Verarbeitung (ein Durchlauf) ----------
 // gmail: { searchInbound({ query, max }) → [messageId], readInbound(messageId) → msg, createDraft({ to, subject, body, mode, contactFormKey }), listOwned() }
+// TF-077B: autoReply (Mail-Worker: contactForms.autoReply !== false und Absenderidentität vorhanden) + sendGuard (serverseitiges Send-Lock je
+// Einsendung, gleiches Lock wie alle Jarvis-Sends) – nur VERIFIZIERTE Anfragen werden automatisch gesendet, genau einmal.
+const NO_GUARD = Object.freeze({ acquire: async () => ({ ok: true }), done: async () => {} });
 export async function processContactForms({ gmail, store, cfg = {}, sender = {}, vnSignature = "", ownAddresses = [], leads = () => [], orders = () => ({}),
-  now = new Date(), log = () => {}, escalate = async () => {}, isTransient = () => false, readOnly = false } = {}) {
-  const res = { fetched: 0, new: 0, duplicates: 0, untrusted: 0, drafted: 0, review: 0, failed: 0, pending: 0, degraded: null, processed: [] };
+  now = new Date(), log = () => {}, escalate = async () => {}, isTransient = () => false, readOnly = false, autoReply = false, sendGuard = NO_GUARD } = {}) {
+  const res = { fetched: 0, new: 0, duplicates: 0, untrusted: 0, drafted: 0, sent: 0, review: 0, failed: 0, pending: 0, degraded: null, processed: [] };
+  const canAuto = (it) => autoReply === true && it.verified === true && typeof gmail?.sendDraft === "function";
   if (cfg.enabled === false || !gmail || typeof gmail.searchInbound !== "function" || typeof gmail.readInbound !== "function") return res;
   const st = loadContactForms(store);
   const t = now.toISOString();
@@ -316,13 +421,49 @@ export async function processContactForms({ gmail, store, cfg = {}, sender = {},
     try { await escalate({ messageId: it.message_id, threadId: it.thread_id, company: it.company || "", contactName: "", reason: `Kontaktformular: ${reason}` }); }
     catch (e) { log("error", "escalate_failed", { key: it.key, error: e.message }); }
   };
+  // TF-077B: automatische Antwort genau EINMAL je Einsendung. Vor jedem Versuch: im Gesendet-Register? → SENT. Unklarer Versand (Absturz
+  // zwischen Gmail und Register) oder Entwurf verschwunden → SEND_UNKNOWN (Prüfung, nie wiederholen). Dann Send-Lock cf-send:<key>, dann
+  // gmail.sendDraft (Gmail verbraucht den Entwurf – eine zweite Mail ist ausgeschlossen). Fehler → nie SENT; vorübergehend → nächster Durchlauf.
+  async function sendReply(it) {
+    const lockKey = `cf-send:${it.key}`;
+    try {
+      const regNow = typeof gmail.listOwned === "function" ? gmail.listOwned() : { drafts: {}, sent: {} };
+      const done = Object.entries(regNow.sent || {}).find(([, s]) => (it.draft_id && s.fromDraft === it.draft_id) || (s.contactFormKey && s.contactFormKey === it.key));
+      if (done) { setState(it, STATES.SENT, { sent_at: done[1].sentAt || t, sent_message_id: done[0], reason: null }); save(); return; }
+      if (regNow.sending?.[it.draft_id] || !regNow.drafts?.[it.draft_id]) { setState(it, STATES.SEND_UNKNOWN, { reason: "send_state_unclear" }); save(); await review(it, "Antwort-Versand unklar – nicht wiederholt"); return; }
+      const lock = await sendGuard.acquire({ key: lockKey, threadId: it.draft_thread_id || null, messageId: it.message_id || null });
+      if (!lock.ok) {
+        if (lock.final) { setState(it, STATES.SEND_UNKNOWN, { reason: "send_lock_held" }); save(); await review(it, "Send-Lock gehalten bzw. bereits gesendet"); }
+        else res.degraded ||= "send_lock_unreachable"; // Cloud nicht erreichbar: später, Reihenfolge bleibt
+        return;
+      }
+      const info = await gmail.sendDraft(it.draft_id);
+      setState(it, STATES.SENT, { sent_at: t, sent_message_id: info?.messageId || null, sent_thread_id: info?.threadId || null, reason: null });
+      save();
+      await sendGuard.done(lockKey, "SENT");
+      res.sent++;
+      log("info", "contact_form_reply_sent", { key: it.key, draftId: it.draft_id, language: it.language });
+    } catch (e) {
+      try { await sendGuard.done(lockKey, "FAILED"); } catch {}
+      const transient = isTransient(e), attempts = (it.attempts || 0) + 1;
+      if (transient) { setState(it, STATES.SENDING, { attempts: it.attempts || 0, reason: String(e.message).slice(0, 120) }); res.degraded ||= String(e.message).slice(0, 160); }
+      else if (attempts >= MAX_ATTEMPTS) {
+        // Antwort-Entwurf bleibt in Gmail (Chris kann ihn prüfen und senden) – Anfrage bleibt im CRM sichtbar (Prüfung).
+        setState(it, STATES.DRAFTED, { attempts, reason: `auto_send_failed: ${String(e.message).slice(0, 100)}`, verification: VERIFICATION.REVIEW });
+        res.failed++;
+        await review(it, "Automatische Antwort nicht möglich – Entwurf liegt bereit");
+      } else setState(it, STATES.SENDING, { attempts, reason: String(e.message).slice(0, 120) });
+      save();
+      log(transient ? "warn" : "error", "contact_form_send_failed", { key: it.key, attempts, error: String(e.message).slice(0, 160) });
+    }
+  }
 
   // 1) Absturz während „drafting“: liegt der Entwurf im Register → erledigt; sonst nach Ablauf unklar → nie wiederholen (Prüfung).
   const reg = typeof gmail.listOwned === "function" ? gmail.listOwned() : { drafts: {}, sent: {} };
   for (const it of Object.values(st.items)) {
     if (it.state !== STATES.DRAFTING) continue;
     const hit = Object.entries(reg.drafts || {}).find(([, d]) => d.contactFormKey === it.key);
-    if (hit) setState(it, STATES.DRAFTED, { draft_id: hit[0], draft_message_id: hit[1].messageId || null, drafted_at: hit[1].createdAt || t });
+    if (hit) setState(it, hit[1].mode === CONTACT_FORM_AUTO_REPLY_MODE ? STATES.SENDING : STATES.DRAFTED, { draft_id: hit[0], draft_message_id: hit[1].messageId || null, drafted_at: hit[1].createdAt || t });
     else if (+now - Date.parse(it.drafting_at || 0) > DRAFTING_STALE_MS) { setState(it, STATES.DRAFT_UNKNOWN, { reason: "crash_during_draft" }); await review(it, "Entwurf unklar (Absturz) – nicht wiederholt"); }
   }
 
@@ -385,16 +526,18 @@ export async function processContactForms({ gmail, store, cfg = {}, sender = {},
       }
       if (!inquiry?.message) throw new Error("Anfrage nicht mehr lesbar");
       const vi = it.language === "vi";
-      const { subject, body } = composeReply({ lang: vi ? "vi" : "de", inquiry, sender, vnSignature });
+      const auto = canAuto(it);
+      const { subject, body } = composeReply({ lang: vi ? "vi" : "de", inquiry, sender, vnSignature, context: { order_id: it.order_id, callback: it.callback_requested === true } });
       setState(it, STATES.DRAFTING, { drafting_at: t });
       save();
-      const d = await gmail.createDraft({ to: it.customer_email, subject, body, mode: CONTACT_FORM_DRAFT_MODE, contactFormKey: it.key });
-      setState(it, STATES.DRAFTED, { draft_id: d.draftId, draft_message_id: d.messageId || null, draft_thread_id: d.threadId || null, drafted_at: t, reason: null });
+      const d = await gmail.createDraft({ to: it.customer_email, subject, body, mode: auto ? CONTACT_FORM_AUTO_REPLY_MODE : CONTACT_FORM_DRAFT_MODE, contactFormKey: it.key });
+      setState(it, auto ? STATES.SENDING : STATES.DRAFTED, { draft_id: d.draftId, draft_message_id: d.messageId || null, draft_thread_id: d.threadId || null, drafted_at: t, reason: null, attempts: 0 });
       pendingInquiry.delete(it.key);
       save();
       res.drafted++;
       res.processed.push(it.key);
-      log("info", "contact_form_drafted", { key: it.key, draftId: d.draftId, match: it.match_state, language: it.language });
+      log("info", "contact_form_drafted", { key: it.key, draftId: d.draftId, match: it.match_state, language: it.language, auto, verification: it.verification || null });
+      if (auto) { await sendReply(it); if (res.degraded) break; }
     } catch (e) {
       const transient = isTransient(e);
       const attempts = (it.attempts || 0) + 1;
@@ -409,7 +552,12 @@ export async function processContactForms({ gmail, store, cfg = {}, sender = {},
       if (transient) { res.degraded ||= String(e.message).slice(0, 160); break; } // Gmail gestört: Rest im nächsten Durchlauf (Reihenfolge bleibt)
     }
   }
-  res.pending = Object.values(st.items).filter((it) => it.state === STATES.NEW).length;
+  // 4) Antworten, deren Versand noch aussteht (Gmail gestört, Lock nicht erreichbar, Neustart) – ebenfalls FIFO, vor allem anderen.
+  if (!readOnly) for (const it of orderMailQueue(Object.values(st.items).filter((x) => x.state === STATES.SENDING && !res.processed.includes(x.key)))) {
+    if (res.degraded) break;
+    await sendReply(it);
+  }
+  res.pending = Object.values(st.items).filter((it) => it.state === STATES.NEW || it.state === STATES.SENDING).length;
   // „seen“ nur so lange halten, wie die Suche zurückreicht (+ Reserve) – Elemente (items) bleiben dauerhaft (Dedupe je Submission).
   const keepMs = (Math.max(1, Math.min(60, Number(cfg.newerThanDays) || 14)) + 30) * 86_400_000;
   for (const [id, s] of Object.entries(st.seen)) if (+now - Date.parse(s?.at || 0) > keepMs) { delete st.seen[id]; changed = true; }

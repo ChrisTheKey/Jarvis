@@ -7,14 +7,20 @@
 import { safeEqual, findSensitiveKeys } from "./shared-state.js";
 import { cleanCore } from "./cloud-core.js";
 import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
+import { mailAccessFor, draftRefOf, DRAFT_REF_RE, SELLER_SEND_DAILY_LIMIT } from "./mail-access.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
   ttlHours: 24, maxTtlHours: 72, duplicateHours: 24, bodyBytes: 16_000 };
 export const REQUEST_STATUSES = ["pending", "processing", "accepted_local", "blocked", "sent", "drafted", "failed", "expired"];
 export const FINAL_STATUSES = ["blocked", "sent", "drafted", "failed", "expired"];
 export const INTENTS = ["sales", "follow_up", "reply", "info"];
-// delivery "draft": der Worker legt nur einen Gmail-Entwurf an (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie, Chris entscheidet in Gmail.
-export const DELIVERIES = ["send", "draft"];
+// delivery "draft": der Worker legt nur einen Gmail-Entwurf an (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie von sich aus.
+// delivery "send_prepared" (TF-077B, SEND_PREPARED_LEAD_DRAFT): ein Verkäufer hat «E-Mail lossenden» geklickt – der Worker sendet GENAU den
+// vorbereiteten Jarvis-Entwurf dieses Leads (draft_ref), ohne Betreff/Text aus der Cloud. Empfänger = CRM-Adresse des Leads.
+export const DELIVERIES = ["send", "draft", "send_prepared"];
+// Wiederholen nach einem Fehlschlag ist erlaubt (der Worker sendet nur einen noch unversendet in Gmail liegenden Entwurf), aber begrenzt.
+export const SEND_PREPARED_MAX_ATTEMPTS = 3;
+const OPEN_OR_SENT = ["pending", "processing", "accepted_local", "sent"];
 // Mailklassen: A/B nur in den Versandfenstern 09:30/14:30, C/D zeitnah (24/7) – immer nach allen Schutzregeln.
 export const MAIL_CLASSES = ["automatic_sales_outreach", "sales_followup", "conversation_reply", "manual_chris_mail"];
 // Lease eines übernommenen Auftrags bzw. Send-Locks; ein Heartbeat älter als HEARTBEAT_STALE_MS = MAIL SERVICE OFFLINE.
@@ -22,7 +28,7 @@ export const LEASE_MS = 10 * 60_000;
 export const HEARTBEAT_STALE_MS = 5 * 60_000;
 const LOCK_LIMIT = 2000, LOCK_DAYS = 30, CLAIM_MAX = 10;
 const REF_RE = /^[a-f0-9]{12,32}$/;
-const FIELDS = ["request_id", "recipient", "subject", "body", "optional_thread_reference", "intent", "ttl_hours", "delivery"];
+const FIELDS = ["request_id", "recipient", "subject", "body", "optional_thread_reference", "intent", "ttl_hours", "delivery", "draft_ref"];
 const ID_RE = /^[a-z0-9][a-z0-9-]{7,63}$/;
 const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i;
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
@@ -58,15 +64,20 @@ export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "ch
   const L = MAIL_REQUEST_LIMITS;
   const recipient = typeof input.recipient === "string" ? input.recipient.trim().toLowerCase() : "";
   if (!recipient || recipient.length > L.recipientChars || /[\r\n,;]/.test(recipient) || !EMAIL_RE.test(recipient)) return { error: "Empfänger ungültig (genau eine E-Mail-Adresse)." };
-  const subject = typeof input.subject === "string" ? input.subject.replace(CONTROL, "").replace(/[\r\n]+/g, " ").trim() : "";
-  if (!subject || subject.length > L.subjectChars) return { error: `Betreff fehlt oder ist länger als ${L.subjectChars} Zeichen.` };
-  const body = typeof input.body === "string" ? input.body.replace(/\r\n/g, "\n").replace(CONTROL, "").trim() : "";
-  if (!body || body.length > L.bodyChars) return { error: `Text fehlt oder ist länger als ${L.bodyChars} Zeichen.` };
+  if (input.delivery !== undefined && !DELIVERIES.includes(input.delivery)) return { error: "delivery ungültig (send, draft oder send_prepared)." };
+  const prepared = input.delivery === "send_prepared";
+  // send_prepared: nie Betreff/Text aus der Cloud – gesendet wird ausschliesslich der vorbereitete Entwurf (draft_ref) des Leads aus den Metadaten.
+  if (prepared && (input.subject || input.body || input.optional_thread_reference)) return { error: "send_prepared: kein Betreff, kein Text, kein Thread." };
+  if (prepared && (!DRAFT_REF_RE.test(String(input.draft_ref || "")) || !cleanMeta(meta))) return { error: "send_prepared: Entwurfsreferenz oder Lead fehlt." };
+  if (!prepared && input.draft_ref !== undefined) return { error: "draft_ref nur mit send_prepared." };
+  const subject = prepared ? "" : typeof input.subject === "string" ? input.subject.replace(CONTROL, "").replace(/[\r\n]+/g, " ").trim() : "";
+  if (!prepared && (!subject || subject.length > L.subjectChars)) return { error: `Betreff fehlt oder ist länger als ${L.subjectChars} Zeichen.` };
+  const body = prepared ? "" : typeof input.body === "string" ? input.body.replace(/\r\n/g, "\n").replace(CONTROL, "").trim() : "";
+  if (!prepared && (!body || body.length > L.bodyChars)) return { error: `Text fehlt oder ist länger als ${L.bodyChars} Zeichen.` };
   const ref = input.optional_thread_reference ?? null;
   if (ref !== null && !(typeof ref === "string" && /^[a-f0-9]{12}$/.test(ref))) return { error: "Thread-Referenz ungültig." };
   if (input.request_id !== undefined && !(typeof input.request_id === "string" && ID_RE.test(input.request_id))) return { error: "request_id ungültig." };
-  if (input.delivery !== undefined && !DELIVERIES.includes(input.delivery)) return { error: "delivery ungültig (send oder draft)." };
-  const delivery = input.delivery === "draft" ? "draft" : "send";
+  const delivery = DELIVERIES.includes(input.delivery) ? input.delivery : "send";
   const ttl = Math.min(L.maxTtlHours, Math.max(1, Number(input.ttl_hours) || L.ttlHours));
   const created = now.toISOString();
   return {
@@ -74,8 +85,9 @@ export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "ch
       request_id: input.request_id || newId(), created_at: created, expires_at: new Date(+now + ttl * 3_600_000).toISOString(),
       requested_by: requestedBy, recipient, subject, body, optional_thread_reference: ref,
       intent: INTENTS.includes(input.intent) ? input.intent : "sales", status: "pending", reason: null, updated_at: created,
-      fingerprint: fingerprint(recipient, subject.toLowerCase(), body, ...(delivery === "draft" ? ["draft"] : [])), mail_class: "manual_chris_mail", delivery,
-      lease_owner: null, lease_expires_at: null, attempts: 0, ...(cleanMeta(meta) ? { meta: cleanMeta(meta) } : {}),
+      fingerprint: prepared ? fingerprint(recipient, "send_prepared", cleanMeta(meta).lead_id, input.draft_ref) : fingerprint(recipient, subject.toLowerCase(), body, ...(delivery === "draft" ? ["draft"] : [])),
+      mail_class: "manual_chris_mail", delivery, lease_owner: null, lease_expires_at: null, attempts: 0, ...(cleanMeta(meta) ? { meta: cleanMeta(meta) } : {}),
+      ...(prepared ? { draft_ref: input.draft_ref } : {}),
     },
   };
 }
@@ -90,8 +102,8 @@ function clean(r) {
     optional_thread_reference: typeof r.optional_thread_reference === "string" && /^[a-f0-9]{12}$/.test(r.optional_thread_reference) ? r.optional_thread_reference : null,
     intent: INTENTS.includes(r.intent) ? r.intent : "sales", status: REQUEST_STATUSES.includes(r.status) ? r.status : "pending",
     reason: s(r.reason, MAIL_REQUEST_LIMITS.reasonChars), updated_at: s(r.updated_at, 40), fingerprint: s(r.fingerprint, 16),
-    mail_class: "manual_chris_mail", delivery: r.delivery === "draft" ? "draft" : "send", lease_owner: s(r.lease_owner, 20), lease_expires_at: s(r.lease_expires_at, 40), attempts: Number.isFinite(r.attempts) ? r.attempts : 0,
-    ...(cleanMeta(r.meta) ? { meta: cleanMeta(r.meta) } : {}),
+    mail_class: "manual_chris_mail", delivery: DELIVERIES.includes(r.delivery) ? r.delivery : "send", lease_owner: s(r.lease_owner, 20), lease_expires_at: s(r.lease_expires_at, 40), attempts: Number.isFinite(r.attempts) ? r.attempts : 0,
+    ...(cleanMeta(r.meta) ? { meta: cleanMeta(r.meta) } : {}), ...(r.delivery === "send_prepared" && DRAFT_REF_RE.test(r.draft_ref || "") ? { draft_ref: r.draft_ref } : {}),
   };
 }
 export const cleanList = (list) => (Array.isArray(list) ? list : []).map(clean).filter(Boolean);
@@ -116,9 +128,18 @@ export function addRequest(list, input, { now = new Date(), requestedBy, meta = 
   const current = expireRequests(cleanList(list), now);
   const same = current.find((r) => r.request_id === request.request_id);
   if (same) return same.fingerprint === request.fingerprint ? { status: 200, list: current, request: same, duplicate: true } : { status: 409, error: "request_id bereits mit anderem Inhalt vergeben." };
-  const since = new Date(+now - MAIL_REQUEST_LIMITS.duplicateHours * 3_600_000).toISOString();
-  const dup = current.find((r) => r.fingerprint === request.fingerprint && r.created_at >= since && ["pending", "processing", "accepted_local", "sent", "drafted"].includes(r.status));
-  if (dup) return { status: 200, list: current, request: dup, duplicate: true };
+  if (request.delivery === "send_prepared") {
+    // TF-077B Idempotenz: derselbe Entwurf (Lead + draft_ref) hat höchstens EINEN offenen oder gesendeten Auftrag – Doppelklick/Wiederholung
+    // liefert ihn zurück. Nach einem Fehlschlag ist ein neuer Versuch erlaubt (begrenzt); der Worker sendet nur einen noch unversendeten Entwurf.
+    const same = current.filter((r) => r.fingerprint === request.fingerprint);
+    const live = same.find((r) => OPEN_OR_SENT.includes(r.status));
+    if (live) return { status: 200, list: current, request: live, duplicate: true };
+    if (same.length >= SEND_PREPARED_MAX_ATTEMPTS) return { status: 429, error: "Zu viele Sendeversuche für diesen Entwurf – bitte Chris informieren.", code: "SEND_RETRY_LIMIT" };
+  } else {
+    const since = new Date(+now - MAIL_REQUEST_LIMITS.duplicateHours * 3_600_000).toISOString();
+    const dup = current.find((r) => r.fingerprint === request.fingerprint && r.created_at >= since && ["pending", "processing", "accepted_local", "sent", "drafted"].includes(r.status));
+    if (dup) return { status: 200, list: current, request: dup, duplicate: true };
+  }
   if (current.filter((r) => r.status === "pending").length >= MAIL_REQUEST_LIMITS.pending) return { status: 429, error: "Zu viele offene Mailaufträge – erst den lokalen Worker abarbeiten lassen." };
   return { status: 201, list: trim([...current, request]), request, duplicate: false };
 }
@@ -211,7 +232,11 @@ export function serviceStatus(state, now = new Date(), dedicated = false) {
 
 // Sicht für den Browser: kein Fingerabdruck, kein Lease-Inhaber, Text gekürzt.
 export const publicView = (r) => ({ request_id: r.request_id, created_at: r.created_at, expires_at: r.expires_at, recipient: r.recipient, subject: r.subject,
-  intent: r.intent, mail_class: r.mail_class || "manual_chris_mail", delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at, optional_thread_reference: r.optional_thread_reference });
+  intent: r.intent, mail_class: r.mail_class || "manual_chris_mail", delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at, optional_thread_reference: r.optional_thread_reference,
+  ...(r.delivery === "send_prepared" ? { lead_id: r.meta?.lead_id || null, draft_ref: r.draft_ref || null } : {}) });
+// TF-077B: Sicht eines Verkäufers auf seine eigenen Aufträge – ohne Empfängeradresse und Text.
+const sellerView = (r) => ({ request_id: r.request_id, created_at: r.created_at, delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at,
+  lead_id: r.meta?.lead_id || null, ...(r.delivery === "send_prepared" ? { draft_ref: r.draft_ref || null } : {}) });
 
 // Ein Blob { requests, locks, workers } mit bedingtem Schreiben (ETag) – gleichzeitige Worker überholen sich nie.
 export function createMailQueue(store, { now = () => new Date(), dedicated = false } = {}) {
@@ -273,7 +298,7 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (isUser && req.method === "POST" && actor) {
       // OWNER darf ebenfalls lead_draft für VN-Leads nutzen (gleiche serverseitige Empfänger-Auflösung).
       const peek = await req.clone().json().catch(() => null);
-      if (peek?.op === "lead_draft") return sellerRequest(req, actor);
+      if (peek?.op === "lead_draft" || peek?.op === "send_lead_draft") return sellerRequest(req, actor);
     }
     // Genau ein Sender: der VPS-Worker, wenn eingerichtet – sonst der lokale Worker.
     const owner = isWorker ? "vps" : isLocal && !dedicated ? "local" : null;
@@ -296,6 +321,7 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (body.op === "create") {
       if (!isUser) return reply(403, { error: "Nur Chris darf Mailaufträge anlegen." });
       const { op, ...input } = body;
+      if (input.delivery === "send_prepared") return reply(400, { error: "send_prepared nur über send_lead_draft.", code: "BAD_PARAMS" });
       const r = await queue.create(input);
       return r.status >= 400 ? reply(r.status, { error: r.error }) : reply(r.status, { request: publicView(r.request), duplicate: !!r.duplicate });
     }
@@ -323,11 +349,16 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
 
   async function sellerRequest(req, actor) {
     const queue = createMailQueue(await getStore(), { now, dedicated: !!env("JARVIS_MAIL_WORKER_TOKEN") });
-    if (req.method === "GET") return reply(200, { requests: (await queue.list()).filter((r) => r.requested_by === actor.user_id).map(publicView).slice(-20) });
+    if (req.method === "GET") return reply(200, { requests: (await queue.list()).filter((r) => r.requested_by === actor.user_id).map(sellerView).slice(-50) });
     let body;
     try { body = JSON.parse((await req.text()).slice(0, MAIL_REQUEST_LIMITS.bodyBytes) || "{}"); } catch { return reply(400, { error: "Ungültiges JSON." }); }
+    if (body?.op === "send_lead_draft") return sendPrepared(queue, body, actor);
     if (body?.op !== "lead_draft") return reply(403, { error: "Keine Berechtigung für diese Aktion.", code: "FORBIDDEN" });
     if (Object.keys(body).some((k) => !LEAD_DRAFT_FIELDS.includes(k))) return reply(400, { error: "Nur lead_id, subject und body sind erlaubt (kein Empfänger).", code: "BAD_PARAMS" });
+    // TF-077: Entwürfe entstehen im einzigen verbundenen Gmail (Chris) – Verkäufer ohne eigene verbundene Mailbox nie (kein Fallback auf Chris).
+    const mail = mailAccessFor(actor);
+    if (!mail.draft_requests) return reply(403, { error: mail.mode === "OWN_MAILBOX" ? `Mailbox ${mail.mailbox} ist nicht verbunden – kein Entwurf.` : "Mail-Aktionen sind für dieses Konto deaktiviert.",
+      code: mail.mode === "SERVER_SEND" ? "FORBIDDEN" : mail.state, ...(mail.mailbox ? { mailbox: mail.mailbox, connect_path: mail.connect_path || null } : {}) });
     if (!resolveLead) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
     const found = await resolveLead(actor, body.lead_id);
     if (!found?.lead) return reply(found?.status || 403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: found?.code || "OUT_OF_SCOPE" });
@@ -340,7 +371,37 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     const r = await queue.create({ recipient: lead.email, subject: body.subject, body: body.body, intent: "sales", delivery: "draft" }, actor.user_id, meta);
     return r.status >= 400 ? reply(r.status, { error: r.error, code: "BAD_PARAMS" }) : reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "draft", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
   }
+
+  // TF-077B «E-Mail lossenden» (SEND_PREPARED_LEAD_DRAFT): nur lead_id + draft_ref vom Browser. Geprüft: Recht (Giuliano/Mario/Damiano, Owner),
+  // Lead im eigenen Bereich, CH-Markt, Adresse aus dem CRM, kein DNC/Opt-out/Suppression, Entwurf offen und GENAU der angezeigte (draft_ref),
+  // Tageslimit je Verkäufer. Der Mail-Worker prüft Besitz, Empfänger, Suppression und DNC vor dem Senden erneut und sendet genau einmal.
+  async function sendPrepared(queue, body, actor) {
+    const mail = mailAccessFor(actor);
+    if (!mail.send_prepared && actor.role !== "OWNER") return reply(403, { error: mail.mode === "OWN_MAILBOX" ? `Mailbox ${mail.mailbox} ist nicht verbunden – kein Versand.` : "Keine Berechtigung für diese Aktion.",
+      code: mail.mode === "OWN_MAILBOX" ? mail.state : "FORBIDDEN" });
+    if (Object.keys(body).some((k) => !SEND_FIELDS.includes(k))) return reply(400, { error: "Nur lead_id und draft_ref sind erlaubt (kein Empfänger, kein Text).", code: "BAD_PARAMS" });
+    if (!DRAFT_REF_RE.test(String(body.draft_ref || ""))) return reply(400, { error: "Entwurfsreferenz ungültig.", code: "BAD_PARAMS" });
+    if (!resolveLead) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
+    const found = await resolveLead(actor, body.lead_id);
+    if (!found?.lead) return reply(found?.status || 403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: found?.code || "OUT_OF_SCOPE" });
+    const lead = found.lead;
+    if (lead.market === "VN") return reply(403, { error: "Vietnam-Leads werden nicht über das Jarvis-Postfach gesendet.", code: "FORBIDDEN" });
+    if (lead.do_not_contact) return reply(409, { error: "Do Not Contact – kein Versand.", code: "DO_NOT_CONTACT" });
+    if (!lead.email) return reply(400, { error: "Keine E-Mail-Adresse für diesen Lead.", code: "NO_EMAIL" });
+    const ref = draftRefOf(lead);
+    if (!ref) return reply(409, { error: "Für diesen Lead liegt kein vorbereiteter Entwurf (mehr) bereit.", code: "NO_PREPARED_DRAFT" });
+    if (ref !== body.draft_ref) return reply(409, { error: "Der Entwurf wurde inzwischen geändert – bitte neu laden.", code: "DRAFT_CHANGED" });
+    const day = (v) => String(v || "").slice(0, 10), today = day(now().toISOString());
+    const mine = new Set((await queue.list()).filter((r) => r.delivery === "send_prepared" && r.requested_by === actor.user_id && day(r.created_at) === today).map((r) => r.meta?.lead_id));
+    mine.delete(lead.lead_id); // Wiederholung für denselben Lead zählt nicht doppelt
+    if (actor.role !== "OWNER" && mine.size >= SELLER_SEND_DAILY_LIMIT) return reply(429, { error: `Tageslimit von ${SELLER_SEND_DAILY_LIMIT} Sendungen erreicht.`, code: "SEND_DAILY_LIMIT" });
+    const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id };
+    const r = await queue.create({ recipient: lead.email, intent: "sales", delivery: "send_prepared", draft_ref: ref }, actor.user_id, meta);
+    if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "BAD_PARAMS" });
+    return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "send_prepared", lead_id: lead.lead_id, draft_ref: ref }, duplicate: !!r.duplicate });
+  }
 }
+export const SEND_FIELDS = Object.freeze(["op", "lead_id", "draft_ref"]);
 
 // ---------- Mail-Worker (VPS oder lokal): abholen, Locks, Ergebnisse, Heartbeat (wirft nie) ----------
 
