@@ -2,7 +2,53 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-17 (TF-076)
+Letzte Aktualisierung: 2026-10-17 (TF-077B)
+
+## TF-077B – ONE-CLICK-VERKÄUFER-MAIL + KONTAKTFORMULAR P0 + CRM HOT LEADS (2026-10-17, Code 912dc2a, MAIL + CRM LIVE, Netlify LIVE)
+- Enthält TF-077 Teil A (mail-access.js, war nur lokal) mit geänderter Policy.
+- **SELLER MAIL:** Giuliano/Mario/Damiano = `SERVER_SEND`: genau EIN Knopf je Lead **«E-Mail lossenden»** (SEND_PREPARED_LEAD_DRAFT). Kein Gmail-Link,
+  keine draft_url, kein mailto, kein Gmail-Zugang. Browser schickt nur `{op:"send_lead_draft", lead_id, draft_ref}` (draft_ref = FNV-Hash der Gmail-
+  Message-ID des aktuellen Jarvis-Entwurfs; geänderter Entwurf → neue Referenz → DRAFT_CHANGED). Server (/api/mail-requests): Recht, eigener Bereich,
+  CH-Markt, Adresse aus dem CRM, kein DNC/Opt-out, Entwurf offen; Auftrag `delivery:"send_prepared"` ohne Betreff/Text; Doppelklick = derselbe Auftrag;
+  nach Fehlschlag neuer Versuch (max. 3 je Entwurf); 40 Leads/Tag je Verkäufer. Mail-Worker: Recht+Markt aus Metadaten, Entwurf gehört dem Lead und
+  ist der angezeigte, Empfänger = Entwurf = CRM, Suppression (auch Domain), Lead-Datenbank/CRM-DNC (fail closed), Send-Lock `seller-send:<lead>:<ref>`,
+  dann `gmail.sendPreparedLeadDraft` (einziger Sendeweg für COLD_LEAD_DRAFT_ONLY – sendDraft verweigert Cold-Entwürfe weiterhin). Bereits gesendet →
+  nie erneut; unklarer Ausgang → nie wiederholt. Zustände DRAFT_READY / SEND_IN_PROGRESS / SENT («E-Mail gesendet», gesperrt) / SEND_FAILED
+  («E-Mail konnte nicht gesendet werden», sicherer neuer Versuch). Cold-Register → manually_sent + seller_sent_by.
+- **KUDOSHIN:** Postfach hathanhlap261096@gmail.com, `KUDOSHIN_MAILBOX_NOT_CONNECTED` – kein Gmail-Link (auch kein Verfassen-Link), kein Entwurf,
+  kein Versand, nie Chris' Gmail. **CHRIS:** Owner unverändert (eigener Gmail-Entwurf + mailto); allgemeiner «E-Mail öffnen»-Knopf bleibt entfernt.
+- **CONTACT FORM = CONTACT_FORM_P0 (höchste Priorität):** Schritt 0 jedes Worker-Durchlaufs. **Verifizierte** Anfrage → sofort automatische Antwort
+  (Modus CONTACT_FORM_AUTO_REPLY, genau einmal je Einsendung: Schlüssel Submission-ID → RFC-ID → Gmail-ID, Send-Lock `cf-send:<key>`, Register-Abgleich;
+  CONTACT_FORM_REPLY_SENT). Verifiziert = Anbieter-DKIM/DMARC (Gmail) + registriertes Formular + **Netlify-Site aus dem Dashboard-Link = registrierte
+  Site** + bekanntes Empfangspostfach (receivingMailboxes oder Delivered-To = Jarvis-Absenderpostfach) + Submission-ID + Adresse aus Reply-To/Feld.
+  Sonst `CONTACT_FORM_REVIEW_REQUIRED`: nur Entwurf (CONTACT_FORM_DRAFT_ONLY), nie Auto-Send. Antwort DE/VI mit bestehender Signatur, zitiert die Nachricht,
+  nennt zugeordneten Auftrag / notierten Rückrufwunsch, keine Preise/Versprechen. Abschaltbar: config `contactForms.autoReply=false`.
+- **Live-Konfiguration (2026-10-17):** `contactForms.forms = [{form_name:"anfrage", site:"helvetic-webdesign-reperatur", market:"CH"}]`, autoReply true
+  (Backup config.json.bak-tf077b). Gmail-Konto des Workers = eigene Absenderadresse (read-only geprüft, nur Boolean) → echte Einsendungen verifizierbar.
+  Bisher 0 Formular-Benachrichtigungen → 0 automatische Antworten. Kein Testmail an Kunden.
+- **CRM:** jede Anfrage mit gültiger Kundenadresse erstellt/befördert einen Lead (nie Dublette: zugeordneter Lead → Geschäftsdomain → Adresse; Abgleich mit
+  der Lead-Datenbank). Metadaten lead_source=CONTACT_FORM, priority_class=CONTACT_FORM_P0, priority_at, submission_id (Hash), contact_form_status,
+  received_at, Kurzfassung ≤ 200 Zeichen (nie voller Text). Pool **CONTACT_FORM_INBOUND** (auch ohne Website-Fehler) getrennt vom gescrapten Pool
+  VERIFIED_ERRORS (TF-076 unverändert: gescrapte Website ohne Fehler bleibt draussen). Zähler getrennt: verified_error_leads / contact_form_hot.
+  Abschnitt **«KONTAKTFORMULAR – SOFORT BEARBEITEN»** (vi «BIỂU MẪU LIÊN HỆ – XỬ LÝ NGAY») ganz oben, älteste unbeantwortete zuerst; offene P0-Leads
+  stehen in JEDER Sortierung zuoberst, in der Standardsortierung danach Rückrufe/heisse Leads, dann übrige. P0 endet bei CONTACT_FORM_HANDLED
+  (`crm.resolveContactForm`), CUSTOMER_REACHED, CALLBACK_SCHEDULED, NOT_INTERESTED, ORDER_CREATED, DNC; neue Einsendung öffnet wieder. Bereich je
+  Verkäufer unverändert (CH-Inbound → Standard Giuliano, Zuweisung bleibt; VN-Inbound → Kudoshin; Chris alle).
+- **CALLING:** P0 +20 Priorität (höchste Anrufpriorität). Basis `CONTACT_FORM_CALLBACK` nur bei ausdrücklichem, verifiziertem Rückrufwunsch (wörtlicher
+  Beleg + Formularnummer = Leadnummer); Telefon allein → keine Einwilligung (NICHT ANRUFBAR). DNC-Register, Rechtsprüfung, Zeitfenster, Frequenz, CH-Sperre
+  unverändert. Calling-VPS nicht neu gestartet (Eligibility läuft in /api/calling).
+- **PHONEBOOK:** `phonebook-compliance.js` (PHONEBOOK_STAR_CLEAR/PRESENT/UNKNOWN/LOOKUP_FAILED, search.ch-Feld `tel:nopromo`). Kein erlaubter Anbieter
+  konfiguriert → PHONEBOOK_PROVIDER_NOT_CONFIGURED, **keine Abfrage, kein Massenabruf**. Nur ausdrücklicher strukturierter Beleg → STAR_PRESENT
+  (Nummer nicht anrufbar, nie angerufen, auch nicht mit P0); nie aus dem Telefontext abgeleitet. Bestehende Leads bleiben sichtbar als
+  «Telefonbuch: NICHT GEPRÜFT» (nie CLEAR). Künftige Aufnahme (phonebookAdmission) erst mit konfiguriertem, erlaubtem kommerziellem Anbieter.
+- **Tests:** test/tf077b.test.js 22/22 (inkl. Chromium), test/tf077.test.js angepasst. Gesamtsuite sequenziell **1019 / 1007 pass / 0 fail / 12 skip**.
+  Secret-Scan 301 Dateien, 0 Treffer. Netlify-Functions + Edge importierbar.
+- **Deploy:** Mail 912dc2a (deploy.sh fiverr; vorher 0 sending/creating, 0 offene Cloud-Aufträge; healthy, restarts 0, Ticks ohne Fehler), CRM 912dc2a
+  (deploy-crm.sh build|start, healthy, MAIL/CONTACTS_WORKER_UNTOUCHED; Sicht 1754 Leads, 5.55 MB < 6 MB). Netlify 912dc2a live (crm.js, crm-model.js,
+  i18n.js, crm.css byte-gleich HEAD; APIs ohne Sitzung 401). Repair, Calling, Contacts, VN NICHT neu gestartet. Dockerfile.repair/.vn ergänzt
+  (mail-access.js / phonebook-compliance.js, nötig beim nächsten Build). 60 % / 6000 bps, CALLING_DRY_RUN=true unverändert.
+- **Offen:** Live-Klicktest als Verkäufer nicht möglich (keine Passwörter auf PC/VPS) – UI per Browser-Tests belegt. 0 echte Testmails, 0 Anrufe,
+  0 Zahlungen, 0 Kundenwebsites verändert.
 
 ## TF-076 – AKTIVES CRM NUR MIT VERIFIZIERTEM FEHLER + GENAUE FEHLERORTE (2026-10-17, Code ee28c5b, CRM + VN LIVE, Netlify LIVE)
 - **ACTIVE CRM POLICY:** nur erfolgreich geprüfte Websites mit **≥ 1 aktuell verifiziertem, für Besucher sichtbarem Website-Fehler**
