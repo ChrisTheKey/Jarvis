@@ -29,6 +29,15 @@ Letzte Aktualisierung: 2026-10-18 (TF-080)
   Notiz/Archiv/erledigt). Bereinigung: `node e2e-test.js list | cleanup <test_run_id>` (je Container, nie Platzhalter).
 - **Tests:** `test/tf080.test.js` (volle E2E-Fixture Formular → … → Tresor zerstört, LIVE-Weg mit Abgleich, NOT_CONFIGURED, Webhook-Matrix, Ablauf/Erinnerung,
   Refund, Freigabe-Grenzen/historisch, Kennzahlen, Bereinigung). `npm run test:tf080`.
+- **Deploy 2026-10-18 (Code c2d2422, origin = HEAD):** Repair (deploy-repair.sh, MAIL_WORKER_UNTOUCHED=YES), CRM (deploy-crm.sh build|start), Mail (deploy.sh fiverr,
+  ohne --with-secrets; vorher 0 pending/0 processing). Alle drei running/healthy/0 Restarts. Netlify live (crm.js, crm-model.js, i18n.js, crm.css, zahlung.html
+  byte-gleich HEAD). Stripe LIVE/TEST NOT_CONFIGURED, Webhook-Secrets fehlen (/api/payments POST → 503), E2E NOT_READY. /api/access-intake ohne Token 401.
+  contact_forms_public.json einmal neu geschrieben (keine Mail/kein Weg gestartet): 3 historische Test-Einsendungen jetzt im CRM als TEST/HISTORISCH,
+  TEST_BLOCKED, kein tel-Link. Tests: voll 1074 / 1062 pass / 0 fail / 12 skip (erster Lauf: e2e-test.js von node --test als Testdatei gestartet → behoben).
+  Secret-Scan 312 Dateien, 0 Treffer. 0 Zahlungen, 0 Anrufe, 0 Kundenwebsites verändert.
+- **Chris (extern):** Stripe-Konto (CHF, optional TWINT), Schlüssel per `install-stripe-keys.sh fiverr live|test`, Webhook auf `https://chrisjarvis.netlify.app/api/payments`
+  (checkout.session.completed/async_payment_succeeded/async_payment_failed/expired, charge.refunded, charge.dispute.created; LIVE und TEST) + Secrets in Netlify,
+  für E2E `install-stripe-keys.sh fiverr e2e` + danach Mail-Deploy.
 
 ## TF-079 – KONTAKTFORMULAR → AUTOMATISCHES GESPRÄCH → SICHERER ZUGANG → AUTOMATISCHE REPARATUR (2026-10-18)
 - **Kundenweg (nur bestehende Bausteine verdrahtet, kein zweites Credential-/Mail-/Zustandssystem):** verifizierte, echte Einsendung mit «Interesse an:
