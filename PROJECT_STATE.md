@@ -2,7 +2,32 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-18 (TF-077C)
+Letzte Aktualisierung: 2026-10-18 (TF-079)
+
+## TF-079 – KONTAKTFORMULAR → AUTOMATISCHES GESPRÄCH → SICHERER ZUGANG → AUTOMATISCHE REPARATUR (2026-10-18)
+- **Kundenweg (nur bestehende Bausteine verdrahtet, kein zweites Credential-/Mail-/Zustandssystem):** verifizierte, echte Einsendung mit «Interesse an:
+  Check & Reparatur» (bzw. «CHF 480», «REPAIR_FIX_500»; nur das Formularfeld zählt – nie eine Problembeschreibung) → `intent = CONTACT_FORM_REPAIR_INTEREST` →
+  erste automatische Antwort (TF-077B/D, genau einmal) zusätzlich mit den nächsten Schritten und der Bitte um ausdrückliche Bestätigung («Ja, ich bestätige den
+  Auftrag»), ohne Link, ohne Passwortfrage → **contact-form-journey.js** (Mail-Worker) führt den Thread dieser Antwort: Routinefragen (Zugang/Zahlung) mit festen
+  Vorlagen, Passwort per Mail → `SENSITIVE_CREDENTIAL_SENT`-Hinweis (nichts gespeichert/wiederholt), Stopp/Storno/Preisverhandlung/Recht/Injection/Unklares → Chris.
+  Ausdrückliche Bestätigung (Absender == Kundenadresse) → Auftragsbitte `onboarding/cf_orders/<key>.json` → Repair-Service `applyContactFormOrders` legt GENAU EINEN
+  RF480-Auftrag an (`createContactFormRepairOrder` = Direktverkauf + Auftrag wie `createConfirmedRepairOrder`, Beleg Kundenmail) bzw. bindet an den offenen Auftrag
+  derselben Domain + Adresse; fremde Adresse → `DUPLICATE_OPEN_ORDER` → Prüfung. Ergebnis `onboarding/cf_order_results.json` + `contact_form_keys` im Export.
+  Bestätigungsmail im selben Thread (Auftragsnummer, CHF 240 vor Start, Zahlungsangaben separat) + Hinweis an Chris («Zahlungsangaben senden»).
+- **Ab dem Auftrag unverändert repair-workflow.js:** AUTHORIZATION_REQUIRED (Auftrag ≠ Freigabe) → Zahlungsschwelle CHF 240 (payments.js, je Lauf geprüft) →
+  ACCESS_REQUESTED → Plattform-Erkennung (TF-071) → `newIntakeToken`/`accessLink`/CUSTOMER_ACCESS_REQUEST automatisch. **Neu:** `onboarding-dialogue.route()` legt diese
+  erste Auftrags-Mail in den Kontaktformular-Thread (`contactThreadFor`, nur eindeutig + gleiche Adresse; Thread unbrauchbar → eigener Auftrags-Thread), der
+  Onboarding-Dialog übernimmt dort (frühere Kundennachrichten vor der ersten Auftrags-Mail gelten als `pre_binding`), der Kundenweg endet (`HANDED_OFF`).
+  Danach: sicherer Zugang (Domain/Zweck/Token/Ablauf gebunden, Zustimmung im Formular) → Preflight → Brief-Gate → Backup → Audit → Plan → Reparatur → Validierung →
+  Browser-Retest (Regression → Rollback) → Lieferung → COMPLETED + Tresor zerstört (REPAIR_FAILED/CANCELLED ebenfalls).
+- **§9:** Einsendung exakt zu einem bestätigten + bezahlten FIX-Auftrag (Adresse + Domain) → erste Antwort nennt den sicheren Zugangsschritt (ohne Link/Token), Weg sofort
+  `ORDER_BOUND`. Nie für unbestätigt/unbezahlt/andere Domain/unverifiziert/Test.
+- **Doppelte Antworten verhindert:** Threads des Kundenwegs sind vom allgemeinen Antwort-Scan des Mail-Workers ausgenommen (wie Onboarding-Threads).
+- **CRM:** `contact_form.workflow_status` (NEUE ANFRAGE / ANTWORT GESENDET / WARTET AUF BESTÄTIGUNG / WARTET AUF ZAHLUNG / ZUGANG ANGEFRAGT / ZUGANG ERHALTEN /
+  REPARATUR LÄUFT / ABGESCHLOSSEN / MANUELLE PRÜFUNG / ABGEBROCHEN) + `order_id`, Anzeige in Hot-Liste und Lead-Detail (DE/VI). CONTACT_FORM_P0 unverändert. Nie Zugangsdaten.
+- **Grenzen:** nur CH/de (VN-Aufträge weiterhin über Kudoshin/`/api/sales`). Zahlungsangaben verschickt weiterhin Chris (Zahlungsweg unverändert); Jarvis kündigt sie an.
+- **Tests:** `test/tf079.test.js` 12/12 (Happy Path bis Abschluss + Tresor zerstört, Zugang vor Zahlung, Test-Einsendung, fremde Domain, Klartext-Passwort, Duplikate,
+  Regression → Rollback, §9, Entscheidungen/Stopp, Fremdadresse). `npm run test:tf079`.
 
 ## TF-077C – NETLIFY-BENACHRICHTIGUNG MIT BENUTZERDEFINIERTEM TEXT + ANTWORTBOX (2026-10-18, CODE READY, nicht deployt)
 - **Anlass:** echte Benachrichtigung vom 18.10.2026 (Formular «anfrage», helvetic-webdesign-reperatur.netlify.app): Absender formresponses@netlify.com,

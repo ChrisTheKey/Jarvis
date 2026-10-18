@@ -236,7 +236,7 @@ export const AI_BUDGET_FILE = "ai_budget.json";
 // hier werden sie weder gelesen noch beantwortet noch mit Follow-ups versehen).
 export const SERVICE_THREAD_CLASSES = new Set(["CUSTOMER_ONBOARDING_DIALOGUE", "CUSTOMER_ACCESS_REQUEST"]);
 // TF-075A: contactOrders() → Aufträge (order_id → { customer_email, market, lead_id, … }) für die exakte Zuordnung von Kontaktformular-Anfragen.
-export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, aiPaused = async () => {}, sendGuard = ALLOW_ALL, onboardingThreads = null, contactOrders = () => ({}) }) {
+export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, aiPaused = async () => {}, sendGuard = ALLOW_ALL, onboardingThreads = null, contactOrders = () => ({}), contactJourney = null }) {
   const store = createStore(dir);
   // KI-Budget-Sperre (fail closed, persistiert): nach einem Guthabenfehler keine weiteren KI-Aufrufe. Höchstens ein Prüfversuch
   // je aiRecheckMinutes (von Anthropic abgelehnte Aufrufe kosten nichts); gelingt er, ist die KI wieder frei.
@@ -315,6 +315,12 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         autoReply: cfg.contactForms?.autoReply !== false && !!cfg.sender?.name, sendGuard });
       if (contactForms.degraded) degrade("contact_form", { message: contactForms.degraded });
     } catch (e) { log("error", "contact_form_failed", { error: String(e.message).slice(0, 160) }); }
+    // TF-079: Kundenweg «Check & Reparatur» im Thread der automatischen Antwort (Gespräch → bestätigter Auftrag → Übergabe an den Onboarding-Dialog).
+    // Nur mit Onboarding (VPS, Repair-Outbox). Fehler stoppen den Durchlauf nie.
+    if (typeof contactJourney === "function" && !dry && !readOnly) {
+      try { const cj = await contactJourney({ gmail, store, now: t, log, escalate }); if (cj?.degraded) degrade("contact_journey", { message: cj.degraded }); }
+      catch (e) { log("error", "contact_journey_failed", { error: String(e.message).slice(0, 160) }); }
+    }
     // TF-025: von Chris manuell in Gmail versendete Cold-Entwürfe erkennen (nur eigene, eindeutig zugeordnete Threads).
     // Ergebnis sind nur Fakten (Zeit, IDs) – nie eine Rechtsgrundlage. Danach gelten die normalen sicheren Antwortregeln.
     // TF-037: höchstens maxColdDraftChecksPerTick Entwürfe je Durchlauf (persistenter Round-Robin-Cursor in gmail.js).
@@ -1199,12 +1205,15 @@ async function loop() {
   // TF-066: Kunden-Onboarding-Dialog (nur mit Repair-Outbox, d. h. auf dem VPS neben dem Repair-Service; Notschalter JARVIS_ONBOARDING=off).
   const onbMod = await import("./onboarding-dialogue.js");
   const onbDir = repairOutboxDir() && process.env.JARVIS_ONBOARDING !== "off" ? (await import("./onboarding-store.js")).onboardingDirOf(repairOutboxDir()) : null;
+  // TF-079: Kontaktformular-Kundenweg (contact-form-journey.js) – erste Auftrags-Mail im Thread der automatischen Antwort, eigene Threads nie doppelt beantwortet.
+  const journeyMod = await import("./contact-form-journey.js");
   const onboarding = onbDir ? onbMod.createOnboarding({ dir: WORKER_DIR, onboardingDir: onbDir, gmail, extract: role === "vps" || process.env.JARVIS_COMPOSE === "api" ? onbMod.apiExtract() : null,
-    log, notify: shared.createOnboardingNotifier({ local, log }) }) : null;
-  const onboardingThreads = onboarding ? () => onboarding.boundThreads() : null;
+    log, notify: shared.createOnboardingNotifier({ local, log }), contactThreadFor: (id, email) => journeyMod.contactThreadFor(createStore(WORKER_DIR), id, email) }) : null;
+  const onboardingThreads = onboarding ? () => new Map([...journeyMod.journeyThreads(createStore(WORKER_DIR)), ...onboarding.boundThreads()]) : null;
+  const contactJourney = onboarding ? (x) => journeyMod.processContactJourneys({ ...x, onboardingDir: onbDir, boundOrders: () => new Set(onboarding.boundThreads().values()) }) : null;
   // TF-075A: Aufträge für die exakte Zuordnung von Kontaktformular-Anfragen (Export des Repair-Service, nur lesen).
   const contactOrders = () => (onbDir ? readOrdersExport(onbDir).orders || {} : {});
-  let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads, contactOrders });
+  let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads, contactOrders, contactJourney });
   const startedAt = new Date().toISOString();
   // Server Control (nur VPS): Pause zwischen Durchläufen ist weckbar; Neustart des Cores = sauberes Ende nach dem Durchlauf,
   // Docker (restart: unless-stopped) startet den Container-Prozess neu. Nie mitten in einem Gmail-Durchlauf.
@@ -1225,7 +1234,7 @@ async function loop() {
     syncConfig: shared.syncConfig, pollMs: () => pollMs(worker.config()), lastIteration: () => lastIt,
     queue: () => { const inbox = createStore(WORKER_DIR).read(CLOUD_INBOX, {}); const st = Object.values(inbox).map((e) => e.status); return { pending: st.filter((x) => x === "pending").length, processing: st.filter((x) => x === "accepted_local").length }; },
     restartCore: () => { restartRequested = true; wake(); },
-    restartMailWorker: () => { worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads, contactOrders }); standbyLogged = false; wake(); },
+    restartMailWorker: () => { worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads, contactOrders, contactJourney }); standbyLogged = false; wake(); },
     restartScheduler: () => wake(),
     // Cloud/Handy: Lead-Liste (Allowlist) und Cold-Entwurf je genau einem Lead – nur Entwurf, nie Versand.
     leads: () => publicLeads(salesMod.loadPipeline({ dir: WORKER_DIR, registry: gmail.listOwned() }).leads),

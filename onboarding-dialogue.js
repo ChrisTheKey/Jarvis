@@ -63,7 +63,9 @@ export function apiExtract({ apiKey = process.env.ANTHROPIC_API_KEY, model = pro
   };
 }
 
-export function createOnboarding({ dir, onboardingDir, gmail, extract = null, now = () => new Date(), log = () => {}, notify = async () => {}, maxReads = 10 } = {}) {
+// TF-079: contactThreadFor(order_id, customer_email) → Thread der automatischen Kontaktformular-Antwort desselben Kunden (nur exakt gebunden) – die erste
+// Auftrags-Mail geht dann in diesen Verlauf statt in einen neuen Thread.
+export function createOnboarding({ dir, onboardingDir, gmail, extract = null, now = () => new Date(), log = () => {}, notify = async () => {}, maxReads = 10, contactThreadFor = null } = {}) {
   if (!dir || !onboardingDir) throw new Error("Onboarding: Verzeichnisse fehlen.");
   const file = path.join(dir, ONBOARDING_FILE);
   let st = null;
@@ -104,6 +106,8 @@ export function createOnboarding({ dir, onboardingDir, gmail, extract = null, no
       if (rec.customer_email !== o.customer_email) return { reject: "binding_mismatch" };
       return { threadId: rec.thread_id };
     }
+    const cf = typeof contactThreadFor === "function" ? contactThreadFor(rq.order_id, o.customer_email) : null;
+    if (cf) return { threadId: cf, fallbackNewThread: true };
     return { newThread: true };
   }
   function onSent(rq, info) {
@@ -114,6 +118,8 @@ export function createOnboarding({ dir, onboardingDir, gmail, extract = null, no
     if (!rec) {
       if (!info?.threadId) return;
       rec = st.records[rq.order_id] = newRecord(o, rq, info);
+      // TF-079: im Kontaktformular-Verlauf gebunden → frühere Kundennachrichten (z. B. die Auftragsbestätigung) gehören dem Kontaktformular-Weg.
+      if (typeof contactThreadFor === "function" && o && contactThreadFor(rq.order_id, o.customer_email) === info.threadId) Object.assign(rec, { via_contact_form: true, bind_message_id: info.messageId || null });
       log("info", "onboarding_bound", { order_id: rq.order_id, kind: rec.kind, market: rec.market, message_class: rq.message_class });
     } else if (info?.threadId && rec.thread_id && info.threadId !== rec.thread_id) {
       halt(rec, "MANUAL_REVIEW_REQUIRED", "Auftrags-Mail landete in einem anderen Thread – Zuordnung nicht eindeutig.");
@@ -307,7 +313,8 @@ export function createOnboarding({ dir, onboardingDir, gmail, extract = null, no
       return;
     }
     const cur = st.records[id];
-    const bound = Date.parse(cur.bound_at) - 120_000;
+    const firstOwn = cur.via_contact_form ? (thread.messages || []).find((m) => m.messageId === cur.bind_message_id) : null;
+    const bound = Math.max(Date.parse(cur.bound_at) - 120_000, firstOwn ? Number(firstOwn.internalDate) || 0 : 0);
     const msgs = (thread.messages || []).filter((m) => !m.draft && !m.sent).sort((a, b) => a.internalDate - b.internalDate);
     let changed = false;
     for (const m of msgs) if (!cur.processed[m.messageId] && m.internalDate < bound) { cur.processed[m.messageId] = { at: iso(), result: "pre_binding" }; changed = true; }

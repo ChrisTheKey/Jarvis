@@ -126,6 +126,8 @@ export const HISTORY_BADGES = Object.freeze(["HISTORICAL", "REVERIFIED"]);
 export const CONTACT_FORM_STATUSES = Object.freeze(["NEW", "DRAFT_CREATED", "REVIEW_REQUIRED", "REPLY_SENT"]);
 export const CONTACT_FORM_RESOLUTIONS = Object.freeze(["CONTACT_FORM_HANDLED", "CUSTOMER_REACHED", "CALLBACK_SCHEDULED", "NOT_INTERESTED", "ORDER_CREATED", "DNC"]);
 export const CONTACT_FORM_CALL = Object.freeze(["CALLBACK_REQUESTED", "CALL_NOT_CURRENTLY_ELIGIBLE"]);
+export const CONTACT_FORM_WORKFLOW = Object.freeze(["NEW_INQUIRY", "REPLY_SENT", "WAITING_FOR_CONFIRMATION", "WAITING_FOR_PAYMENT", "ACCESS_REQUESTED", "ACCESS_RECEIVED",
+  "REPAIR_RUNNING", "COMPLETED", "MANUAL_REVIEW", "CANCELLED"]);
 export function cleanContactForm(c) {
   if (!c || typeof c !== "object" || !CONTACT_FORM_STATUSES.includes(c.status)) return null;
   const out = { status: c.status, matched: c.matched === true, received_at: iso(c.received_at), count: Number.isInteger(c.count) ? Math.max(1, Math.min(1000, c.count)) : 1 };
@@ -140,7 +142,10 @@ export function cleanContactForm(c) {
     customer_website: typeof c.customer_website === "string" && c.customer_website.length <= 200 && /^https?:\/\/[a-z0-9.-]+\.[a-z]{2,24}\/[^\s<>"']*$/.test(c.customer_website) ? c.customer_website : null, interest: str(c.interest, 80),
     reply_sent_at: iso(c.reply_sent_at), callback_requested: c.callback_requested === true, callback_evidence: c.callback_requested === true ? str(c.callback_evidence, 120) : null,
     callback_phone_match: c.callback_phone_match === true, open: c.open === true, open_since: iso(c.open_since), resolution: oneOf(c.resolution, CONTACT_FORM_RESOLUTIONS),
-    resolved_at: iso(c.resolved_at), call_eligibility: oneOf(c.call_eligibility, CONTACT_FORM_CALL, "CALL_NOT_CURRENTLY_ELIGIBLE") };
+    resolved_at: iso(c.resolved_at), call_eligibility: oneOf(c.call_eligibility, CONTACT_FORM_CALL, "CALL_NOT_CURRENTLY_ELIGIBLE"),
+    // TF-079: Kundenweg «Check & Reparatur» (feste Codes) + Auftragsnummer – nie Zugangsdaten, nie Mailinhalt.
+    workflow_status: oneOf(c.workflow_status, CONTACT_FORM_WORKFLOW), intent: c.intent === "CONTACT_FORM_REPAIR_INTEREST" ? c.intent : null,
+    order_id: typeof c.order_id === "string" && /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/.test(c.order_id) ? c.order_id : null };
 }
 // Kontaktformular-Einträge je CRM-Lead. Eine nicht zugeordnete Anfrage, deren Adresse/Domain die Lead-Datenbank doch kennt, wird auf DIESEN
 // Lead gelegt (nie ein zweiter Datensatz). Gecacht je gelesener Datei.

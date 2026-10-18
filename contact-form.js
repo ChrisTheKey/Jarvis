@@ -179,6 +179,16 @@ export function normalizeWebsite(raw) {
 }
 // «Interesse an»: Freitext, einzeilig, ≤ 80 Zeichen – nur Anzeige/CRM.
 export const interestOf = (raw) => String(raw ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || null;
+// TF-079: «Interesse an» nennt eindeutig das Angebot «Check & Reparatur» (CHF 480, REPAIR_FIX_500). Nur das Formularfeld zählt – eine Problembeschreibung
+// in der Nachricht («meine Website hat einen Fehler») ist NIE ein Reparaturwunsch. Interesse ist keine Freigabe und kein Auftrag.
+export const REPAIR_INTEREST = "CONTACT_FORM_REPAIR_INTEREST";
+const REPAIR_INTEREST_RE = /^(?:check\s*(?:&|\+|und|and)\s*reparatur(?:\s*[(–-]?\s*chf\s*480(?:\.[-–]{1,2})?\s*\)?)?|chf\s*480(?:\.[-–]{1,2})?|repair_fix_500)$/i;
+export const repairInterestOf = (interest) => REPAIR_INTEREST_RE.test(String(interest ?? "").normalize("NFC").replace(/[«»"“”]/g, "").replace(/\s+/g, " ").trim());
+// Domain der Kundenangabe «Ihre Website» (ohne www.) – nur aus der validierten URL, sonst null.
+export const websiteDomain = (url) => { try { return url ? new URL(url).hostname.toLowerCase().replace(/^www\./, "") : null; } catch { return null; } };
+// Automatischer Kundenweg (TF-079) nur für eine VERIFIZIERTE, echte (keine Test-)Einsendung mit eindeutigem Reparaturwunsch, CH-Formular und Website.
+export const journeyEligible = (it = {}) => it.verified === true && it.is_test !== true && it.intent === REPAIR_INTEREST && it.form_market !== "VN" && it.language !== "vi"
+  && !!websiteDomain(it.customer_website) && !!it.customer_email;
 
 // TF-077C: Test-Einsendung = Kundenname entspricht einem bekannten Eigentümer (Anzeigename oder Local-Part einer Adresse aus ownAddresses,
 // Umlaute ae/a-tolerant, Reihenfolge egal, ≥ 6 Buchstaben) ODER die Nachricht enthält «testrun»/«testlauf»/«ohne echtgeld». Der Name allein
@@ -320,7 +330,9 @@ export function classifyInbound(msg = {}, { cfg = {}, ownAddresses = [] } = {}) 
     else if (base.message_id) { sid = base.message_id; sid_source = "gmail_message_id"; }
   }
   const is_test = isTestSubmission({ name: inquiry.name, message, ownAddresses });
-  const item = { ...base, submission_id: sid, submission_id_source: sid_source, is_test, customer_website: normalizeWebsite(pick(fields, WEBSITE_KEYS)), interest: interestOf(pick(fields, INTEREST_KEYS)),
+  const interest = interestOf(pick(fields, INTEREST_KEYS));
+  const item = { ...base, submission_id: sid, submission_id_source: sid_source, is_test, customer_website: normalizeWebsite(pick(fields, WEBSITE_KEYS)), interest,
+    intent: repairInterestOf(interest) ? REPAIR_INTEREST : null,
     form_market, form_lead_id: form?.lead_id || null, form_order_id: form?.order_id || null,
     form_registered: !!form, site_verified, mailbox_verified, form_site: lc(form?.site || "") || site || null,
     summary: message.replace(/\s+/g, " ").trim().slice(0, 200), name: inquiry.name || null, phone: phone?.display || null, phone_e164: phone?.e164 || null,
@@ -426,16 +438,40 @@ export function composeReply({ lang = "de", inquiry = {}, sender = {}, vnSignatu
   const body = [name ? `Guten Tag ${name}` : "Guten Tag", "",
     "Vielen Dank für Ihre Nachricht über unser Kontaktformular. Wir haben Ihre Anfrage erhalten und melden uns so rasch wie möglich ausführlich bei Ihnen.",
     ...(order ? ["", `Ihre Anfrage betrifft Ihren Auftrag ${order}.`] : []),
+    ...(context.repair ? ["", ...repairNextStepLines(context.repair)] : []),
     ...(context.callback ? ["", "Ihren Rückrufwunsch haben wir notiert."] : []), "",
     "Ihre Nachricht:", quote(inquiry.message), "", "Freundliche Grüsse", ...(signature ? ["", signature] : [])].join("\n");
   return { subject, body: body.trim() };
 }
 const ORDER_ID_OK = /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/;
+// TF-079: nächste Schritte für «Check & Reparatur» – Bestätigung nur ausdrücklich, Zahlung vor Zugang, Zugang nur über den einmaligen Link.
+// ready = bereits bestätigter Auftrag mit erfüllter Zahlungsschwelle (exakt zugeordnet): der sichere Link kommt automatisch.
+export const SECURE_ACCESS_DE = "Für die Reparatur benötigen wir einen sicheren Zugang. Bitte verwenden Sie dafür den einmaligen Zugangslink, den Sie von uns per E-Mail erhalten.";
+export const NO_PASSWORD_MAIL_DE = "Bitte senden Sie keine Passwörter oder Zugangsdaten per E-Mail.";
+export const ORDER_CONFIRM_PHRASE_DE = "Ja, ich bestätige den Auftrag";
+export function repairNextStepLines({ domain, ready = false, order_id = null } = {}) {
+  if (ready) return [`Ihr Auftrag «Check & Reparatur»${ORDER_ID_OK.test(String(order_id || "")) ? ` (${order_id})` : ""} für ${domain} ist bestätigt und die erste Teilzahlung ist eingegangen.`,
+    SECURE_ACCESS_DE, NO_PASSWORD_MAIL_DE];
+  return [`Sie interessieren sich für «Check & Reparatur» (Festpreis CHF 480) für Ihre Website ${domain}. So geht es weiter:`,
+    `1. Wenn Sie den Auftrag erteilen möchten, antworten Sie einfach auf diese E-Mail mit «${ORDER_CONFIRM_PHRASE_DE}».`,
+    "2. Wir beginnen nach Eingang der ersten Hälfte des Festpreises (CHF 240); die Zahlungsangaben erhalten Sie nach Ihrer Bestätigung.",
+    "3. Danach erhalten Sie in diesem E-Mail-Verlauf einen sicheren, einmaligen Zugangslink. Dort geben Sie den Zugang verschlüsselt ein und bestätigen die Reparatur für Ihre Website.",
+    "4. Vor jeder Änderung sichern wir Ihre Website vollständig; zum Abschluss erhalten Sie einen verständlichen Bericht.",
+    NO_PASSWORD_MAIL_DE];
+}
 
 // ---------- Ablage ----------
 export const loadContactForms = (store) => { const s = store.read(CONTACT_FORMS_FILE, {}) || {}; return { v: 1, ...s, items: s.items || {}, seen: s.seen || {} }; };
 export const STATUS_WORD = (state) => (state === STATES.SENT ? "REPLY_SENT" : state === STATES.DRAFTED ? "DRAFT_CREATED"
   : [STATES.NEW, STATES.DRAFTING, STATES.SENDING].includes(state) ? "NEW" : "REVIEW_REQUIRED");
+// TF-079: sichtbarer Kundenweg im CRM (feste Codes, Anzeige DE «NEUE ANFRAGE» … «MANUELLE PRÜFUNG») – nie Zugangsdaten, nie Mailinhalt.
+export const WORKFLOW_STATUSES = Object.freeze(["NEW_INQUIRY", "REPLY_SENT", "WAITING_FOR_CONFIRMATION", "WAITING_FOR_PAYMENT", "ACCESS_REQUESTED", "ACCESS_RECEIVED",
+  "REPAIR_RUNNING", "COMPLETED", "MANUAL_REVIEW", "CANCELLED"]);
+export function workflowStatusOf(it = {}) {
+  if (WORKFLOW_STATUSES.includes(it.journey?.workflow)) return it.journey.workflow;
+  if (REVIEW_STATES.has(it.state)) return "MANUAL_REVIEW";
+  return it.state === STATES.SENT || it.state === STATES.DRAFTED ? "REPLY_SENT" : "NEW_INQUIRY";
+}
 const LEAD_ID_OK = /^[a-z0-9][a-z0-9.@_+-]{2,252}$/;
 // Website des Kunden nur aus einer geschäftlichen Adressdomain (nie Freemail, nie geraten); das Formular selbst liegt auf unserer Website.
 const bizSite = (email) => { const d = domainOf(lc(email)); return d && !FREEMAIL_RE.test(d) && /^[a-z0-9.-]+\.[a-z]{2,24}$/.test(d) ? `https://${d}/` : null; };
@@ -466,7 +502,8 @@ export function publicContactForms(st) {
       customer_website: it.customer_website || prev?.customer_website || null, interest: it.interest || prev?.interest || null,
       phone: it.phone || prev?.phone || null, phone_e164: it.phone_e164 || prev?.phone_e164 || null, website: bizSite(it.customer_email),
       callback_requested: it.callback_requested === true, callback_evidence: it.callback_requested ? it.callback_evidence || null : null,
-      reply_sent_at: it.state === STATES.SENT ? it.sent_at || null : prev?.reply_sent_at || null, order_id: it.order_id || prev?.order_id || null,
+      reply_sent_at: it.state === STATES.SENT ? it.sent_at || null : prev?.reply_sent_at || null, order_id: it.journey?.order_id || it.order_id || prev?.order_id || null,
+      workflow_status: workflowStatusOf(it), intent: it.intent === REPAIR_INTEREST ? REPAIR_INTEREST : prev?.intent || null,
       submissions: [...(prev?.submissions || []), { key: it.key, received_at: it.received_at, status: STATUS_WORD(it.state) }].slice(-10),
     };
   }
@@ -600,7 +637,12 @@ export async function processContactForms({ gmail, store, cfg = {}, sender = {},
       if (!inquiry?.message) throw new Error("Anfrage nicht mehr lesbar");
       const vi = it.language === "vi";
       const auto = canAuto(it);
-      const { subject, body } = composeReply({ lang: vi ? "vi" : "de", inquiry, sender, vnSignature, context: { order_id: it.order_id, callback: it.callback_requested === true } });
+      // TF-079: «Check & Reparatur» → nächste Schritte (nur verifiziert, nie Test). Bereits bestätigter + bezahlter FIX-Auftrag derselben Domain → Hinweis
+      // auf den sicheren Link (der Link selbst kommt ausschliesslich vom Repair-Service). Unbezahlt/unbestätigt/andere Domain → normaler Weg.
+      const ready = auto && journeyEligible(it) ? readyRepairOrder(it, safe(orders, {})) : null;
+      if (ready) it.repair_ready_order_id = ready.order_id;
+      const repair = auto && journeyEligible(it) ? { domain: websiteDomain(it.customer_website), ready: !!ready, order_id: ready?.order_id || null } : null;
+      const { subject, body } = composeReply({ lang: vi ? "vi" : "de", inquiry, sender, vnSignature, context: { order_id: it.order_id, callback: it.callback_requested === true, repair } });
       setState(it, STATES.DRAFTING, { drafting_at: t });
       save();
       const d = await gmail.createDraft({ to: it.customer_email, subject, body, mode: auto ? CONTACT_FORM_AUTO_REPLY_MODE : CONTACT_FORM_DRAFT_MODE, contactFormKey: it.key });
@@ -636,6 +678,15 @@ export async function processContactForms({ gmail, store, cfg = {}, sender = {},
   for (const [id, s] of Object.entries(st.seen)) if (+now - Date.parse(s?.at || 0) > keepMs) { delete st.seen[id]; changed = true; }
   save();
   return res;
+}
+// TF-079: exakt zugeordneter (Adresse) FIX-Auftrag, bestätigt, Zahlungsschwelle erfüllt, nicht abgeschlossen, Domain == «Ihre Website» – sonst null.
+export function readyRepairOrder(it = {}, orders = {}) {
+  if (it.match_state !== MATCH.ORDER || !it.order_id) return null;
+  const o = orders[it.order_id];
+  const dom = websiteDomain(it.customer_website);
+  if (!o || o.kind !== "FIX" || o.order_confirmed !== true || o.payment_gate_met !== true || o.terminal || !dom) return null;
+  if (lc(o.domain).replace(/^www\./, "") !== dom || lc(o.customer_email) !== lc(it.customer_email)) return null;
+  return o;
 }
 // Formulartext eines frisch gelesenen Elements – nur im Speicher dieses Prozesses, nie auf Platte.
 const pendingInquiry = new Map();

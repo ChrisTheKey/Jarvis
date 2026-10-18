@@ -95,6 +95,8 @@ const cfBadge = (l) => {
   return el("span", { class: "crm-cfbadges" }, badge(`cf-${c.status}`, [L.badge, c.matched && c.lead_source !== "CONTACT_FORM" ? L.matched : null, L[c.status]].filter(Boolean).join(" · ")),
     contactFormOpen(l) ? [" ", badge("cf-urgent", L.urgent)] : "", c.lead_source === "CONTACT_FORM" && contactFormOpen(l) ? [" ", badge(`cf-${c.call_eligibility}`, L[c.call_eligibility] || "")] : "");
 };
+// TF-079: Kundenweg (NEUE ANFRAGE … ABGESCHLOSSEN / MANUELLE PRÜFUNG) – nur feste Codes vom Server.
+const cfWorkflow = (l) => (I.L.contactForm?.workflow || {})[l.contact_form?.workflow_status] || "";
 const pbText = (l) => t(`pb.${l.phonebook?.status || "PHONEBOOK_STAR_UNKNOWN"}`) + (l.phonebook?.source === "multisource" ? ` · ${t("pb.provider")}: multisource` : "");
 // TF-077B «E-Mail lossenden»: genau EIN Knopf je Lead (nur SERVER_SEND). Der Browser schickt nur lead_id + draft_ref – nie Empfänger/Text/Gmail-URL.
 function sendBox(l) {
@@ -140,6 +142,7 @@ function renderHot() {
     q.length ? el("ul", { class: "crm-hot-list" }, q.map((l) => el("li", { class: "crm-hot-item", "data-id": l.lead_id },
       el("div", { class: "row" }, el("b", {}, l.company || l.contact_form.name || l.email || l.lead_id), " ", cfBadge(l)),
       el("small", {}, `${t("cf.received")}: ${fmt(l.contact_form.open_since || l.contact_form.received_at)}`),
+      cfWorkflow(l) ? el("small", { class: "crm-cf-workflow" }, `${t("cf.workflow")}: ${cfWorkflow(l)}`) : "",
       l.contact_form.summary ? el("p", { class: "crm-hot-msg" }, l.contact_form.summary) : "",
       el("div", { class: "crm-hot-meta" }, l.website ? link(l.website, l.domain || l.website) : "–", " · ", telLink(l), " · ", el("span", {}, l.email || "–"),
         owner && l.seller ? ` · ${t("cf.seller")}: ${l.seller}` : ""),
@@ -292,7 +295,7 @@ function renderDrawer() {
   // TF-077B: Giuliano/Mario/Damiano – genau EIN Mail-Knopf «E-Mail lossenden» (sendBox), keine Gmail-URL.
   const c = l.contact_form;
   const cfBox = c?.lead_source === "CONTACT_FORM" ? el("section", { class: `crm-cfbox${contactFormOpen(l) ? " open" : ""}` }, el("h4", {}, t("cf.head")), cfBadge(l),
-    kv([[t("cf.received"), fmt(c.open_since || c.received_at)], [t("cf.msg"), c.summary || "–"], [t("cf.reply"), (I.L.contactForm || {})[c.status] || "–"],
+    kv([[t("cf.received"), fmt(c.open_since || c.received_at)], ...(cfWorkflow(l) ? [[t("cf.workflow"), cfWorkflow(l) + (c.order_id ? ` · ${c.order_id}` : "")]] : []), [t("cf.msg"), c.summary || "–"], [t("cf.reply"), (I.L.contactForm || {})[c.status] || "–"],
       [t("cf.call"), (I.L.contactForm || {})[c.call_eligibility] || "–"], ...(c.callback_evidence ? [[t("cf.callback"), c.callback_evidence]] : []),
       ...(c.email && c.email !== l.email ? [[t("kv.email"), c.email]] : []), ...(c.phone && c.phone !== l.phone ? [[t("kv.phone"), c.phone]] : [])]),
     c.inbound ? el("p", { class: "crm-note" }, t("cf.inbound")) : "",

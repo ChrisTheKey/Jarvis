@@ -221,15 +221,31 @@ export function createRepairOrder(store, { domain, website = null, lead_id = nul
 // Bestätigter CHF-480-Auftrag (TF-046): der bewusste Aufruf durch Chris ist die betriebliche Bestätigung (wie
 // check-150-workflow --create-confirmed). Direktverkauf (sales.js recordDirectSale, Quelle direct_customer) + Auftrag; eine
 // Anfrage allein erzeugt NIE einen Auftrag. VERKAUF != ZAHLUNG: der Auftrag wartet danach auf kumulativ CHF 240.
-export function createConfirmedRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, date = null, now = new Date() } = {}) {
+// TF-079: viaCustomerMail = Bestätigung kam als ausdrückliche Kundenmail im Kontaktformular-Verlauf (Beleg statt Chris-CLI).
+export function createConfirmedRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, date = null, viaCustomerMail = false, now = new Date() } = {}) {
   if (!DELIVERY_EMAIL_RE.test(String(delivery_email || ""))) throw new Error("Verifizierte Kundenadresse (--email) des bestätigten Auftrags erforderlich.");
   const sales = store.read("sales.json", { records: {} });
   const records = recordDirectSale(sales.records || {}, { domain, offer: REPAIR_OFFER, delivery_email, company, contact_name, website, date: date || undefined, now }); // validiert, schreibt nicht
+  const ds = records[normDomain(domain)]?.direct_sale;
+  if (viaCustomerMail && ds) Object.assign(ds, { basis: "customer_email_confirmation", confirmed_by: "customer_contact_form" });
   const order = createRepairOrder(store, { domain, website, company, delivery_email, contact_name, now }); // wirft bei offenem Auftrag
   store.write("sales.json", { ...sales, records });
   const sale = records[normDomain(domain)]?.sale;
   order.confirmed = { source: "sales.json", sale_date: sale?.sale_date || null, confirmed_at: now.toISOString() };
   order.state_history.push({ at: now.toISOString(), from: order.state, to: order.state, reason: `ORDER_CONFIRMED – Direktverkauf ${REPAIR_OFFER} erfasst (CHF ${OFFERS[REPAIR_OFFER].price}); wartet auf Zahlung` });
+  return saveOrder(store, order);
+}
+// TF-079: Kunde hat im Kontaktformular-Thread ausdrücklich «Check & Reparatur» bestätigt (Mail-Worker → onboarding/cf_orders). Gleicher Weg wie
+// createConfirmedRepairOrder (Direktverkauf + Auftrag), Bestätigung belegt als Kundenmail statt Chris-CLI. Die Bestätigung des AUFTRAGS ist KEINE
+// Reparaturfreigabe: customer_authorized_repair bleibt false, bis der Kunde im sicheren Formular für genau diese Domain zustimmt. VERKAUF != ZAHLUNG.
+export function createContactFormRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, lead_id = null, contact_form_key, confirmed_at, now = new Date() } = {}) {
+  if (!/^cf:[0-9a-f]{24}$/.test(String(contact_form_key || ""))) throw new Error("Kontaktformular-Kennung fehlt.");
+  const order = createConfirmedRepairOrder(store, { domain, website, company, delivery_email, contact_name, viaCustomerMail: true, now });
+  if (lead_id) order.lead_id = lead_id;
+  order.confirmed = { ...order.confirmed, source: "contact_form_customer_confirmation", customer_confirmed_at: confirmed_at || now.toISOString() };
+  order.contact_form = { key: contact_form_key, confirmed_at: confirmed_at || now.toISOString(), source: "customer_reply_email" };
+  order.onboarding_required = true; // Kunden-Dialog (Brief-Gate) läuft im Kontaktformular-Thread weiter
+  order.state_history.push({ at: now.toISOString(), from: order.state, to: order.state, reason: "Auftrag vom Kunden im Kontaktformular-Verlauf ausdrücklich bestätigt (keine Reparaturfreigabe) – wartet auf Zahlung" });
   return saveOrder(store, order);
 }
 // Stornierter (voided) CHF-480-Verkauf für die Domain des Auftrags (TF-040/TF-046) – dann nie Reparatur oder Lieferung.

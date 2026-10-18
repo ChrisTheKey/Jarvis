@@ -46,7 +46,8 @@
     "payments-reconcile": "node payment-reconcile.js",
     "phonebook:backfill": "node crm-service.js --phonebook-backfill",
     "phonebook:diagnose": "node crm-service.js --phonebook-diagnose",
-    "test:tf078": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf078.test.js test/tf077b.test.js"
+    "test:tf078": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf078.test.js test/tf077b.test.js",
+    "test:tf079": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf079.test.js test/tf077.test.js test/tf077b.test.js test/tf077c.test.js test/tf077d.test.js test/onboarding-066.test.js test/tf071.test.js test/secure-access-041.test.js test/access-profile-043.test.js"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",

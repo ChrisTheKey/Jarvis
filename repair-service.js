@@ -57,6 +57,11 @@ export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUT
     try { out.vn_orders = await (await import("./order-intake.js")).syncOrderIntake({ dir, client: orderIntake, log }); }
     catch (e) { out.vn_orders = { error: true }; log("error", "vn_order_intake_failed", { error: String(e.message).slice(0, 160) }); }
   }
+  // TF-079: ausdrücklich bestätigte «Check & Reparatur»-Aufträge aus dem Kontaktformular-Thread anlegen/binden – vor den Workflows.
+  if (onboardingDir) {
+    try { out.contact_form_orders = (await import("./onboarding-repair.js")).applyContactFormOrders({ dir, onboardingDir, log }); }
+    catch (e) { out.contact_form_orders = { error: true }; log("error", "contact_form_orders_failed", { error: String(e.message).slice(0, 160) }); }
+  }
   runRepair ||= (await import("./repair-workflow.js")).runRepairOrders;
   runCheck150 ||= (await import("./check-150-workflow.js")).runCheck150Orders;
   try { out.repair = await runRepair({ dir, gmail: mailer, intake, log, onboardingDir }); if (out.repair?.advanced) log("info", "repair_orders_processed", out.repair); }
