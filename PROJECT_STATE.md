@@ -28,6 +28,11 @@ Letzte Aktualisierung: 2026-10-18 (TF-079)
 - **Grenzen:** nur CH/de (VN-Aufträge weiterhin über Kudoshin/`/api/sales`). Zahlungsangaben verschickt weiterhin Chris (Zahlungsweg unverändert); Jarvis kündigt sie an.
 - **Tests:** `test/tf079.test.js` 12/12 (Happy Path bis Abschluss + Tresor zerstört, Zugang vor Zahlung, Test-Einsendung, fremde Domain, Klartext-Passwort, Duplikate,
   Regression → Rollback, §9, Entscheidungen/Stopp, Fremdadresse). `npm run test:tf079`.
+- **Deploy 2026-10-18 (Code 5a2f633, origin = HEAD):** Repair 5a2f633 (deploy-repair.sh, MAIL_WORKER_UNTOUCHED=YES), CRM 5a2f633 (deploy-crm.sh build|start, healthy,
+  MAIL/CONTACTS_WORKER_UNTOUCHED), Mail 5a2f633 (deploy.sh fiverr, ohne --with-secrets; vorher Queue 0 pending / 0 processing; healthy, 0 Restarts, erster Tick ohne Fehler).
+  Netlify live (crm.js, crm-model.js, i18n.js byte-gleich HEAD). /api/access-intake ohne Worker-Token → 401. Tests: voll 1051/1063 bestanden, 0 fehlgeschlagen, 12 übersprungen
+  (erster Volllauf: CRM-Browser-Test N Timeout unter Last → einzeln 4/4 grün; Dockerfile-COPY + sales.json-Guard behoben). Secret-Scan 0 Treffer. 0 echte Testmails/Reparaturen/Zugangsdaten.
+- **Chris:** Zahlungsangaben an Kunden mit neuem Auftrag senden (Jarvis meldet «Zahlungsangaben an den Kunden senden»); Zahlung wie bisher in payments.js verbuchen.
 
 ## TF-077C – NETLIFY-BENACHRICHTIGUNG MIT BENUTZERDEFINIERTEM TEXT + ANTWORTBOX (2026-10-18, CODE READY, nicht deployt)
 - **Anlass:** echte Benachrichtigung vom 18.10.2026 (Formular «anfrage», helvetic-webdesign-reperatur.netlify.app): Absender formresponses@netlify.com,
