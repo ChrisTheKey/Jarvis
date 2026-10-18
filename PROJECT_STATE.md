@@ -2,7 +2,33 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-17 (TF-077B)
+Letzte Aktualisierung: 2026-10-18 (TF-077C)
+
+## TF-077C – NETLIFY-BENACHRICHTIGUNG MIT BENUTZERDEFINIERTEM TEXT + ANTWORTBOX (2026-10-18, CODE READY, nicht deployt)
+- **Anlass:** echte Benachrichtigung vom 18.10.2026 (Formular «anfrage», helvetic-webdesign-reperatur.netlify.app): Absender formresponses@netlify.com,
+  Betreff «Neue Kundenanfrage - Helvetic Webdesign», Body nur «Ihre Website *», «Name *», «E-Mail *», «Interesse an», «Was funktioniert nicht?» – kein Link,
+  keine Submission-ID, kein Formularname → Jarvis legte weder Antwort noch Entwurf an (`no_form_fields`, kein Formularname, keine ID, Site nicht verifizierbar).
+- **Feld-Erkennung (contact-form.js):** `parseFormFields` akzeptiert « *» und «?» im Feldnamen (`normalizeFieldKey`: NFC, klein, Leerzeichen/./-/_ → «_»);
+  Nachricht auch aus «Was funktioniert nicht?»; «Ihre Website» → `customer_website` (nur URL-validiert: http/https, vollständiger Hostname, keine Zugangsdaten,
+  kein Sonderport, keine IP, ohne Query/Fragment), «Interesse an» → `interest` (≤ 80 Zeichen). Beides nur Anzeige/CRM (`cleanContactForm`, `contact_forms_public.json`),
+  nie Empfänger, nie Verifikation, nie Audit-Ziel (CRM-`website` bleibt aus der Geschäftsadresse).
+- **Submission-ID-Ersatz:** fehlt die ID, gilt NUR bei registriertem Formular + `site_verified` + `mailbox_verified` die RFC-Message-ID (sonst Gmail-ID) als
+  Einsendungs-ID (Idempotenz-Schlüssel unverändert, Verifikation erfüllt). Feld `submission_id_source`: `provider` | `rfc_message_id` | `gmail_message_id`.
+  Ohne Registrierung/Site-Verifikation bleibt `no_submission_id` (nur Entwurf). **Site-Verifikation unverändert strikt** (Link `app.netlify.com/sites/<slug>/` oder
+  Betreff «submission from <slug> (<formular>)») – keine Code-Lockerung.
+- **Test-Einsendungen:** Kundenname = bekannter Eigentümer (Anzeigename/Local-Part einer Adresse aus ownAddresses, Umlaut-tolerant, Reihenfolge egal, ≥ 6 Buchstaben)
+  ODER Nachricht enthält «testrun»/«testlauf»/«ohne echtgeld» → `is_test: true`: Antwort wie gewohnt, aber KEIN CRM-Lead (publicContactForms überspringt sie), kein Verkauf.
+  Eine Eigentümer-Adresse als Kunden-E-Mail wird weiterhin abgelehnt (`own_address`).
+- **Konfiguration (Server `config.json`, Abschnitt `contactForms`; keine Secrets):**
+  `{ "enabled": true, "receivingMailboxes": ["chriskaelin98@gmail.com"], "forms": [ { "form_name": "anfrage", "site": "helvetic-webdesign-reperatur", "market": "CH" } ] }`
+  **In Netlify (Formular «anfrage» → Benachrichtigung) den Betreff setzen auf:** `Neue Kundenanfrage – submission from helvetic-webdesign-reperatur (anfrage)`.
+- **Dashboard (public/index.html):** Antwortfeld von Jarvis 3× grösser (Desktop 5.4 → 16.2 em, Handy 4.2 → 12.6 em, niedriger Viewport 2.8 → 8.4 em; zusätzlich durch 45/38/30 vh
+  begrenzt) und der Antwort-Verlauf der aktuellen Sitzung bleibt bestehen (sessionStorage, max. 80 Antworten; neue Befehle/«Neues Gespräch»/Neuladen löschen ihn nicht,
+  «Neues Gespräch» setzt nur eine Trennlinie). Nur Anzeige – Gesprächskontext, Gedächtnis und Cloud-Turns unverändert.
+- **Tests:** `test/tf077c.test.js` 8/8 (echte Mail als Fixture mit Gmail-Header dkim=pass netlify.com; VERIFIED + genau eine Antwort; ohne Registrierung/Site nur Entwurf; doppelte
+  Zustellung → eine Antwort; Test-Einsendung ohne CRM-Lead).
+- **Offen / zu tun (Chris):** Mail-Worker neu deployen (`deploy.sh fiverr`), Zeilen aus der Konfiguration oben in die Server-`config.json` eintragen, Netlify-Betreff ändern,
+  Netlify-Frontend neu deployen (Antwortbox).
 
 ## TF-077B – ONE-CLICK-VERKÄUFER-MAIL + KONTAKTFORMULAR P0 + CRM HOT LEADS (2026-10-17, Code 912dc2a, MAIL + CRM LIVE, Netlify LIVE)
 - Enthält TF-077 Teil A (mail-access.js, war nur lokal) mit geänderter Policy.

@@ -68,7 +68,12 @@ header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
 .subs { width: min(860px, 100%); text-align: center; min-height: 84px; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; }
 .subs .you { font: 500 15px var(--mono); color: var(--muted); letter-spacing: .04em; }
 .subs .you::before { content: "CHRIS ▸ "; color: var(--cyan); opacity: .7; }
-.subs .jarvis { white-space: pre-wrap; user-select: text; font: 500 21px/1.35 var(--ui); color: var(--text); text-shadow: 0 0 12px rgba(0,0,0,.9); max-height: 5.4em; overflow-y: auto; scrollbar-width: none; }
+.subs .jarvis { white-space: pre-wrap; user-select: text; font: 500 21px/1.35 var(--ui); color: var(--text); text-shadow: 0 0 12px rgba(0,0,0,.9); max-height: min(16.2em, 45vh); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; text-align: left; }
+/* Verlauf der Antworten der aktuellen Sitzung: ältere Antworten gedimmt, die aktuelle voll sichtbar. */
+.subs .jarvis .turn { padding: 7px 0; border-top: 1px solid rgba(63,216,255,.14); opacity: .62; overflow-wrap: anywhere; }
+.subs .jarvis .turn:first-child { border-top: 0; }
+.subs .jarvis .turn.cur { opacity: 1; }
+.subs .jarvis .turn.sep { font: 500 12px var(--mono); letter-spacing: .14em; color: var(--muted); text-align: center; opacity: .8; }
 .bar-in { width: min(860px, 100%); display: flex; gap: 10px; align-items: center; }
 .mic { width: 54px; height: 54px; border-radius: 50%; border: 1px solid var(--cyan); background: rgba(63,216,255,.08); color: var(--cyan-2); cursor: pointer; display: grid; place-items: center; flex: none; transition: background .2s, box-shadow .2s; }
 .mic svg { width: 22px; height: 22px; }
@@ -178,7 +183,7 @@ form.cmd button.stop { color: var(--red); }
 @keyframes slide { from { opacity: 0; transform: translateX(8px); } }
 @media (prefers-reduced-motion: reduce) { .log li { animation: none; } }
 @media (max-width: 1100px) { .hud { grid-template-columns: 250px minmax(0, 1fr) 280px; } }
-@media (max-height: 700px) { .subs { min-height: 0; } .subs .jarvis { font-size: 18px; max-height: 2.8em; } .hud { gap: 10px; } }
+@media (max-height: 700px) { .subs { min-height: 0; } .subs .jarvis { font-size: 18px; max-height: min(8.4em, 30vh); } .hud { gap: 10px; } }
 /* Quick-Status (Handy): die wichtigsten Cloud-Werte auf einen Blick – auf dem Desktop zeigt das STATUS-Panel alles. */
 .quick { display: none; }
 .quick .q { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font: 12px var(--mono); }
@@ -221,7 +226,7 @@ form.cmd button.stop { color: var(--red); }
   .left .clock-panel, .left .sys-panel { display: none; }
   .bottom { order: 4; margin-top: auto; position: sticky; bottom: 0; z-index: 5; background: linear-gradient(transparent, var(--bg) 12%); margin-inline: -16px; padding: 10px 16px max(12px, env(safe-area-inset-bottom)); gap: 10px; }
   .subs { min-height: 0; }
-  .subs .jarvis { font-size: 17px; max-height: 4.2em; }
+  .subs .jarvis { font-size: 17px; max-height: min(12.6em, 38vh); }
   .subs .you { font-size: 13px; }
   .mic { width: 48px; height: 48px; }
   form.cmd textarea { font-size: 16px; padding: 12px; } /* 16 px: iOS zoomt sonst beim Fokus in das Feld */
@@ -953,6 +958,24 @@ addEventListener("keydown", (e) => {
 });
 setInterval(() => { $("mic").classList.toggle("on", state === "listening" || (ptt && recOn)); }, 150);
 
+// ---------- Antwort-Verlauf der aktuellen Sitzung ----------
+// Alle Antworten von Jarvis bleiben sichtbar (scrollbar) – über neue Befehle, «Neues Gespräch» und Neuladen hinweg (sessionStorage = diese Sitzung).
+const SAY_KEY = "jarvis.sayHistory.v1", SAY_MAX = 80, SAY_NEW = "— NEUES GESPRÄCH —";
+let sayLog = [], sayOpen = false;
+try { const raw = JSON.parse(sessionStorage.getItem(SAY_KEY) || "[]"); if (Array.isArray(raw)) sayLog = raw.filter((x) => typeof x === "string" && x).slice(-SAY_MAX).map((x) => x.slice(0, 20000)); } catch {}
+function sayRender() {
+  const box = $("say"), shown = sayLog.filter(Boolean);
+  box.textContent = "";
+  shown.forEach((t, i) => { const d = document.createElement("div"); d.className = "turn" + (t === SAY_NEW ? " sep" : "") + (i === shown.length - 1 ? " cur" : ""); d.textContent = t; box.appendChild(d); });
+  box.scrollTop = box.scrollHeight;
+  try { sessionStorage.setItem(SAY_KEY, JSON.stringify(shown.slice(-SAY_MAX))); } catch {}
+}
+function sayBegin() { sayLog.push(""); sayLog = sayLog.slice(-SAY_MAX); sayOpen = true; }           // neue Antwort beginnt (Verlauf bleibt)
+function saySet(text) { if (!sayOpen || !sayLog.length) { sayLog.push(""); sayOpen = true; } sayLog[sayLog.length - 1] = String(text ?? ""); sayRender(); } // laufende Antwort aktualisieren
+function sayEnd() { sayOpen = false; sayLog = sayLog.filter(Boolean); sayRender(); }
+function sayPush(text) { sayOpen = false; sayLog.push(String(text ?? "")); sayLog = sayLog.slice(-SAY_MAX); sayRender(); }   // eigenständige Meldung (Begrüssung o. ä.)
+sayRender();
+
 // ---------- Befehl an Claude Code ----------
 const TOOL_NAMES = { Bash: "BEFEHL", Read: "LESEN", Write: "SCHREIBEN", Edit: "ÄNDERN", WebSearch: "SUCHE", WebFetch: "WEB", Glob: "DATEIEN", Grep: "SUCHE", Task: "AGENT", TodoWrite: "PLAN" };
 let fromComposer = false;
@@ -962,7 +985,7 @@ async function run(text, { typed = false } = {}) {
   stopSpeaking();
   busy = true; ptt = false; awakeUntil = 0;
   $("you").hidden = false; $("you").textContent = text;
-  $("say").textContent = "";
+  sayBegin();
   setState("thinking");
   log("CHRIS", text);
   $("send").textContent = "STOPP"; $("send").classList.add("stop");
@@ -989,8 +1012,7 @@ async function run(text, { typed = false } = {}) {
         const ev = JSON.parse(raw.slice(5));
         if (ev.type === "text") {
           said += (said ? "\n\n" : "") + ev.text.trim();
-          $("say").textContent = said;
-          $("say").scrollTop = $("say").scrollHeight;
+          saySet(said);
           log("JARVIS", ev.text.trim(), "green");
           speak(ev.text);
         } else if (ev.type === "model") {
@@ -1004,7 +1026,7 @@ async function run(text, { typed = false } = {}) {
           log("BLOCKIERT", ev.detail, "red");
         } else if (ev.type === "error") {
           log("FEHLER", ev.message, "red");
-          $("say").textContent = ev.message;
+          saySet(ev.message);
           speak("Verzeihung, Chris. Es gab ein Problem. Details stehen auf dem Bildschirm.");
         } else if (ev.type === "mail_request") {
           // Cloud-Mailauftrag: nur in die Warteschlange gelegt – der Mail-Worker auf dem Server prüft und sendet zeitnah.
@@ -1015,7 +1037,7 @@ async function run(text, { typed = false } = {}) {
             : `Mailauftrag abgelehnt: ${ev.error}`;
           log("MAIL", msg, ev.ok ? "amber" : "red");
           said += (said ? "\n\n" : "") + msg;
-          $("say").textContent = said;
+          saySet(said);
           speak(msg);
           if (ev.ok) { mailSeen[ev.request.request_id] = ev.request.status; loadMailRequests(); }
         } else if (ev.type === "done" && ev.error && !said) {
@@ -1029,9 +1051,10 @@ async function run(text, { typed = false } = {}) {
       pushCloudTurns([{ role: "user", content: text }, { role: "assistant", content: said }]);
     }
   } catch (e) {
-    if (!ctl.signal.aborted) { log("FEHLER", e.message || "Verbindung verloren.", "red"); $("say").textContent = mode === "cloud" ? "Keine Verbindung zur Cloud. Bitte Internetverbindung prüfen und erneut senden." : "Keine Verbindung zum Jarvis-Server. Läuft das Terminal-Fenster noch?"; }
+    if (!ctl.signal.aborted) { log("FEHLER", e.message || "Verbindung verloren.", "red"); saySet(mode === "cloud" ? "Keine Verbindung zur Cloud. Bitte Internetverbindung prüfen und erneut senden." : "Keine Verbindung zum Jarvis-Server. Läuft das Terminal-Fenster noch?"); }
   } finally {
     busy = false; ctl = null;
+    sayEnd();
     $("send").textContent = "SENDEN"; $("send").classList.remove("stop");
     // Composer bleibt nach jeder Antwort bedienbar; nach getippten Befehlen direkt weiterschreiben.
     $("cmdInput").disabled = false;
@@ -1055,7 +1078,8 @@ $("reset").addEventListener("click", async () => {
   stopAll();
   if (mode === "cloud") { cloudTurns = []; store.set("cloudTurns", []); pushCloudTurns([], true); }
   else if (mode === "local") await api("/api/reset");
-  $("say").textContent = ""; $("you").hidden = true;
+  $("you").hidden = true;
+  if (sayLog.length && sayLog[sayLog.length - 1] !== SAY_NEW) sayPush(SAY_NEW); // Verlauf der Sitzung bleibt, nur eine Trennlinie
   log("SYSTEM", "Neues Gespräch gestartet. Meldungen und das Gedächtnis in memory/chris.md bleiben erhalten.");
 });
 
@@ -1560,7 +1584,7 @@ async function boot() {
     : status.claude
       ? `${greet} ${allOnline ? "Alle Systeme sind online." : `Achtung: Kein aktiver Mail-Worker (${mailHud ? mailHud.mailWorker : "Status unbekannt"}).`} ${call}`
       : `${greet} Ich kann Claude Code nicht finden. Bitte installieren Sie es und melden Sie sich einmal im Terminal an.`;
-  $("say").textContent = msg;
+  if (!sayLog.some(Boolean)) sayPush(msg); // bei Neuladen innerhalb der Sitzung bleibt der Verlauf, keine doppelte Begrüssung
   log("SYSTEM", mode === "cloud" ? "Cloud-Modus: Jarvis auf dem VPS – Chat, Gmail-Entwürfe, Server Control. Kein PC nötig." : "Online. " + (SR ? "Sprachsteuerung bereit." : "Keine Spracherkennung – bitte Chrome oder Edge nutzen."), mode === "local" && !status.claude ? "red" : "green");
   speak(msg);
 }

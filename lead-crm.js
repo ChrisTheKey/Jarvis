@@ -136,6 +136,8 @@ export function cleanContactForm(c) {
     verified: c.verified === true, inbound: c.inbound === true, summary: text(c.summary, 200), name: str(c.name, 120),
     email: typeof c.email === "string" && EMAIL_RE.test(c.email) && c.email.length <= 200 ? c.email : null,
     phone: typeof c.phone === "string" && /^[+0-9 ()\/.-]{6,30}$/.test(c.phone) ? c.phone : null,
+    // TF-077C: reiner Kontext (Anzeige) – nie Empfänger, nie Audit-Ziel.
+    customer_website: typeof c.customer_website === "string" && c.customer_website.length <= 200 && /^https?:\/\/[a-z0-9.-]+\.[a-z]{2,24}\/[^\s<>"']*$/.test(c.customer_website) ? c.customer_website : null, interest: str(c.interest, 80),
     reply_sent_at: iso(c.reply_sent_at), callback_requested: c.callback_requested === true, callback_evidence: c.callback_requested === true ? str(c.callback_evidence, 120) : null,
     callback_phone_match: c.callback_phone_match === true, open: c.open === true, open_since: iso(c.open_since), resolution: oneOf(c.resolution, CONTACT_FORM_RESOLUTIONS),
     resolved_at: iso(c.resolved_at), call_eligibility: oneOf(c.call_eligibility, CONTACT_FORM_CALL, "CALL_NOT_CURRENTLY_ELIGIBLE") };

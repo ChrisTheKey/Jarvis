@@ -1,4 +1,7 @@
 // TF-075A: Kontaktformular-Anfragen (CONTACT_FORM_INQUIRY) – höchste Mail-Priorität P0.
+// TF-077C: Netlify-Benachrichtigungen mit benutzerdefiniertem Text (Felder «Name *», «Was funktioniert nicht?», «Ihre Website *», «Interesse an», kein Link,
+// keine Submission-ID): Feldnamen mit Sternchen/Fragezeichen werden erkannt; die RFC-Message-ID ersetzt die Submission-ID nur für ein registriertes Formular
+// mit verifizierter Site + Postfach; Test-Einsendungen (is_test) werden beantwortet, erzeugen aber keinen CRM-Lead.
 // TF-077B (CONTACT_FORM_P0): eine VERIFIZIERTE Anfrage wird sofort automatisch beantwortet (CONTACT_FORM_REPLY_SENT, genau eine Antwort je
 // Einsendung). Verifiziert = bekannter Anbieter mit Gmail-bestätigtem DKIM/DMARC UND registriertes Formular UND konfiguriertes Empfangspostfach
 // UND Submission-ID UND Kundenadresse aus Reply-To/Formularfeld (verificationOf). Fehlt etwas → CONTACT_FORM_REVIEW_REQUIRED: nur Entwurf
@@ -124,27 +127,77 @@ export function authPassFor(headers = {}, domains = []) {
 }
 
 // "Feld: Wert"-Zeilen einer Formular-Benachrichtigung. Mehrzeilige Nachricht: Folgezeilen gehören zum letzten Feld.
+// TF-077C: Feldnamen dürfen ein Pflichtfeld-Sternchen und/oder Fragezeichen tragen («Name *», «Was funktioniert nicht?») – beides gehört nicht
+// zum Schlüssel. Normalisierung: NFC, Kleinbuchstaben, Leerzeichen/Punkt/Bindestrich/Unterstrich → «_» («E-Mail *» → e_mail).
+export const normalizeFieldKey = (k) => lc(String(k ?? "").normalize("NFC")).replace(/[*?]+/g, " ").replace(/[\s_.-]+/g, "_").replace(/^_+|_+$/g, "");
+const FIELD_LINE_RE = /^\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ0-9 _./-]{0,40}?)\s*[*?]*\s*:\s*(.*)$/u;
 export function parseFormFields(body = "") {
   const fields = {};
   let last = null;
   for (const raw of String(body).replace(/\r/g, "").split("\n")) {
     const line = raw.replace(/^\s*[*•-]\s*/, "");
-    const m = line.match(/^\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ0-9 _./-]{0,40}?)\s*:\s*(.*)$/u);
-    if (m && !/^https?$/i.test(m[1])) { last = lc(m[1]).replace(/[\s_.-]+/g, "_"); fields[last] = (fields[last] ? fields[last] + "\n" : "") + m[2].trim(); continue; }
+    const m = line.match(FIELD_LINE_RE);
+    if (m && !/^https?$/i.test(m[1])) { last = normalizeFieldKey(m[1]); fields[last] = (fields[last] ? fields[last] + "\n" : "") + m[2].trim(); continue; }
     if (/^\s*https?:\/\/\S+\s*$/.test(line) && /submissions?\//i.test(line)) { last = null; continue; } // Anbieter-Link, kein Kundentext
     if (last && line.trim()) fields[last] += "\n" + line.trim();
-    else if (!line.trim()) last = last && ["message", "nachricht", "anliegen", "comments", "comment", "noi_dung", "tin_nhan"].includes(last) ? last : null;
+    else if (!line.trim()) last = last && MSG_KEYS.includes(last) ? last : null;
   }
   return fields;
 }
 const EMAIL_KEYS = ["email", "e_mail", "mail", "email_address", "e_mail_adresse", "emailadresse", "your_email", "ihre_e_mail", "dia_chi_email", "địa_chỉ_email"];
 const NAME_KEYS = ["name", "full_name", "your_name", "ihr_name", "vorname_nachname", "ho_ten", "họ_tên", "họ_và_tên", "ten"];
-const MSG_KEYS = ["message", "nachricht", "anliegen", "ihre_nachricht", "comments", "comment", "anfrage", "noi_dung", "nội_dung", "tin_nhan", "tin_nhắn"];
+const MSG_KEYS = ["message", "nachricht", "anliegen", "ihre_nachricht", "comments", "comment", "anfrage", "was_funktioniert_nicht", "noi_dung", "nội_dung", "tin_nhan", "tin_nhắn"];
+// TF-077C: nur Anzeige/CRM-Kontext – nie Empfänger, nie Verifikation.
+const WEBSITE_KEYS = ["ihre_website", "ihre_webseite", "website", "webseite"];
+const INTEREST_KEYS = ["interesse_an", "interesse", "interest"];
 const SUBJECT_KEYS = ["subject", "betreff", "thema", "tieu_de", "tiêu_đề"];
 const FORMNAME_KEYS = ["form_name", "form", "formular"];
 const PHONE_KEYS = ["phone", "telefon", "tel", "telefonnummer", "phone_number", "mobile", "handy", "natel", "ihre_telefonnummer", "so_dien_thoai", "số_điện_thoại", "dien_thoai", "điện_thoại"];
 const CALLBACK_KEYS = ["rueckruf", "rückruf", "callback", "call_back", "rueckruf_erwuenscht", "rückruf_erwünscht", "goi_lai", "gọi_lại"];
 const pick = (f, keys) => { for (const k of keys) if (typeof f[k] === "string" && f[k].trim()) return f[k].trim(); return ""; };
+
+// TF-077C: «Ihre Website» des Kunden – nur URL-validiert (http/https, vollständiger Hostname, keine Zugangsdaten, kein Sonderport, keine IP), ohne
+// Query/Fragment. Reiner Kontext für CRM/Anzeige: wird NIE Empfänger, nie Verifikation und nie als Audit-Ziel übernommen.
+export function normalizeWebsite(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s || s.length > 200 || /[\s<>"'\\\u0000-\u001f]/.test(s)) return null;
+  let u;
+  try { u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(s) ? s : `https://${s}`); } catch { return null; }
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password || (u.port && !["80", "443"].includes(u.port))) return null;
+  const host = u.hostname.toLowerCase();
+  if (!/^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/.test(host)) return null;
+  return `${u.protocol}//${host}${u.pathname === "/" ? "/" : u.pathname.slice(0, 150)}`.slice(0, 200);
+}
+// «Interesse an»: Freitext, einzeilig, ≤ 80 Zeichen – nur Anzeige/CRM.
+export const interestOf = (raw) => String(raw ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || null;
+
+// TF-077C: Test-Einsendung = Kundenname entspricht einem bekannten Eigentümer (Anzeigename oder Local-Part einer Adresse aus ownAddresses,
+// Umlaute ae/a-tolerant, Reihenfolge egal, ≥ 6 Buchstaben) ODER die Nachricht enthält «testrun»/«testlauf»/«ohne echtgeld». Der Name allein
+// beeinflusst nie Empfänger oder Verifikation – er unterdrückt nur den CRM-Lead (Antwort wie gewohnt).
+const TEST_MESSAGE_RE = /\b(?:testrun|testlauf)\b|ohne\s+echtgeld/iu;
+const foldLetters = (s, translit) => {
+  let x = String(s ?? "").normalize("NFC").toLowerCase();
+  if (translit) x = x.replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue");
+  return x.replace(/ß/g, "ss").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z]/g, "");
+};
+const nameKeys = (s) => {
+  const tokens = String(s ?? "").split(/[\s,._+-]+/).filter(Boolean);
+  const out = new Set();
+  for (const order of tokens.length > 1 ? [tokens, [...tokens].reverse()] : [tokens]) for (const t of [true, false]) { const k = foldLetters(order.join(""), t); if (k.length >= 6) out.add(k); }
+  return out;
+};
+export function isTestSubmission({ name = "", message = "", ownAddresses = [] } = {}) {
+  if (TEST_MESSAGE_RE.test(String(message))) return true;
+  const mine = nameKeys(name);
+  if (!mine.size) return false;
+  for (const a of ownAddresses) {
+    const raw = String(a ?? "");
+    const display = raw.includes("<") ? raw.slice(0, raw.indexOf("<")).replace(/["']/g, "") : "";
+    const local = addrOf(raw).split("@")[0] || "";
+    for (const k of [...nameKeys(display), ...nameKeys(local)]) if (mine.has(k)) return true;
+  }
+  return false;
+}
 
 // TF-077B: Telefonnummer aus dem Formular – nur validiert (CH +41 9 Ziffern, VN +84 9–10 Ziffern), gehört ausschliesslich zu dieser Einsendung.
 export function normalizePhone(raw, market = "CH") {
@@ -249,7 +302,17 @@ export function classifyInbound(msg = {}, { cfg = {}, ownAddresses = [] } = {}) 
   // TF-077B: CRM-Angaben dieser Einsendung (Kurzfassung, Name, validiertes Telefon, ausdrücklicher Rückrufwunsch) – nie der volle Text.
   const phone = normalizePhone(pick(fields, PHONE_KEYS), form_market || "CH");
   const cb = phone ? callbackRequest(fields, message) : null;
-  const item = { ...base, form_market, form_lead_id: form?.lead_id || null, form_order_id: form?.order_id || null,
+  // TF-077C: Fehlt die Submission-ID in der Benachrichtigung (benutzerdefinierter Netlify-Text ohne Link), gilt NUR für ein registriertes Formular
+  // mit verifizierter Site UND verifiziertem Postfach die RFC-Message-ID (Header), sonst die Gmail-ID, als Einsendungs-ID – für Idempotenz
+  // (der Schlüssel bleibt derselbe) UND Verifikation. Ohne Registrierung/Site-Verifikation bleibt «no_submission_id».
+  let sid = base.submission_id, sid_source = sid ? "provider" : null;
+  if (!sid && !!form && site_verified && mailbox_verified) {
+    if (base.rfc_message_id) { sid = base.rfc_message_id; sid_source = "rfc_message_id"; }
+    else if (base.message_id) { sid = base.message_id; sid_source = "gmail_message_id"; }
+  }
+  const is_test = isTestSubmission({ name: inquiry.name, message, ownAddresses });
+  const item = { ...base, submission_id: sid, submission_id_source: sid_source, is_test, customer_website: normalizeWebsite(pick(fields, WEBSITE_KEYS)), interest: interestOf(pick(fields, INTEREST_KEYS)),
+    form_market, form_lead_id: form?.lead_id || null, form_order_id: form?.order_id || null,
     form_registered: !!form, site_verified, mailbox_verified, form_site: lc(form?.site || "") || site || null,
     summary: message.replace(/\s+/g, " ").trim().slice(0, 200), name: inquiry.name || null, phone: phone?.display || null, phone_e164: phone?.e164 || null,
     callback_requested: !!cb, callback_evidence: cb ? `${cb.source}: ${cb.evidence}` : null };
@@ -381,7 +444,7 @@ export function inquiryLeadId(it = {}) {
 export function publicContactForms(st) {
   const leads = {};
   for (const it of Object.values(st.items || {}).sort((a, b) => String(a.received_at).localeCompare(String(b.received_at)) || String(a.key).localeCompare(String(b.key)))) {
-    if (NO_LEAD_STATES.has(it.state) || !it.customer_email) continue;
+    if (NO_LEAD_STATES.has(it.state) || !it.customer_email || it.is_test === true) continue; // TF-077C: Test-Einsendungen erzeugen nie einen CRM-Lead
     const id = inquiryLeadId(it);
     if (!id) continue;
     const prev = leads[id];
@@ -391,6 +454,7 @@ export function publicContactForms(st) {
       lead_source: "CONTACT_FORM", priority_class: PRIORITY_CLASS, priority_at: prev?.priority_at || it.created_at || it.received_at,
       submission_id: it.key, contact_form_status: it.state, verified: it.verified === true, market: it.market === "VN" ? "VN" : "CH",
       email: lc(it.customer_email), name: it.name || prev?.name || null, company: it.company || prev?.company || null, summary: it.summary || null,
+      customer_website: it.customer_website || prev?.customer_website || null, interest: it.interest || prev?.interest || null,
       phone: it.phone || prev?.phone || null, phone_e164: it.phone_e164 || prev?.phone_e164 || null, website: bizSite(it.customer_email),
       callback_requested: it.callback_requested === true, callback_evidence: it.callback_requested ? it.callback_evidence || null : null,
       reply_sent_at: it.state === STATES.SENT ? it.sent_at || null : prev?.reply_sent_at || null, order_id: it.order_id || prev?.order_id || null,

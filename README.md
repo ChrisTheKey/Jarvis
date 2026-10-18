@@ -84,6 +84,12 @@ Jarvis kann E-Mail-Entwürfe anlegen, bearbeiten und senden – aber **ausschlie
 - Einstellungen: `.secrets/mail_worker/config.json`
   - `dryRun: true` – nur anzeigen. `sendMode: "drafts"` – nur Entwürfe. `sendMode: "compliant_auto"` + `dryRun: false` – versandberechtigte Mails werden selbst gesendet.
   - `offer` und `sender` (`name`, `company`, `email`, optional `signature`) müssen echt ausgefüllt sein; ohne `sender.name` wird nie gesendet und es gibt keine Erstkontakte.
+- Kontaktformular-Anfragen (Netlify/Formspree) werden vor allem anderen bearbeitet; eine VERIFIZIERTE Anfrage wird genau einmal automatisch beantwortet, sonst entsteht nur ein Entwurf. Registrierung in `config.json` (Beispiel, keine Secrets):
+  ```json
+  "contactForms": { "enabled": true, "receivingMailboxes": ["chriskaelin98@gmail.com"],
+    "forms": [{ "form_name": "anfrage", "site": "helvetic-webdesign-reperatur", "market": "CH" }] }
+  ```
+  Die Website wird nur über den Netlify-Link `app.netlify.com/sites/<slug>/` oder den Betreff `… submission from <slug> (<formular>)` verifiziert. Bei benutzerdefiniertem Benachrichtigungstext in Netlify daher den Betreff setzen auf `Neue Kundenanfrage – submission from helvetic-webdesign-reperatur (anfrage)`; fehlt die Submission-ID, gilt für ein so verifiziertes Formular die RFC-Message-ID. Test-Einsendungen (Eigentümername oder «testrun»/«testlauf»/«ohne echtgeld») werden beantwortet, erzeugen aber keinen CRM-Lead.
 - Selbst gesendet wird nur: Erstkontakte an Leads mit Versandgrundlage, Follow-ups und Antworten in genau diesen Threads. Alles andere bleibt Entwurf. Heikle Fälle (Verträge, Zahlungen, Rabatte, Passwörter, rechtliche Beschwerden, Unklares) sind immer Entwürfe mit Label `JARVIS-PRUEFEN`.
 - Leads: `.secrets/mail_worker/leads.json` (nie ins Git):
   ```json
