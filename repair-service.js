@@ -48,7 +48,9 @@ export function serviceHealthy(dir = WORKER_DIR, now = Date.now(), maxAgeMs = 5 
 
 // Ein Durchlauf: CHF-480 und CHF-150 mit der Outbox als einzigem Versandweg. Fehler eines Workflows stoppen den anderen nie.
 export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR, crmExportDir = CRM_EXPORT_DIR, intake = null, orderIntake = null, log = () => {}, runRepair = null, runCheck150 = null,
-  onboarding = false } = {}) {
+  onboarding = false, stripe = null, e2e = undefined } = {}) {
+  // TF-080: e2e (e2e-test.js e2eConfig) – Standard aus der Umgebung; Tests übergeben ihn ausdrücklich.
+  const e2eOpt = e2e ? { e2e } : {};
   const mailer = createOutboxMailer({ dir: outboxDir });
   const onboardingDir = onboarding ? onboardingDirOf(outboxDir) : null;
   const out = {};
@@ -59,12 +61,18 @@ export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUT
   }
   // TF-079: ausdrücklich bestätigte «Check & Reparatur»-Aufträge aus dem Kontaktformular-Thread anlegen/binden – vor den Workflows.
   if (onboardingDir) {
-    try { out.contact_form_orders = (await import("./onboarding-repair.js")).applyContactFormOrders({ dir, onboardingDir, log }); }
+    try { out.contact_form_orders = (await import("./onboarding-repair.js")).applyContactFormOrders({ dir, onboardingDir, log, ...e2eOpt }); }
     catch (e) { out.contact_form_orders = { error: true }; log("error", "contact_form_orders_failed", { error: String(e.message).slice(0, 160) }); }
+  }
+  // TF-080: Stripe-Anzahlung (Checkout anlegen, signierte Ereignisse/Abgleich prüfen, payments.js verbuchen) – VOR den Workflows, damit das
+  // CHF-240-Gate im selben Lauf öffnet. Ohne Schlüssel: NOT_CONFIGURED (nichts vorgetäuscht). Fehler stoppen den Service nie.
+  if (onboardingDir && stripe) {
+    try { out.stripe = await (await import("./stripe-webhook.js")).syncStripePayments({ dir, onboardingDir, log, ...e2eOpt, ...stripe }); if (out.stripe.booked || out.stripe.created) log("info", "stripe_sync", out.stripe); }
+    catch (e) { out.stripe = { error: true }; log("error", "stripe_sync_failed", { error: String(e.message).slice(0, 160) }); }
   }
   runRepair ||= (await import("./repair-workflow.js")).runRepairOrders;
   runCheck150 ||= (await import("./check-150-workflow.js")).runCheck150Orders;
-  try { out.repair = await runRepair({ dir, gmail: mailer, intake, log, onboardingDir }); if (out.repair?.advanced) log("info", "repair_orders_processed", out.repair); }
+  try { out.repair = await runRepair({ dir, gmail: mailer, intake, log, onboardingDir, ...e2eOpt }); if (out.repair?.advanced) log("info", "repair_orders_processed", out.repair); }
   catch (e) { out.repair = { error: true }; log("error", "repair_orders_failed", { error: e.message }); }
   try { out.check150 = await runCheck150({ dir, gmail: mailer, log, onboarding: !!onboardingDir }); if (out.check150?.advanced) log("info", "check150_orders_processed", out.check150); }
   catch (e) { out.check150 = { error: true }; log("error", "check150_orders_failed", { error: e.message }); }
@@ -85,7 +93,17 @@ export async function repairServiceIteration({ dir = WORKER_DIR, outboxDir = OUT
 export async function serviceStatus({ dir = WORKER_DIR, outboxDir = OUTBOX_DIR } = {}) {
   const { repairOrdersStatus } = await import("./repair-workflow.js");
   const { check150Status } = await import("./check-150-workflow.js");
-  return { role: SERVICE_ROLE, healthy: serviceHealthy(dir), commit: process.env.JARVIS_COMMIT || null, repair: repairOrdersStatus(dir), check150: check150Status(dir), outbox: outboxStatus(outboxDir) };
+  const { stripeServiceStatus } = await import("./stripe-webhook.js");
+  const { e2eStatus } = await import("./e2e-test.js");
+  return { role: SERVICE_ROLE, healthy: serviceHealthy(dir), commit: process.env.JARVIS_COMMIT || null, repair: repairOrdersStatus(dir), check150: check150Status(dir), outbox: outboxStatus(outboxDir),
+    stripe: stripeServiceStatus({ dir }), e2e: e2eStatus() };
+}
+// TF-080: Stripe-Abhängigkeiten des Produktivbetriebs (Inbox /api/payments mit Worker-Token, Rückkehr-Adresse = Netlify-Site). Nie Werte loggen.
+async function stripeDeps() {
+  const { paymentsInboxClient } = await import("./stripe-webhook.js");
+  const { syncConfig } = await import("./local-state.js");
+  const inbox = paymentsInboxClient({ config: syncConfig() });
+  return { inbox, origin: (String(process.env.JARVIS_WEB_ORIGIN || "").split(",")[0].trim() || inbox?.origin || "").replace(/\/+$/, "") || null };
 }
 
 // Lokales, verschlüsseltes State-Backup des Repair-Zustands (kein Offsite-Upload: der Offsite-Schlüssel je Tag gehört dem Mail-Worker).
@@ -116,7 +134,7 @@ async function loop() {
   try { await backupLocal({ dir, log, first: true }); } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
   while (!stop) {
     heartbeat(dir, process.pid, SERVICE_LOCK);
-    await repairServiceIteration({ dir, intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log, onboarding: onboardingEnabled() });
+    await repairServiceIteration({ dir, intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log, onboarding: onboardingEnabled(), stripe: await stripeDeps() });
     try { await backupLocal({ dir, log }); } catch (e) { log("error", "state_backup_failed", { error: e.message }); }
     if (!stop) await nap(pollMs());
   }
@@ -137,7 +155,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const { intakeClient } = await import("./access-intake.js");
       const { orderIntakeClient } = await import("./order-intake.js");
       const { syncConfig } = await import("./local-state.js");
-      console.log(JSON.stringify(await repairServiceIteration({ intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log: createLogger(WORKER_DIR), onboarding: onboardingEnabled() }), null, 2));
+      console.log(JSON.stringify(await repairServiceIteration({ intake: intakeClient({ config: syncConfig() }), orderIntake: orderIntakeClient({ config: syncConfig() }), log: createLogger(WORKER_DIR), onboarding: onboardingEnabled(), stripe: await stripeDeps() }), null, 2));
       return 0;
     },
   }[arg] || loop;

@@ -229,7 +229,7 @@ function payStore() {
   store.write("check150_orders.json", { orders: { [VNCHECK]: { order_id: VNCHECK, domain: "vn-cong-ty-2.vn", offer_class: "VN_REPAIR_CHECK", market: "VN", currency: "VND", state: "ORDER_CONFIRMED", created_at: "2026-10-16T03:00:00Z" } } });
   return { dir, store, done: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
-const pi = (id, amount, currency, order_id, x = {}) => ({ id: `evt_${id}`, type: "payment_intent.succeeded", data: { object: { id, status: "succeeded", amount_received: amount, currency, metadata: order_id ? { order_id } : {}, created: 1760583600, ...x } } });
+const pi = (id, amount, currency, order_id, x = {}) => ({ id: `evt_${id}`, type: "payment_intent.succeeded", livemode: true, data: { object: { id, status: "succeeded", amount_received: amount, currency, metadata: order_id ? { order_id } : {}, created: 1760583600, ...x } } });
 
 test("TF-068 Payment-Webhook: nicht konfiguriert 503, ungültige Signatur blocked, gültig → Inbox, Duplikat, nur Owner sieht Status", async () => {
   const s = await setup({ ch: 10, vn: 2 });

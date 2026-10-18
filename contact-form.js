@@ -23,6 +23,7 @@
 //     Kurzfassung der Nachricht (≤ 200 Zeichen), Name, validiertes Telefon und – nur bei ausdrücklichem Wunsch – den Rückruf-Beleg.
 //     Nie der volle Mailtext, nie Header.
 import crypto from "node:crypto";
+import { testRunId, testLeadId, isE2eDomain, isE2eMailbox, TEST_RUN_ID_RE } from "./e2e-test.js";
 
 export const CONTACT_FORM_CLASS = "CONTACT_FORM_INQUIRY";
 export const CONTACT_FORM_DRAFT_MODE = "CONTACT_FORM_DRAFT_ONLY";
@@ -187,7 +188,9 @@ export const repairInterestOf = (interest) => REPAIR_INTEREST_RE.test(String(int
 // Domain der Kundenangabe «Ihre Website» (ohne www.) – nur aus der validierten URL, sonst null.
 export const websiteDomain = (url) => { try { return url ? new URL(url).hostname.toLowerCase().replace(/^www\./, "") : null; } catch { return null; } };
 // Automatischer Kundenweg (TF-079) nur für eine VERIFIZIERTE, echte (keine Test-)Einsendung mit eindeutigem Reparaturwunsch, CH-Formular und Website.
-export const journeyEligible = (it = {}) => it.verified === true && it.is_test !== true && it.intent === REPAIR_INTEREST && it.form_market !== "VN" && it.language !== "vi"
+// TF-080: Ausnahme = aktiver E2E-Testlauf (e2e_run, bei der Aufnahme gegen JARVIS_E2E_TEST_* geprüft: Modus an, Test-Postfach, Sandbox-Domain).
+// Historische Test-Einsendungen (vor TF-080, ohne test_run_id) und Tests ohne E2E-Freigabe laufen nie weiter.
+export const journeyEligible = (it = {}) => it.verified === true && (it.is_test !== true || it.e2e_run === true) && it.intent === REPAIR_INTEREST && it.form_market !== "VN" && it.language !== "vi"
   && !!websiteDomain(it.customer_website) && !!it.customer_email;
 
 // TF-077C: Test-Einsendung = Kundenname entspricht einem bekannten Eigentümer (Anzeigename oder Local-Part einer Adresse aus ownAddresses,
@@ -435,7 +438,7 @@ export function composeReply({ lang = "de", inquiry = {}, sender = {}, vnSignatu
   }
   const subject = inquiry.subject ? `Re: ${inquiry.subject}` : "Ihre Anfrage über unser Kontaktformular";
   const signature = sender.signature?.trim() || [sender.name, sender.company, sender.email].filter(Boolean).join("\n");
-  const body = [name ? `Guten Tag ${name}` : "Guten Tag", "",
+  const body = [name ? `Guten Tag ${name}` : "Guten Tag", "", ...(context.test ? [E2E_TEST_LINE_DE, ""] : []),
     "Vielen Dank für Ihre Nachricht über unser Kontaktformular. Wir haben Ihre Anfrage erhalten und melden uns so rasch wie möglich ausführlich bei Ihnen.",
     ...(order ? ["", `Ihre Anfrage betrifft Ihren Auftrag ${order}.`] : []),
     ...(context.repair ? ["", ...repairNextStepLines(context.repair)] : []),
@@ -449,6 +452,8 @@ const ORDER_ID_OK = /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/;
 export const SECURE_ACCESS_DE = "Für die Reparatur benötigen wir einen sicheren Zugang. Bitte verwenden Sie dafür den einmaligen Zugangslink, den Sie von uns per E-Mail erhalten.";
 export const NO_PASSWORD_MAIL_DE = "Bitte senden Sie keine Passwörter oder Zugangsdaten per E-Mail.";
 export const ORDER_CONFIRM_PHRASE_DE = "Ja, ich bestätige den Auftrag";
+// TF-080: jede Mail eines E2E-Testlaufs trägt diese Zeile (nie für echte Kunden).
+export const E2E_TEST_LINE_DE = "[E2E-TEST] Dies ist ein interner Testlauf – keine echte Bestellung, es wird kein echtes Geld belastet.";
 export function repairNextStepLines({ domain, ready = false, order_id = null } = {}) {
   if (ready) return [`Ihr Auftrag «Check & Reparatur»${ORDER_ID_OK.test(String(order_id || "")) ? ` (${order_id})` : ""} für ${domain} ist bestätigt und die erste Teilzahlung ist eingegangen.`,
     SECURE_ACCESS_DE, NO_PASSWORD_MAIL_DE];
@@ -465,8 +470,12 @@ export const loadContactForms = (store) => { const s = store.read(CONTACT_FORMS_
 export const STATUS_WORD = (state) => (state === STATES.SENT ? "REPLY_SENT" : state === STATES.DRAFTED ? "DRAFT_CREATED"
   : [STATES.NEW, STATES.DRAFTING, STATES.SENDING].includes(state) ? "NEW" : "REVIEW_REQUIRED");
 // TF-079: sichtbarer Kundenweg im CRM (feste Codes, Anzeige DE «NEUE ANFRAGE» … «MANUELLE PRÜFUNG») – nie Zugangsdaten, nie Mailinhalt.
-export const WORKFLOW_STATUSES = Object.freeze(["NEW_INQUIRY", "REPLY_SENT", "WAITING_FOR_CONFIRMATION", "WAITING_FOR_PAYMENT", "ACCESS_REQUESTED", "ACCESS_RECEIVED",
-  "REPAIR_RUNNING", "COMPLETED", "MANUAL_REVIEW", "CANCELLED"]);
+// TF-080: + PAYMENT_CONFIRMED (Anzahlung verbucht, Zugangslink folgt) und VALIDATION (Validierung/Retest) – reine Abbildung bestehender Zustände.
+export const WORKFLOW_STATUSES = Object.freeze(["NEW_INQUIRY", "REPLY_SENT", "WAITING_FOR_CONFIRMATION", "WAITING_FOR_PAYMENT", "PAYMENT_CONFIRMED", "ACCESS_REQUESTED", "ACCESS_RECEIVED",
+  "REPAIR_RUNNING", "VALIDATION", "COMPLETED", "MANUAL_REVIEW", "CANCELLED"]);
+// TF-080: CRM-Detail – nur feste Wörter (nie Links, Beträge anderer Kunden, Mailinhalte oder Zugangsdaten).
+export const PAYMENT_STATES = Object.freeze(["NONE", "LINK_PENDING", "LINK_SENT", "PAID", "EXPIRED", "NOT_CONFIGURED", "MANUAL", "REVIEW"]);
+const viewWord = (v, re = /^[A-Z_]{2,40}$/) => (typeof v === "string" && re.test(v) ? v : null);
 export function workflowStatusOf(it = {}) {
   if (WORKFLOW_STATUSES.includes(it.journey?.workflow)) return it.journey.workflow;
   if (REVIEW_STATES.has(it.state)) return "MANUAL_REVIEW";
@@ -489,8 +498,11 @@ export function inquiryLeadId(it = {}) {
 export function publicContactForms(st) {
   const leads = {};
   for (const it of Object.values(st.items || {}).sort((a, b) => String(a.received_at).localeCompare(String(b.received_at)) || String(a.key).localeCompare(String(b.key)))) {
-    if (NO_LEAD_STATES.has(it.state) || !it.customer_email || it.is_test === true) continue; // TF-077C: Test-Einsendungen erzeugen nie einen CRM-Lead
-    const id = inquiryLeadId(it);
+    if (NO_LEAD_STATES.has(it.state) || !it.customer_email || it.archived_test === true) continue;
+    // TF-080 (ersetzt TF-077C «kein CRM-Lead»): Test-Einsendungen erscheinen im CRM – mit eigener Test-Identität test-cf-<hash> (nie mit einem echten
+    // Lead derselben Adresse/Domain zusammengeführt) und Pflicht-Kennzeichen is_test/environment/test_run_id.
+    const test = it.is_test === true;
+    const id = test ? testLeadId(it.key) : inquiryLeadId(it);
     if (!id) continue;
     const prev = leads[id];
     const matched = !!it.lead_id && [MATCH.LEAD, MATCH.ORDER].includes(it.match_state);
@@ -505,6 +517,12 @@ export function publicContactForms(st) {
       reply_sent_at: it.state === STATES.SENT ? it.sent_at || null : prev?.reply_sent_at || null, order_id: it.journey?.order_id || it.order_id || prev?.order_id || null,
       workflow_status: workflowStatusOf(it), intent: it.intent === REPAIR_INTEREST ? REPAIR_INTEREST : prev?.intent || null,
       submissions: [...(prev?.submissions || []), { key: it.key, received_at: it.received_at, status: STATUS_WORD(it.state) }].slice(-10),
+      // TF-080: Zustände je Stufe (feste Wörter) fürs CRM-Detail.
+      journey_state: viewWord(it.journey?.state), payment_mode: it.journey?.view?.payment_mode === "TEST" || test ? "TEST" : it.journey?.order_id ? "LIVE" : null,
+      payment_state: PAYMENT_STATES.includes(it.journey?.view?.payment_state) ? it.journey.view.payment_state : null,
+      access_state: viewWord(it.journey?.view?.access_state), repair_state: viewWord(it.journey?.view?.repair_state),
+      ...(test ? { is_test: true, environment: "TEST", test_run_id: TEST_RUN_ID_RE.test(String(it.test_run_id || "")) ? it.test_run_id : testRunId(it.key),
+        test_historical: !it.test_run_id, e2e_run: it.e2e_run === true } : {}),
     };
   }
   return { v: 2, leads };
@@ -516,7 +534,7 @@ export function publicContactForms(st) {
 // Einsendung, gleiches Lock wie alle Jarvis-Sends) – nur VERIFIZIERTE Anfragen werden automatisch gesendet, genau einmal.
 const NO_GUARD = Object.freeze({ acquire: async () => ({ ok: true }), done: async () => {} });
 export async function processContactForms({ gmail, store, cfg = {}, sender = {}, vnSignature = "", ownAddresses = [], leads = () => [], orders = () => ({}),
-  now = new Date(), log = () => {}, escalate = async () => {}, isTransient = () => false, readOnly = false, autoReply = false, sendGuard = NO_GUARD } = {}) {
+  now = new Date(), log = () => {}, escalate = async () => {}, isTransient = () => false, readOnly = false, autoReply = false, sendGuard = NO_GUARD, e2e = null } = {}) {
   const res = { fetched: 0, new: 0, duplicates: 0, untrusted: 0, drafted: 0, sent: 0, review: 0, failed: 0, pending: 0, degraded: null, processed: [] };
   const canAuto = (it) => autoReply === true && it.verified === true && typeof gmail?.sendDraft === "function";
   if (cfg.enabled === false || !gmail || typeof gmail.searchInbound !== "function" || typeof gmail.readInbound !== "function") return res;
@@ -610,6 +628,10 @@ export async function processContactForms({ gmail, store, cfg = {}, sender = {},
           Object.assign(it, { match_state: m.match_state, lead_id: m.lead_id, order_id: m.order_id, company: m.company || null, language,
             market: m.lead_id || m.order_id ? (m.market === "VN" ? "VN" : "CH") : language === "vi" ? "VN" : "CH" });
         }
+        // TF-080: Test-Einsendung → TEST-Kennzeichen + stabile test_run_id; aktiver E2E-Lauf NUR mit Server-Freigabe (e2e-test.js), Test-Postfach und
+        // Sandbox-Domain – sonst sichtbar als TEST, aber ohne Auftrag/Zahlung/Zugang/Reparatur.
+        if (it.is_test === true) Object.assign(it, { environment: "TEST", test_run_id: testRunId(it.key),
+          e2e_run: it.state === STATES.NEW && it.verified === true && it.intent === REPAIR_INTEREST && isE2eMailbox(e2e, it.customer_email) && isE2eDomain(e2e, websiteDomain(it.customer_website)) });
         st.items[it.key] = { ...it, created_at: t, updated_at: t, attempts: 0 };
         st.seen[id] = { at: t, result: "contact_form", key: it.key };
         // Text nur flüchtig für den Entwurf in diesem Durchlauf; nie gespeichert.
@@ -639,10 +661,10 @@ export async function processContactForms({ gmail, store, cfg = {}, sender = {},
       const auto = canAuto(it);
       // TF-079: «Check & Reparatur» → nächste Schritte (nur verifiziert, nie Test). Bereits bestätigter + bezahlter FIX-Auftrag derselben Domain → Hinweis
       // auf den sicheren Link (der Link selbst kommt ausschliesslich vom Repair-Service). Unbezahlt/unbestätigt/andere Domain → normaler Weg.
-      const ready = auto && journeyEligible(it) ? readyRepairOrder(it, safe(orders, {})) : null;
+      const ready = auto && journeyEligible(it) && it.is_test !== true ? readyRepairOrder(it, safe(orders, {})) : null; // TF-080: ein Test bindet nie an einen echten Auftrag
       if (ready) it.repair_ready_order_id = ready.order_id;
       const repair = auto && journeyEligible(it) ? { domain: websiteDomain(it.customer_website), ready: !!ready, order_id: ready?.order_id || null } : null;
-      const { subject, body } = composeReply({ lang: vi ? "vi" : "de", inquiry, sender, vnSignature, context: { order_id: it.order_id, callback: it.callback_requested === true, repair } });
+      const { subject, body } = composeReply({ lang: vi ? "vi" : "de", inquiry, sender, vnSignature, context: { order_id: it.order_id, callback: it.callback_requested === true, repair, test: it.e2e_run === true } });
       setState(it, STATES.DRAFTING, { drafting_at: t });
       save();
       const d = await gmail.createDraft({ to: it.customer_email, subject, body, mode: auto ? CONTACT_FORM_AUTO_REPLY_MODE : CONTACT_FORM_DRAFT_MODE, contactFormKey: it.key });

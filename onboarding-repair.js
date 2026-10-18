@@ -10,6 +10,7 @@ import { orderKind, localeOf } from "./onboarding-core.js";
 import { writeOrdersExport, listContactOrderRequests, readContactOrderResults, writeContactOrderResults, CF_KEY_RE } from "./onboarding-store.js";
 import { canonicalSellerId } from "./seller-identity.js";
 import { cleanPlatform } from "./hosting-detect.js";
+import { e2eConfig, isE2eDomain, isE2eMailbox, TEST_RUN_ID_RE } from "./e2e-test.js";
 
 const KEEP_TERMINAL_MS = 30 * 86_400_000;
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
@@ -58,6 +59,8 @@ export function onboardingOrderEntry(store, o, { now = new Date(), kind }) {
     reissues: kind === "FIX" ? { ...(o.onboarding_reissues || {}) } : {},
     brief_gate: o.state === "WAITING_FOR_CUSTOMER_BRIEF" ? "WAITING" : o.customer_brief?.status || null,
     platform: kind === "FIX" ? platformExport(o) : null, // TF-071: nur feste Wörter (Hosting/CMS/Zugangsweg/Konfidenz/Status)
+    // TF-080: Test-Kennzeichen (E2E) – der Mail-Worker zeigt/führt Test-Aufträge nur als TEST.
+    ...(o.test_order === true ? { test_order: true, environment: "TEST", test_run_id: TEST_RUN_ID_RE.test(String(o.test_run_id || "")) ? o.test_run_id : null } : {}),
     contact_form_keys: kind === "FIX" ? [o.contact_form?.key, ...(o.contact_form_keys || [])].filter((k) => CF_KEY_RE.test(String(k || ""))).slice(0, 10) : [], // TF-079: Hash, kein Inhalt
   };
 }
@@ -67,7 +70,9 @@ export function onboardingOrderEntry(store, o, { now = new Date(), kind }) {
 // FIX-Auftrag derselben Domain mit DERSELBEN Kundenadresse → daran binden (nie ein zweiter Auftrag); fremde Adresse → Prüfung (DUPLICATE_OPEN_ORDER).
 export const CF_APPLIED_FILE = "contact_form_orders.json";
 const DOMAIN_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
-export function applyContactFormOrders({ dir = WORKER_DIR, onboardingDir, now = new Date(), log = () => {} } = {}) {
+// TF-080: test = true (E2E-Testlauf) → nur mit aktivem E2E-Modus, Sandbox-Domain UND Test-Postfach (e2e-test.js), sonst TEST_BLOCKED (kein Auftrag).
+// Ein Testlauf bindet nie an einen echten Auftrag und ein echter nie an einen Test-Auftrag.
+export function applyContactFormOrders({ dir = WORKER_DIR, onboardingDir, e2e = e2eConfig(), now = new Date(), log = () => {} } = {}) {
   if (!onboardingDir) return { requests: 0 };
   const store = createStore(dir);
   const applied = store.read(CF_APPLIED_FILE, { schema: 1, applied: {} });
@@ -81,11 +86,13 @@ export function applyContactFormOrders({ dir = WORKER_DIR, onboardingDir, now = 
     const email = String(r.delivery_email || "").toLowerCase();
     if (r.offer_class !== REPAIR_OFFER || r.market !== "CH" || r.source !== "customer_reply_email" || !Date.parse(r.confirmed_at || "")) { fail("BAD_REQUEST"); continue; }
     if (!DOMAIN_RE.test(domain) || !EMAIL_RE.test(email)) { fail("BAD_LEAD"); continue; }
+    const test = r.test === true;
+    if (test && (!TEST_RUN_ID_RE.test(String(r.test_run_id || "")) || !isE2eDomain(e2e, domain) || !isE2eMailbox(e2e, email))) { fail("TEST_BLOCKED"); continue; }
     const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
     const open = Object.values(data.orders || {}).find((o) => String(o.domain) === domain && !COMPLETED_STATES.includes(o.state) && o.state !== REPAIR_CANCELLED && !BLOCKED_STATES.includes(o.state));
     let order_id;
     if (open) {
-      if (String(open.delivery_email || "").toLowerCase() !== email) { fail("DUPLICATE_OPEN_ORDER"); continue; }
+      if (String(open.delivery_email || "").toLowerCase() !== email || (open.test_order === true) !== test) { fail("DUPLICATE_OPEN_ORDER"); continue; }
       open.contact_form_keys = [...new Set([...(open.contact_form_keys || []), r.key])].slice(-10);
       open.updated_at = now.toISOString();
       data.orders[open.order_id] = open; store.write(REPAIR_ORDERS_FILE, data);
@@ -94,13 +101,13 @@ export function applyContactFormOrders({ dir = WORKER_DIR, onboardingDir, now = 
       try {
         order_id = createContactFormRepairOrder(store, { domain, website: typeof r.website === "string" && /^https:\/\/[^\s<>"']{4,200}$/.test(r.website) ? r.website : null,
           company: typeof r.company === "string" ? r.company.slice(0, 120) : null, delivery_email: email, contact_name: typeof r.contact_name === "string" ? r.contact_name.replace(/[\r\n<>]/g, " ").slice(0, 80) : null,
-          lead_id: typeof r.lead_id === "string" && /^[a-z0-9][a-z0-9.@_+-]{2,252}$/.test(r.lead_id) ? r.lead_id : null, contact_form_key: r.key, confirmed_at: r.confirmed_at, now }).order_id;
+          lead_id: typeof r.lead_id === "string" && /^[a-z0-9][a-z0-9.@_+-]{2,252}$/.test(r.lead_id) ? r.lead_id : null, contact_form_key: r.key, confirmed_at: r.confirmed_at, test: test ? { run_id: r.test_run_id } : null, now }).order_id;
         created++;
       } catch (e) { log("error", "contact_form_order_failed", { error: String(e.message).slice(0, 120) }); fail("CREATE_FAILED"); continue; }
     }
     const x = { ok: true, order_id, at: now.toISOString() };
     applied.applied[r.key] = x; results[r.key] = x; changed = true;
-    log("info", "contact_form_order_bound", { order_id, created: !open });
+    log("info", "contact_form_order_bound", { order_id, created: !open, test });
   }
   if (changed) store.write(CF_APPLIED_FILE, applied);
   writeContactOrderResults(onboardingDir, results, { now });

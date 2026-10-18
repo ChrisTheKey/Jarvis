@@ -16,7 +16,12 @@ services:
     restart: unless-stopped
     # Nur: JARVIS_MAIL_WORKER_TOKEN (sicherer Zugangslink/Intake), optional JARVIS_SYNC_URL / JARVIS_WEB_ORIGIN. Datei mit Rechten 600.
     # Nie ANTHROPIC_API_KEY oder Gmail-Secrets (der Service verweigert sonst den Start).
-    env_file: ./.env
+    # TF-080: Stripe-Schlüssel (STRIPE_SECRET_KEY / STRIPE_TEST_SECRET_KEY) und E2E-Konfiguration NUR in /opt/jarvis-payment (root:root 0600,
+    # nie im Deploy-Archiv, nie von Deploys überschrieben; Installation: deploy/vps/install-stripe-keys.sh). Leer = NOT_CONFIGURED.
+    env_file:
+      - ./.env
+      - /opt/jarvis-payment/stripe.env
+      - /opt/jarvis-payment/e2e.env
     volumes:
       # Repair-Zustand: Aufträge, Zahlungen, Tresor (nur Chiffrat), Host-Keys, Backups – Verzeichnis 700, Dateien 600.
       - ./state:/data/repair

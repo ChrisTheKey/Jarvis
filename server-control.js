@@ -249,8 +249,10 @@ export function cleanRepair(r) {
     manual_items_open: o.manual_items_open == null ? null : n(o.manual_items_open, 10_000),
     onboarding: cleanOnboarding(o.onboarding), // TF-066
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
+    // TF-080: Test-Kennzeichen MUSS die Whitelist passieren – Provision/Umsatz/Verkäufer-Sichten in der Cloud lassen Test-Aufträge sonst nicht weg.
+    test_order: o.test_order === true || o.environment === "TEST", environment: o.test_order === true || o.environment === "TEST" ? "TEST" : "LIVE",
   } : null)).filter(Boolean);
-  return { total: n(r.total, 100_000), open: n(r.open, 100_000), completed_with_manual_items: n(r.completed_with_manual_items, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
+  return { total: n(r.total, 100_000), open: n(r.open, 100_000), test_orders: n(r.test_orders, 100_000), completed_with_manual_items: n(r.completed_with_manual_items, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
     waiting_payment: n(r.waiting_payment, 100_000), access_requested: n(r.access_requested, 100_000),
     payment_review: n(r.payment_review, 100_000), cancelled: n(r.cancelled, 100_000),
     ready_for_delivery: n(r.ready_for_delivery, 100_000), manual_review: n(r.manual_review, 100_000), unsafe_access: n(r.unsafe_access, 100_000),
@@ -266,7 +268,7 @@ export function cleanPayments(p) {
   if (!p || typeof p !== "object") return null;
   const n = (v) => num(v, 1e7);
   return { status: word(p.status, ["ACTIVE"]), total: n(p.total), received: n(p.received), voided: n(p.voided), refunded: n(p.refunded),
-    received_chf: n(p.received_chf), refunded_chf: n(p.refunded_chf), received_vnd: num(p.received_vnd, 1e12), refunded_vnd: num(p.refunded_vnd, 1e12), waiting_deposit: n(p.waiting_deposit), payment_review: n(p.payment_review) };
+    received_chf: n(p.received_chf), refunded_chf: n(p.refunded_chf), received_vnd: num(p.received_vnd, 1e12), refunded_vnd: num(p.refunded_vnd, 1e12), waiting_deposit: n(p.waiting_deposit), payment_review: n(p.payment_review), test_payments: n(p.test_payments) };
 }
 // 24/7-Discovery (VPS): nur Zähler, Zeitpunkte, feste Wörter; Fehlertext bereinigt und gekürzt.
 export function cleanDiscovery(d) {

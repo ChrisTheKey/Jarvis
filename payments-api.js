@@ -1,5 +1,7 @@
 // /api/payments – Zahlungseingangs-Webhook + Inbox (TF-068). Netlify Function.
 //
+//   TF-080 Stripe          LIVE- (STRIPE_WEBHOOK_SECRET) und TEST-Secret (STRIPE_TEST_WEBHOOK_SECRET) getrennt; das passende Secret bestimmt den
+//                          Modus, livemode muss dazu passen. Checkout-Ereignisse → Inbox je Ereignis-ID (Repair-Service verbucht nach Prüfung).
 //   POST (Provider)        signierter Webhook. Ohne konfigurierten Provider → 503 PAYMENT_MONITOR_NOT_CONFIGURED. Ungültige/abgelaufene
 //                          Signatur → 400 (nichts gespeichert). Gültig → normalisiertes Ereignis in die Inbox (idempotent je Transaktion).
 //   POST x-jarvis-worker   VPS (payment-reconcile.js pull): { op: "inbox.pull" } | { op: "inbox.ack", keys: [...] }
@@ -7,11 +9,13 @@
 // Hier wird NICHTS verbucht – das Zahlungsbuch liegt auf dem VPS (payments.js); der Abgleich läuft dort (payment-reconcile.js).
 import { safeEqual } from "./shared-state.js";
 import { resolveActor, isOwner, deny, forbidden } from "./auth-core.js";
-import { monitorStatus, verifyStripeSignature, normalizeStripeEvent, txKey } from "./payment-monitor.js";
+import { monitorStatus, normalizeStripeEvent, txKey } from "./payment-monitor.js";
+import { stripeStatus, verifyStripeWebhook, normalizeCheckoutEvent, checkoutEventKey } from "./stripe-payments.js";
 
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const MAX_BODY = 256_000, INBOX_KEEP = 2000;
 const emptyInbox = () => ({ schema: 1, events: [] });
+const stripeWebhookOnly = (s) => ({ webhook_live: s.webhook_live, webhook_test: s.webhook_test }); // Netlify kennt nur die Webhook-Secrets
 
 export function createPaymentsHandler({ env, getStore, getAuthStore = null, now = () => new Date() }) {
   async function mutate(fn) {
@@ -32,7 +36,7 @@ export function createPaymentsHandler({ env, getStore, getAuthStore = null, now 
       if (!a.actor) return deny(a);
       if (!isOwner(a.actor)) return forbidden("Nur der Owner.");
       const inbox = (await (await getStore("inbox")).get()).state || emptyInbox();
-      return reply(200, { monitor: { status: ms.status, provider: ms.provider, kind: ms.kind, missing: ms.missing },
+      return reply(200, { monitor: { status: ms.status, provider: ms.provider, kind: ms.kind, missing: ms.missing }, stripe: stripeWebhookOnly(stripeStatus(env)),
         inbox: { pending: inbox.events.filter((e) => e.status === "pending").length, delivered: inbox.events.filter((e) => e.status === "delivered").length, total: inbox.events.length } });
     }
     if (req.method !== "POST") return reply(405, { error: "Nur GET oder POST." });
@@ -57,17 +61,19 @@ export function createPaymentsHandler({ env, getStore, getAuthStore = null, now 
       return reply(400, { error: "Unbekannte Operation." });
     }
 
-    // Provider-Webhook
+    // Provider-Webhook (Stripe: LIVE- oder TEST-Secret genügt – je Modus eigenes Secret, nie gemischt)
     if (ms.status !== "CONFIGURED" || ms.kind !== "signed_webhook") return reply(503, { error: "Zahlungsüberwachung nicht konfiguriert.", code: "PAYMENT_MONITOR_NOT_CONFIGURED" });
-    let tx = null;
+    let tx = null, key = null;
     if (ms.provider === "stripe") {
-      const v = verifyStripeSignature(raw, req.headers.get("stripe-signature"), env("STRIPE_WEBHOOK_SECRET"), { now: t });
+      const v = verifyStripeWebhook(raw, req.headers.get("stripe-signature"), env, { now: t });
       if (!v.ok) return reply(400, { error: "Signatur ungültig.", code: v.code });
-      let evt; try { evt = JSON.parse(raw); } catch { return reply(400, { error: "Ungültiges JSON." }); }
-      tx = normalizeStripeEvent(evt);
+      const n = normalizeCheckoutEvent(v.evt, v.mode);
+      if (n) { if (n.kind === "IGNORED") return reply(200, { ok: true, ignored: true }); tx = n; key = checkoutEventKey(n); }
+      else if (/^checkout\.session\./.test(String(v.evt?.type || ""))) return reply(200, { ok: true, ignored: true, code: "UNSUPPORTED_SESSION" });
+      else if (v.mode === "LIVE") tx = normalizeStripeEvent(v.evt); // TF-068-Altpfad (nur LIVE; Abgleich weiterhin per payment-reconcile.js)
     }
     if (!tx) return reply(200, { ok: true, ignored: true });
-    const key = txKey(tx);
+    key ||= txKey(tx);
     if (!key) return reply(200, { ok: true, ignored: true, code: "NO_TRANSACTION_ID" });
     const dup = await mutate((cur) => {
       if (cur.events.some((e) => e.key === key)) return true;

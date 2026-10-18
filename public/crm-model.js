@@ -97,6 +97,8 @@ export function sellerSendState(lead, requests = []) {
 }
 
 // ---------- TF-077B: Kontaktformular CONTACT_FORM_P0 (höchste Priorität, eigener Abschnitt ganz oben) ----------
+// TF-080: E2E-Testlead (Kontaktformular-Test, Identität test-cf-…) – im CRM sichtbar, aber nie anrufbar, nie Verkäufer-/Umsatz-/Kennzahlen.
+export const isTestLead = (l) => l?.is_test === true || l?.contact_form?.is_test === true || /^test-cf-/.test(String(l?.lead_id || ""));
 export const contactFormOpen = (l) => !!l?.contact_form && l.contact_form.lead_source === "CONTACT_FORM" && l.contact_form.open === true && !l.archived;
 // Rangstufe der kanonischen Reihenfolge: 0 offene Kontaktformular-Anfrage · 1 ausdrücklicher Rückruf/heisser Lead · 2 übrige.
 const HOT_STAGES = ["INTERESTED", "CHECK_150_INTEREST", "REPAIR_480_INTEREST"];
@@ -365,13 +367,15 @@ export function priorityOf(lead) {
 }
 // Anruf-Empfehlung: nur mit Geschäftsnummer, nie bei Do Not Contact, abgeschlossenen Stufen oder „nicht anrufen“.
 // TF-077B: ausdrücklich belegtes Telefonbuch-Sternchen → nie eine Anruf-Empfehlung (unabhängig von CONTACT_FORM_P0).
-export const callRecommended = (l) => !!l?.phone && !l.do_not_contact && !l.archived && !CLOSED_STAGES.includes(l.sales_stage) && !NO_CALL_STATUSES.includes(l.call_status)
+export const callRecommended = (l) => !isTestLead(l) && !!l?.phone && !l.do_not_contact && !l.archived && !CLOSED_STAGES.includes(l.sales_stage) && !NO_CALL_STATUSES.includes(l.call_status)
   && l.phonebook?.status !== "PHONEBOOK_STAR_PRESENT";
 // Outreach-Queue (nur Anzeige, nie Versand): offene Leads ohne Sperre.
-export const inOutreachQueue = (l) => !!l && !l.do_not_contact && !l.archived && ["NEW", "DRAFT_READY", "TO_CONTACT", "FOLLOW_UP"].includes(l.sales_stage);
+export const inOutreachQueue = (l) => !!l && !isTestLead(l) && !l.do_not_contact && !l.archived && ["NEW", "DRAFT_READY", "TO_CONTACT", "FOLLOW_UP"].includes(l.sales_stage);
 
 // ---------- Suche, Filter, Sortierung ----------
-export const FILTER_KEYS = Object.freeze(["q", "stage", "canton", "region", "category", "phone", "person", "draft", "problems", "errors", "audit", "issue", "contact", "call", "followup", "dnc", "archived", "card"]);
+// TF-080: env = all (ALLE, Standard – Tests bleiben für die E2E-Prüfung sichtbar) | real (ECHT) | test (TEST).
+export const ENV_FILTERS = Object.freeze(["all", "real", "test"]);
+export const FILTER_KEYS = Object.freeze(["q", "env", "stage", "canton", "region", "category", "phone", "person", "draft", "problems", "errors", "audit", "issue", "contact", "call", "followup", "dnc", "archived", "card"]);
 const has = (hay, needle) => String(hay || "").toLowerCase().includes(String(needle).toLowerCase());
 const digits = (s) => String(s || "").replace(/\D+/g, "");
 export function searchMatch(l, q) {
@@ -407,7 +411,14 @@ export const CONTACT_FORM_LABEL = Object.freeze({ badge: "KONTAKTFORMULAR", matc
   REPLY_SENT: "ANTWORT GESENDET", urgent: "SOFORT BEARBEITEN", CALLBACK_REQUESTED: "RÜCKRUF", CALL_NOT_CURRENTLY_ELIGIBLE: "NICHT ANRUFBAR",
   // TF-079: Kundenweg «Check & Reparatur»
   workflow: { NEW_INQUIRY: "NEUE ANFRAGE", REPLY_SENT: "ANTWORT GESENDET", WAITING_FOR_CONFIRMATION: "WARTET AUF BESTÄTIGUNG", WAITING_FOR_PAYMENT: "WARTET AUF ZAHLUNG",
-    ACCESS_REQUESTED: "ZUGANG ANGEFRAGT", ACCESS_RECEIVED: "ZUGANG ERHALTEN", REPAIR_RUNNING: "REPARATUR LÄUFT", COMPLETED: "ABGESCHLOSSEN", MANUAL_REVIEW: "MANUELLE PRÜFUNG", CANCELLED: "ABGEBROCHEN" } });
+    PAYMENT_CONFIRMED: "ZAHLUNG BESTÄTIGT", ACCESS_REQUESTED: "ZUGANG ANGEFRAGT", ACCESS_RECEIVED: "ZUGANG ERHALTEN", REPAIR_RUNNING: "REPARATUR LÄUFT", VALIDATION: "VALIDIERUNG",
+    COMPLETED: "ABGESCHLOSSEN", MANUAL_REVIEW: "MANUELLE PRÜFUNG", CANCELLED: "ABGEBROCHEN" },
+  // TF-080: E2E-Test + Zahlung (feste Wörter)
+  TEST_BLOCKED: "TEST – NICHT ANRUFBAR", test: "TEST", e2e: "E2E-TEST", historical: "HISTORISCH",
+  payment: { NONE: "–", LINK_PENDING: "Zahlungslink wird erstellt", LINK_SENT: "Zahlungslink gesendet", PAID: "Zahlung: CHF 240 bestätigt", EXPIRED: "Zahlungslink abgelaufen",
+    NOT_CONFIGURED: "Stripe nicht konfiguriert – Zahlung manuell", MANUAL: "Zahlung manuell (Chris)", REVIEW: "Zahlung prüfen" },
+  testPaid: "TESTZAHLUNG: CHF 240 Stripe-Test bestätigt", envAll: "Umgebung: ALLE", envReal: "ECHT", envTest: "TEST",
+  kvRun: "Testlauf", kvMode: "Zahlungsmodus", kvPayment: "Zahlung", kvAccess: "Zugang", kvRepair: "Reparatur", kvJourney: "Kundenweg", kvMail: "Mail", modeTest: "TEST – Stripe-Testmodus, kein echtes Geld" });
 const yes = (v) => v === "1" || v === "yes" || v === true;
 const no = (v) => v === "0" || v === "no" || v === false;
 export function filterLeads(list = [], f = {}, now = new Date()) {
@@ -416,6 +427,8 @@ export function filterLeads(list = [], f = {}, now = new Date()) {
     const card = CARDS[f.card] || ERROR_CARDS[f.card] || PIPELINE_CARDS[f.card];
     if (f.card && card && !card.test(l, now)) return false;
     if (!searchMatch(l, f.q)) return false;
+    if (f.env === "real" && isTestLead(l)) return false;
+    if (f.env === "test" && !isTestLead(l)) return false;
     if (f.stage && l.sales_stage !== f.stage) return false;
     if (f.canton && l.canton !== f.canton) return false;
     if (f.region && l.region !== f.region) return false; // TF-063: VN-Verwaltungseinheit
@@ -464,8 +477,10 @@ export function sortLeads(list = [], key = "priority", now = new Date()) {
 export function nextBestLead(list = []) {
   return sortLeads(list.filter(inOutreachQueue), "priority")[0] || null;
 }
-export function crmStats(list = [], now = new Date()) {
-  const out = {};
+// TF-080: Geschäftszähler nur echte Leads – Tests nur als test_leads (nie Kunden-/Konversions-/DNC-Zahlen).
+export function crmStats(all = [], now = new Date()) {
+  const list = all.filter((l) => !isTestLead(l));
+  const out = { test_leads: all.length - list.length };
   for (const [k, c] of Object.entries({ ...CARDS, ...ERROR_CARDS, ...PIPELINE_CARDS })) out[k] = list.filter((l) => !l.archived || k === "all").filter((l) => c.test(l, now)).length;
   out.archived = list.filter((l) => l.archived).length;
   out.all = list.filter((l) => !l.archived).length;

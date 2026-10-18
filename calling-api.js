@@ -13,7 +13,7 @@ import { safeEqual } from "./shared-state.js";
 import { resolveActor, isOwner, deny, forbidden } from "./auth-core.js";
 import { canSeeLead, sellerOf, leadMarket, emptyAssignments } from "./sales-scope.js";
 import { LEAD_ID_RE } from "./lead-crm.js";
-import { issueLinks, crmActive, issueDetails, DETAIL_WORDS_DE } from "./public/crm-model.js";
+import { issueLinks, crmActive, issueDetails, DETAIL_WORDS_DE, isTestLead } from "./public/crm-model.js";
 import { DETAIL_WORDS_VI, ISSUE_TYPE_TEXT } from "./public/i18n.js";
 import { migrateCallingControl, migrateCallingHistory, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import {
@@ -170,7 +170,8 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
     // TF-077B: Kontaktformular-Leads (CONTACT_FORM_INBOUND) zählen als aktiv; VN-Inbound aus dem CH-CRM bleibt Markt VN. Höchste Anrufpriorität
     // über priority.score (P0) – alle Rechts-/Einwilligungs-/DNC-/Telefonbuch-Sperren in eligibility() bleiben unverändert wirksam.
     const chMarket = (l) => (l.market === "VN" && l.contact_form?.lead_source === "CONTACT_FORM" && l.contact_form.inbound === true ? "VN" : "CH");
-    return [...(v.state?.leads || []).map((l) => ({ ...l, market: chMarket(l) })), ...(vn.state?.leads || []).map((l) => ({ ...l, market: "VN" }))].filter(crmActive);
+    // TF-080: E2E-Testleads kommen nie in eine Anrufliste/Statistik (eligibility sperrt zusätzlich mit TEST_BLOCKED).
+    return [...(v.state?.leads || []).map((l) => ({ ...l, market: chMarket(l) })), ...(vn.state?.leads || []).map((l) => ({ ...l, market: "VN" }))].filter(crmActive).filter((l) => !isTestLead(l));
   }
   // System-Aufträge in die bestehende CRM-/VN-Warteschlange (gleiche crm.*-Allowlist, Akteur system:calling). Der jeweilige Dienst übernimmt sie.
   async function enqueueCrm(market, actions, t) {

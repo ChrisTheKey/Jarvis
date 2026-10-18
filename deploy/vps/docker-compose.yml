@@ -17,7 +17,10 @@ services:
     image: jarvis-mail-worker:latest
     restart: unless-stopped
     # Nur: JARVIS_MAIL_WORKER_TOKEN, ANTHROPIC_API_KEY, JARVIS_SERVER_CONTROL_TOKEN (Server Control), optional JARVIS_SYNC_URL / JARVIS_MAIL_MODEL. Datei mit Rechten 600.
-    env_file: ./.env
+    # TF-080: E2E-Testlauf-Freigabe (JARVIS_E2E_TEST_*, keine Secrets) – nie Stripe-Schlüssel im Mail-Worker.
+    env_file:
+      - ./.env
+      - /opt/jarvis-payment/e2e.env
     volumes:
       # Gmail-Credentials, Token, Register, Leads, Suppression, Worker-Zustand – nur hier, Verzeichnis 700, Dateien 600.
       - ./secrets:/data/secrets

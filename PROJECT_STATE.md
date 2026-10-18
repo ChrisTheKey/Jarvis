@@ -2,7 +2,33 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-18 (TF-079)
+Letzte Aktualisierung: 2026-10-18 (TF-080)
+
+## TF-080 – STRIPE-ANZAHLUNG AUTOMATISCH + E2E-TESTLÄUFE SICHTBAR IM CRM (2026-10-18)
+- **Kundenweg (echt):** bestätigter CHF-480-FIX-Auftrag aus dem Kontaktformular → Repair-Service erzeugt serverseitig GENAU EINE Stripe-Checkout-Session
+  (stripe-payments.js; CHF 240.00 aus pricing.js, Metadaten order_id/offer_class/market/purpose=REPAIR_DEPOSIT/environment, Idempotenz-Schlüssel
+  `jarvis:<order_id>:deposit:v1:<mode>[:r2]`, Stripe-gehostet, Zahlungsarten aus dem Stripe-Konto – TWINT, sofern dort aktiviert) → Übergabe
+  `onboarding/payment_links.json` → Mail-Worker sendet die Auftragsbestätigung MIT Zahlungslink genau einmal im Kontaktformular-Verlauf → signiertes
+  Stripe-Ereignis (Netlify /api/payments, LIVE-/TEST-Secret getrennt, livemode muss passen, Inbox je Ereignis-ID) bzw. autoritativer Abgleich direkt bei
+  Stripe (alle 10 min) → stripe-webhook.js prüft bekannte Session · Modus · Auftrag · Metadaten · CHF · Betrag · paid → **payments.js recordPayment**
+  (Referenz `stripe:<payment_intent>`, Duplikatschutz) → bestehendes CHF-240-Gate → sicherer One-Time-Link (TF-079 unverändert). Kein Chris-Schritt.
+  Rückkehrseite `zahlung.html` ist nie ein Beleg. Abgelaufen → genau EINE Ersatz-Session + EINE Erinnerung, danach EXPIRED_FINAL → Chris. Rückerstattung/
+  Streitfall → PAYMENT_REVIEW_REQUIRED (nie automatisch erstattet). CHF 240 = DEPOSIT_MET, nie PAID_FULL.
+- **Fail closed ohne Schlüssel:** Stripe LIVE/TEST NOT_CONFIGURED → keine API-Aufrufe, Bestätigung wie TF-079 + Hinweis an Chris (Zahlung manuell wie bisher).
+  Schlüssel nur in `/opt/jarvis-payment/stripe.env` (root 0600, nur Repair-Service, nie im Deploy-Archiv), Installation verdeckt per
+  `deploy/vps/install-stripe-keys.sh <host> live|test|e2e|status`. Webhook-Secrets nur in Netlify. Status: `node stripe-webhook.js status` (Repair).
+- **payments.js:** `provider_mode` LIVE|TEST je Zahlung; TEST nur auf Test-Aufträgen und umgekehrt (beide Richtungen geprüft), Gate zählt nur den eigenen Modus,
+  Summen/Umsatz nur LIVE (`test_payments` separat). CLI verbucht nur LIVE – kein «simulate paid».
+- **E2E-Tests im CRM (ersetzt TF-077C «kein CRM-Lead»):** jede Test-Einsendung erscheint als eigener CRM-Eintrag `test-cf-<hash>` (nie mit echtem Lead
+  zusammengeführt) mit TEST/E2E-TEST-Abzeichen, test_run_id, Stufen (Weg/Mail/Zahlung/Zugang/Reparatur), Filter ALLE/ECHT/TEST (Owner). Aktiver Lauf NUR mit
+  `JARVIS_E2E_TEST_ENABLED=true` + Kundenadresse ∈ `JARVIS_E2E_TEST_MAILBOXES` + Website ∈ `JARVIS_E2E_TEST_DOMAINS` (`/opt/jarvis-payment/e2e.env`, Mail + Repair).
+  Test-Auftrag: test_order/environment TEST/test_run_id, kein sales.json-Verkauf, Provisionssatz 0, nur Stripe-TEST, vor jedem Schritt erneut gegen die
+  Allowlist geprüft (sonst TEST_ACCESS_BLOCKED). Historische Tests (vor TF-080) = HISTORISCH, nie rückwirkend gestartet.
+- **Isolation:** Testleads/-aufträge/-zahlungen ausgeschlossen aus Umsatz, Zahlungssummen, Provision (auch nach der Cloud-Whitelist server-control), Verkäufer-
+  Sicht/-Zählern (nur Owner sieht Tests), CRM-Kennzahlen, Anruflisten (eligibility `TEST_BLOCKED`, kein tel-Link), Cold-Outreach, CRM-Schreibaktionen (nur
+  Notiz/Archiv/erledigt). Bereinigung: `node e2e-test.js list | cleanup <test_run_id>` (je Container, nie Platzhalter).
+- **Tests:** `test/tf080.test.js` (volle E2E-Fixture Formular → … → Tresor zerstört, LIVE-Weg mit Abgleich, NOT_CONFIGURED, Webhook-Matrix, Ablauf/Erinnerung,
+  Refund, Freigabe-Grenzen/historisch, Kennzahlen, Bereinigung). `npm run test:tf080`.
 
 ## TF-079 – KONTAKTFORMULAR → AUTOMATISCHES GESPRÄCH → SICHERER ZUGANG → AUTOMATISCHE REPARATUR (2026-10-18)
 - **Kundenweg (nur bestehende Bausteine verdrahtet, kein zweites Credential-/Mail-/Zustandssystem):** verifizierte, echte Einsendung mit «Interesse an:

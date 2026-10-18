@@ -14,7 +14,7 @@
 //
 // Nichts hier sendet, ruft an oder erstellt Entwürfe. Do Not Contact wirkt sofort im CRM (keine Anruf-Empfehlung, kein Follow-up,
 // keine Outreach-Queue) und – über lead-registry.js registryBlock – auf neue Cold-Entwürfe des Mail-Workers.
-import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines, issueLink, crmAdmission, ADMISSION_STATES, ACTIVE_ADMISSIONS } from "./public/crm-model.js";
+import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, PRIORITY_LEVELS, DRAFT_STATUSES, priorityOf, followUpBucket, callRecommended, issueLines, issueLink, crmAdmission, ADMISSION_STATES, ACTIVE_ADMISSIONS, isTestLead } from "./public/crm-model.js";
 import { siteHealth, httpStatusOf, AUDIT_STATES, ISSUE_CATEGORIES, FINDING_SOURCES, AREAS } from "./site-findings.js";
 import { buildIndex, findId, normCompany } from "./lead-db.js";
 import { displayCategory } from "./category-labels.js";
@@ -125,9 +125,13 @@ export const HISTORY_BADGES = Object.freeze(["HISTORICAL", "REVERIFIED"]);
 // Rückrufwunsch (nur ausdrücklich, mit Beleg) und – vom CRM berechnet – offen/erledigt (open, open_since, resolution) + Anruf-Kennzeichen.
 export const CONTACT_FORM_STATUSES = Object.freeze(["NEW", "DRAFT_CREATED", "REVIEW_REQUIRED", "REPLY_SENT"]);
 export const CONTACT_FORM_RESOLUTIONS = Object.freeze(["CONTACT_FORM_HANDLED", "CUSTOMER_REACHED", "CALLBACK_SCHEDULED", "NOT_INTERESTED", "ORDER_CREATED", "DNC"]);
-export const CONTACT_FORM_CALL = Object.freeze(["CALLBACK_REQUESTED", "CALL_NOT_CURRENTLY_ELIGIBLE"]);
-export const CONTACT_FORM_WORKFLOW = Object.freeze(["NEW_INQUIRY", "REPLY_SENT", "WAITING_FOR_CONFIRMATION", "WAITING_FOR_PAYMENT", "ACCESS_REQUESTED", "ACCESS_RECEIVED",
-  "REPAIR_RUNNING", "COMPLETED", "MANUAL_REVIEW", "CANCELLED"]);
+// TF-080: TEST_BLOCKED = E2E-Testlead, nie anrufbar (kein Mensch, keine KI, kein Twilio/LiveKit).
+export const CONTACT_FORM_CALL = Object.freeze(["CALLBACK_REQUESTED", "CALL_NOT_CURRENTLY_ELIGIBLE", "TEST_BLOCKED"]);
+export const CONTACT_FORM_WORKFLOW = Object.freeze(["NEW_INQUIRY", "REPLY_SENT", "WAITING_FOR_CONFIRMATION", "WAITING_FOR_PAYMENT", "PAYMENT_CONFIRMED", "ACCESS_REQUESTED", "ACCESS_RECEIVED",
+  "REPAIR_RUNNING", "VALIDATION", "COMPLETED", "MANUAL_REVIEW", "CANCELLED"]);
+export const CONTACT_FORM_PAYMENT = Object.freeze(["NONE", "LINK_PENDING", "LINK_SENT", "PAID", "EXPIRED", "NOT_CONFIGURED", "MANUAL", "REVIEW"]);
+const WORD_RE = /^[A-Z_]{2,40}$/;
+const word = (v) => (typeof v === "string" && WORD_RE.test(v) ? v : null);
 export function cleanContactForm(c) {
   if (!c || typeof c !== "object" || !CONTACT_FORM_STATUSES.includes(c.status)) return null;
   const out = { status: c.status, matched: c.matched === true, received_at: iso(c.received_at), count: Number.isInteger(c.count) ? Math.max(1, Math.min(1000, c.count)) : 1 };
@@ -145,7 +149,12 @@ export function cleanContactForm(c) {
     resolved_at: iso(c.resolved_at), call_eligibility: oneOf(c.call_eligibility, CONTACT_FORM_CALL, "CALL_NOT_CURRENTLY_ELIGIBLE"),
     // TF-079: Kundenweg «Check & Reparatur» (feste Codes) + Auftragsnummer – nie Zugangsdaten, nie Mailinhalt.
     workflow_status: oneOf(c.workflow_status, CONTACT_FORM_WORKFLOW), intent: c.intent === "CONTACT_FORM_REPAIR_INTEREST" ? c.intent : null,
-    order_id: typeof c.order_id === "string" && /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/.test(c.order_id) ? c.order_id : null };
+    order_id: typeof c.order_id === "string" && /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/.test(c.order_id) ? c.order_id : null,
+    // TF-080: Stufen (feste Wörter) + Test-Kennzeichen. Nie Links, Zugangsdaten, Kartendaten oder Mailinhalte.
+    journey_state: word(c.journey_state), payment_mode: oneOf(c.payment_mode, ["LIVE", "TEST"]), payment_state: oneOf(c.payment_state, CONTACT_FORM_PAYMENT),
+    access_state: word(c.access_state), repair_state: word(c.repair_state),
+    ...(c.is_test === true ? { is_test: true, environment: "TEST", test_run_id: typeof c.test_run_id === "string" && /^e2e-[0-9a-f]{12}$/.test(c.test_run_id) ? c.test_run_id : null,
+      test_historical: c.test_historical === true, e2e_run: c.e2e_run === true } : {}) };
 }
 // Kontaktformular-Einträge je CRM-Lead. Eine nicht zugeordnete Anfrage, deren Adresse/Domain die Lead-Datenbank doch kennt, wird auf DIESEN
 // Lead gelegt (nie ein zweiter Datensatz). Gecacht je gelesener Datei.
@@ -164,7 +173,8 @@ export function contactFormLeads(src = {}) {
   for (const [id, c] of Object.entries(raw)) {
     if (!c || typeof c !== "object" || !LEAD_ID_RE.test(id)) continue;
     let target = id;
-    if (c.lead_source === "CONTACT_FORM" && !c.matched && !leads[id]) target = findId(idx, { domain: id.includes("@") || id.startsWith("cf-") ? "" : id, email: c.email || "" }) || id;
+    // TF-080: Testleads (test-cf-…) werden nie auf einen echten Lead gelegt – eigene Identität.
+    if (c.lead_source === "CONTACT_FORM" && !c.matched && !leads[id] && c.is_test !== true) target = findId(idx, { domain: id.includes("@") || id.startsWith("cf-") ? "" : id, email: c.email || "" }) || id;
     out[target] = out[target] ? mergeCf(out[target], c) : c;
   }
   cfCache.set(raw, out);
@@ -269,7 +279,7 @@ export function effectiveStage(entry, f) {
 export function buildCrmLead(id, src = {}, now = new Date()) {
   const reg = src.registry?.leads?.[id] || null, dir = src.directory?.leads?.[id] || null, rv = src.reviews?.[id] || null, crm = src.crm?.leads?.[id] || null;
   const cfSrc = contactFormLeads(src)[id] || null;
-  const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || (id.includes("@") || id.startsWith("cf-") ? "" : id)) || null;
+  const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || (id.includes("@") || id.startsWith("cf-") || id.startsWith("test-cf-") ? "" : id)) || null;
   const hist = historyOf(src, domain); // TF-058: niedrigste Priorität – füllt nur, was Registry/Review/Verzeichnis nicht kennen
   const histOnly = !!hist && !reg && !dir && !rv;
   const d = draftInfo(dir, rv, src.gmail, reg);
@@ -339,8 +349,10 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     const leadE164 = /^tel:(\+\d{8,15})$/.exec(String(lead.phone_tel || ""))?.[1] || null;
     const phoneMatch = !!cfSrc.phone_e164 && cfSrc.phone_e164 === leadE164;
     const callable = cf.callback_requested && cf.verified && phoneMatch && !lead.do_not_contact && phonebook.status !== "PHONEBOOK_STAR_PRESENT";
-    lead.contact_form = cleanContactForm({ ...cfSrc, ...st, inbound: cfOnly, callback_phone_match: phoneMatch, call_eligibility: callable ? "CALLBACK_REQUESTED" : "CALL_NOT_CURRENTLY_ELIGIBLE" });
+    lead.contact_form = cleanContactForm({ ...cfSrc, ...st, inbound: cfOnly, callback_phone_match: phoneMatch, call_eligibility: cfSrc.is_test === true ? "TEST_BLOCKED" : callable ? "CALLBACK_REQUESTED" : "CALL_NOT_CURRENTLY_ELIGIBLE" });
   }
+  // TF-080: E2E-Testlead – sichtbar mit TEST-Kennzeichen, nie anrufbar (kein Anruf-Link), nie Website-/Audit-Ziel.
+  if (isTestLead(lead) || cfSrc?.is_test === true) Object.assign(lead, { is_test: true, environment: "TEST", test_run_id: lead.contact_form?.test_run_id || null, phone_tel: null, website: null });
   lead.priority = priorityOf(lead);
   lead.follow_up = followUpBucket(lead, now);
   lead.call_recommended = callRecommended(lead);
@@ -436,6 +448,8 @@ export function applyCrmAction(state, req, { now = new Date(), lookup } = {}) {
   const { lead_id } = v.params, p = v.params;
   const cur = lookup ? lookup(lead_id) : null;
   if (!cur) return fail("UNKNOWN_LEAD", "Unbekannter Lead – nur bestehende Jarvis-Leads können bearbeitet werden.");
+  // TF-080: E2E-Testlead – nur Notiz/Archiv/«erledigt»; nie Verkaufsstufe, Anruf, DNC (würde echte Kennzahlen/Sperrlisten verfälschen).
+  if (isTestLead(cur) && !["crm.addNote", "crm.archive", "crm.resolveContactForm"].includes(req.action)) return fail("TEST_LEAD", "E2E-Testlead – diese Aktion ist für Tests gesperrt.");
   const t = now.toISOString();
   const e = structuredClone(state.leads[lead_id] || newCrmEntry(lead_id, now));
   const changed = [];
@@ -568,6 +582,7 @@ export function cleanCrmLead(l) {
     archived: l.archived === true, crm_created_at: iso(l.crm_created_at), updated_at: iso(l.updated_at),
     priority: { score: Number.isInteger(pr.score) ? Math.max(-100, Math.min(100, pr.score)) : 0, level: oneOf(pr.level, PRIORITY_LEVELS, "LOW"),
       reasons: (Array.isArray(pr.reasons) ? pr.reasons : []).slice(0, 10).map((r) => str(r, 60)).filter(Boolean) },
-    follow_up: oneOf(l.follow_up, ["OVERDUE", "TODAY", "LATER"]), call_recommended: l.call_recommended === true,
+    follow_up: oneOf(l.follow_up, ["OVERDUE", "TODAY", "LATER"]), call_recommended: l.call_recommended === true && !isTestLead(l),
+    ...(isTestLead(l) ? { is_test: true, environment: "TEST", test_run_id: typeof l.test_run_id === "string" && /^e2e-[0-9a-f]{12}$/.test(l.test_run_id) ? l.test_run_id : null, phone_tel: null } : {}),
   };
 }

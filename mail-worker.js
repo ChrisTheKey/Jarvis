@@ -312,7 +312,8 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         ownAddresses: [cfg.sender?.email, ...cfg.excludeAddresses].filter(Boolean), leads: () => contactLeads(store), orders: contactOrders, now: t, log, escalate,
         isTransient: (e) => TRANSIENT_RE.test(String(e?.message || e)), readOnly: dry || readOnly,
         // TF-077B: verifizierte Anfragen sofort automatisch beantworten (angefragte Antwort) – abschaltbar über contactForms.autoReply=false.
-        autoReply: cfg.contactForms?.autoReply !== false && !!cfg.sender?.name, sendGuard });
+        autoReply: cfg.contactForms?.autoReply !== false && !!cfg.sender?.name, sendGuard,
+        e2e: (await import("./e2e-test.js")).e2eConfig() }); // TF-080: E2E-Testlauf nur mit Server-Freigabe (JARVIS_E2E_TEST_*)
       if (contactForms.degraded) degrade("contact_form", { message: contactForms.degraded });
     } catch (e) { log("error", "contact_form_failed", { error: String(e.message).slice(0, 160) }); }
     // TF-079: Kundenweg «Check & Reparatur» im Thread der automatischen Antwort (Gespräch → bestätigter Auftrag → Übergabe an den Onboarding-Dialog).
@@ -1207,10 +1208,11 @@ async function loop() {
   const onbDir = repairOutboxDir() && process.env.JARVIS_ONBOARDING !== "off" ? (await import("./onboarding-store.js")).onboardingDirOf(repairOutboxDir()) : null;
   // TF-079: Kontaktformular-Kundenweg (contact-form-journey.js) – erste Auftrags-Mail im Thread der automatischen Antwort, eigene Threads nie doppelt beantwortet.
   const journeyMod = await import("./contact-form-journey.js");
+  const e2eMod = await import("./e2e-test.js"); // TF-080
   const onboarding = onbDir ? onbMod.createOnboarding({ dir: WORKER_DIR, onboardingDir: onbDir, gmail, extract: role === "vps" || process.env.JARVIS_COMPOSE === "api" ? onbMod.apiExtract() : null,
     log, notify: shared.createOnboardingNotifier({ local, log }), contactThreadFor: (id, email) => journeyMod.contactThreadFor(createStore(WORKER_DIR), id, email) }) : null;
   const onboardingThreads = onboarding ? () => new Map([...journeyMod.journeyThreads(createStore(WORKER_DIR)), ...onboarding.boundThreads()]) : null;
-  const contactJourney = onboarding ? (x) => journeyMod.processContactJourneys({ ...x, onboardingDir: onbDir, boundOrders: () => new Set(onboarding.boundThreads().values()) }) : null;
+  const contactJourney = onboarding ? (x) => journeyMod.processContactJourneys({ ...x, onboardingDir: onbDir, boundOrders: () => new Set(onboarding.boundThreads().values()), e2e: e2eMod.e2eConfig() }) : null;
   // TF-075A: Aufträge für die exakte Zuordnung von Kontaktformular-Anfragen (Export des Repair-Service, nur lesen).
   const contactOrders = () => (onbDir ? readOrdersExport(onbDir).orders || {} : {});
   let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads, contactOrders, contactJourney });

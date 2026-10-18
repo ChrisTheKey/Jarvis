@@ -18,6 +18,10 @@
 //   - Duplikatschutz: dieselbe Zahlungsreferenz (normalisiert: Gross/Klein und Leerzeichen egal) zählt nie doppelt.
 //   - Keine Secrets: nur Betrag/Quelle/Referenztext – nie Kontodaten, IBAN-Listen oder Tokens in diesem Modul.
 //   - Nur Chris (CLI auf dem VPS) verbucht – es gibt keine Cloud-/Verkäufer-Schnittstelle zum Erfassen, Ändern oder Erstatten.
+//     TF-080: zusätzlich der Repair-Service nach einem geprüften Stripe-Checkout-Ereignis (stripe-webhook.js) – gleiche Regeln, gleicher Duplikatschutz.
+//   - TF-080 LIVE/TEST: jede Zahlung trägt provider_mode (LIVE | TEST). TEST-Zahlungen (is_test) gibt es NUR für Test-Aufträge (test_order) und
+//     umgekehrt; ein Gate zählt nur Zahlungen seines Modus (TEST erfüllt nie ein LIVE-Gate). Summen/Umsatz/Provision kennen nur LIVE.
+//     Die CLI verbucht nur LIVE – es gibt keinen Weg, eine Testzahlung von Hand zu «simulieren».
 //
 // Gespeichertes Format: CHF-Einträge wie bisher mit amount_chf (+ amount/currency), VND-Einträge mit amount + currency "VND".
 // Leser verstehen beide Formate (Legacy-Eintrag ohne currency/amount = CHF/amount_chf).
@@ -65,7 +69,7 @@ export function findPayableOrder(store, orderId) {
   if (!o) return null;
   const money = orderMoney(o);
   return { order_id: o.order_id, domain: o.domain || null, offer_class: o.offer_class, state: o.state, file,
-    market: money?.market || null, currency: money?.currency || null };
+    market: money?.market || null, currency: money?.currency || null, test_order: o.test_order === true };
 }
 
 function readLedger(store) { return store.read(PAYMENTS_FILE, { schema: 1, payments: {} }); }
@@ -73,9 +77,15 @@ function writeLedger(store, data) { store.write(PAYMENTS_FILE, data); }
 
 // Zahlung als eingegangen verbuchen – nur gegen einen existierenden Auftrag (fail closed), nur in dessen Währung, nie löschen, nie überschreiben.
 // amount (neu) oder amount_chf (Legacy-Aufrufe) – beide meinen den Betrag in der angegebenen Währung.
-export function recordPayment(store, { order_id, amount = undefined, amount_chf = undefined, currency = undefined, source = "bank_transfer", reference = null, received_at = null, now = new Date() } = {}) {
+export const PROVIDER_MODES = Object.freeze(["LIVE", "TEST"]);
+export const isTestPayment = (p) => p?.is_test === true || p?.provider_mode === "TEST";
+export function recordPayment(store, { order_id, amount = undefined, amount_chf = undefined, currency = undefined, source = "bank_transfer", reference = null, received_at = null, provider_mode = "LIVE", now = new Date() } = {}) {
   const order = findPayableOrder(store, order_id);
   if (!order) throw new Error(`Kein Auftrag mit order_id "${order_id}" vorhanden (CA150-…/RF480-…/VNCHECK-…/VNFIX-…) – Zahlungen werden nur gegen echte Aufträge verbucht.`);
+  if (!PROVIDER_MODES.includes(provider_mode)) throw new Error("Ungültiger Zahlungsmodus (LIVE | TEST).");
+  // TF-080: Test-Auftrag ↔ Testzahlung strikt (beide Richtungen) – nie echtes Geld auf einen Test, nie ein Test auf einen echten Auftrag.
+  if (order.test_order && provider_mode !== "TEST") throw new Error(`Auftrag ${order.order_id} ist ein E2E-Test – nur Stripe-TESTzahlungen, nichts verbucht.`);
+  if (!order.test_order && provider_mode !== "LIVE") throw new Error(`Auftrag ${order.order_id} ist echt – eine TESTzahlung wird nie verbucht.`);
   if (!order.currency) throw new Error(`Auftrag ${order.order_id} hat keinen gültigen Markt/keine gültige Währung – nichts verbucht.`);
   const cur = String(currency || order.currency).toUpperCase();
   if (cur !== order.currency) throw new Error(`Nur ${order.currency} wird für diesen Auftrag verbucht (Auftragswährung) – keine stillen Fremdwährungs-Umrechnungen.`);
@@ -102,6 +112,7 @@ export function recordPayment(store, { order_id, amount = undefined, amount_chf 
     payment_id, order_id: order.order_id, domain: order.domain, offer_class: order.offer_class,
     ...(cur === "CHF" ? { amount_chf: value } : {}), amount: value, currency: cur, market: order.market, received_at: new Date(at).toISOString(),
     source: src, reference: reference ? String(reference).replace(/\s+/g, " ").trim().slice(0, 200) : null,
+    provider_mode, ...(provider_mode === "TEST" ? { is_test: true } : {}),
     status: "RECEIVED", created_at: now.toISOString(),
   };
   data.payments = { ...(data.payments || {}), [payment_id]: entry };
@@ -131,8 +142,9 @@ export function paymentsForOrder(store, orderId) {
     .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 }
 // Kumulativ tatsächlich eingegangen in einer Währung (nur RECEIVED) – primär an die ORDER_ID gebunden, nie an die Domain.
-export function paidAmount(store, orderId, currency = "CHF") {
-  const minor = paymentsForOrder(store, orderId).filter((p) => p.status === "RECEIVED" && paymentCurrency(p) === currency)
+// TF-080: test = Modus des Auftrags (Gate eines Test-Auftrags zählt nur Testzahlungen, jedes andere nur LIVE).
+export function paidAmount(store, orderId, currency = "CHF", { test = false } = {}) {
+  const minor = paymentsForOrder(store, orderId).filter((p) => p.status === "RECEIVED" && paymentCurrency(p) === currency && isTestPayment(p) === (test === true))
     .reduce((a, p) => a + toMinor(paymentAmount(p), currency), 0);
   return fromMinor(minor, currency);
 }
@@ -144,7 +156,7 @@ export function paymentGateForOrder(store, order = {}) {
   const m = orderMoney(order);
   const currency = m?.currency || null;
   const required = m ? m.deposit : null;
-  const paid = order.order_id && currency ? paidAmount(store, order.order_id, currency) : 0;
+  const paid = order.order_id && currency ? paidAmount(store, order.order_id, currency, { test: order.test_order === true }) : 0;
   // CH: exakt das bisherige Format (required_chf/paid_chf). VN: currency + required/paid in VND (nie *_chf).
   if (currency === "VND") return { order_id: order.order_id || null, offer_class: order.offer_class || null, currency, required, paid, satisfied: required != null && paid >= required };
   return { order_id: order.order_id || null, offer_class: order.offer_class || null, required_chf: required, paid_chf: paid, satisfied: required != null && paid >= required };
@@ -160,8 +172,8 @@ export function paymentSummary(store, order = {}) {
   const m = orderMoney(order);
   const currency = m?.currency || null;
   const price = m ? m.price : null, deposit = m ? m.deposit : null;
-  const list = order.order_id ? paymentsForOrder(store, order.order_id) : [];
-  const paid = order.order_id && currency ? paidAmount(store, order.order_id, currency) : 0;
+  const list = order.order_id ? paymentsForOrder(store, order.order_id).filter((p) => isTestPayment(p) === (order.test_order === true)) : [];
+  const paid = order.order_id && currency ? paidAmount(store, order.order_id, currency, { test: order.test_order === true }) : 0;
   let status = "UNPAID";
   if (order.state === "PAYMENT_REVIEW_REQUIRED") status = "PAYMENT_REVIEW_REQUIRED";
   else if (price != null && paid >= price) status = "PAID_FULL";
@@ -175,14 +187,16 @@ export function paymentSummary(store, order = {}) {
 }
 
 // Zähler/Summen fürs Dashboard – keine Referenzen; Summen je Währung getrennt (nie CHF und VND addieren).
+// TF-080: nur LIVE-Zahlungen zählen (Umsatz/Summen); Testzahlungen nur als eigene Anzahl.
 export function paymentsStatus(dir = WORKER_DIR) {
-  const list = Object.values(createStore(dir).read(PAYMENTS_FILE, { payments: {} }).payments || {});
+  const raw = Object.values(createStore(dir).read(PAYMENTS_FILE, { payments: {} }).payments || {});
+  const list = raw.filter((p) => !isTestPayment(p));
   const by = (s, cur) => list.filter((p) => p.status === s && paymentCurrency(p) === cur);
   const sum = (xs, cur) => fromMinor(xs.reduce((a, p) => a + toMinor(paymentAmount(p), cur), 0), cur);
   const all = (s) => list.filter((p) => p.status === s);
   return { total: list.length, received: all("RECEIVED").length, voided: all("VOIDED").length, refunded: all("REFUNDED").length,
     received_chf: sum(by("RECEIVED", "CHF"), "CHF"), refunded_chf: sum(by("REFUNDED", "CHF"), "CHF"),
-    received_vnd: sum(by("RECEIVED", "VND"), "VND"), refunded_vnd: sum(by("REFUNDED", "VND"), "VND") };
+    received_vnd: sum(by("RECEIVED", "VND"), "VND"), refunded_vnd: sum(by("REFUNDED", "VND"), "VND"), test_payments: raw.length - list.length };
 }
 
 // ---------- Kommandozeile ----------

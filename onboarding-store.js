@@ -92,6 +92,19 @@ export function listContactOrderRequests(dir) {
   try { names = fs.readdirSync(path.join(dir, CF_ORDERS_DIR)); } catch { return []; }
   return names.filter((n) => /^cf-[0-9a-f]{24}\.json$/.test(n)).sort().map((n) => readJson(path.join(dir, CF_ORDERS_DIR, n), null)).filter((r) => r && CF_KEY_RE.test(String(r.key)));
 }
+// ---------- TF-080: payment_links.json (Schreiber: Repair-Service) ----------
+// Stripe-Checkout je Auftrag für die Zahlungs-Mail im Kontaktformular-Verlauf (Mail-Worker sendet sie genau einmal): nur Statuswort, Modus,
+// Session-Nummer (seq), Ablauf und – NUR solange offen – der Stripe-gehostete Checkout-Link. Nie Schlüssel, Beträge anderer Kunden, Kartendaten.
+export const PAYMENT_LINKS_FILE = "payment_links.json";
+export const PAYMENT_LINK_STATUSES = Object.freeze(["PENDING", "OPEN", "PAID", "EXPIRED", "EXPIRED_FINAL", "NOT_CONFIGURED", "FAILED", "TEST_BLOCKED", "REVIEW"]);
+export const readPaymentLinks = (dir) => (dir ? readJson(path.join(dir, PAYMENT_LINKS_FILE), null) : null) || { v: 1, links: {} };
+export function writePaymentLinks(dir, links, { now = new Date() } = {}) {
+  if (!dir) return false;
+  const cur = readPaymentLinks(dir);
+  if (JSON.stringify(cur.links || {}) === JSON.stringify(links)) return false;
+  writeAtomic(path.join(dir, PAYMENT_LINKS_FILE), { v: 1, at: now.toISOString(), links });
+  return true;
+}
 export const readContactOrderResults = (dir) => (dir ? readJson(path.join(dir, CF_RESULTS_FILE), null) : null) || { v: 1, results: {} };
 export function writeContactOrderResults(dir, results, { now = new Date() } = {}) {
   const cur = readContactOrderResults(dir);

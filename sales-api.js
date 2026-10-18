@@ -79,7 +79,8 @@ export function createSalesHandler({ env, data, getSalesStore, getAuthStore = nu
     }
     return { L: migrateLedger((await store.get()).state || emptyLedger()).doc, snapshot };
   }
-  const snapshotOrders = (snapshot) => [...(snapshot?.check150?.orders || []), ...(snapshot?.repair?.orders || [])].filter((o) => o && ORDER_ID_RE.test(String(o.order_id || "")));
+  // TF-080: E2E-Test-Aufträge nie in Verkäufer-/Umsatz-Sichten.
+  const snapshotOrders = (snapshot) => [...(snapshot?.check150?.orders || []), ...(snapshot?.repair?.orders || [])].filter((o) => o && ORDER_ID_RE.test(String(o.order_id || "")) && o.test_order !== true && o.environment !== "TEST");
   const isOpenState = (s) => !CLOSED_ORDER_STATES.includes(s);
 
   // ---------- VN-Auftragssicht (Kudoshin/OWNER): Anfrage + Auftragsstand aus dem Snapshot + erwartete Provision ----------
