@@ -587,7 +587,9 @@ let inboundAllow = new Set();
 export async function searchInbound({ query, max = 20 } = {}) {
   const m = String(query || "").match(INBOUND_QUERY_RE);
   if (!m) throw new Error("Kontaktformular-Suche nur mit Allowlist-Anfrage.");
-  inboundAllow = new Set(m[1].toLowerCase().split(" OR "));
+  // TF-077D: erst (case-insensitiv) splitten, dann normalisieren – toLowerCase() vor split(" OR ") liess Mehr-Anbieter-Anfragen
+  // als einen einzigen String stehen, sodass kein Absender mehr exakt passte.
+  inboundAllow = new Set(m[1].split(/\s+OR\s+/i).map((x) => x.trim().toLowerCase()).filter(Boolean));
   const q = new URLSearchParams({ q: query, maxResults: String(Math.max(1, Math.min(100, Number(max) || 20))) });
   const r = await gmail("GET", `/messages?${q}`);
   return (r.messages || []).map((x) => x.id).filter(Boolean);
