@@ -21,8 +21,9 @@ const NETLIFY_FROM = '"helvetic-webdesign-reperatur.netlify.app" <formresponses@
 const SUBJECT = "Neue Kundenanfrage – submission from helvetic-webdesign-reperatur (anfrage)";
 const AUTH = "mx.google.com; dkim=pass header.i=@netlify.com header.s=s1 header.b=abc; spf=pass smtp.mailfrom=bounce@netlify.com; dmarc=pass (p=NONE) header.from=netlify.com";
 const CFG = { forms: [{ form_name: "anfrage", site: "helvetic-webdesign-reperatur", market: "CH" }], receivingMailboxes: [MAILBOX] };
-const BODY = ["Ihre Website *: https://www.muster-garage.ch", "Name *: Anna Muster", "E-Mail *: anna@muster-garage.ch", "Interesse an: Reparatur",
-  "Was funktioniert nicht?: Das Kontaktformular sendet nichts ab."].join("\n");
+// Echte Form (Produktion 18.10.2026): Feldname allein auf einer Zeile, Wert darunter, Leerzeile dazwischen; «Was funktioniert nicht?» OHNE Doppelpunkt.
+const BODY = ["Ihre Website *:", "https://www.muster-garage.ch", "", "Name *:", "Anna Muster", "", "E-Mail *:", "anna@muster-garage.ch", "",
+  "Interesse an:", "Reparatur und Wartung", "", "Was funktioniert nicht?", "Das Kontaktformular sendet nichts ab.", ""].join("\r\n");
 
 // Gmail-API-Nachricht im echten Format (users.messages.get?format=full).
 function apiMsg({ id, from = NETLIFY_FROM, subject = SUBJECT, replyTo = "Anna Muster <anna@muster-garage.ch>", auth = AUTH, body = BODY, at = T0 }) {
@@ -94,6 +95,16 @@ test("Ein-Anbieter-Anfrage: nur dieser Anbieter, der andere wird abgelehnt (Allo
   await assert.rejects(gmailMod.readInbound("00000000000000d2"), /Allowlist/);
   // Freie Anfragen bleiben verboten.
   await assert.rejects(gmailMod.searchInbound({ query: "in:inbox" }), /Allowlist/);
+});
+
+test("parseFormFields: Feldname-Zeile + Wert-Zeile, letztes Feld ohne Doppelpunkt (echte Netlify-Form)", () => {
+  assert.deepEqual(cf.parseFormFields(BODY), { ihre_website: "https://www.muster-garage.ch", name: "Anna Muster", e_mail: "anna@muster-garage.ch",
+    interesse_an: "Reparatur und Wartung", was_funktioniert_nicht: "Das Kontaktformular sendet nichts ab." });
+  // Mehrzeilige Nachricht: Folgezeilen (auch nach Leerzeile, auch mit «?») bleiben Nachricht, werden nie neue Felder.
+  const multi = cf.parseFormFields("Name *:\nA\n\nWas funktioniert nicht?\nZeile 1?\n\nName?\nNachricht *\n");
+  assert.deepEqual(multi, { name: "A", was_funktioniert_nicht: "Zeile 1?\nName?\nNachricht *" });
+  // Unbekannte Zeile ohne Doppelpunkt mit «?» ist kein Feld.
+  assert.deepEqual(cf.parseFormFields("Name: A\nWarum?\n"), { name: "A\nWarum?" });
 });
 
 // ======================================================================================================================================

@@ -131,6 +131,10 @@ export function authPassFor(headers = {}, domains = []) {
 // zum Schlüssel. Normalisierung: NFC, Kleinbuchstaben, Leerzeichen/Punkt/Bindestrich/Unterstrich → «_» («E-Mail *» → e_mail).
 export const normalizeFieldKey = (k) => lc(String(k ?? "").normalize("NFC")).replace(/[*?]+/g, " ").replace(/[\s_.-]+/g, "_").replace(/^_+|_+$/g, "");
 const FIELD_LINE_RE = /^\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ0-9 _./-]{0,40}?)\s*[*?]*\s*:\s*(.*)$/u;
+// TF-077D: echte Netlify-Benachrichtigung = Feldname allein auf einer Zeile, Wert auf der nächsten; das letzte Feld «Was funktioniert nicht?» hat
+// KEINEN Doppelpunkt. Eine Zeile ohne Doppelpunkt gilt nur dann als Feldname, wenn sie mit «?»/«*» endet UND ein bekannter Schlüssel ist –
+// sonst bleibt sie Kundentext (eine Nachrichtenzeile «Warum?» wird nie zum Feld).
+const BARE_LABEL_RE = /^\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ0-9 _./-]{0,40}?)\s*[*?]+\s*$/u;
 export function parseFormFields(body = "") {
   const fields = {};
   let last = null;
@@ -138,9 +142,13 @@ export function parseFormFields(body = "") {
     const line = raw.replace(/^\s*[*•-]\s*/, "");
     const m = line.match(FIELD_LINE_RE);
     if (m && !/^https?$/i.test(m[1])) { last = normalizeFieldKey(m[1]); fields[last] = (fields[last] ? fields[last] + "\n" : "") + m[2].trim(); continue; }
+    const bare = line.match(BARE_LABEL_RE);
+    if (bare && KNOWN_FIELD_KEYS.has(normalizeFieldKey(bare[1])) && !(last && MSG_KEYS.includes(last) && fields[last].trim())) {
+      last = normalizeFieldKey(bare[1]); fields[last] ??= ""; continue;
+    }
     if (/^\s*https?:\/\/\S+\s*$/.test(line) && /submissions?\//i.test(line)) { last = null; continue; } // Anbieter-Link, kein Kundentext
-    if (last && line.trim()) fields[last] += "\n" + line.trim();
-    else if (!line.trim()) last = last && MSG_KEYS.includes(last) ? last : null;
+    if (last && line.trim()) fields[last] = fields[last] ? fields[last] + "\n" + line.trim() : line.trim();
+    else if (!line.trim()) last = last && (MSG_KEYS.includes(last) || !fields[last]) ? last : null; // Feldname ohne Wert: Wert folgt noch
   }
   return fields;
 }
@@ -154,6 +162,7 @@ const SUBJECT_KEYS = ["subject", "betreff", "thema", "tieu_de", "tiêu_đề"];
 const FORMNAME_KEYS = ["form_name", "form", "formular"];
 const PHONE_KEYS = ["phone", "telefon", "tel", "telefonnummer", "phone_number", "mobile", "handy", "natel", "ihre_telefonnummer", "so_dien_thoai", "số_điện_thoại", "dien_thoai", "điện_thoại"];
 const CALLBACK_KEYS = ["rueckruf", "rückruf", "callback", "call_back", "rueckruf_erwuenscht", "rückruf_erwünscht", "goi_lai", "gọi_lại"];
+const KNOWN_FIELD_KEYS = new Set([...EMAIL_KEYS, ...NAME_KEYS, ...MSG_KEYS, ...WEBSITE_KEYS, ...INTEREST_KEYS, ...SUBJECT_KEYS, ...FORMNAME_KEYS, ...PHONE_KEYS, ...CALLBACK_KEYS]);
 const pick = (f, keys) => { for (const k of keys) if (typeof f[k] === "string" && f[k].trim()) return f[k].trim(); return ""; };
 
 // TF-077C: «Ihre Website» des Kunden – nur URL-validiert (http/https, vollständiger Hostname, keine Zugangsdaten, kein Sonderport, keine IP), ohne
