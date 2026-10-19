@@ -176,3 +176,8 @@ Jede Einordnung enthält `offer_class`, `confidence`, `evidence[]`, `rationale`,
 `powershell -ExecutionPolicy Bypass -File install-local-core.ps1` legt die Aufgabe „Jarvis Local Core“ an (bei Anmeldung, unsichtbar, Neustart nach Fehlern; nur bei Bedarf UAC). Sie startet `node server.js --supervise`: ein Aufpasser startet den bestehenden Server und startet ihn nach Abstürzen neu. Der Server bindet nur 127.0.0.1; läuft schon ein Jarvis auf dem Port, beendet sich ein zweiter Start sofort. Healthcheck: `http://localhost:3000/api/health`, Log: `.secrets/local_core/core.log` (begrenzt, geschwärzt). Entfernen mit `-Uninstall`. Der Task „Jarvis Mail Worker“ bleibt davon unabhängig.
 
 Das HUD erkennt automatisch LOCAL (Local Core erreichbar, PC-Zugriff) oder CLOUD (nur Gespräch) und prüft alle 20 Sekunden erneut – es wechselt selbst zurück auf LOCAL, sobald der Core online ist.
+
+## TF-079 – Zahlungslinks und Nachfassen
+`payment-links.js` hält die zwei Stripe-Links (CHF 150 / 480). Kontaktformular-Antworten und das Nachfassen unbezahlter bestätigter CH-Aufträge (`payment-followup.js`, Standard AUS)
+senden den Link mit `client_reference_id`; Kundenmails laufen über den Alias `sender.sendAs`. Config: `sender.sendAs`, `paymentFollowup.enabled`, optional `forms[].payment_links`.
+Stripe-Webhook: nur `checkout.session.completed` aktivieren. Details: PROJECT_STATE.md (TF-079).

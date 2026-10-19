@@ -28,6 +28,7 @@ import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend, ensureColdDra
 import { publicLeads } from "./cloud-leads.js";
 import { loadRegistry, registryBlock, reconcileRegistry, publicRegistry, registryStatus, CRM_UNAVAILABLE } from "./lead-registry.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
+import { paymentOptions } from "./payment-links.js";
 import { readOrdersExport } from "./onboarding-store.js";
 import { senderProfileFor, VN_SIGNATURE } from "./sender-profiles.js";
 import { processContactForms, DEFAULT_CONTACT_FORM_CONFIG, CONTACT_FORM_DRAFT_MODE } from "./contact-form.js";
@@ -64,7 +65,7 @@ export const DEFAULT_CONFIG = {
   maxThreadReadsPerTick: 20,
   maxColdDraftChecksPerTick: 40,
   excludeAddresses: [], // z. B. eigene Adressen von Chris: dafür nie Entwürfe vorbereiten
-  sender: { name: "", company: "", email: "", signature: "" }, // echte Identität von Chris – ohne name kein Erstkontakt/Versand
+  sender: { name: "", company: "", email: "", sendAs: "", signature: "" }, // sendAs (TF-079): verifizierter «Senden als»-Alias (z. B. chris@helvetic-webdesign.ch) für Kunden-Service-Mails; echte Identität von Chris – ohne name kein Erstkontakt/Versand
   offer: "", // Angebot von Chris in eigenen Worten – ohne Angebot keine Erstkontakte
   model: "sonnet",
 };
@@ -234,7 +235,7 @@ export const AI_BUDGET_FILE = "ai_budget.json";
 // aiPaused: Meldung an Chris, wenn das Anthropic-Guthaben aufgebraucht ist (einmal je Pause).
 // TF-066: onboardingThreads() → Map threadId → order_id der gebundenen Auftrags-Threads (Dialog läuft in onboarding-dialogue.js,
 // hier werden sie weder gelesen noch beantwortet noch mit Follow-ups versehen).
-export const SERVICE_THREAD_CLASSES = new Set(["CUSTOMER_ONBOARDING_DIALOGUE", "CUSTOMER_ACCESS_REQUEST"]);
+export const SERVICE_THREAD_CLASSES = new Set(["CUSTOMER_ONBOARDING_DIALOGUE", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_PAYMENT_REQUEST"]);
 // TF-075A: contactOrders() → Aufträge (order_id → { customer_email, market, lead_id, … }) für die exakte Zuordnung von Kontaktformular-Anfragen.
 export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new Date(), log = createLogger(dir), notify = async () => {}, escalate = async () => {}, aiPaused = async () => {}, sendGuard = ALLOW_ALL, onboardingThreads = null, contactOrders = () => ({}) }) {
   const store = createStore(dir);
@@ -292,6 +293,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
 
   async function cycle({ dry, readOnly = false }) {
     const t = now(), day = zurichDay(t), cfg = config();
+    try { gmail.setSendAs?.({ address: cfg.sender?.sendAs || "", name: cfg.sender?.name || "" }); } catch (e) { log("error", "send_as_invalid", { error: String(e.message).slice(0, 120) }); gmail.setSendAs?.(null); }
     const state = { ...structuredClone(STATE), ...store.read("state.json", STATE) };
     const supp = store.read("suppression.json", {});
     const exclude = new Set(cfg.excludeAddresses.map(normEmail));
@@ -309,7 +311,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
     let contactForms = null;
     try {
       contactForms = await processContactForms({ gmail, store, cfg: { ...DEFAULT_CONTACT_FORM_CONFIG, ...(cfg.contactForms || {}) }, sender: cfg.sender, vnSignature: VN_SIGNATURE,
-        ownAddresses: [cfg.sender?.email, ...cfg.excludeAddresses].filter(Boolean), leads: () => contactLeads(store), orders: contactOrders, now: t, log, escalate,
+        ownAddresses: [cfg.sender?.email, cfg.sender?.sendAs, ...cfg.excludeAddresses].filter(Boolean), leads: () => contactLeads(store), orders: contactOrders, now: t, log, escalate,
         isTransient: (e) => TRANSIENT_RE.test(String(e?.message || e)), readOnly: dry || readOnly,
         // TF-077B: verifizierte Anfragen sofort automatisch beantworten (angefragte Antwort) – abschaltbar über contactForms.autoReply=false.
         autoReply: cfg.contactForms?.autoReply !== false && !!cfg.sender?.name, sendGuard });
@@ -521,7 +523,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
             kind: "antwort", threadId, to: sender, subject: m.subject, escalate: !!escalateReason || !!hc, escalateReason, humanContact: !!hc,
             sourceMessageId: m.messageId, company: companyFor(sender), contactName: displayName(m.from),
             autoSend: !!state.compliantThreads[threadId] && !escalateReason && !hc,
-            task: { kind: "reply", humanContact: hc?.kind || null, sender: cfg.sender, offer: cfg.offer, thread: mails.map((x) => ({ from: x.from, date: x.date, subject: x.subject, body: (x.sent ? x.body : newText(x.body) || x.body).slice(0, 4000) })) },
+            task: { kind: "reply", humanContact: hc?.kind || null, sender: cfg.sender, offer: cfg.offer, paymentOptions: paymentOptions(), thread: mails.map((x) => ({ from: x.from, date: x.date, subject: x.subject, body: (x.sent ? x.body : newText(x.body) || x.body).slice(0, 4000) })) },
           }, async (r) => {
             // Ein noch offener eigener Entwurf in diesem Thread wird aktualisiert statt verdoppelt.
             if (isPending(pendingDraft)) return { ...(await gmail.updateDraft(pendingDraft, { body: r.body })), draftId: pendingDraft, isNew: false };
@@ -1201,7 +1203,12 @@ async function loop() {
   const onbDir = repairOutboxDir() && process.env.JARVIS_ONBOARDING !== "off" ? (await import("./onboarding-store.js")).onboardingDirOf(repairOutboxDir()) : null;
   const onboarding = onbDir ? onbMod.createOnboarding({ dir: WORKER_DIR, onboardingDir: onbDir, gmail, extract: role === "vps" || process.env.JARVIS_COMPOSE === "api" ? onbMod.apiExtract() : null,
     log, notify: shared.createOnboardingNotifier({ local, log }) }) : null;
-  const onboardingThreads = onboarding ? () => onboarding.boundThreads() : null;
+  // TF-079: Zahlungsanfrage/Erinnerungen für bestätigte, unbezahlte CH-Aufträge (Standard AUS: config.json paymentFollowup.enabled).
+  const payFollowMod = await import("./payment-followup.js");
+  const paymentFollowup = onbDir ? payFollowMod.createPaymentFollowup({ dir: WORKER_DIR, onboardingDir: onbDir, gmail, log, sendGuard,
+    sender: () => worker.config().sender, settings: () => worker.config().paymentFollowup || {},
+    notify: shared.createOnboardingNotifier({ local, log }) }) : null;
+  const onboardingThreads = onboarding || paymentFollowup ? () => new Map([...(paymentFollowup ? paymentFollowup.boundThreads() : []), ...(onboarding ? onboarding.boundThreads() : [])]) : null;
   // TF-075A: Aufträge für die exakte Zuordnung von Kontaktformular-Anfragen (Export des Repair-Service, nur lesen).
   const contactOrders = () => (onbDir ? readOrdersExport(onbDir).orders || {} : {});
   let worker = createWorker({ gmail, compose, log, notify, escalate, aiPaused, sendGuard, onboardingThreads, contactOrders });
@@ -1311,6 +1318,10 @@ async function loop() {
     if (onboarding && gmailAuth?.ok !== false) {
       try { const ob = await onboarding.process(); if (ob.processed) log("info", "onboarding_processed", ob); }
       catch (e) { log("error", "onboarding_failed", { error: String(e.message).slice(0, 160) }); }
+    }
+    if (paymentFollowup && gmailAuth?.ok !== false) {
+      try { const pf = await paymentFollowup.process(); if (pf.processed || pf.activated) log("info", "payment_followup_processed", pf); }
+      catch (e) { log("error", "payment_followup_failed", { error: String(e.message).slice(0, 160) }); }
     }
     // Bereinigten Status in den gemeinsamen Zustand schreiben und abgleichen – Fehler stoppen den Worker nie.
     try {

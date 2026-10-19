@@ -23,6 +23,8 @@
 //     Kurzfassung der Nachricht (≤ 200 Zeichen), Name, validiertes Telefon und – nur bei ausdrücklichem Wunsch – den Rückruf-Beleg.
 //     Nie der volle Mailtext, nie Header.
 import crypto from "node:crypto";
+import { offerOfOrderId } from "./pricing.js";
+import { paymentLinesDe, packageOfInterest } from "./payment-links.js";
 
 export const CONTACT_FORM_CLASS = "CONTACT_FORM_INQUIRY";
 export const CONTACT_FORM_DRAFT_MODE = "CONTACT_FORM_DRAFT_ONLY";
@@ -312,6 +314,9 @@ export function classifyInbound(msg = {}, { cfg = {}, ownAddresses = [] } = {}) 
   }
   const is_test = isTestSubmission({ name: inquiry.name, message, ownAddresses });
   const item = { ...base, submission_id: sid, submission_id_source: sid_source, is_test, customer_website: normalizeWebsite(pick(fields, WEBSITE_KEYS)), interest: interestOf(pick(fields, INTEREST_KEYS)),
+    // TF-079: Zahlungslink(s) in der Antwort – ausdrücklich je Formular (forms[].payment_links true/false); ohne Angabe nur, wenn das Formular das Feld
+    // «Interesse an» liefert (Angebots-Landingpage).
+    offer_links: form?.payment_links === false ? false : form?.payment_links === true || !!interestOf(pick(fields, INTEREST_KEYS)),
     form_market, form_lead_id: form?.lead_id || null, form_order_id: form?.order_id || null,
     form_registered: !!form, site_verified, mailbox_verified, form_site: lc(form?.site || "") || site || null,
     summary: message.replace(/\s+/g, " ").trim().slice(0, 200), name: inquiry.name || null, phone: phone?.display || null, phone_e164: phone?.e164 || null,
@@ -398,6 +403,20 @@ export function languageOf({ match = {}, item = {}, text = "" }) {
 
 // ---------- Entwurf (feste Vorlage, keine erfundenen Fakten) ----------
 const quote = (s) => String(s || "").split("\n").slice(0, 40).map((l) => "> " + l).join("\n");
+// TF-079: Welche(r) Zahlungslink(s) gehören in die Antwort? Zugeordneter, noch unbezahlter CH-Auftrag → sein Paket MIT Auftrags-ID (Zahlung wird automatisch
+// zugeordnet). Bezahlt/abgeschlossen/storniert → kein Link. Sonst (Formular mit Angebot): Paket aus «Interesse an», unklar → beide Pakete zur Auswahl.
+// VN-Anfragen bekommen nie einen (CHF-)Link.
+export function paymentContextOf(it = {}, orderMap = {}) {
+  if (it.language === "vi" || it.market === "VN" || it.form_market === "VN") return null;
+  const o = it.order_id ? (orderMap || {})[it.order_id] : null;
+  if (it.order_id) {
+    const info = o ? offerOfOrderId(o.order_id) : null;
+    if (!o || o.payment_gate_met === true || o.cancelled || o.terminal || !info || info.market !== "CH") return null;
+    return { kind: info.kind, orderId: o.order_id, email: it.customer_email || null };
+  }
+  if (it.offer_links !== true) return null;
+  return { kind: packageOfInterest(it.interest), orderId: null, email: it.customer_email || null };
+}
 // TF-077B: bezieht sich auf den tatsächlichen Inhalt (zitiert die Nachricht, nennt einen zugeordneten Auftrag bzw. einen notierten Rückrufwunsch) –
 // keine Preise, keine Termine, keine Leistungsversprechen, keine Verkaufsbehauptungen.
 export function composeReply({ lang = "de", inquiry = {}, sender = {}, vnSignature = "", context = {} }) {
@@ -413,11 +432,13 @@ export function composeReply({ lang = "de", inquiry = {}, sender = {}, vnSignatu
     return { subject, body: body.normalize("NFC").trim() };
   }
   const subject = inquiry.subject ? `Re: ${inquiry.subject}` : "Ihre Anfrage über unser Kontaktformular";
+  const payLines = context.payment ? paymentLinesDe(context.payment) : [];
   const signature = sender.signature?.trim() || [sender.name, sender.company, sender.email].filter(Boolean).join("\n");
   const body = [name ? `Guten Tag ${name}` : "Guten Tag", "",
     "Vielen Dank für Ihre Nachricht über unser Kontaktformular. Wir haben Ihre Anfrage erhalten und melden uns so rasch wie möglich ausführlich bei Ihnen.",
     ...(order ? ["", `Ihre Anfrage betrifft Ihren Auftrag ${order}.`] : []),
-    ...(context.callback ? ["", "Ihren Rückrufwunsch haben wir notiert."] : []), "",
+    ...(context.callback ? ["", "Ihren Rückrufwunsch haben wir notiert."] : []),
+    ...(payLines.length ? ["", "Wenn Sie direkt starten möchten:", "", ...payLines, "", "Sobald die Zahlung bei uns eingegangen ist, melde ich mich mit den nächsten Schritten."] : []), "",
     "Ihre Nachricht:", quote(inquiry.message), "", "Freundliche Grüsse", ...(signature ? ["", signature] : [])].join("\n");
   return { subject, body: body.trim() };
 }
@@ -591,7 +612,7 @@ export async function processContactForms({ gmail, store, cfg = {}, sender = {},
       if (!inquiry?.message) throw new Error("Anfrage nicht mehr lesbar");
       const vi = it.language === "vi";
       const auto = canAuto(it);
-      const { subject, body } = composeReply({ lang: vi ? "vi" : "de", inquiry, sender, vnSignature, context: { order_id: it.order_id, callback: it.callback_requested === true } });
+      const { subject, body } = composeReply({ lang: vi ? "vi" : "de", inquiry, sender, vnSignature, context: { order_id: it.order_id, callback: it.callback_requested === true, payment: paymentContextOf(it, safe(orders, {})) } });
       setState(it, STATES.DRAFTING, { drafting_at: t });
       save();
       const d = await gmail.createDraft({ to: it.customer_email, subject, body, mode: auto ? CONTACT_FORM_AUTO_REPLY_MODE : CONTACT_FORM_DRAFT_MODE, contactFormKey: it.key });

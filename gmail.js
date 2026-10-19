@@ -38,7 +38,22 @@ export const NEVER_SEND_MODES = Object.freeze([COLD_DRAFT_MODE, CONTACT_FORM_DRA
 export const CONTACT_FORM_AUTO_REPLY_MODE = "CONTACT_FORM_AUTO_REPLY";
 // Einzige automatisch sendbare Service-Klassen für echte, bezahlte Kundenaufträge (TF-041, nach Zahlungsschwelle).
 // TF-066: + CUSTOMER_ONBOARDING_DIALOGUE – transaktionaler Dialog zu einem bestätigten, bezahlten Auftrag (nur im Auftrags-Thread).
-export const SERVICE_MESSAGE_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE"]);
+// TF-079: + CUSTOMER_PAYMENT_REQUEST – Zahlungsanfrage/Erinnerung (mit Stripe-Link) zu einem bestätigten, noch unbezahlten Auftrag (payment-followup.js).
+export const SERVICE_MESSAGE_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE", "CUSTOMER_PAYMENT_REQUEST"]);
+
+// TF-079: Absenderadresse für KUNDEN-Mails (Service-Klassen, Kontaktformular-Antworten): From + Reply-To = z. B. chris@helvetic-webdesign.ch.
+// Voraussetzung in Gmail: die Adresse ist als «Senden als»-Alias des Jarvis-Kontos eingerichtet und bestätigt – sonst ersetzt Gmail das From
+// durch die Kontoadresse (kein Fehler, kein Fehlversand); Reply-To bleibt, Kundenantworten gehen also trotzdem an die Alias-Adresse und müssen
+// dort im Jarvis-Postfach ankommen (Weiterleitung/Alias). Cold-Entwürfe und Antworten in Cold-Threads bleiben unverändert.
+const SEND_AS_EMAIL_RE = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/i;
+let sendAs = null;
+export function setSendAs(cfg) {
+  const address = String(cfg?.address ?? cfg?.sendAs ?? "").trim().toLowerCase();
+  const name = String(cfg?.name ?? "").replace(/[\r\n"<>\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+  sendAs = address && SEND_AS_EMAIL_RE.test(address) ? { address, name } : null;
+  return sendAs;
+}
+export const getSendAs = () => sendAs;
 const ORDER_ID_RE = /^(CA150|RF480|VNCHECK|VNFIX)-\d{8}-[0-9a-f]{6}$/;
 
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } };
@@ -287,10 +302,11 @@ export async function assertOwnedDraft(draftId, reg = loadRegistry()) {
 // ---------- Nachrichten ----------
 
 const encodeHeader = (s) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s).toString("base64")}?=`);
-function rawMessage({ to, subject = "", body = "", inReplyTo = "", references = "" }) {
+export function rawMessage({ to, subject = "", body = "", inReplyTo = "", references = "", from = null }) {
   if (!to) throw new Error("Empfänger (--to) fehlt.");
   if (/[\r\n]/.test(to + subject + inReplyTo + references)) throw new Error("Zeilenumbrüche in Empfänger oder Betreff sind nicht erlaubt.");
   const mime = [
+    ...(from ? [`From: ${from.name ? `${encodeHeader(from.name)} <${from.address}>` : from.address}`, `Reply-To: ${from.address}`] : []),
     `To: ${to}`, `Subject: ${encodeHeader(subject)}`,
     ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${references || inReplyTo}`] : []),
     "MIME-Version: 1.0",
@@ -318,7 +334,9 @@ async function discardMismatch(draftId, threadId) {
 export async function createDraft(fields) {
   const reg = loadRegistry();
   const lid = await labelId(reg);
-  const draft = await gmail("POST", "/drafts", { message: { raw: rawMessage(fields), ...(fields.threadId && { threadId: fields.threadId }) } });
+  // TF-079: Absender-Alias nur für Kundenmails (Kontaktformular-Antworten, Service-Klassen) – nie für Cold-Entwürfe.
+  const customerFacing = [CONTACT_FORM_DRAFT_MODE, CONTACT_FORM_AUTO_REPLY_MODE].includes(fields.mode) || SERVICE_MESSAGE_CLASSES.includes(fields.messageClass);
+  const draft = await gmail("POST", "/drafts", { message: { raw: rawMessage({ ...fields, from: customerFacing ? sendAs : null }), ...(fields.threadId && { threadId: fields.threadId }) } });
   if (fields.threadId && draft.message?.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
   const info = await labelAndDescribe(draft.message.id, lid);
   if (fields.threadId && info.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
@@ -336,7 +354,8 @@ export async function updateDraft(draftId, fields) {
   const reg = loadRegistry();
   const { entry } = await assertOwnedDraft(draftId, reg);
   const merged = { to: fields.to ?? entry.to, subject: fields.subject ?? entry.subject, body: fields.body ?? "", inReplyTo: entry.inReplyTo, references: entry.references };
-  const draft = await gmail("PUT", `/drafts/${encodeURIComponent(draftId)}`, { message: { raw: rawMessage(merged), threadId: entry.threadId } });
+  const customerFacing = [CONTACT_FORM_DRAFT_MODE, CONTACT_FORM_AUTO_REPLY_MODE].includes(entry.mode) || SERVICE_MESSAGE_CLASSES.includes(entry.messageClass);
+  const draft = await gmail("PUT", `/drafts/${encodeURIComponent(draftId)}`, { message: { raw: rawMessage({ ...merged, from: customerFacing ? sendAs : null }), threadId: entry.threadId } });
   const info = await labelAndDescribe(draft.message.id, reg.labelId);
   updateRegistry((r) => { r.drafts[draftId] = { ...entry, ...info, to: merged.to, subject: merged.subject, updatedAt: new Date().toISOString() }; });
   return { draftId, ...info };

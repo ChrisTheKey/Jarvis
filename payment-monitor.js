@@ -55,11 +55,13 @@ export function normalizeStripeEvent(evt) {
   if (!o || typeof o !== "object") return null;
   const cur = String(o.currency || "").toUpperCase();
   const at = Number.isInteger(o.created) ? new Date(o.created * 1000).toISOString() : null;
+  // TF-079: Payment Links tragen die Auftrags-ID als client_reference_id (nur checkout.session.completed); Metadaten haben Vorrang.
   const ref = (m) => (m && typeof m.order_id === "string" ? m.order_id : null);
+  const sessionRef = (x) => ref(x.metadata) || (typeof x.client_reference_id === "string" && x.client_reference_id.length <= 64 ? x.client_reference_id : null);
   if (evt.type === "payment_intent.succeeded" && o.status === "succeeded" && Number.isInteger(o.amount_received))
     return { provider: "stripe", transaction_id: o.id, kind: "PAYMENT", amount: fromStripeMinor(o.amount_received, cur), currency: cur, received_at: at, settled: true, order_ref: ref(o.metadata), remittance: o.description || null, verified: true };
   if (evt.type === "checkout.session.completed" && o.payment_status === "paid" && Number.isInteger(o.amount_total))
-    return { provider: "stripe", transaction_id: typeof o.payment_intent === "string" ? o.payment_intent : o.id, kind: "PAYMENT", amount: fromStripeMinor(o.amount_total, cur), currency: cur, received_at: at, settled: true, order_ref: ref(o.metadata), remittance: null, verified: true };
+    return { provider: "stripe", transaction_id: typeof o.payment_intent === "string" ? o.payment_intent : o.id, kind: "PAYMENT", amount: fromStripeMinor(o.amount_total, cur), currency: cur, received_at: at, settled: true, order_ref: sessionRef(o), remittance: null, verified: true };
   if (evt.type === "charge.refunded" && Number.isInteger(o.amount_refunded))
     return { provider: "stripe", transaction_id: `refund:${o.id}`, kind: "REFUND", amount: fromStripeMinor(o.amount_refunded, cur), currency: cur, received_at: at, settled: true, order_ref: ref(o.metadata), remittance: null, verified: true };
   return null;

@@ -2,7 +2,20 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-18 (TF-077C)
+Letzte Aktualisierung: 2026-10-19 (TF-079)
+
+## TF-079 – STRIPE-ZAHLUNGSLINKS + NACHFASSEN ÜBER chris@helvetic-webdesign.ch (2026-10-19, CODE READY, nicht deployt)
+- **Links (`payment-links.js`, einzige Quelle):** REPAIR_CHECK_150 (CHF 150) und REPAIR_FIX_500 (CHF 480) → Stripe Payment Links. Mit Auftrag: `?client_reference_id=<order_id>&prefilled_email=`.
+  VN nie ein Link. `payment-monitor.js` liest `client_reference_id` NUR aus `checkout.session.completed` (Metadaten haben Vorrang); ohne Auftrags-ID bleibt es `PAYMENT_REVIEW_REQUIRED` (fail closed).
+- **Kontaktformular-Antwort:** enthält den Link, wenn das Formular «Interesse an» liefert (oder `forms[].payment_links:true`); Paket aus «Interesse an», mehrdeutig → beide. Zugeordneter, bezahlter/stornierter Auftrag → kein Link.
+- **Mail-Schreiber:** `paymentOptions` in reply-Aufgaben; Link unverändert nennen erlaubt, Rabatt/IBAN/Rechnung bleiben escalate.
+- **Absender-Alias:** `config.json` `sender.sendAs` (z. B. chris@helvetic-webdesign.ch) → From + Reply-To NUR für Kundenmails (Kontaktformular, Service-Klassen inkl. neu `CUSTOMER_PAYMENT_REQUEST`), nie Cold-Mails.
+  Gmail braucht den bestätigten «Senden als»-Alias, sonst ersetzt es das From; Kundenantworten an den Alias müssen im Jarvis-Postfach ankommen.
+- **Nachfassen (`payment-followup.js`, Standard AUS: `paymentFollowup.enabled`):** bestätigter, unbezahlter CH-Auftrag → genau eine Zahlungsanfrage (neuer Thread), höchstens 3 Erinnerungen (48 h, +72 h, +7 d; 08–19 Uhr Zürich, nie sonntags),
+  danach EXHAUSTED + Meldung an Chris. Bei Aktivierung bereits offene Aufträge = LEGACY (nie angeschrieben). Zahlung → PAID, dann führt `onboarding-dialogue.js` bis zum Abschluss.
+  Kundenantwort: Stopp/Storno → STOPPED; Link-Bitte → Link erneut (max. 3×); «bereits bezahlt», Rabatt, Recht, Zugang, fremder Absender → MANUAL + Meldung, keine Auto-Mail. Exactly-once (Claim vor Gmail, Send-Lock, unklarer Ausgang → nie wiederholen).
+- **Offen/Grenzen:** Zahlungs-Thread und späterer Onboarding-Thread sind getrennte Threads. Annahme: Stripe-Links sind auf den vollen Festpreis CHF 150/480 gesetzt (Gate = Hälfte). Auf dem Stripe-Webhook NUR `checkout.session.completed` aktivieren (sonst kommt `payment_intent.succeeded` ohne Referenz zuerst und der Auftrag landet in der Prüfung).
+- **Deploy (Chris):** Mail-Worker neu deployen; `config.json`: `sender.sendAs`, `paymentFollowup: {"enabled": true}`; Gmail-Alias einrichten; Stripe-Webhook-Events einschränken. Tests: `test/tf079.test.js`.
 
 ## TF-077C – NETLIFY-BENACHRICHTIGUNG MIT BENUTZERDEFINIERTEM TEXT + ANTWORTBOX (2026-10-18, CODE READY, nicht deployt)
 - **Anlass:** echte Benachrichtigung vom 18.10.2026 (Formular «anfrage», helvetic-webdesign-reperatur.netlify.app): Absender formresponses@netlify.com,
