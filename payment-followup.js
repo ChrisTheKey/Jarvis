@@ -153,6 +153,7 @@ export function createPaymentFollowup({ dir, onboardingDir, gmail, sender = () =
   }
   async function deliver(id, { key, kind, msgId = null, mail }) {
     const rec = st.records[id];
+    { const fresh = orders()[id]; if (!fresh || ineligibleReason(fresh)) { setState(rec, ["paid"].includes(ineligibleReason(fresh || {})) ? "PAID" : "STOPPED", "Auftrag inzwischen bezahlt/beendet – keine Mail"); persist(); return "stop"; } } // frischer Stand direkt vor der Mail
     rec.pending = { key, kind, msg_id: msgId, status: "creating", at: iso() };
     persist();
     let d;

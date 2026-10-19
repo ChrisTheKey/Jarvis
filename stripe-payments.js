@@ -12,7 +12,7 @@
 //     Schlüsselwert zurückgegeben oder geloggt – Status nur CONFIGURED/NOT_CONFIGURED.
 //   - Zahlungsarten bestimmt das Stripe-Konto (dynamische Zahlungsarten: Karte, TWINT, … sofern dort aktiviert) – nichts hart kodiert.
 import crypto from "node:crypto";
-import { offerInfo, toMinor } from "./pricing.js";
+import { offerInfo, toMinor, ORDER_ID_RE } from "./pricing.js";
 
 export const MODES = Object.freeze(["LIVE", "TEST"]);
 export const PURPOSE = "REPAIR_DEPOSIT";
@@ -71,6 +71,10 @@ export function safeSession(s, mode) {
     amount_minor: Number.isInteger(s.amount_total) ? s.amount_total : null, currency: String(s.currency || "").toUpperCase() || null,
     payment_intent: typeof s.payment_intent === "string" && ID_RE.test(s.payment_intent) ? s.payment_intent : null,
     expires_at: Number.isInteger(s.expires_at) ? new Date(s.expires_at * 1000).toISOString() : null,
+    // TF-081: statischer Payment Link (buy.stripe.com) – Session trägt client_reference_id (aus dem Link) und die Payment-Link-ID. Nur als Format geprüft;
+    // die Zuordnung zum Auftrag entscheidet stripe-webhook.js (bookStaticLink) strikt.
+    client_reference_id: typeof s.client_reference_id === "string" && ORDER_ID_RE.test(s.client_reference_id) ? s.client_reference_id : null,
+    payment_link: typeof s.payment_link === "string" && /^plink_[A-Za-z0-9]{6,100}$/.test(s.payment_link) ? s.payment_link : null,
     url: typeof s.url === "string" && /^https:\/\/checkout\.stripe\.com\/[^\s<>"']{4,600}$/.test(s.url) ? s.url : null, metadata: meta };
 }
 const META_KEYS = ["order_id", "offer_class", "market", "purpose", "environment"];

@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createStore, WORKER_DIR } from "./mail-worker.js";
 import { recordPayment, findPayableOrder, paymentGateForOrder, paymentsForOrder } from "./payments.js";
-import { fromMinor } from "./pricing.js";
+import { fromMinor, toMinor, offerInfo } from "./pricing.js";
 import { REPAIR_ORDERS_FILE, COMPLETED_STATES, BLOCKED_STATES, REPAIR_CANCELLED, holdForPaymentReview } from "./repair-workflow.js";
 import { createCheckoutSession, retrieveCheckoutSession, modeConfigured, modeOfOrder, expectedDeposit, stripeStatus, PURPOSE } from "./stripe-payments.js";
 import { writePaymentLinks, readPaymentLinks } from "./onboarding-store.js";
@@ -22,7 +22,7 @@ import { e2eConfig, isE2eDomain } from "./e2e-test.js";
 export const STRIPE_FILE = "stripe_checkouts.json";
 export const MAX_SESSIONS = 2;             // erste Session + höchstens EINE Ersatz-Session nach Ablauf (zurückhaltende Erinnerung)
 export const RECONCILE_EVERY_MS = 10 * 60_000;
-const empty = () => ({ schema: 1, attempts: {}, sessions: {}, events: {}, reviews: [] });
+const empty = () => ({ schema: 1, attempts: {}, sessions: {}, events: {}, reviews: [], static: {} });
 const load = (store) => ({ ...empty(), ...store.read(STRIPE_FILE, empty()) });
 const isoOr = (v, fb = null) => (v && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString() : fb);
 
@@ -54,6 +54,7 @@ export function bookCheckout(store, st, sess, { source = "webhook", now = new Da
     log("warn", "stripe_payment_review", { code, order_id, event_id: sess.event_id || null });
     return { result: "PAYMENT_REVIEW_REQUIRED", code, order_id };
   };
+  if (!orderId && sess.payment_link) return bookStaticLink(store, st, sess, { source, now, log }, review); // TF-081: statischer Payment Link
   if (!a || !(a.history || []).some((h) => h.checkout_session_id === sid)) return review("UNKNOWN_SESSION", null);
   if (sess.provider_mode !== a.provider_mode) return review("MODE_MISMATCH");
   const order = findPayableOrder(store, a.order_id);
@@ -83,6 +84,40 @@ export function bookCheckout(store, st, sess, { source = "webhook", now = new Da
   return { result: dup ? "ALREADY_RECORDED" : "BOOKED", order_id: a.order_id, payment_id };
 }
 
+// TF-081 – Zahlung über einen STATISCHEN Stripe Payment Link (CHF 150 / 480). Der Link trägt `client_reference_id=<order_id>`. Fail closed: verbucht wird NUR,
+// wenn die ID exakt einen echten Auftrag trifft · Modus (LIVE/TEST) zum Auftrag passt · CHF · Betrag = voller Festpreis des Auftrags (aus pricing.js) · paid ·
+// Auftrag weder abgeschlossen/storniert/blockiert · das Zahlungs-Gate noch NICHT erfüllt (sonst DUPLICATE_PAYMENT → Prüfung, nie eine zweite Buchung).
+// Alles andere (keine/ungültige Referenz, anderer Betrag, Fremdwährung, unbekannter Auftrag) → PAYMENT_REVIEW_REQUIRED, nichts verbucht.
+// Idempotenz: Ereignis-ID (processCheckoutEvent) + Referenz stripe:<payment_intent> (payments.js). Rückerstattung/Streitfall findet die Zahlung über st.static.
+function bookStaticLink(store, st, sess, { source, now, log }, review) {
+  const sid = sess.session_id || sess.id, oid = sess.client_reference_id;
+  if (!oid) return review("PAYMENT_LINK_NO_REFERENCE", null);
+  const order = findPayableOrder(store, oid);
+  if (!order) return review("UNKNOWN_ORDER", null);
+  if (sess.provider_mode !== modeOfOrder(order)) return review("MODE_MISMATCH", oid);
+  const full = store.read(order.file, { orders: {} }).orders?.[oid] || {};
+  if (COMPLETED_STATES.includes(order.state) || order.state === REPAIR_CANCELLED || (/^RF480-/.test(oid) && BLOCKED_STATES.includes(order.state))) return review("ORDER_NOT_PAYABLE", oid);
+  const info = offerInfo(order.offer_class);
+  if (!info || info.market !== "CH" || info.currency !== "CHF" || sess.currency !== "CHF" || order.currency !== "CHF") return review("CURRENCY_MISMATCH", oid);
+  if (sess.amount_minor !== toMinor(info.price, "CHF")) return review("AMOUNT_MISMATCH", oid);
+  if (sess.payment_status !== "paid") return review("NOT_PAID", oid);
+  const reference = `stripe:${sess.payment_intent || sid}`;
+  const already = paymentsForOrder(store, oid).find((p) => String(p.reference || "").toLowerCase() === reference.toLowerCase());
+  if (already) return { result: "ALREADY_RECORDED", order_id: oid, payment_id: already.payment_id };
+  if (paymentGateForOrder(store, { ...full, ...order }).satisfied) return review("DUPLICATE_PAYMENT", oid);
+  let payment_id;
+  try {
+    payment_id = recordPayment(store, { order_id: oid, amount: fromMinor(sess.amount_minor, "CHF"), currency: "CHF", source: sess.provider_mode === "TEST" ? "stripe_test_payment_link" : "stripe_payment_link",
+      reference, received_at: isoOr(sess.created_at, now.toISOString()), provider_mode: sess.provider_mode, now }).payment_id;
+  } catch (e) {
+    if (/Doppelte Zahlungsreferenz/.test(e.message)) return { result: "ALREADY_RECORDED", order_id: oid, payment_id: null };
+    return review("BOOKING_FAILED", oid);
+  }
+  st.static = { ...(st.static || {}), [oid]: { session_id: sid, payment_intent: sess.payment_intent || null, provider_mode: sess.provider_mode, payment_id, at: now.toISOString() } };
+  log("info", "stripe_payment_booked", { order_id: oid, provider_mode: sess.provider_mode, source, via: "payment_link" });
+  return { result: "BOOKED", order_id: oid, payment_id };
+}
+
 // Ein normalisiertes Ereignis (stripe-payments.normalizeCheckoutEvent) – idempotent je Ereignis-ID.
 export function processCheckoutEvent(store, st, ev, { now = new Date(), log = () => {} } = {}) {
   if (!ev?.event_id) return { result: "IGNORED", code: "NO_EVENT_ID" };
@@ -108,6 +143,10 @@ function closeSession(st, sid, status, mode, now) {
 // Rückerstattung/Streitfall: nie automatisch verbucht/erstattet. Zuordnung nur über die eigene PaymentIntent-ID → Auftrag anhalten (Chris).
 function reversal(store, st, ev, { now, log }) {
   const a = Object.values(st.attempts).find((x) => x.payment_intent_id && x.payment_intent_id === ev.payment_intent && x.provider_mode === ev.provider_mode);
+  const sp = !a && ev.payment_intent ? Object.entries(st.static || {}).find(([, x]) => x.payment_intent && x.payment_intent === ev.payment_intent && x.provider_mode === ev.provider_mode) : null; // TF-081
+  if (sp) { const h = holdForPaymentReview(store, sp[0], { reason: `Stripe ${ev.kind === "REFUND" ? "Rückerstattung" : "Streitfall (Dispute)"} zur Zahlung über Payment Link gemeldet`, now });
+    st.reviews = [...(st.reviews || []), { at: now.toISOString(), code: ev.kind === "REFUND" ? "REFUND_REVIEW_REQUIRED" : "DISPUTE_REVIEW_REQUIRED", order_id: sp[0], event_id: ev.event_id, provider_mode: ev.provider_mode, status: "OPEN" }].slice(-500);
+    log("warn", "stripe_reversal", { order_id: sp[0], kind: ev.kind, held: h.held }); return { result: "PAYMENT_REVIEW_REQUIRED", code: ev.kind, order_id: sp[0] }; }
   st.reviews = [...(st.reviews || []), { at: now.toISOString(), code: ev.kind === "REFUND" ? "REFUND_REVIEW_REQUIRED" : "DISPUTE_REVIEW_REQUIRED", order_id: a?.order_id || null,
     event_id: ev.event_id, provider_mode: ev.provider_mode, status: "OPEN" }].slice(-500);
   if (!a) { log("warn", "stripe_reversal_unmatched", { event_id: ev.event_id }); return { result: "PAYMENT_REVIEW_REQUIRED", code: "UNMATCHED_REVERSAL" }; }

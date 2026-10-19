@@ -180,4 +180,4 @@ Das HUD erkennt automatisch LOCAL (Local Core erreichbar, PC-Zugriff) oder CLOUD
 ## TF-081 – Zahlungslinks und Nachfassen
 `payment-links.js` hält die zwei Stripe-Links (CHF 150 / 480). Kontaktformular-Antworten und das Nachfassen unbezahlter bestätigter CH-Aufträge (`payment-followup.js`, Standard AUS)
 senden den Link mit `client_reference_id`; Kundenmails laufen über den Alias `sender.sendAs`. Config: `sender.sendAs`, `paymentFollowup.enabled`, optional `forms[].payment_links`.
-Stripe-Webhook: nur `checkout.session.completed` aktivieren. Details: PROJECT_STATE.md (TF-081).
+Stripe-Webhook: TF-080-Ereignisliste, keine `payment_intent.*`; Link-Zahlungen werden über `client_reference_id` strikt dem Auftrag zugeordnet (sonst PAYMENT_REVIEW_REQUIRED). Details: PROJECT_STATE.md (TF-081).
