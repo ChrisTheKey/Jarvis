@@ -2,7 +2,14 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-19 (TF-081)
+Letzte Aktualisierung: 2026-10-19 (TF-085)
+
+## TF-085 – ZAHLUNGSSTATUS IN `--show` LIVE AUS DEM LEDGER (2026-10-19, CODE READY, nicht deployt)
+- Ursache: `order.payment` ist nur ein Schnappschuss, den der Erfüllungs-Workflow nachzieht; CHF-150-Testaufträge laufen dort (TF-084) bewusst nicht durch.
+  Die Zahlung stand korrekt im Ledger (`payments.json`, TEST, 150, PAID_FULL), `--show` zeigte aber den alten Schnappschuss (paid_chf 0).
+- Fix: `payments.js withLivePayment()` – reine Leseansicht (kein Schreiben, keine Buchung); genutzt von `check-150-workflow.js --show` (CHF 150) und
+  `repair-workflow.js --show` (CHF 480). Ausgabe: `payment` (live), `payment_status`, `payment_source: ledger`, `payment_snapshot_stored` (alter Wert).
+- Tests: `test/tf085.test.js` (6): Live-Anzeige, Ledger/Auftrag byte-identisch, TEST/LIVE getrennt, echtes CLI, CHF 480, Stripe-Wiederholung ohne Doppelbuchung.
 
 ## TF-084 – STRIPE-SANDBOX-TESTAUFTRAG CHF 150 (2026-10-19, CODE READY, nicht deployt)
 - `node check-150-workflow.js --create-test <sandbox-domain> --email <test-postfach> [--link <stripe-test-link>]` legt einen CA150-Testauftrag an

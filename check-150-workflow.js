@@ -28,7 +28,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale } from "./sales.js";
-import { paymentGateForOrder, paymentThresholdChf, paymentSummary, gatePaid, gateText, amountText } from "./payments.js";
+import { paymentGateForOrder, paymentThresholdChf, paymentSummary, gatePaid, gateText, amountText, withLivePayment } from "./payments.js";
 import { offerInfo, isCheckOffer, SELLER_COMMISSION_BPS } from "./pricing.js";
 import { isVnOrder, vnFindingText, vnInstructionsFor, pageLabelVi, buildVnCheckReport, buildVnCheckDeliveryDraft } from "./vn-customer-texts.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
@@ -613,7 +613,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const store = createStore(WORKER_DIR);
   const run = async () => {
     if (argv.includes("--list")) { console.log(JSON.stringify(check150Status(), null, 2)); return 0; }
-    if (flag("show")) { const o = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders?.[flag("show")]; if (!o) throw new Error("Auftrag nicht gefunden."); console.log(JSON.stringify(o, null, 2)); return 0; }
+    if (flag("show")) { const o = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders?.[flag("show")]; if (!o) throw new Error("Auftrag nicht gefunden."); console.log(JSON.stringify(withLivePayment(store, o), null, 2)); return 0; } // TF-085: Zahlungsstand live aus dem Ledger
     if (flag("create-confirmed")) {
       // Direktkunde mit TATSÄCHLICH bestätigtem CHF-150-Auftrag: der bewusste CLI-Aufruf durch Chris ist die betriebliche
       // Bestätigung. Erzeugt intern den Direktverkauf (sales.js recordDirectSale, Quelle direct_customer) und den Auftrag –

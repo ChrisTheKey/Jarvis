@@ -186,6 +186,16 @@ export function paymentSummary(store, order = {}) {
     ...(currency === "CHF" || !currency ? { price_chf: price, deposit_chf: deposit, paid_chf: paid, rest_to_deposit_chf: rest } : {}), payment_status: status };
 }
 
+// TF-085: Anzeige-Sicht eines Auftrags (CLI `--show`): Zahlungsstand IMMER frisch aus dem Ledger berechnet, nie aus dem gespeicherten
+// Schnappschuss `order.payment` (den nur der Erfüllungs-Workflow nachzieht – Testaufträge CHF 150 laufen dort bewusst nicht durch).
+// Reine Leseansicht: schreibt nichts, bucht nichts, ändert weder Ledger noch Auftrag. TEST/LIVE getrennt wie überall (order.test_order).
+export function withLivePayment(store, order) {
+  if (!order || typeof order !== "object" || !order.order_id) return order;
+  const gate = paymentGateForOrder(store, order);
+  return { ...order, payment: gate, payment_status: paymentSummary(store, order).payment_status, payment_source: "ledger",
+    ...(order.payment !== undefined ? { payment_snapshot_stored: order.payment } : {}) };
+}
+
 // Zähler/Summen fürs Dashboard – keine Referenzen; Summen je Währung getrennt (nie CHF und VND addieren).
 // TF-080: nur LIVE-Zahlungen zählen (Umsatz/Summen); Testzahlungen nur als eigene Anzahl.
 export function paymentsStatus(dir = WORKER_DIR) {

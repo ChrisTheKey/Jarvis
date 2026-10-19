@@ -60,7 +60,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale, recordDirectSale } from "./sales.js";
-import { paymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText } from "./payments.js";
+import { paymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText, withLivePayment } from "./payments.js";
 import { offerInfo, isFixOffer, SELLER_COMMISSION_BPS } from "./pricing.js";
 import { isVnOrder, buildVnAccessRequestMail, buildVnHostingQuestionMail, buildVnHostKeyConfirmationMail, buildVnRepairReport, buildVnRepairDeliveryMail, vnReportSubject } from "./vn-customer-texts.js";
 import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIntakeToken, openAccessCredential, destroyAccessSecret,
@@ -1702,7 +1702,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const o = store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders?.[flag("show")];
       if (!o) throw new Error("Auftrag nicht gefunden.");
       // Token-Hash nicht ausgeben (nicht geheim, aber unnötig); Zugangsdaten stehen ohnehin nie im Auftrag.
-      console.log(JSON.stringify({ ...o, access_request: o.access_request ? { ...o.access_request, token_hash: o.access_request.token_hash ? "[gesetzt]" : null } : null }, null, 2)); return 0;
+      console.log(JSON.stringify(withLivePayment(store, { ...o, access_request: o.access_request ? { ...o.access_request, token_hash: o.access_request.token_hash ? "[gesetzt]" : null } : null }), null, 2)); return 0; // TF-085: Zahlungsstand live aus dem Ledger
     }
     if (flag("create-confirmed")) {
       const o = createConfirmedRepairOrder(store, { domain: flag("create-confirmed"), website: flag("website"), company: flag("company"), delivery_email: flag("email"), contact_name: flag("name") });
