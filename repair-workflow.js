@@ -1482,7 +1482,7 @@ export function repairOrdersStatus(dir = WORKER_DIR) {
   const orders = all.filter((o) => !isTestOrder(o));
   const states = {};
   for (const o of orders) states[o.state] = (states[o.state] || 0) + 1;
-  return { total: orders.length, open: all.filter((o) => !TERMINAL.has(o.state)).length, test_orders: all.length - orders.length, states,
+  return { total: orders.length, open: all.filter((o) => !TERMINAL.has(o.state)).length, open_live: orders.filter((o) => !TERMINAL.has(o.state)).length, test_orders: all.length - orders.length, states,
     waiting_authorization: states.AUTHORIZATION_REQUIRED || 0, waiting_payment: states.PAYMENT_REQUIRED || 0,
     access_requested: states.ACCESS_REQUESTED || 0, payment_review: states.PAYMENT_REVIEW_REQUIRED || 0,
     ready_for_delivery: states.READY_FOR_DELIVERY || 0, cancelled: states[REPAIR_CANCELLED] || 0, completed_with_manual_items: states[COMPLETED_WITH_MANUAL_ITEMS] || 0,

@@ -545,10 +545,12 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
 
 // ---------- Status/Allowlist für Dashboard/Cloud (nie Evidence, nie Draft-Inhalte, nie Pfade) ----------
 export function check150Status(dir = WORKER_DIR) {
-  const orders = Object.values(createStore(dir).read(CHECK150_ORDERS_FILE, { orders: {} }).orders || {});
+  const all = Object.values(createStore(dir).read(CHECK150_ORDERS_FILE, { orders: {} }).orders || {});
+  // TF-086: Geschäftszähler und Zustände nur über echte Aufträge; Test-Aufträge separat (nie in offen/Wartet/Prüfung/Bereit).
+  const orders = all.filter((o) => !isTestOrder(o));
   const states = {};
   for (const o of orders) states[o.state] = (states[o.state] || 0) + 1;
-  return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state) && !isTestOrder(o)).length, test_orders: orders.filter(isTestOrder).length, states,
+  return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state)).length, test_orders: all.length - orders.length, states,
     ready_for_delivery: states.READY_FOR_DELIVERY || 0, waiting_confirmation: states.BLOCKED_ORDER_NOT_CONFIRMED || 0,
     waiting_payment: states.BLOCKED_PAYMENT_NOT_RECEIVED || 0, cancelled: states[CHECK150_CANCELLED] || 0 };
 }

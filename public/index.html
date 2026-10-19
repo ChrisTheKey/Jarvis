@@ -1651,7 +1651,8 @@ function renderRepair(rep) {
   const sum = (...keys) => keys.reduce((a, k) => a + (st[k] || 0), 0);
   if (!rep) { for (const id of ["repOpen", "repAuth", "repUnpaid", "repAccessReq", "repNoAccess", "repRegistry", "repProfile", "repManual", "repWorking", "repValidating", "repReady", "repDone", "repFailed"]) set(id, "–");
     $("repSeen").textContent = ""; $("repairList").replaceChildren(Object.assign(document.createElement("li"), { className: "empty", textContent: "Keine Daten vom VPS." })); return; }
-  set("repOpen", String(rep.open ?? 0), rep.open ? "on-idle" : "");
+  const repOpen = rep.open_live ?? rep.open ?? 0; // TF-086: Testaufträge zählen nie als offen
+  set("repOpen", String(repOpen), repOpen ? "on-idle" : "");
   set("repAuth", String(rep.waiting_authorization ?? 0), rep.waiting_authorization ? "on-idle" : "");
   set("repUnpaid", String(rep.waiting_payment ?? st.PAYMENT_REQUIRED ?? 0), (rep.waiting_payment ?? st.PAYMENT_REQUIRED) ? "on-idle" : ""); // Warten auf Zahlung = neutral, nie ein Fehler
   set("repAccessReq", String(rep.access_requested ?? st.ACCESS_REQUESTED ?? 0), (rep.access_requested ?? st.ACCESS_REQUESTED) ? "on-idle" : "");
@@ -1677,7 +1678,7 @@ function renderRepair(rep) {
     const yn = (v) => (v === true ? "JA" : v === false ? "NEIN" : "–");
     const prod = o.production === "DEPLOYED" ? "LIVE" : o.production === "BRANCH_ONLY" ? "NUR BRANCH" : "UNVERÄNDERT";
     li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span><span class="why adp"></span><span class="why pay"></span><span class="why brw"></span>`;
-    li.querySelector(".st").textContent = `${REPAIR_LABELS[o.state] || o.state || "–"} · ${orderPrice(o, 480)}`;
+    li.querySelector(".st").textContent = `${o.test_order === true ? "TEST · " : ""}${REPAIR_LABELS[o.state] || o.state || "–"} · ${orderPrice(o, 480)}`;
     li.querySelector(".pay").textContent = payLine(o, 480, 240) + (o.access_requested ? ` · Zugang ${o.access_received ? "ERHALTEN" : "ANGEFRAGT"}${o.access_type ? ` (${o.access_type})` : ""}` : "")
       + (o.profile_status ? ` · Profil ${PROFILE_LABELS[o.profile_status] || "–"}` : "")
       + (typeof o.host_key_verified === "boolean" ? ` · HOST KEY VERIFIED ${yn(o.host_key_verified)}` : "") // TF-044: nur JA/NEIN
@@ -1756,7 +1757,7 @@ function renderCheck150(rep) {
     const li = document.createElement("li");
     li.className = o.state === "CANCELLED" ? "" : ["COMPLETED", "READY_FOR_DELIVERY"].includes(o.state) ? "ok" : /FAILED|MANUAL/.test(o.state || "") ? "bad" : "wait";
     li.innerHTML = `<span class="st"></span><span class="sub"></span><span class="why"></span><span class="why pay"></span>`;
-    li.querySelector(".st").textContent = `${C150_LABELS[o.state] || o.state || "–"} · ${orderPrice(o, 150)}`;
+    li.querySelector(".st").textContent = `${o.test_order === true ? "TEST · " : ""}${C150_LABELS[o.state] || o.state || "–"} · ${orderPrice(o, 150)}`;
     li.querySelector(".pay").textContent = payLine(o, 150, 75);
     li.querySelector(".sub").textContent = ` ${[o.company, o.domain, C150_SOURCE[o.source]].filter(Boolean).join(" · ")}`;
     const sev = o.findings == null ? "Befunde –" : `Befunde ${o.findings} (kritisch ${o.critical ?? 0} · hoch ${o.high ?? 0} · mittel ${o.medium ?? 0} · gering ${o.low ?? 0})`;

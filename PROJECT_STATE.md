@@ -2,7 +2,13 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-19 (TF-085)
+Letzte Aktualisierung: 2026-10-19 (TF-086)
+
+## TF-086 – CRM: TEST-AUFTRÄGE KORREKT DURCH DIE WHITELIST (2026-10-19, CODE READY, nicht deployt)
+- Befund (auf Hetzner bestätigt): Mail-Worker läuft mit Code vor TF-084/085; `cleanCheck150` verlor `test_order`/`environment`, `moneyFields` verlor `commission_rate_bps: 0` → CHF-150-Testauftrag sah im CRM wie ein echter aus (zählte «offen», Kachel «in Prüfung», Provisions-Kandidat). Zahlungsanzeige (CHF 150 / PAID_FULL) war schon korrekt.
+- Fix: `cleanCheck150` reicht `test_order`/`environment`/`test_orders` durch (Cloud nutzt dieselbe Funktion via `netlify/functions/server-control.mjs`); `commission_rate_bps` 0–10000 erlaubt; `check150Status` zählt `total/open/states` nur über echte Aufträge (Tests separat in `test_orders`); `repairOrdersStatus` neu `open_live`; Dashboard: «TEST ·»-Abzeichen in beiden Listen, Reparatur-«Offen» ohne Tests.
+- Umsatz/Verkauf/Provision: Filter existierten (`sales-api.js snapshotOrders`, `commission-ledger.js`), griffen aber nur mit Flag → jetzt wirksam. `test/tf086.test.js` (7 Tests, CHF 150 + 480).
+- Rollout: Push (Netlify) → Phantom-Provisionseintrag prüfen (read-only) → Mail-Worker-Deploy (`deploy/vps/deploy.sh`) im Wartungsfenster nach Queue-Check. Repair-Service-Deploy ändert das Dashboard nicht.
 
 ## TF-085 – ZAHLUNGSSTATUS IN `--show` LIVE AUS DEM LEDGER (2026-10-19, CODE READY, nicht deployt)
 - Ursache: `order.payment` ist nur ein Schnappschuss, den der Erfüllungs-Workflow nachzieht; CHF-150-Testaufträge laufen dort (TF-084) bewusst nicht durch.

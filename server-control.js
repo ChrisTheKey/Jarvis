@@ -182,8 +182,8 @@ const moneyFields = (o, n) => ({ market: word(o.market, MARKET_WORDS), currency:
   price_amount: o.price_amount == null ? null : n(o.price_amount, 1e9), paid_amount: o.paid_amount == null ? null : n(o.paid_amount, 1e9),
   payment_required_amount: o.payment_required_amount == null ? null : n(o.payment_required_amount, 1e9),
   rest_to_deposit_amount: o.rest_to_deposit_amount == null ? null : n(o.rest_to_deposit_amount, 1e9),
-  // TF-072: bei Auftragserstellung gespeicherter Provisionssatz (Basispunkte, 1–10000) – sonst null.
-  commission_rate_bps: Number.isInteger(o.commission_rate_bps) && o.commission_rate_bps > 0 && o.commission_rate_bps <= 10_000 ? o.commission_rate_bps : null });
+  // TF-072: bei Auftragserstellung gespeicherter Provisionssatz (Basispunkte, 0–10000; 0 = Test-Auftrag ohne Provision) – sonst null.
+  commission_rate_bps: Number.isInteger(o.commission_rate_bps) && o.commission_rate_bps >= 0 && o.commission_rate_bps <= 10_000 ? o.commission_rate_bps : null });
 const payFields = (o, n) => ({ paid_chf: o.paid_chf == null ? null : n(o.paid_chf, 10_000), payment_required_chf: o.payment_required_chf == null ? null : n(o.payment_required_chf, 10_000),
   rest_to_deposit_chf: o.rest_to_deposit_chf == null ? null : n(o.rest_to_deposit_chf, 10_000), payment_status: word(o.payment_status, PAYMENT_STATE_WORDS), payment_ok: bool(o.payment_ok) });
 export function cleanCheck150(r) {
@@ -206,8 +206,10 @@ export function cleanCheck150(r) {
     source: word(o.source, ["direct_customer", "jarvis_lead"]),
     onboarding: cleanOnboarding(o.onboarding), // TF-066
     created_at: iso(o.created_at), updated_at: iso(o.updated_at),
+    // TF-086: Test-Kennzeichen MUSS auch hier die Whitelist passieren (wie bei cleanRepair, TF-080).
+    test_order: o.test_order === true || o.environment === "TEST", environment: o.test_order === true || o.environment === "TEST" ? "TEST" : "LIVE",
   } : null)).filter(Boolean);
-  return { total: n(r.total, 100_000), open: n(r.open, 100_000), ready_for_delivery: n(r.ready_for_delivery, 100_000),
+  return { total: n(r.total, 100_000), open: n(r.open, 100_000), test_orders: n(r.test_orders, 100_000), ready_for_delivery: n(r.ready_for_delivery, 100_000),
     waiting_confirmation: n(r.waiting_confirmation, 100_000), waiting_payment: n(r.waiting_payment, 100_000),
     cancelled: n(r.cancelled, 100_000), states, orders };
 }
@@ -252,7 +254,7 @@ export function cleanRepair(r) {
     // TF-080: Test-Kennzeichen MUSS die Whitelist passieren – Provision/Umsatz/Verkäufer-Sichten in der Cloud lassen Test-Aufträge sonst nicht weg.
     test_order: o.test_order === true || o.environment === "TEST", environment: o.test_order === true || o.environment === "TEST" ? "TEST" : "LIVE",
   } : null)).filter(Boolean);
-  return { total: n(r.total, 100_000), open: n(r.open, 100_000), test_orders: n(r.test_orders, 100_000), completed_with_manual_items: n(r.completed_with_manual_items, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
+  return { total: n(r.total, 100_000), open: n(r.open, 100_000), open_live: r.open_live == null ? null : n(r.open_live, 100_000), test_orders: n(r.test_orders, 100_000), completed_with_manual_items: n(r.completed_with_manual_items, 100_000), waiting_authorization: n(r.waiting_authorization, 100_000),
     waiting_payment: n(r.waiting_payment, 100_000), access_requested: n(r.access_requested, 100_000),
     payment_review: n(r.payment_review, 100_000), cancelled: n(r.cancelled, 100_000),
     ready_for_delivery: n(r.ready_for_delivery, 100_000), manual_review: n(r.manual_review, 100_000), unsafe_access: n(r.unsafe_access, 100_000),
