@@ -71,3 +71,14 @@ export function paymentOptions() {
     return info && url ? { package: PACKAGE_NAMES_DE[k], price: formatMoney(info.price, info.currency), link: url } : null;
   }).filter(Boolean);
 }
+
+// TF-084: Stripe-TEST-Payment-Link (Sandbox) + client_reference_id eines TEST-Auftrags. Nur für die CLI `check-150-workflow.js --create-test`;
+// bewusst NICHT in PAYMENT_LINKS / paymentLinkFor (Kundenmails bekommen nie einen Testlink).
+export const TEST_PAYMENT_LINK_RE = /^https:\/\/buy\.stripe\.com\/test_[A-Za-z0-9]{10,64}$/;
+export function testPaymentLinkUrl(link, { orderId, email = null } = {}) {
+  const base = String(link || "").trim();
+  if (!TEST_PAYMENT_LINK_RE.test(base) || !ORDER_ID_RE.test(String(orderId || ""))) return null;
+  const q = [`client_reference_id=${encodeURIComponent(orderId)}`];
+  if (email && EMAIL_RE.test(String(email)) && String(email).length <= 120) q.push(`prefilled_email=${encodeURIComponent(String(email).toLowerCase())}`);
+  return `${base}?${q.join("&")}`;
+}

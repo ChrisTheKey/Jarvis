@@ -32,7 +32,8 @@ import { paymentGateForOrder, paymentThresholdChf, paymentSummary, gatePaid, gat
 import { offerInfo, isCheckOffer, SELLER_COMMISSION_BPS } from "./pricing.js";
 import { isVnOrder, vnFindingText, vnInstructionsFor, pageLabelVi, buildVnCheckReport, buildVnCheckDeliveryDraft } from "./vn-customer-texts.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
-import { fullSiteAudit, detectStack, normDomain } from "./repair-workflow.js";
+import { fullSiteAudit, detectStack, normDomain, isTestOrder } from "./repair-workflow.js";
+import { TEST_RUN_ID_RE, e2eConfig, isE2eDomain, isE2eMailbox } from "./e2e-test.js";
 import { ONBOARDING_CLASS, buildCheckIntroMail } from "./onboarding-core.js";
 
 export const CHECK150_ORDERS_FILE = "check150_orders.json";
@@ -71,13 +72,21 @@ export function confirmedCheck150Sale(store, domain, offer_class = CHECK150_OFFE
 // ---------- Auftrag ----------
 // TF-064: offer_class VN_REPAIR_CHECK → VN-Auftrag (VNCHECK-…, market VN, currency VND, Preis/Schwelle aus pricing.js, Kundentexte
 // Vietnamesisch). Gleicher Workflow; CH-Aufträge bleiben exakt im bisherigen Format (CA150-…, price_chf, CHF).
-export function createCheck150Order(store, { domain, website = null, company = null, delivery_email, contact_name = null, offer_class = CHECK150_OFFER, vn = null, now = new Date() } = {}) {
+export function createCheck150Order(store, { domain, website = null, company = null, delivery_email, contact_name = null, offer_class = CHECK150_OFFER, vn = null, test = null, env = process.env, now = new Date() } = {}) {
   const d = normDomain(domain);
   if (!d) throw new Error("Domain erforderlich.");
   const info = offerInfo(offer_class);
   if (!info || !isCheckOffer(offer_class)) throw new Error(`Unbekanntes Check-Angebot "${offer_class}".`);
   // Lieferadresse ist Pflicht und kommt vom bestätigten Auftrag – NIE automatisch eine alte Cold-Outreach-Adresse übernehmen.
   if (!EMAIL_RE.test(delivery_email || "")) throw new Error("Verifizierte Lieferadresse (--email) des bestätigten Auftrags erforderlich.");
+  // TF-084: Sandbox-Testauftrag – NUR ausdrücklich (test = { run_id }), nur CH «Check & Anleitung», nur Sandbox-Domain + Test-Postfach der
+  // Server-Allowlist (JARVIS_E2E_TEST_*). Ohne `test` ändert sich am Live-Pfad nichts. Fail closed.
+  if (test) {
+    if (!TEST_RUN_ID_RE.test(String(test.run_id || ""))) throw new Error("E2E-Testlauf ohne gültige test_run_id.");
+    if (offer_class !== CHECK150_OFFER) throw new Error("Testaufträge gibt es nur für CH «Check & Anleitung» (CHF 150).");
+    const cfg = e2eConfig(env);
+    if (!cfg.ready || !isE2eDomain(cfg, d) || !isE2eMailbox(cfg, delivery_email)) throw new Error("TEST_BLOCKED: Domain und Postfach müssen in JARVIS_E2E_TEST_DOMAINS / JARVIS_E2E_TEST_MAILBOXES stehen (JARVIS_E2E_TEST_ENABLED=true).");
+  }
   const data = store.read(CHECK150_ORDERS_FILE, { schema: 1, orders: {} });
   const open = Object.values(data.orders || {}).find((o) => normDomain(o.domain) === d && !TERMINAL.has(o.state));
   if (open) throw new Error(`Für ${d} läuft bereits Auftrag ${open.order_id} (${open.state}).`);
@@ -95,6 +104,12 @@ export function createCheck150Order(store, { domain, website = null, company = n
     audit_completed_at: null, report_generated_at: null, report_findings_count: null, delivery_status: "none",
     blocked_reason: null, created_at: now.toISOString(), updated_at: now.toISOString(),
   };
+  if (test) {
+    // Kein Verkauf (sales.json bleibt unberührt), kein Umsatz, keine Provision, kein Audit, keine Mail: der Engine überspringt Testaufträge.
+    Object.assign(order, { test_order: true, environment: "TEST", test_run_id: test.run_id, commission_rate_bps: 0,
+      confirmed: { source: "e2e_test_confirmation", sale_date: null, confirmed_at: now.toISOString() }, state: "ORDER_CONFIRMED" });
+    order.state_history.push({ at: now.toISOString(), from: "ORDER_RECEIVED", to: "ORDER_CONFIRMED", reason: `E2E-TEST ${test.run_id} – Test-Auftrag (kein Verkauf, kein Umsatz, keine Provision, keine Kundenmail); nur Stripe-TESTzahlung` });
+  }
   data.orders = { ...(data.orders || {}), [order_id]: order };
   store.write(CHECK150_ORDERS_FILE, data);
   return order;
@@ -357,6 +372,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
   };
 
   async function step(order) {
+    if (isTestOrder(order)) return false; // TF-084: Testaufträge laufen nie durch den Erfüllungs-Workflow (kein Audit, kein Entwurf, keine Mail)
     const t = now();
 
     if (order.state === "ORDER_RECEIVED" || order.state === "BLOCKED_ORDER_NOT_CONFIRMED") {
@@ -512,7 +528,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
 
   async function processAll() {
     const data = store.read(CHECK150_ORDERS_FILE, { schema: 1, orders: {} });
-    const open = Object.values(data.orders || {}).filter((o) => !TERMINAL.has(o.state) && !WAITING.has(o.state));
+    const open = Object.values(data.orders || {}).filter((o) => !TERMINAL.has(o.state) && !WAITING.has(o.state) && !isTestOrder(o));
     let advanced = 0;
     for (const stored of open) {
       const order = structuredClone(stored);
@@ -532,7 +548,7 @@ export function check150Status(dir = WORKER_DIR) {
   const orders = Object.values(createStore(dir).read(CHECK150_ORDERS_FILE, { orders: {} }).orders || {});
   const states = {};
   for (const o of orders) states[o.state] = (states[o.state] || 0) + 1;
-  return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state)).length, states,
+  return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state) && !isTestOrder(o)).length, test_orders: orders.filter(isTestOrder).length, states,
     ready_for_delivery: states.READY_FOR_DELIVERY || 0, waiting_confirmation: states.BLOCKED_ORDER_NOT_CONFIRMED || 0,
     waiting_payment: states.BLOCKED_PAYMENT_NOT_RECEIVED || 0, cancelled: states[CHECK150_CANCELLED] || 0 };
 }
@@ -570,6 +586,7 @@ export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
         payment_status: pay.payment_status, payment_ok: pay.deposit_amount != null && pay.paid_amount >= pay.deposit_amount,
         phase: check150Phase(o, pay),
         source: records[normDomain(o.domain)]?.direct_sale?.source === "direct_customer" ? "direct_customer" : "jarvis_lead",
+        ...(isTestOrder(o) ? { test_order: true, environment: "TEST" } : {}),
         created_at: o.created_at, updated_at: o.updated_at };
     });
   return { ...check150Status(dir), orders };
@@ -589,7 +606,7 @@ export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, audito
 // Zahlung verbuchen (TF-041): node payments.js record <order_id> --amount 75 – erst ab CHF 75 läuft der Auftrag.
 // node check-150-workflow.js --list | --show <id> | --create <domain> --email <lieferadresse> [--website URL] [--company NAME]
 //                            [--name ANREDE] | --create-confirmed <domain> --email <adresse> [--company] [--name] [--website]
-//                            | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>
+//                            | --create-test <sandbox-domain> --email <test-postfach> [--link <stripe-test-link>] | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
   const flag = (n) => { const i = argv.indexOf("--" + n); return i >= 0 ? argv[i + 1] : undefined; };
@@ -619,6 +636,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       try { const { reconcileRegistry } = await import("./lead-registry.js"); reconcileRegistry(store, { gmailRegistry: registry, force: true }); } catch {}
       return 0;
     }
+    if (flag("create-test")) {
+      // TF-084: Sandbox-Testauftrag (CHF 150) für eine Stripe-TESTzahlung. Nur mit Sandbox-Domain + Test-Postfach der Server-Allowlist;
+      // schreibt NICHT in sales.json, sendet nichts. Mit --link <Stripe-Test-Payment-Link> wird die Zahlungs-URL samt client_reference_id ausgegeben.
+      const { testRunId } = await import("./e2e-test.js");
+      const domain = flag("create-test");
+      const o = createCheck150Order(store, { domain, delivery_email: flag("email"), company: "E2E-Test", contact_name: "E2E-Test", test: { run_id: testRunId(`check150:${normDomain(domain)}:${Date.now()}`) } });
+      console.log(`TEST-Auftrag angelegt: ${o.order_id} (${o.state}, test_order=true, environment=TEST, CHF ${o.price_chf}, offen/unbezahlt). Kein Verkauf, keine Mail.`);
+      if (flag("link")) { const { testPaymentLinkUrl } = await import("./payment-links.js"); const u = testPaymentLinkUrl(flag("link"), { orderId: o.order_id }); if (!u) throw new Error("Ungültiger Stripe-TEST-Payment-Link (erwartet https://buy.stripe.com/test_…)."); console.log(`Sandbox-Zahlungs-URL: ${u}`); }
+      return 0;
+    }
     if (flag("cancel")) {
       const o = cancelCheck150Order(store, flag("cancel"), { reason: flag("reason") });
       console.log(`Storniert: ${o.order_id} → ${o.state}${o.cancel_reason ? ` (${o.cancel_reason})` : ""}. Auftrag bleibt gespeichert; keine Gmail-/Website-Aktion.`);
@@ -636,7 +663,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log(JSON.stringify(await runCheck150Orders({ gmail }), null, 2)); return 0; }
     if (flag("report")) { const o = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders?.[flag("report")]; if (!o?.report_text_file || !fs.existsSync(o.report_text_file)) throw new Error("Kein Bericht vorhanden."); console.log(fs.readFileSync(o.report_text_file, "utf8")); return 0; }
     if (flag("complete")) { const o = completeCheck150(store, flag("complete")); console.log(`Abgeschlossen: ${o.order_id} → ${o.state}`); return 0; }
-    console.log("Befehle: --list | --show <id> | --create <domain> --email <adresse> | --create-confirmed <domain> --email <adresse> | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>");
+    console.log("Befehle: --list | --show <id> | --create <domain> --email <adresse> | --create-confirmed <domain> --email <adresse> | --create-test <sandbox-domain> --email <test-postfach> [--link <url>] | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>");
     return 1;
   };
   run().then((c) => process.exit(c), (e) => { console.error("Fehler: " + e.message); process.exit(1); });

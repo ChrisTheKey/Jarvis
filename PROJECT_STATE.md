@@ -4,6 +4,15 @@ Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys
 
 Letzte Aktualisierung: 2026-10-19 (TF-081)
 
+## TF-084 – STRIPE-SANDBOX-TESTAUFTRAG CHF 150 (2026-10-19, CODE READY, nicht deployt)
+- `node check-150-workflow.js --create-test <sandbox-domain> --email <test-postfach> [--link <stripe-test-link>]` legt einen CA150-Testauftrag an
+  (`test_order=true`, `environment=TEST`, Provision 0, kein Eintrag in sales.json, State ORDER_CONFIRMED, unbezahlt). Nur mit
+  `JARVIS_E2E_TEST_ENABLED=true` + Domain/Postfach in `JARVIS_E2E_TEST_DOMAINS/_MAILBOXES` (sonst TEST_BLOCKED). Live-Pfad unverändert.
+- Engine (`check-150-workflow.js`) überspringt Testaufträge vollständig (kein Audit/Entwurf/Mail); `check150Status().open` zählt sie nicht.
+- Stripe: TEST-Ereignis ↔ Live-Auftrag und LIVE-Ereignis ↔ Testauftrag → MODE_MISMATCH (Prüfung, nichts verbucht); `recordPayment` weist beide Kreuzungen ab.
+- `payment-links.js`: `testPaymentLinkUrl` (nur `https://buy.stripe.com/test_…`), bewusst nicht in `PAYMENT_LINKS` (Kundenmails nie mit Testlink).
+- Tests: `test/tf084.test.js` (9). Aufräumen: `node check-150-workflow.js --cancel <id> --reason …`.
+
 ## TF-081 – STRIPE-ZAHLUNGSLINKS + NACHFASSEN ÜBER chris@helvetic-webdesign.ch (2026-10-19, CODE READY, nicht deployt)
 - **Links (`payment-links.js`, einzige Quelle):** REPAIR_CHECK_150 (CHF 150) und REPAIR_FIX_500 (CHF 480) → Stripe Payment Links. Mit Auftrag: `?client_reference_id=<order_id>&prefilled_email=`.
   VN nie ein Link. `payment-monitor.js` liest `client_reference_id` NUR aus `checkout.session.completed` (Metadaten haben Vorrang); ohne Auftrags-ID bleibt es `PAYMENT_REVIEW_REQUIRED` (fail closed).
