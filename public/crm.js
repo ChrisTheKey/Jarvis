@@ -5,7 +5,7 @@
 // Sprache: de-CH (Standard, unverändert) oder vi-VN (setLocale) – Firmennamen, Domains, Telefonnummern und Kundeninhalte bleiben wie sie sind.
 import { SALES_STAGES, CALL_STATUSES, CONTACT_STATUSES, CARDS, SORTS, filterLeads, sortLeads, crmStats, nextBestLead, followUpBucket,
   ERROR_CARDS, PIPELINE_CARDS, ISSUE_CATEGORIES, errorCount, errorShort, errorLong, topIssues, repairLine, issueLines, issueFacts, issueLink, currentIssues, issueDetail,
-  sellerSendState, contactFormQueue, contactFormOpen } from "./crm-model.js";
+  sellerSendState, contactFormQueue, contactFormOpen, isTestLead } from "./crm-model.js";
 import { createI18n } from "./i18n.js";
 import { callingTexts, leadCallBox } from "./calling-ui.js";
 import { onboardingTexts, leadOnboardingBox, onboardingPanel } from "./onboarding-ui.js";
@@ -95,6 +95,15 @@ const cfBadge = (l) => {
   return el("span", { class: "crm-cfbadges" }, badge(`cf-${c.status}`, [L.badge, c.matched && c.lead_source !== "CONTACT_FORM" ? L.matched : null, L[c.status]].filter(Boolean).join(" · ")),
     contactFormOpen(l) ? [" ", badge("cf-urgent", L.urgent)] : "", c.lead_source === "CONTACT_FORM" && contactFormOpen(l) ? [" ", badge(`cf-${c.call_eligibility}`, L[c.call_eligibility] || "")] : "");
 };
+// TF-080: E2E-Test – unübersehbar TEST (+ E2E-TEST für einen aktiven Lauf, HISTORISCH für Tests vor TF-080). Nie wie ein echter Kunde.
+const testBadge = (l) => {
+  if (!isTestLead(l)) return "";
+  const L = I.L.contactForm || {}, c = l.contact_form || {};
+  return el("span", { class: "crm-testbadges" }, badge("test", L.test || "TEST"), c.e2e_run ? [" ", badge("test", L.e2e || "E2E-TEST")] : "", c.test_historical ? [" ", badge("test-hist", L.historical || "HISTORISCH")] : "");
+};
+const payText = (c) => { const L = I.L.contactForm || {}; return c.payment_mode === "TEST" && c.payment_state === "PAID" ? L.testPaid : (L.payment || {})[c.payment_state] || c.payment_state || "–"; };
+// TF-079: Kundenweg (NEUE ANFRAGE … ABGESCHLOSSEN / MANUELLE PRÜFUNG) – nur feste Codes vom Server.
+const cfWorkflow = (l) => { const w = (I.L.contactForm?.workflow || {})[l.contact_form?.workflow_status] || ""; return w && isTestLead(l) ? `${I.L.contactForm?.test || "TEST"} · ${w}` : w; };
 const pbText = (l) => t(`pb.${l.phonebook?.status || "PHONEBOOK_STAR_UNKNOWN"}`) + (l.phonebook?.source === "multisource" ? ` · ${t("pb.provider")}: multisource` : "");
 // TF-077B «E-Mail lossenden»: genau EIN Knopf je Lead (nur SERVER_SEND). Der Browser schickt nur lead_id + draft_ref – nie Empfänger/Text/Gmail-URL.
 function sendBox(l) {
@@ -138,8 +147,9 @@ function renderHot() {
   box.replaceChildren(
     el("div", { class: "crm-hot-h" }, el("h3", {}, t("cf.head")), badge("cf-count", String(q.length)), el("small", {}, t("cf.counts", st.verified_error_leads ?? 0, st.contact_form_hot ?? q.length))),
     q.length ? el("ul", { class: "crm-hot-list" }, q.map((l) => el("li", { class: "crm-hot-item", "data-id": l.lead_id },
-      el("div", { class: "row" }, el("b", {}, l.company || l.contact_form.name || l.email || l.lead_id), " ", cfBadge(l)),
+      el("div", { class: "row" }, testBadge(l), " ", el("b", {}, l.company || l.contact_form.name || l.email || l.lead_id), " ", cfBadge(l)),
       el("small", {}, `${t("cf.received")}: ${fmt(l.contact_form.open_since || l.contact_form.received_at)}`),
+      cfWorkflow(l) ? el("small", { class: "crm-cf-workflow" }, `${t("cf.workflow")}: ${cfWorkflow(l)}`) : "",
       l.contact_form.summary ? el("p", { class: "crm-hot-msg" }, l.contact_form.summary) : "",
       el("div", { class: "crm-hot-meta" }, l.website ? link(l.website, l.domain || l.website) : "–", " · ", telLink(l), " · ", el("span", {}, l.email || "–"),
         owner && l.seller ? ` · ${t("cf.seller")}: ${l.seller}` : ""),
@@ -173,7 +183,7 @@ function setMeta(text, bad = false) { const m = $("crmMeta"); if (!m) return; m.
 // ---------- Ansicht ----------
 function readFilters() {
   const f = {};
-  for (const k of ["q", "stage", "canton", "region", "category", "phone", "person", "draft", "errors", "audit", "issue", "contact", "call", "followup", "dnc", "archived"]) {
+  for (const k of ["q", "env", "stage", "canton", "region", "category", "phone", "person", "draft", "errors", "audit", "issue", "contact", "call", "followup", "dnc", "archived"]) {
     const v = $("crmF_" + k)?.value; if (v) f[k] = v;
   }
   if (S.card) f.card = S.card;
@@ -216,6 +226,7 @@ function facets() {
   fill("crmF_category", count("category").map(([v, n]) => [v, `${I.category(v)} (${n})`]));
   // Nur Felder zeigen, die in diesem Bereich vorkommen (Kudoshin: Region statt Kanton).
   if ($("crmF_canton")) $("crmF_canton").hidden = !S.leads.some((l) => l.canton);
+  if ($("crmF_env")) $("crmF_env").hidden = S.actor?.role !== "OWNER" && !S.leads.some(isTestLead); // TF-080: ALLE / ECHT / TEST (Owner)
   if ($("crmF_region")) $("crmF_region").hidden = !S.leads.some((l) => l.region);
   S.facets = true;
 }
@@ -237,7 +248,7 @@ function tableView(list) {
   const head = ["th.company", "th.category", "th.website", "th.errors", "th.top", "th.person", "th.phone", "th.email", "th.draft", "th.status", "th.call", "th.next"].map((k) => t(k));
   const rows = list.map((l) => el("tr", { class: `${l.do_not_contact ? "dnc" : ""}${S.sel === l.lead_id ? " sel" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
-    el("td", { class: "co" }, el("b", {}, l.company || l.domain || l.lead_id), el("small", {}, place(l) || ""), badge(l.priority?.level || "LOW", `${level(l)} ${l.priority?.score ?? 0}`), histBadge(l), cfBadge(l)),
+    el("td", { class: "co" }, el("b", {}, l.company || l.domain || l.lead_id), el("small", {}, place(l) || ""), badge(l.priority?.level || "LOW", `${level(l)} ${l.priority?.score ?? 0}`), testBadge(l), histBadge(l), cfBadge(l)),
     el("td", { class: "cat" }, cat(l)),
     el("td", {}, link(l.website, l.domain || t("th.website"))),
     el("td", { class: "err" }, errorsCell(l)),
@@ -255,7 +266,7 @@ function cardsView(list) {
   return el("ul", { class: "crm-list" }, list.map((l) => el("li", { class: `crm-lcard${l.do_not_contact ? " dnc" : ""}`, "data-id": l.lead_id, tabindex: "0",
     onclick: () => openLead(l.lead_id), onkeydown: (e) => { if (e.key === "Enter") openLead(l.lead_id); } },
     el("div", { class: "row" }, el("h3", {}, l.company || l.domain || l.lead_id), stageBadge(l)),
-    l.domain ? el("small", { class: "dom" }, l.domain) : "", histBadge(l), cfBadge(l),
+    l.domain ? el("small", { class: "dom" }, l.domain) : "", testBadge(l), histBadge(l), cfBadge(l),
     el("div", { class: "crm-cat" }, el("span", { class: "lbl" }, t("card.category")), " ", cat(l)),
     el("div", { class: "crm-errline" }, el("span", { class: "lbl" }, t("card.errors")), errNum(l), auditBadge(l)),
     el("div", { class: "crm-top2wrap" }, el("span", { class: "lbl" }, t("card.top2")), top2(l)),
@@ -292,9 +303,15 @@ function renderDrawer() {
   // TF-077B: Giuliano/Mario/Damiano – genau EIN Mail-Knopf «E-Mail lossenden» (sendBox), keine Gmail-URL.
   const c = l.contact_form;
   const cfBox = c?.lead_source === "CONTACT_FORM" ? el("section", { class: `crm-cfbox${contactFormOpen(l) ? " open" : ""}` }, el("h4", {}, t("cf.head")), cfBadge(l),
-    kv([[t("cf.received"), fmt(c.open_since || c.received_at)], [t("cf.msg"), c.summary || "–"], [t("cf.reply"), (I.L.contactForm || {})[c.status] || "–"],
+    kv([[t("cf.received"), fmt(c.open_since || c.received_at)], ...(cfWorkflow(l) ? [[t("cf.workflow"), cfWorkflow(l) + (c.order_id ? ` · ${c.order_id}` : "")]] : []), [t("cf.msg"), c.summary || "–"], [t("cf.reply"), (I.L.contactForm || {})[c.status] || "–"],
       [t("cf.call"), (I.L.contactForm || {})[c.call_eligibility] || "–"], ...(c.callback_evidence ? [[t("cf.callback"), c.callback_evidence]] : []),
-      ...(c.email && c.email !== l.email ? [[t("kv.email"), c.email]] : []), ...(c.phone && c.phone !== l.phone ? [[t("kv.phone"), c.phone]] : [])]),
+      ...(c.email && c.email !== l.email ? [[t("kv.email"), c.email]] : []), ...(c.phone && c.phone !== l.phone ? [[t("kv.phone"), c.phone]] : []),
+      // TF-080: Stufen + Test-Angaben (feste Wörter, nie Secrets/Links/Mailinhalt).
+      ...(isTestLead(l) ? [[I.L.contactForm.kvRun, `${I.L.contactForm.e2e} · ${c.test_run_id || "–"}`]] : []),
+      ...(c.journey_state ? [[I.L.contactForm.kvJourney, c.journey_state]] : []), ...(c.status ? [[I.L.contactForm.kvMail, (I.L.contactForm || {})[c.status] || c.status]] : []),
+      ...(c.payment_mode ? [[I.L.contactForm.kvMode, c.payment_mode === "TEST" ? I.L.contactForm.modeTest : "LIVE"]] : []),
+      ...(c.payment_state ? [[I.L.contactForm.kvPayment, payText(c)]] : []),
+      ...(c.access_state ? [[I.L.contactForm.kvAccess, c.access_state]] : []), ...(c.repair_state ? [[I.L.contactForm.kvRepair, c.repair_state]] : [])]),
     c.inbound ? el("p", { class: "crm-note" }, t("cf.inbound")) : "",
     contactFormOpen(l) ? el("div", { class: "crm-qa" }, el("button", { type: "button", class: "crm-btn", disabled: dis, onclick: () => act("crm.resolveContactForm", { lead_id: l.lead_id }) }, t("cf.done"))) : "") : "";
   // TF-055 Website-Zustand: Zahl + Audit-Art + Zeitpunkt, die zwei wichtigsten Fehler, danach ALLE aktuell verifizierten Fehler.
@@ -322,7 +339,7 @@ function renderDrawer() {
   const unconfirmed = (l.findings_total || 0) - (l.findings_confirmed || 0);
   d.replaceChildren(
     el("div", { class: "crm-top" }, el("h3", {}, l.company || l.domain || l.lead_id), el("button", { type: "button", class: "crm-btn", onclick: closeDrawer, "aria-label": t("aria.closeDetail") }, t("btn.close"))),
-    el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", t("priority", level(l), l.priority?.score ?? 0)), " ", histBadge(l), " ", cfBadge(l)),
+    el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", t("priority", level(l), l.priority?.score ?? 0)), " ", testBadge(l), " ", histBadge(l), " ", cfBadge(l)),
     l.history_badge ? el("p", { class: "crm-note" }, t("histNote")) : "",
     blocked ? el("div", { class: "crm-dnc-banner" }, `${t("dncBanner")}${l.dnc_source && l.dnc_source !== "crm" ? t("dncSource", src) : ""}`) : "",
     qa, status, cfBox,
@@ -531,6 +548,7 @@ function build() {
       el("span", { id: "crmCount", class: "crm-next" })),
     el("details", { class: "crm-filters", open: !MOBILE.matches }, el("summary", {}, t("filters")),
       el("div", { class: "crm-fgrid" },
+        sel("env", I.L.contactForm?.envAll || "ALLE", [["real", I.L.contactForm?.envReal || "ECHT"], ["test", I.L.contactForm?.envTest || "TEST"]]),
         sel("stage", t("f.stage"), SALES_STAGES.map((s) => [s, I.L.stage[s]])), sel("canton", t("f.canton"), []), sel("region", t("f.region"), []), sel("category", t("f.category"), []),
         sel("phone", t("f.phone"), [["1", t("f.phone1")], ["0", t("f.phone0")]]), sel("person", t("f.person"), [["1", t("f.person1")], ["0", t("f.person0")]]),
         sel("draft", t("f.draft"), [["1", t("f.draft1")], ["0", t("f.draft0")]]),

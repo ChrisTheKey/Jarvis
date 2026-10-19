@@ -47,6 +47,10 @@ fi
 sudo chown root:root "$R/.env" && sudo chmod 600 "$R/.env"
 sudo chown -R 1000:1000 "$R/secrets" && sudo chmod 700 "$R/secrets"
 sudo find "$R/secrets" -type d -exec chmod 700 {} + && sudo find "$R/secrets" -type f -exec chmod 600 {} +
+# TF-080: E2E-Freigabe-Datei (keine Secrets) anlegen, falls sie fehlt – nie überschreiben.
+sudo mkdir -p /opt/jarvis-payment && sudo chown root:root /opt/jarvis-payment && sudo chmod 700 /opt/jarvis-payment
+[ -f /opt/jarvis-payment/e2e.env ] || sudo sh -c "umask 077; : > /opt/jarvis-payment/e2e.env"
+sudo chown root:root /opt/jarvis-payment/e2e.env && sudo chmod 600 /opt/jarvis-payment/e2e.env
 # TF-047: Mount-Ziele des separaten Repair-Service anlegen (Besitz node, 700), falls deploy-repair.sh noch nie lief.
 sudo mkdir -p /opt/jarvis-repair/outbox /opt/jarvis-repair/state/mail_worker
 sudo chown 1000:1000 /opt/jarvis-repair/outbox /opt/jarvis-repair/state /opt/jarvis-repair/state/mail_worker

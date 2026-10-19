@@ -1,4 +1,4 @@
-// TF-079: Zahlungsanfrage + Erinnerungen für bestätigte, noch UNBEZAHLTE Schweizer Aufträge – Mail-Worker-Seite (einzige Sender Authority).
+// TF-081: Zahlungsanfrage + Erinnerungen für bestätigte, noch UNBEZAHLTE Schweizer Aufträge – Mail-Worker-Seite (einzige Sender Authority).
 //
 //   Ablauf je Auftrag (Auftragsfakten aus onboarding/orders.json des Repair-Service, nur lesen):
 //     1. Auftrag bestätigt + Zahlungsschwelle NICHT erfüllt + CH + gültige Kundenadresse → GENAU EINE Zahlungsanfrage mit dem Stripe-Link des Pakets
@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { newCustomerText, preclassify, normEmailAddr, validEmail } from "./onboarding-core.js";
-import { readOrdersExport } from "./onboarding-store.js";
+import { readOrdersExport, readPaymentLinks } from "./onboarding-store.js";
 import { offerInfo, formatMoney, ORDER_ID_RE } from "./pricing.js";
 import { paymentLinkFor, PACKAGE_NAMES_DE } from "./payment-links.js";
 
@@ -28,6 +28,8 @@ export const PAYMENT_CLASS = "CUSTOMER_PAYMENT_REQUEST";
 export const DEFAULT_REMINDER_HOURS = Object.freeze([48, 72, 168]);
 export const EXHAUST_AFTER_HOURS = 168;
 export const MAX_RESENDS = 3;
+export const REQUEST_GRACE_MS = 30 * 60_000; // TF-080 hat Vortritt: erst wenn nach 30 min keine Stripe-Checkout-Session des Repair-Service existiert
+const OWN_SESSION_STATUSES = new Set(["PENDING", "OPEN", "PAID", "EXPIRED", "EXPIRED_FINAL", "FAILED", "REVIEW", "TEST_BLOCKED"]);
 export const ACTIVE_STATES = Object.freeze(["REQUEST_DUE", "WAITING_PAYMENT"]);
 const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network|timeout|aborted/i;
 const SAFE_RETRY_RE = /nicht gesendet|andere Sendung läuft|Register gesperrt|Tageslimit/i;
@@ -52,6 +54,7 @@ export function ineligibleReason(o) {
   if (!o || !ORDER_ID_RE.test(String(o.order_id || ""))) return "invalid";
   if (o.market !== "CH" || offerInfo(o.offer_class)?.market !== "CH") return "not_ch";
   if (!paymentLinkFor(o.offer_class, { orderId: o.order_id })) return "no_link";
+  if (o.test_order === true || o.environment === "TEST") return "test";
   if (o.cancelled) return "cancelled";
   if (o.terminal) return "terminal";
   if (o.payment_gate_met === true) return "paid";
@@ -93,6 +96,8 @@ export function createPaymentFollowup({ dir, onboardingDir, gmail, sender = () =
   const persist = () => writeAtomic(file, st);
   const iso = () => now().toISOString();
   const orders = () => readOrdersExport(onboardingDir).orders || {};
+  // TF-080: hat der Repair-Service eine Stripe-Checkout-Session für den Auftrag, führt der Kontaktformular-Weg die Zahlung – dieses Modul schweigt (kein Doppelversand).
+  const ownSession = (id) => OWN_SESSION_STATUSES.has(readPaymentLinks(onboardingDir).links?.[id]?.status);
   const inform = async (rec, reason) => {
     log("warn", "payment_followup_chris", { order_id: rec.order_id, reason: String(reason).slice(0, 120) });
     try { await notify({ order_id: rec.order_id, company: rec.company || "", threadId: rec.thread_id || null, reason: `Zahlung: ${String(reason).slice(0, 110)}` }); }
@@ -218,7 +223,9 @@ export function createPaymentFollowup({ dir, onboardingDir, gmail, sender = () =
   async function processRecord(id, o) {
     const rec = st.records[id];
     if (rec.pending && (await resolvePending(id)) !== "done") return;
+    if (ACTIVE_STATES.includes(rec.state) && ownSession(id)) { rec.pending = null; setState(rec, "STOPPED", "Stripe-Checkout des Repair-Service (TF-080) führt die Zahlung"); persist(); return; }
     if (rec.state === "REQUEST_DUE") {
+      if (+now() - Date.parse(rec.created_at) < REQUEST_GRACE_MS) return;
       const mail = composePaymentMail({ kind: "request", orderId: id, offerClass: rec.offer_class, name: rec.contact_name || o.contact_name, email: rec.customer_email, signature: signatureOf() });
       await deliver(id, { key: "request", kind: "request", mail });
       return;

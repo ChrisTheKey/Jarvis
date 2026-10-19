@@ -51,6 +51,7 @@ export function ordersFromSnapshot(snapshot) {
   const out = [];
   for (const o of list) {
     if (!o || !ORDER_ID_RE.test(String(o.order_id || ""))) continue;
+    if (o.test_order === true || o.environment === "TEST") continue; // TF-080: E2E-Test-Aufträge erzeugen nie Provision
     const m = orderMoney(o);
     if (!m) continue;
     const price = Number.isFinite(o.price_amount) ? o.price_amount : Number.isFinite(o.price_chf) && m.currency === "CHF" ? o.price_chf : null;

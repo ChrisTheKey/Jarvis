@@ -2,9 +2,9 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-19 (TF-079)
+Letzte Aktualisierung: 2026-10-19 (TF-081)
 
-## TF-079 – STRIPE-ZAHLUNGSLINKS + NACHFASSEN ÜBER chris@helvetic-webdesign.ch (2026-10-19, CODE READY, nicht deployt)
+## TF-081 – STRIPE-ZAHLUNGSLINKS + NACHFASSEN ÜBER chris@helvetic-webdesign.ch (2026-10-19, CODE READY, nicht deployt)
 - **Links (`payment-links.js`, einzige Quelle):** REPAIR_CHECK_150 (CHF 150) und REPAIR_FIX_500 (CHF 480) → Stripe Payment Links. Mit Auftrag: `?client_reference_id=<order_id>&prefilled_email=`.
   VN nie ein Link. `payment-monitor.js` liest `client_reference_id` NUR aus `checkout.session.completed` (Metadaten haben Vorrang); ohne Auftrags-ID bleibt es `PAYMENT_REVIEW_REQUIRED` (fail closed).
 - **Kontaktformular-Antwort:** enthält den Link, wenn das Formular «Interesse an» liefert (oder `forms[].payment_links:true`); Paket aus «Interesse an», mehrdeutig → beide. Zugeordneter, bezahlter/stornierter Auftrag → kein Link.
@@ -14,8 +14,73 @@ Letzte Aktualisierung: 2026-10-19 (TF-079)
 - **Nachfassen (`payment-followup.js`, Standard AUS: `paymentFollowup.enabled`):** bestätigter, unbezahlter CH-Auftrag → genau eine Zahlungsanfrage (neuer Thread), höchstens 3 Erinnerungen (48 h, +72 h, +7 d; 08–19 Uhr Zürich, nie sonntags),
   danach EXHAUSTED + Meldung an Chris. Bei Aktivierung bereits offene Aufträge = LEGACY (nie angeschrieben). Zahlung → PAID, dann führt `onboarding-dialogue.js` bis zum Abschluss.
   Kundenantwort: Stopp/Storno → STOPPED; Link-Bitte → Link erneut (max. 3×); «bereits bezahlt», Rabatt, Recht, Zugang, fremder Absender → MANUAL + Meldung, keine Auto-Mail. Exactly-once (Claim vor Gmail, Send-Lock, unklarer Ausgang → nie wiederholen).
+- **Zusammenspiel mit TF-079/TF-080:** Reparatur-Interesse (`intent`) bekommt in der ersten Antwort KEINEN Link (die Journey führt Bestätigung → Stripe-Checkout). `payment-followup.js` schweigt bei Test-Aufträgen und sobald `payment_links.json` eine Session des Repair-Service kennt (ausser NOT_CONFIGURED); Anfrage frühestens 30 min nach Erfassung. Der statische Link ist damit der Fallback ohne Stripe-Schlüssel (CHECK 150 immer, FIX 480).
 - **Offen/Grenzen:** Zahlungs-Thread und späterer Onboarding-Thread sind getrennte Threads. Annahme: Stripe-Links sind auf den vollen Festpreis CHF 150/480 gesetzt (Gate = Hälfte). Auf dem Stripe-Webhook NUR `checkout.session.completed` aktivieren (sonst kommt `payment_intent.succeeded` ohne Referenz zuerst und der Auftrag landet in der Prüfung).
 - **Deploy (Chris):** Mail-Worker neu deployen; `config.json`: `sender.sendAs`, `paymentFollowup: {"enabled": true}`; Gmail-Alias einrichten; Stripe-Webhook-Events einschränken. Tests: `test/tf079.test.js`.
+## TF-080 – STRIPE-ANZAHLUNG AUTOMATISCH + E2E-TESTLÄUFE SICHTBAR IM CRM (2026-10-18)
+- **Kundenweg (echt):** bestätigter CHF-480-FIX-Auftrag aus dem Kontaktformular → Repair-Service erzeugt serverseitig GENAU EINE Stripe-Checkout-Session
+  (stripe-payments.js; CHF 240.00 aus pricing.js, Metadaten order_id/offer_class/market/purpose=REPAIR_DEPOSIT/environment, Idempotenz-Schlüssel
+  `jarvis:<order_id>:deposit:v1:<mode>[:r2]`, Stripe-gehostet, Zahlungsarten aus dem Stripe-Konto – TWINT, sofern dort aktiviert) → Übergabe
+  `onboarding/payment_links.json` → Mail-Worker sendet die Auftragsbestätigung MIT Zahlungslink genau einmal im Kontaktformular-Verlauf → signiertes
+  Stripe-Ereignis (Netlify /api/payments, LIVE-/TEST-Secret getrennt, livemode muss passen, Inbox je Ereignis-ID) bzw. autoritativer Abgleich direkt bei
+  Stripe (alle 10 min) → stripe-webhook.js prüft bekannte Session · Modus · Auftrag · Metadaten · CHF · Betrag · paid → **payments.js recordPayment**
+  (Referenz `stripe:<payment_intent>`, Duplikatschutz) → bestehendes CHF-240-Gate → sicherer One-Time-Link (TF-079 unverändert). Kein Chris-Schritt.
+  Rückkehrseite `zahlung.html` ist nie ein Beleg. Abgelaufen → genau EINE Ersatz-Session + EINE Erinnerung, danach EXPIRED_FINAL → Chris. Rückerstattung/
+  Streitfall → PAYMENT_REVIEW_REQUIRED (nie automatisch erstattet). CHF 240 = DEPOSIT_MET, nie PAID_FULL.
+- **Fail closed ohne Schlüssel:** Stripe LIVE/TEST NOT_CONFIGURED → keine API-Aufrufe, Bestätigung wie TF-079 + Hinweis an Chris (Zahlung manuell wie bisher).
+  Schlüssel nur in `/opt/jarvis-payment/stripe.env` (root 0600, nur Repair-Service, nie im Deploy-Archiv), Installation verdeckt per
+  `deploy/vps/install-stripe-keys.sh <host> live|test|e2e|status`. Webhook-Secrets nur in Netlify. Status: `node stripe-webhook.js status` (Repair).
+- **payments.js:** `provider_mode` LIVE|TEST je Zahlung; TEST nur auf Test-Aufträgen und umgekehrt (beide Richtungen geprüft), Gate zählt nur den eigenen Modus,
+  Summen/Umsatz nur LIVE (`test_payments` separat). CLI verbucht nur LIVE – kein «simulate paid».
+- **E2E-Tests im CRM (ersetzt TF-077C «kein CRM-Lead»):** jede Test-Einsendung erscheint als eigener CRM-Eintrag `test-cf-<hash>` (nie mit echtem Lead
+  zusammengeführt) mit TEST/E2E-TEST-Abzeichen, test_run_id, Stufen (Weg/Mail/Zahlung/Zugang/Reparatur), Filter ALLE/ECHT/TEST (Owner). Aktiver Lauf NUR mit
+  `JARVIS_E2E_TEST_ENABLED=true` + Kundenadresse ∈ `JARVIS_E2E_TEST_MAILBOXES` + Website ∈ `JARVIS_E2E_TEST_DOMAINS` (`/opt/jarvis-payment/e2e.env`, Mail + Repair).
+  Test-Auftrag: test_order/environment TEST/test_run_id, kein sales.json-Verkauf, Provisionssatz 0, nur Stripe-TEST, vor jedem Schritt erneut gegen die
+  Allowlist geprüft (sonst TEST_ACCESS_BLOCKED). Historische Tests (vor TF-080) = HISTORISCH, nie rückwirkend gestartet.
+- **Isolation:** Testleads/-aufträge/-zahlungen ausgeschlossen aus Umsatz, Zahlungssummen, Provision (auch nach der Cloud-Whitelist server-control), Verkäufer-
+  Sicht/-Zählern (nur Owner sieht Tests), CRM-Kennzahlen, Anruflisten (eligibility `TEST_BLOCKED`, kein tel-Link), Cold-Outreach, CRM-Schreibaktionen (nur
+  Notiz/Archiv/erledigt). Bereinigung: `node e2e-test.js list | cleanup <test_run_id>` (je Container, nie Platzhalter).
+- **Tests:** `test/tf080.test.js` (volle E2E-Fixture Formular → … → Tresor zerstört, LIVE-Weg mit Abgleich, NOT_CONFIGURED, Webhook-Matrix, Ablauf/Erinnerung,
+  Refund, Freigabe-Grenzen/historisch, Kennzahlen, Bereinigung). `npm run test:tf080`.
+- **Deploy 2026-10-18 (Code c2d2422, origin = HEAD):** Repair (deploy-repair.sh, MAIL_WORKER_UNTOUCHED=YES), CRM (deploy-crm.sh build|start), Mail (deploy.sh fiverr,
+  ohne --with-secrets; vorher 0 pending/0 processing). Alle drei running/healthy/0 Restarts. Netlify live (crm.js, crm-model.js, i18n.js, crm.css, zahlung.html
+  byte-gleich HEAD). Stripe LIVE/TEST NOT_CONFIGURED, Webhook-Secrets fehlen (/api/payments POST → 503), E2E NOT_READY. /api/access-intake ohne Token 401.
+  contact_forms_public.json einmal neu geschrieben (keine Mail/kein Weg gestartet): 3 historische Test-Einsendungen jetzt im CRM als TEST/HISTORISCH,
+  TEST_BLOCKED, kein tel-Link. Tests: voll 1074 / 1062 pass / 0 fail / 12 skip (erster Lauf: e2e-test.js von node --test als Testdatei gestartet → behoben).
+  Secret-Scan 312 Dateien, 0 Treffer. 0 Zahlungen, 0 Anrufe, 0 Kundenwebsites verändert.
+- **Chris (extern):** Stripe-Konto (CHF, optional TWINT), Schlüssel per `install-stripe-keys.sh fiverr live|test`, Webhook auf `https://chrisjarvis.netlify.app/api/payments`
+  (checkout.session.completed/async_payment_succeeded/async_payment_failed/expired, charge.refunded, charge.dispute.created; LIVE und TEST) + Secrets in Netlify,
+  für E2E `install-stripe-keys.sh fiverr e2e` + danach Mail-Deploy.
+
+## TF-079 – KONTAKTFORMULAR → AUTOMATISCHES GESPRÄCH → SICHERER ZUGANG → AUTOMATISCHE REPARATUR (2026-10-18)
+- **Kundenweg (nur bestehende Bausteine verdrahtet, kein zweites Credential-/Mail-/Zustandssystem):** verifizierte, echte Einsendung mit «Interesse an:
+  Check & Reparatur» (bzw. «CHF 480», «REPAIR_FIX_500»; nur das Formularfeld zählt – nie eine Problembeschreibung) → `intent = CONTACT_FORM_REPAIR_INTEREST` →
+  erste automatische Antwort (TF-077B/D, genau einmal) zusätzlich mit den nächsten Schritten und der Bitte um ausdrückliche Bestätigung («Ja, ich bestätige den
+  Auftrag»), ohne Link, ohne Passwortfrage → **contact-form-journey.js** (Mail-Worker) führt den Thread dieser Antwort: Routinefragen (Zugang/Zahlung) mit festen
+  Vorlagen, Passwort per Mail → `SENSITIVE_CREDENTIAL_SENT`-Hinweis (nichts gespeichert/wiederholt), Stopp/Storno/Preisverhandlung/Recht/Injection/Unklares → Chris.
+  Ausdrückliche Bestätigung (Absender == Kundenadresse) → Auftragsbitte `onboarding/cf_orders/<key>.json` → Repair-Service `applyContactFormOrders` legt GENAU EINEN
+  RF480-Auftrag an (`createContactFormRepairOrder` = Direktverkauf + Auftrag wie `createConfirmedRepairOrder`, Beleg Kundenmail) bzw. bindet an den offenen Auftrag
+  derselben Domain + Adresse; fremde Adresse → `DUPLICATE_OPEN_ORDER` → Prüfung. Ergebnis `onboarding/cf_order_results.json` + `contact_form_keys` im Export.
+  Bestätigungsmail im selben Thread (Auftragsnummer, CHF 240 vor Start, Zahlungsangaben separat) + Hinweis an Chris («Zahlungsangaben senden»).
+- **Ab dem Auftrag unverändert repair-workflow.js:** AUTHORIZATION_REQUIRED (Auftrag ≠ Freigabe) → Zahlungsschwelle CHF 240 (payments.js, je Lauf geprüft) →
+  ACCESS_REQUESTED → Plattform-Erkennung (TF-071) → `newIntakeToken`/`accessLink`/CUSTOMER_ACCESS_REQUEST automatisch. **Neu:** `onboarding-dialogue.route()` legt diese
+  erste Auftrags-Mail in den Kontaktformular-Thread (`contactThreadFor`, nur eindeutig + gleiche Adresse; Thread unbrauchbar → eigener Auftrags-Thread), der
+  Onboarding-Dialog übernimmt dort (frühere Kundennachrichten vor der ersten Auftrags-Mail gelten als `pre_binding`), der Kundenweg endet (`HANDED_OFF`).
+  Danach: sicherer Zugang (Domain/Zweck/Token/Ablauf gebunden, Zustimmung im Formular) → Preflight → Brief-Gate → Backup → Audit → Plan → Reparatur → Validierung →
+  Browser-Retest (Regression → Rollback) → Lieferung → COMPLETED + Tresor zerstört (REPAIR_FAILED/CANCELLED ebenfalls).
+- **§9:** Einsendung exakt zu einem bestätigten + bezahlten FIX-Auftrag (Adresse + Domain) → erste Antwort nennt den sicheren Zugangsschritt (ohne Link/Token), Weg sofort
+  `ORDER_BOUND`. Nie für unbestätigt/unbezahlt/andere Domain/unverifiziert/Test.
+- **Doppelte Antworten verhindert:** Threads des Kundenwegs sind vom allgemeinen Antwort-Scan des Mail-Workers ausgenommen (wie Onboarding-Threads).
+- **CRM:** `contact_form.workflow_status` (NEUE ANFRAGE / ANTWORT GESENDET / WARTET AUF BESTÄTIGUNG / WARTET AUF ZAHLUNG / ZUGANG ANGEFRAGT / ZUGANG ERHALTEN /
+  REPARATUR LÄUFT / ABGESCHLOSSEN / MANUELLE PRÜFUNG / ABGEBROCHEN) + `order_id`, Anzeige in Hot-Liste und Lead-Detail (DE/VI). CONTACT_FORM_P0 unverändert. Nie Zugangsdaten.
+- **Grenzen:** nur CH/de (VN-Aufträge weiterhin über Kudoshin/`/api/sales`). Zahlungsangaben verschickt weiterhin Chris (Zahlungsweg unverändert); Jarvis kündigt sie an.
+- **Tests:** `test/tf079.test.js` 12/12 (Happy Path bis Abschluss + Tresor zerstört, Zugang vor Zahlung, Test-Einsendung, fremde Domain, Klartext-Passwort, Duplikate,
+  Regression → Rollback, §9, Entscheidungen/Stopp, Fremdadresse). `npm run test:tf079`.
+- **Deploy 2026-10-18 (Code 5a2f633, origin = HEAD):** Repair 5a2f633 (deploy-repair.sh, MAIL_WORKER_UNTOUCHED=YES), CRM 5a2f633 (deploy-crm.sh build|start, healthy,
+  MAIL/CONTACTS_WORKER_UNTOUCHED), Mail 5a2f633 (deploy.sh fiverr, ohne --with-secrets; vorher Queue 0 pending / 0 processing; healthy, 0 Restarts, erster Tick ohne Fehler).
+  Netlify live (crm.js, crm-model.js, i18n.js byte-gleich HEAD). /api/access-intake ohne Worker-Token → 401. Tests: voll 1051/1063 bestanden, 0 fehlgeschlagen, 12 übersprungen
+  (erster Volllauf: CRM-Browser-Test N Timeout unter Last → einzeln 4/4 grün; Dockerfile-COPY + sales.json-Guard behoben). Secret-Scan 0 Treffer. 0 echte Testmails/Reparaturen/Zugangsdaten.
+- **Chris:** Zahlungsangaben an Kunden mit neuem Auftrag senden (Jarvis meldet «Zahlungsangaben an den Kunden senden»); Zahlung wie bisher in payments.js verbuchen.
 
 ## TF-077C – NETLIFY-BENACHRICHTIGUNG MIT BENUTZERDEFINIERTEM TEXT + ANTWORTBOX (2026-10-18, CODE READY, nicht deployt)
 - **Anlass:** echte Benachrichtigung vom 18.10.2026 (Formular «anfrage», helvetic-webdesign-reperatur.netlify.app): Absender formresponses@netlify.com,

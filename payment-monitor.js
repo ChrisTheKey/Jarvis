@@ -26,11 +26,15 @@ export const SIGNATURE_TOLERANCE_S = 300;
 const ORDER_REF_RE = /(CA150|RF480|VNCHECK|VNFIX)-(\d{8})-([0-9a-f]{6})/gi;
 
 // Status der Überwachung – nur Namen/Ja-Nein, nie Werte.
+// TF-080: Stripe gilt auch ohne PAYMENT_MONITOR_PROVIDER als gewählt, sobald ein Stripe-Webhook-Secret (LIVE oder TEST) gesetzt ist.
+const STRIPE_SECRETS = ["STRIPE_WEBHOOK_SECRET", "STRIPE_TEST_WEBHOOK_SECRET"];
 export function monitorStatus(env = () => undefined) {
-  const provider = String(env("PAYMENT_MONITOR_PROVIDER") || "").trim().toLowerCase();
+  const has = (k) => !!String(env(k) || "").trim();
+  const provider = String(env("PAYMENT_MONITOR_PROVIDER") || "").trim().toLowerCase() || (STRIPE_SECRETS.some(has) ? "stripe" : "");
   const p = PROVIDERS[provider];
   if (!p) return { status: "PAYMENT_MONITOR_NOT_CONFIGURED", provider: null, kind: null, missing: ["PAYMENT_MONITOR_PROVIDER"] };
   if (p.kind === "read_only_api" && !p.adapter) return { status: "PAYMENT_MONITOR_NOT_CONFIGURED", provider, kind: p.kind, missing: ["BANK_API_ADAPTER"] };
+  if (provider === "stripe") return STRIPE_SECRETS.some(has) ? { status: "CONFIGURED", provider, kind: p.kind, missing: [] } : { status: "PAYMENT_MONITOR_NOT_CONFIGURED", provider, kind: p.kind, missing: STRIPE_SECRETS };
   if (p.secret_env && !String(env(p.secret_env) || "").trim()) return { status: "PAYMENT_MONITOR_NOT_CONFIGURED", provider, kind: p.kind, missing: [p.secret_env] };
   return { status: "CONFIGURED", provider, kind: p.kind, missing: [] };
 }
@@ -55,7 +59,7 @@ export function normalizeStripeEvent(evt) {
   if (!o || typeof o !== "object") return null;
   const cur = String(o.currency || "").toUpperCase();
   const at = Number.isInteger(o.created) ? new Date(o.created * 1000).toISOString() : null;
-  // TF-079: Payment Links tragen die Auftrags-ID als client_reference_id (nur checkout.session.completed); Metadaten haben Vorrang.
+  // TF-081: Payment Links tragen die Auftrags-ID als client_reference_id (nur checkout.session.completed); Metadaten haben Vorrang.
   const ref = (m) => (m && typeof m.order_id === "string" ? m.order_id : null);
   const sessionRef = (x) => ref(x.metadata) || (typeof x.client_reference_id === "string" && x.client_reference_id.length <= 64 ? x.client_reference_id : null);
   if (evt.type === "payment_intent.succeeded" && o.status === "succeeded" && Number.isInteger(o.amount_received))

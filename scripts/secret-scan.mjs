@@ -25,6 +25,9 @@ const PATTERNS = [
   ["anthropic-key", /sk-ant-[A-Za-z0-9_-]{30,}/],
   ["google-access-token", /ya29\.[A-Za-z0-9_-]{30,}/],
   ["google-refresh-token", /1\/\/0[A-Za-z0-9_-]{30,}/],
+  // TF-080: Stripe (Test-Fixtures nutzen bewusst kurze Attrappen < 20 Zeichen)
+  ["stripe-secret-key", /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}/],
+  ["stripe-webhook-secret", /\bwhsec_[A-Za-z0-9]{20,}/],
 ];
 const files = execFileSync("git", ["ls-files", "-z", "--cached"], { cwd: ROOT, encoding: "utf8" }).split("\0").filter(Boolean);
 const hits = [];

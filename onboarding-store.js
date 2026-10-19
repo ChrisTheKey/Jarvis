@@ -71,3 +71,44 @@ export function removeReissueRequest(dir, { order_id, seq }) {
   if (!okId(order_id) || !Number.isInteger(seq)) return;
   try { fs.rmSync(path.join(dir, REQUESTS_DIR, `${order_id}-${seq}.json`), { force: true }); } catch {}
 }
+
+// ---------- TF-079: cf_orders/ (Schreiber: Mail-Worker) + cf_order_results.json (Schreiber: Repair-Service) ----------
+// Ausdrückliche Auftragsbestätigung eines Kunden aus dem Kontaktformular-Thread → Bitte an den Repair-Service, GENAU EINEN «Check & Reparatur»-
+// Auftrag anzulegen bzw. an den offenen Auftrag derselben Domain/Adresse zu binden. Inhalt: nur Stammdaten (Domain, Website, Kundenadresse, Name,
+// Firma, Lead), die Einsendungs-Kennung (Hash) und der Bestätigungszeitpunkt – nie Mailtexte, nie Zugangsdaten. Ein Schlüssel = eine Datei.
+export const CF_ORDERS_DIR = "cf_orders";
+export const CF_RESULTS_FILE = "cf_order_results.json";
+export const CF_KEY_RE = /^cf:[0-9a-f]{24}$/;
+const cfFile = (dir, key) => path.join(dir, CF_ORDERS_DIR, `${key.replace(":", "-")}.json`);
+export function writeContactOrderRequest(dir, req) {
+  if (!dir || !CF_KEY_RE.test(String(req?.key || ""))) throw new Error("Ungültige Auftragsbitte.");
+  const f = cfFile(dir, req.key);
+  if (fs.existsSync(f)) return false; // genau eine Bitte je Einsendung
+  writeAtomic(f, { v: 1, ...req });
+  return true;
+}
+export function listContactOrderRequests(dir) {
+  let names = [];
+  try { names = fs.readdirSync(path.join(dir, CF_ORDERS_DIR)); } catch { return []; }
+  return names.filter((n) => /^cf-[0-9a-f]{24}\.json$/.test(n)).sort().map((n) => readJson(path.join(dir, CF_ORDERS_DIR, n), null)).filter((r) => r && CF_KEY_RE.test(String(r.key)));
+}
+// ---------- TF-080: payment_links.json (Schreiber: Repair-Service) ----------
+// Stripe-Checkout je Auftrag für die Zahlungs-Mail im Kontaktformular-Verlauf (Mail-Worker sendet sie genau einmal): nur Statuswort, Modus,
+// Session-Nummer (seq), Ablauf und – NUR solange offen – der Stripe-gehostete Checkout-Link. Nie Schlüssel, Beträge anderer Kunden, Kartendaten.
+export const PAYMENT_LINKS_FILE = "payment_links.json";
+export const PAYMENT_LINK_STATUSES = Object.freeze(["PENDING", "OPEN", "PAID", "EXPIRED", "EXPIRED_FINAL", "NOT_CONFIGURED", "FAILED", "TEST_BLOCKED", "REVIEW"]);
+export const readPaymentLinks = (dir) => (dir ? readJson(path.join(dir, PAYMENT_LINKS_FILE), null) : null) || { v: 1, links: {} };
+export function writePaymentLinks(dir, links, { now = new Date() } = {}) {
+  if (!dir) return false;
+  const cur = readPaymentLinks(dir);
+  if (JSON.stringify(cur.links || {}) === JSON.stringify(links)) return false;
+  writeAtomic(path.join(dir, PAYMENT_LINKS_FILE), { v: 1, at: now.toISOString(), links });
+  return true;
+}
+export const readContactOrderResults = (dir) => (dir ? readJson(path.join(dir, CF_RESULTS_FILE), null) : null) || { v: 1, results: {} };
+export function writeContactOrderResults(dir, results, { now = new Date() } = {}) {
+  const cur = readContactOrderResults(dir);
+  if (JSON.stringify(cur.results || {}) === JSON.stringify(results)) return false;
+  writeAtomic(path.join(dir, CF_RESULTS_FILE), { v: 1, at: now.toISOString(), results });
+  return true;
+}

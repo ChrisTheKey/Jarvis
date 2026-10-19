@@ -143,6 +143,8 @@ export const leadList = (e) => (e.bucket === "BLOCKED_DNC" ? "DO_NOT_CONTACT" : 
 export function eligibility(lead, { consent = null, dncSet = null, now = new Date(), legal = null, lastCallAt = null } = {}) {
   const r = (decision, bucket, code, basis = null) => ({ decision, bucket, code, basis });
   if (!lead || typeof lead !== "object") return r("BLOCKED", "BLOCKED_OTHER", "UNKNOWN_LEAD");
+  // TF-080: E2E-Testlead – nie anrufbar (kein Mensch, keine KI, kein Twilio/LiveKit), unabhängig von allen übrigen Merkmalen.
+  if (lead.is_test === true || lead.contact_form?.is_test === true || /^test-cf-/.test(String(lead.lead_id || ""))) return r("BLOCKED", "BLOCKED_OTHER", "TEST_BLOCKED");
   const market = marketOf(lead);
   if (isDnc(lead, consent, dncSet)) return r("BLOCKED", "BLOCKED_DNC", "DNC");
   // TF-077B: ausdrücklich belegtes Telefonbuch-Sternchen (search.ch tel:nopromo → PHONEBOOK_STAR_PRESENT) bzw. Verzeichnis-Status STAR → nie ein

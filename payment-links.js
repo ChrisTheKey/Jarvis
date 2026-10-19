@@ -1,4 +1,4 @@
-// TF-079: Zahlungslinks für die beiden Schweizer Festpreis-Angebote – EINE Quelle, ohne Abhängigkeiten ausser pricing.js.
+// TF-081: Zahlungslinks für die beiden Schweizer Festpreis-Angebote – EINE Quelle, ohne Abhängigkeiten ausser pricing.js.
 //
 //   REPAIR_CHECK_150  «Check & Anleitung»  CHF 150  → Stripe Payment Link (CHECK)
 //   REPAIR_FIX_500    «Check & Reparatur»  CHF 480  → Stripe Payment Link (FIX)

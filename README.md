@@ -177,7 +177,7 @@ Jede Einordnung enthält `offer_class`, `confidence`, `evidence[]`, `rationale`,
 
 Das HUD erkennt automatisch LOCAL (Local Core erreichbar, PC-Zugriff) oder CLOUD (nur Gespräch) und prüft alle 20 Sekunden erneut – es wechselt selbst zurück auf LOCAL, sobald der Core online ist.
 
-## TF-079 – Zahlungslinks und Nachfassen
+## TF-081 – Zahlungslinks und Nachfassen
 `payment-links.js` hält die zwei Stripe-Links (CHF 150 / 480). Kontaktformular-Antworten und das Nachfassen unbezahlter bestätigter CH-Aufträge (`payment-followup.js`, Standard AUS)
 senden den Link mit `client_reference_id`; Kundenmails laufen über den Alias `sender.sendAs`. Config: `sender.sendAs`, `paymentFollowup.enabled`, optional `forms[].payment_links`.
-Stripe-Webhook: nur `checkout.session.completed` aktivieren. Details: PROJECT_STATE.md (TF-079).
+Stripe-Webhook: nur `checkout.session.completed` aktivieren. Details: PROJECT_STATE.md (TF-081).

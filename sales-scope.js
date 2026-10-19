@@ -19,11 +19,13 @@ export const ASSIGNABLE = Object.freeze(["giuliano", "mario", "damiano"]);
 export const ASSIGNMENT_SOURCES = Object.freeze(["tf063_fair_distribution", "owner_reassign"]);
 
 export const leadMarket = (l) => (l?.market === "VN" ? "VN" : "CH");
+// TF-080: E2E-Testleads gehören niemandem (keine Verkäufer-Zuweisung, keine Verkäufer-Kennzahlen) und sind nur für den Owner sichtbar.
+const isTest = (l) => l?.is_test === true || l?.contact_form?.is_test === true || /^test-cf-/.test(String(l?.lead_id || ""));
 export const emptyAssignments = () => ({ schema: 1, created_at: null, distribution: null, assignments: {}, audit: [] });
 const asgOf = (doc) => (doc && typeof doc === "object" && doc.assignments && typeof doc.assignments === "object" ? doc.assignments : {});
 
 export function sellerOf(lead, doc) {
-  if (!lead) return null;
+  if (!lead || isTest(lead)) return null;
   if (leadMarket(lead) === "VN") return VN_SELLER;
   const a = asgOf(doc)[lead.lead_id];
   return a && a.market !== "VN" && ASSIGNABLE.includes(a.assigned_user_id) ? a.assigned_user_id : CH_DEFAULT_SELLER;
@@ -31,6 +33,7 @@ export function sellerOf(lead, doc) {
 export function canSeeLead(actor, lead, doc) {
   if (!actor || !lead) return false;
   if (actor.role === "OWNER") return true;
+  if (isTest(lead)) return false;
   const m = leadMarket(lead);
   if (actor.role === "SALES_AGENT_VN") return m === "VN" && sellerOf(lead, doc) === actor.user_id;
   if (actor.role === "SALES_MANAGER_CH" || actor.role === "SALES_AGENT_CH") return m === "CH" && sellerOf(lead, doc) === actor.user_id;
@@ -52,7 +55,7 @@ const CLOSED = new Set(["CUSTOMER", "CLOSED", "NOT_INTERESTED", "DO_NOT_CONTACT"
 const LEVEL_RANK = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 // Geeignet: offener, aktueller Schweizer Vertriebslead mit brauchbarem Geschäftskontakt – nie DNC/Opt-out/Suppression/Kunde/abgeschlossen.
 export function eligibleForPortfolio(l) {
-  if (!l || leadMarket(l) !== "CH") return false;
+  if (!l || leadMarket(l) !== "CH" || isTest(l)) return false;
   if (l.do_not_contact || l.dnc_source || l.customer || l.archived) return false;
   if (CLOSED.has(l.sales_stage) || l.call_status === "DO_NOT_CALL" || l.call_status === "NOT_INTERESTED") return false;
   if (l.history_badge === "HISTORICAL") return false; // nur aktuelle Leads (erneut verifizierte historische Funde zählen)

@@ -73,6 +73,7 @@ import { combineDecisions, rollbackMatchesBaseline, safeSnapshot, browserRuntime
 import { REPAIR_FINDINGS_FILE, normalizeIssue, dedupeFindings, rankFindings } from "./site-findings.js";
 import { contentQuestionLines, buildReissueMail, MAX_AUTO_REISSUES, localeOf, ONBOARDING_CLASS } from "./onboarding-core.js";
 import { readBrief, listReissueRequests } from "./onboarding-store.js";
+import { e2eConfig, isE2eDomain } from "./e2e-test.js";
 import { cleanPlatform, cleanStated, resolvePlatform, connectorOf, nameOf, accessGuide, hostingQuestionLines } from "./hosting-detect.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
@@ -221,16 +222,57 @@ export function createRepairOrder(store, { domain, website = null, lead_id = nul
 // Bestätigter CHF-480-Auftrag (TF-046): der bewusste Aufruf durch Chris ist die betriebliche Bestätigung (wie
 // check-150-workflow --create-confirmed). Direktverkauf (sales.js recordDirectSale, Quelle direct_customer) + Auftrag; eine
 // Anfrage allein erzeugt NIE einen Auftrag. VERKAUF != ZAHLUNG: der Auftrag wartet danach auf kumulativ CHF 240.
-export function createConfirmedRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, date = null, now = new Date() } = {}) {
+// TF-079: viaCustomerMail = Bestätigung kam als ausdrückliche Kundenmail im Kontaktformular-Verlauf (Beleg statt Chris-CLI).
+export function createConfirmedRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, date = null, viaCustomerMail = false, now = new Date() } = {}) {
   if (!DELIVERY_EMAIL_RE.test(String(delivery_email || ""))) throw new Error("Verifizierte Kundenadresse (--email) des bestätigten Auftrags erforderlich.");
   const sales = store.read("sales.json", { records: {} });
   const records = recordDirectSale(sales.records || {}, { domain, offer: REPAIR_OFFER, delivery_email, company, contact_name, website, date: date || undefined, now }); // validiert, schreibt nicht
+  const ds = records[normDomain(domain)]?.direct_sale;
+  if (viaCustomerMail && ds) Object.assign(ds, { basis: "customer_email_confirmation", confirmed_by: "customer_contact_form" });
   const order = createRepairOrder(store, { domain, website, company, delivery_email, contact_name, now }); // wirft bei offenem Auftrag
   store.write("sales.json", { ...sales, records });
   const sale = records[normDomain(domain)]?.sale;
   order.confirmed = { source: "sales.json", sale_date: sale?.sale_date || null, confirmed_at: now.toISOString() };
   order.state_history.push({ at: now.toISOString(), from: order.state, to: order.state, reason: `ORDER_CONFIRMED – Direktverkauf ${REPAIR_OFFER} erfasst (CHF ${OFFERS[REPAIR_OFFER].price}); wartet auf Zahlung` });
   return saveOrder(store, order);
+}
+// TF-079: Kunde hat im Kontaktformular-Thread ausdrücklich «Check & Reparatur» bestätigt (Mail-Worker → onboarding/cf_orders). Gleicher Weg wie
+// createConfirmedRepairOrder (Direktverkauf + Auftrag), Bestätigung belegt als Kundenmail statt Chris-CLI. Die Bestätigung des AUFTRAGS ist KEINE
+// Reparaturfreigabe: customer_authorized_repair bleibt false, bis der Kunde im sicheren Formular für genau diese Domain zustimmt. VERKAUF != ZAHLUNG.
+// TF-080: test = { run_id } (E2E-Testlauf, vom Repair-Service gegen JARVIS_E2E_TEST_* geprüft) → Test-Auftrag mit Pflicht-Kennzeichen test_order/
+// environment TEST/test_run_id, KEIN Direktverkauf in sales.json (kein Umsatz, keine Verkäuferstatistik), Provisionssatz 0.
+export function createContactFormRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, lead_id = null, contact_form_key, confirmed_at, test = null, now = new Date() } = {}) {
+  if (!/^cf:[0-9a-f]{24}$/.test(String(contact_form_key || ""))) throw new Error("Kontaktformular-Kennung fehlt.");
+  if (test && !/^e2e-[0-9a-f]{12}$/.test(String(test.run_id || ""))) throw new Error("E2E-Testlauf ohne gültige test_run_id.");
+  const order = test ? createTestRepairOrder(store, { domain, website, company, delivery_email, contact_name, run_id: test.run_id, now })
+    : createConfirmedRepairOrder(store, { domain, website, company, delivery_email, contact_name, viaCustomerMail: true, now });
+  if (lead_id) order.lead_id = lead_id;
+  order.confirmed = { ...order.confirmed, source: "contact_form_customer_confirmation", customer_confirmed_at: confirmed_at || now.toISOString() };
+  order.contact_form = { key: contact_form_key, confirmed_at: confirmed_at || now.toISOString(), source: "customer_reply_email" };
+  order.onboarding_required = true; // Kunden-Dialog (Brief-Gate) läuft im Kontaktformular-Thread weiter
+  order.state_history.push({ at: now.toISOString(), from: order.state, to: order.state, reason: "Auftrag vom Kunden im Kontaktformular-Verlauf ausdrücklich bestätigt (keine Reparaturfreigabe) – wartet auf Zahlung" });
+  return saveOrder(store, order);
+}
+function createTestRepairOrder(store, { domain, website, company, delivery_email, contact_name, run_id, now }) {
+  if (!DELIVERY_EMAIL_RE.test(String(delivery_email || ""))) throw new Error("Verifizierte Test-Postfachadresse erforderlich.");
+  const order = createRepairOrder(store, { domain, website, company, delivery_email, contact_name, now });
+  Object.assign(order, { test_order: true, environment: "TEST", test_run_id: run_id, commission_rate_bps: 0,
+    confirmed: { source: "e2e_test_confirmation", sale_date: null, confirmed_at: now.toISOString() } });
+  order.state_history.push({ at: now.toISOString(), from: order.state, to: order.state, reason: `E2E-TEST ${run_id} – Test-Auftrag (kein Verkauf, kein Umsatz, keine Provision); nur Stripe-TESTzahlung, nur Sandbox-Domain` });
+  return saveOrder(store, order);
+}
+export const isTestOrder = (o) => o?.test_order === true || o?.environment === "TEST";
+// TF-080: Stripe meldet Rückerstattung/Streitfall zu einer bereits verbuchten Anzahlung → Auftrag anhalten (PAYMENT_REVIEW_REQUIRED, Chris entscheidet).
+// Nie automatisch erstatten, nie automatisch weiterarbeiten. Bereits abgeschlossene/stornierte Aufträge bleiben unverändert (nur Prüfeintrag).
+export function holdForPaymentReview(store, orderId, { reason, now = new Date() } = {}) {
+  const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  const order = data.orders?.[orderId];
+  if (!order) return { held: false, code: "UNKNOWN_ORDER" };
+  if (COMPLETED_STATES.includes(order.state) || order.state === REPAIR_CANCELLED || order.state === "PAYMENT_REVIEW_REQUIRED") return { held: false, code: "ALREADY_FINAL", state: order.state };
+  order.blocked_reason = String(reason).slice(0, 200);
+  transition(order, "PAYMENT_REVIEW_REQUIRED", `${String(reason).slice(0, 160)} – kein automatischer Rollback/Refund, Chris entscheidet.`, now);
+  saveOrder(store, order);
+  return { held: true, state: order.state };
 }
 // Stornierter (voided) CHF-480-Verkauf für die Domain des Auftrags (TF-040/TF-046) – dann nie Reparatur oder Lieferung.
 export function repairSaleVoided(store, order = {}) {
@@ -395,7 +437,8 @@ function destroyOrderSecret(store, order, now) {
 // Zugangsprofil automatisch (ACCESS_PROFILE_PREFLIGHT). Ohne preflight bleibt alles wie in TF-042 (Profil von Chris).
 export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir), adapters = {}, auditor = null, retester = null,
   gmail = null, intake = null, router = null, preflight = null, alert = null, browserValidator = null, requireBrowser = false, autoDeliver = false,
-  onboardingDir = null, platformDetector = null, now = () => new Date(), log = () => {} } = {}) {
+  onboardingDir = null, platformDetector = null, e2e = e2eConfig(), now = () => new Date(), log = () => {} } = {}) {
+  // TF-080: e2e (e2e-test.js) – Test-Aufträge laufen nur mit aktivem E2E-Modus UND Domain aus JARVIS_E2E_TEST_DOMAINS (vor jedem Schritt geprüft).
   // TF-071: platformDetector(order) → Befund aus öffentlichen Signalen (hosting-probe.js). Fehlt er oder ist der Befund unsicher,
   // fragt Jarvis den Kunden (WAITING_FOR_HOSTING_INFO) – nie wird ein Anbieter erraten.
   // TF-066: onboardingDir (gemeinsames Outbox-Unterverzeichnis) aktiviert den Kunden-Onboarding-Dialog: Inhaltsfrage in der ersten
@@ -674,6 +717,12 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     const t = now();
     const adapter = adapterOf(order);
 
+    // TF-080: E2E-Test-Auftrag nur gegen die Sandbox-Allowlist bei aktivem E2E-Modus – sonst kein Link, kein Zugang, keine Änderung (TEST_ACCESS_BLOCKED).
+    if (!TERMINAL.has(order.state) && isTestOrder(order) && (!isE2eDomain(e2e, order.domain) || !/^e2e-[0-9a-f]{12}$/.test(String(order.test_run_id || "")))) {
+      await informChris(order, "test_access_blocked", "E2E-Test ausserhalb der Sandbox-Allowlist bzw. E2E-Modus aus");
+      manual(order, "TEST_ACCESS_BLOCKED: E2E-Test-Auftrag ohne aktiven E2E-Modus bzw. Domain nicht in JARVIS_E2E_TEST_DOMAINS – kein Zugang, keine Reparatur.");
+      destroyOrderSecret(store, order, t); saveOrder(store, order); return false;
+    }
     // TF-046: stornierter (voided) Verkauf → nie Zugangs-Anfrage, Reparatur oder Lieferung. Schon verändert → Chris entscheidet.
     if (!TERMINAL.has(order.state) && repairSaleVoided(store, order)) {
       if (changedWebsite(order)) { await informChris(order, "sale_voided", "Verkauf storniert, Website bereits verändert"); manual(order, "Verkauf storniert (voided), Website wurde bereits verändert – kein automatischer Rollback, keine Lieferung; Chris entscheidet."); return false; }
@@ -1428,10 +1477,12 @@ export function reportUnsafe(text = "", order = {}) {
 // ---------- Status (nur Zähler, keine Secrets/Evidence – sicher für Dashboard/Cloud) ----------
 export function repairOrdersStatus(dir = WORKER_DIR) {
   const data = createStore(dir).read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
-  const orders = Object.values(data.orders || {});
+  const all = Object.values(data.orders || {});
+  // TF-080: Geschäftszähler nur echte Aufträge; Test-Aufträge separat (open bleibt für den Lauf beide – sonst liefe ein E2E-Test nie).
+  const orders = all.filter((o) => !isTestOrder(o));
   const states = {};
   for (const o of orders) states[o.state] = (states[o.state] || 0) + 1;
-  return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state)).length, states,
+  return { total: orders.length, open: all.filter((o) => !TERMINAL.has(o.state)).length, test_orders: all.length - orders.length, states,
     waiting_authorization: states.AUTHORIZATION_REQUIRED || 0, waiting_payment: states.PAYMENT_REQUIRED || 0,
     access_requested: states.ACCESS_REQUESTED || 0, payment_review: states.PAYMENT_REVIEW_REQUIRED || 0,
     ready_for_delivery: states.READY_FOR_DELIVERY || 0, cancelled: states[REPAIR_CANCELLED] || 0, completed_with_manual_items: states[COMPLETED_WITH_MANUAL_ITEMS] || 0,
@@ -1474,7 +1525,7 @@ export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domai
   "repaired", "needs_review", "backup_ok", "desktop_retest", "mobile_retest", "production", "report_available",
   "paid_chf", "payment_required_chf", "rest_to_deposit_chf", "payment_status", "payment_ok", "access_requested", "access_received",
   "access_type", "adapter", "access_ok", "rollback_ok", "auto_fixable", "manual_review", "profile_status", "host_key_verified",
-  "browser_desktop", "browser_mobile", "browser_regression", "authorized", "delivery_status", "manual_items_open", "created_at", "updated_at"]);
+  "browser_desktop", "browser_mobile", "browser_regression", "authorized", "delivery_status", "manual_items_open", "created_at", "updated_at", "test_order", "environment"]);
 // TF-045: Browser-Gate fürs Dashboard – nur feste Wörter (nie URLs, Screenshots, Logs, Codes oder Requests).
 const gateWord = (v) => (v === "JA" || v === "NEIN" ? v : "WARTET");
 const regressionWord = (g) => (["KEINE", "GEFUNDEN", "ROLLBACK"].includes(g.regression) ? g.regression : null);
@@ -1523,6 +1574,8 @@ export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
         // TF-055: offene manuelle Punkte (nur Zahl) – sobald der Auftrag den Retest bestanden hat.
         manual_items_open: ["READY_FOR_DELIVERY", ...COMPLETED_STATES].includes(o.state) ? manualItems(o).length : null,
         created_at: o.created_at, updated_at: o.updated_at,
+        // TF-080: Test-Kennzeichen – Provision/Umsatz/Verkäufer-Kennzahlen lassen Test-Aufträge weg (commission-ledger, sales-api).
+        test_order: isTestOrder(o), environment: isTestOrder(o) ? "TEST" : "LIVE",
       };
     });
   const status = repairOrdersStatus(dir);
@@ -1567,7 +1620,7 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
 // TF-046: autoDeliver = true – nach bestandenem Abschluss-Gate geht der Bericht genau einmal an den Kunden (CUSTOMER_ORDER_FULFILLMENT).
 // auditor/alert nur für isolierte Tests (Lab-Auditor, Chris-Hinweis-Attrappe); im Produktivbetrieb null = Standard.
 export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, browserValidator = null, requireBrowser = true,
-  autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, onboardingDir = null, platformDetector = null, log = createLogger(dir) } = {}) {
+  autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, onboardingDir = null, platformDetector = null, e2e = e2eConfig(), log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
@@ -1586,7 +1639,7 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
     const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => (o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED")
       || (o.state === "HOST_KEY_CONFIRMATION_REQUIRED" && o.host_key_request?.sent_at && !o.host_key_request.received_at));
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
-    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, onboardingDir, platformDetector, log });
+    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, onboardingDir, platformDetector, e2e, log });
     return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }
@@ -1600,7 +1653,7 @@ export function repairFindingsExport(dir = WORKER_DIR, { now = new Date() } = {}
   const data = createStore(dir).read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
   const out = {};
   for (const o of Object.values(data.orders || {})) {
-    if (!["READY_FOR_DELIVERY", ...COMPLETED_STATES].includes(o.state)) continue;
+    if (!["READY_FOR_DELIVERY", ...COMPLETED_STATES].includes(o.state) || isTestOrder(o)) continue; // TF-080: Sandbox-Tests nie ins Verkaufs-CRM
     const at = o.validation?.audited_at || o.retest?.tested_at;
     const d = normDomain(o.domain);
     if (!d || !at) continue;

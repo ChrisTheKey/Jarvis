@@ -38,10 +38,10 @@ export const NEVER_SEND_MODES = Object.freeze([COLD_DRAFT_MODE, CONTACT_FORM_DRA
 export const CONTACT_FORM_AUTO_REPLY_MODE = "CONTACT_FORM_AUTO_REPLY";
 // Einzige automatisch sendbare Service-Klassen für echte, bezahlte Kundenaufträge (TF-041, nach Zahlungsschwelle).
 // TF-066: + CUSTOMER_ONBOARDING_DIALOGUE – transaktionaler Dialog zu einem bestätigten, bezahlten Auftrag (nur im Auftrags-Thread).
-// TF-079: + CUSTOMER_PAYMENT_REQUEST – Zahlungsanfrage/Erinnerung (mit Stripe-Link) zu einem bestätigten, noch unbezahlten Auftrag (payment-followup.js).
+// TF-081: + CUSTOMER_PAYMENT_REQUEST – Zahlungsanfrage/Erinnerung (mit Stripe-Link) zu einem bestätigten, noch unbezahlten Auftrag (payment-followup.js).
 export const SERVICE_MESSAGE_CLASSES = Object.freeze(["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE", "CUSTOMER_PAYMENT_REQUEST"]);
 
-// TF-079: Absenderadresse für KUNDEN-Mails (Service-Klassen, Kontaktformular-Antworten): From + Reply-To = z. B. chris@helvetic-webdesign.ch.
+// TF-081: Absenderadresse für KUNDEN-Mails (Service-Klassen, Kontaktformular-Antworten): From + Reply-To = z. B. chris@helvetic-webdesign.ch.
 // Voraussetzung in Gmail: die Adresse ist als «Senden als»-Alias des Jarvis-Kontos eingerichtet und bestätigt – sonst ersetzt Gmail das From
 // durch die Kontoadresse (kein Fehler, kein Fehlversand); Reply-To bleibt, Kundenantworten gehen also trotzdem an die Alias-Adresse und müssen
 // dort im Jarvis-Postfach ankommen (Weiterleitung/Alias). Cold-Entwürfe und Antworten in Cold-Threads bleiben unverändert.
@@ -334,7 +334,7 @@ async function discardMismatch(draftId, threadId) {
 export async function createDraft(fields) {
   const reg = loadRegistry();
   const lid = await labelId(reg);
-  // TF-079: Absender-Alias nur für Kundenmails (Kontaktformular-Antworten, Service-Klassen) – nie für Cold-Entwürfe.
+  // TF-081: Absender-Alias nur für Kundenmails (Kontaktformular-Antworten, Service-Klassen) – nie für Cold-Entwürfe.
   const customerFacing = [CONTACT_FORM_DRAFT_MODE, CONTACT_FORM_AUTO_REPLY_MODE].includes(fields.mode) || SERVICE_MESSAGE_CLASSES.includes(fields.messageClass);
   const draft = await gmail("POST", "/drafts", { message: { raw: rawMessage({ ...fields, from: customerFacing ? sendAs : null }), ...(fields.threadId && { threadId: fields.threadId }) } });
   if (fields.threadId && draft.message?.threadId !== fields.threadId) await discardMismatch(draft.id, fields.threadId);
@@ -606,7 +606,9 @@ let inboundAllow = new Set();
 export async function searchInbound({ query, max = 20 } = {}) {
   const m = String(query || "").match(INBOUND_QUERY_RE);
   if (!m) throw new Error("Kontaktformular-Suche nur mit Allowlist-Anfrage.");
-  inboundAllow = new Set(m[1].toLowerCase().split(" OR "));
+  // TF-077D: erst (case-insensitiv) splitten, dann normalisieren – toLowerCase() vor split(" OR ") liess Mehr-Anbieter-Anfragen
+  // als einen einzigen String stehen, sodass kein Absender mehr exakt passte.
+  inboundAllow = new Set(m[1].split(/\s+OR\s+/i).map((x) => x.trim().toLowerCase()).filter(Boolean));
   const q = new URLSearchParams({ q: query, maxResults: String(Math.max(1, Math.min(100, Number(max) || 20))) });
   const r = await gmail("GET", `/messages?${q}`);
   return (r.messages || []).map((x) => x.id).filter(Boolean);

@@ -165,10 +165,12 @@ export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = 
     try { fs.writeFileSync(claimFile, JSON.stringify({ at: now().toISOString(), message_class: rq.message_class }), { flag: "wx", mode: 0o600 }); }
     catch (e) { if (e.code === "EEXIST") continue; throw e; }
     let d;
+    const fresh = () => gmail.createDraft({ to: rq.to, subject: rq.subject, body: rq.body, messageClass: rq.message_class, ...(rq.order_id && onboarding ? { orderId: rq.order_id } : {}) });
     try {
       d = route?.threadId
         ? await gmail.replyDraftInThread(route.threadId, { to: rq.to, body: rq.body, messageClass: rq.message_class, orderId: rq.order_id })
-        : await gmail.createDraft({ to: rq.to, subject: rq.subject, body: rq.body, messageClass: rq.message_class, ...(rq.order_id && onboarding ? { orderId: rq.order_id } : {}) });
+          .catch((e) => { if (!route.fallbackNewThread || TRANSIENT_RE.test(String(e.message))) throw e; route = { newThread: true }; return fresh(); }) // TF-079: Kontaktformular-Thread nicht nutzbar → eigener Auftrags-Thread
+        : await fresh();
     }
     catch (e) {
       // Vor dem Versand: vorübergehender Fehler → Claim zurücknehmen, nächster Durchlauf; sonst endgültig fehlgeschlagen.

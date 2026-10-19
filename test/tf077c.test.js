@@ -190,7 +190,7 @@ test("ohne Registrierung oder ohne Site-Verifikation: nur Entwurf, nie Versand",
   assert.equal(sends().length, 0);
 });
 
-test("Test-Einsendung (Eigentümername oder «testrun/testlauf/ohne echtgeld»): Antwort wie gewohnt, aber KEIN CRM-Lead, is_test im Status", async () => {
+test("Test-Einsendung (Eigentümername oder «testrun/testlauf/ohne echtgeld»): Antwort wie gewohnt, TF-080: CRM-Eintrag nur als TEST (eigene Identität), is_test im Status", async () => {
   assert.equal(cf.isTestSubmission({ name: "Chris Kälin", ownAddresses: [MAILBOX] }), true, "Umlaut-tolerant: Kälin ↔ kaelin");
   assert.equal(cf.isTestSubmission({ name: "Kaelin Chris", ownAddresses: [MAILBOX] }), true, "Reihenfolge egal");
   assert.equal(cf.isTestSubmission({ name: "Chris Meier", ownAddresses: [MAILBOX] }), false);
@@ -206,6 +206,11 @@ test("Test-Einsendung (Eigentümername oder «testrun/testlauf/ohne echtgeld»):
   const byMail = Object.fromEntries(items().map((x) => [x.customer_email, x]));
   assert.deepEqual([byMail["chris.test@kaelin-test.ch"].is_test, byMail["anna@echt-firma.ch"].is_test, byMail["bea@echt-firma2.ch"].is_test], [true, true, false]);
   assert.deepEqual([byMail["chris.test@kaelin-test.ch"].state, byMail["anna@echt-firma.ch"].state], [cf.STATES.SENT, cf.STATES.SENT]);
-  const leads = Object.keys(readJ(cf.CONTACT_FORMS_PUBLIC_FILE).leads);
-  assert.deepEqual(leads, ["echt-firma2.ch"], "nur die echte Anfrage erzeugt einen CRM-Lead");
+  // TF-080 (ersetzt TF-077C «kein CRM-Lead»): Tests erscheinen als TEST-Einträge test-cf-<hash>, nie unter der echten Domain/Adresse.
+  const pub = readJ(cf.CONTACT_FORMS_PUBLIC_FILE).leads;
+  const real = Object.keys(pub).filter((k) => !k.startsWith("test-cf-")), tests = Object.values(pub).filter((x) => x.is_test === true);
+  assert.deepEqual(real, ["echt-firma2.ch"], "nur die echte Anfrage erzeugt einen echten CRM-Lead");
+  assert.equal(tests.length, 2);
+  for (const x of tests) assert.deepEqual([x.environment, /^e2e-[0-9a-f]{12}$/.test(x.test_run_id), x.e2e_run, x.test_historical], ["TEST", true, false, false], "TEST, ohne E2E-Freigabe kein aktiver Lauf");
+  assert.ok(!Object.keys(pub).includes("echt-firma.ch") && !Object.keys(pub).includes("kaelin-test.ch"), "nie unter der Domain eines echten Leads");
 });

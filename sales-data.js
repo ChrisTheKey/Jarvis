@@ -2,7 +2,7 @@
 // die Edge-Function (Verkäufer-Kontext). Ohne Node-Abhängigkeiten; Netlify-Blobs-Adapter in netlifySalesData().
 import { scopeLeads, canSeeLead, emptyAssignments } from "./sales-scope.js";
 import { netlifyBlobStore } from "./shared-state.js";
-import { crmActive } from "./public/crm-model.js";
+import { crmActive, isTestLead } from "./public/crm-model.js";
 
 export function createSalesData({ getViewStore, getVnViewStore = null, getSalesStore, getControlStore = null }) {
   const read = async (get) => (get ? (await (await get()).get()).state : null);
@@ -13,7 +13,8 @@ export function createSalesData({ getViewStore, getVnViewStore = null, getSalesS
     return [...(v?.leads || []).map((l) => ({ ...l, market: chMarket(l) })), ...(vn?.leads || []).map((l) => ({ ...l, market: "VN" }))];
   }
   // TF-076: nur aktive CRM-Leads (≥ 1 verifizierter Website-Fehler) – Verkäufer-Zähler, Chat-Kontext, neue Aufträge.
-  const leads = async () => (await allLeads()).filter(crmActive);
+  // TF-080: E2E-Testleads nie in Verkäufer-Zählern, Chat-Kontext oder neuen Aufträgen (nur im CRM sichtbar).
+  const leads = async () => (await allLeads()).filter(crmActive).filter((l) => !isTestLead(l));
   const assignments = async () => (await read(() => getSalesStore("assignments"))) || emptyAssignments();
   return {
     leads, assignments,
