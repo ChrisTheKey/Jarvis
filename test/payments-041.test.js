@@ -428,7 +428,7 @@ test("CHF-150 E2E: confirmed+74 → 0 Audit/0 Send; +1 → genau 1 CUSTOMER_ORDE
 test("COLD OUTREACH unverändert: COLD_LEAD_DRAFT_ONLY bleibt unsendbar; automatisch sendbar sind nur die zwei Service-Klassen", async () => {
   const g = await import("../gmail.js");
   // TF-066: dritte transaktionale Klasse für den Auftragsdialog (nur im gebundenen Auftrags-Thread, nie Cold/Marketing).
-  assert.deepEqual(g.SERVICE_MESSAGE_CLASSES, ["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE"]);
+  assert.deepEqual(g.SERVICE_MESSAGE_CLASSES, ["CUSTOMER_ORDER_FULFILLMENT", "CUSTOMER_ACCESS_REQUEST", "CUSTOMER_ONBOARDING_DIALOGUE", "CUSTOMER_PAYMENT_REQUEST"]);
   assert.equal(g.COLD_DRAFT_MODE, "COLD_LEAD_DRAFT_ONLY");
   assert.throws(() => g.assertSendable("d1", { drafts: { d1: { mode: "COLD_LEAD_DRAFT_ONLY" } } }), /nie/);
   const src = fs.readFileSync(path.join(ROOT, "gmail.js"), "utf8");
