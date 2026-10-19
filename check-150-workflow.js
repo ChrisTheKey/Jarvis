@@ -33,7 +33,7 @@ import { offerInfo, isCheckOffer, SELLER_COMMISSION_BPS } from "./pricing.js";
 import { isVnOrder, vnFindingText, vnInstructionsFor, pageLabelVi, buildVnCheckReport, buildVnCheckDeliveryDraft } from "./vn-customer-texts.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { fullSiteAudit, detectStack, normDomain, isTestOrder } from "./repair-workflow.js";
-import { TEST_RUN_ID_RE, e2eConfig, isE2eDomain, isE2eMailbox } from "./e2e-test.js";
+import { TEST_RUN_ID_RE, e2eConfig, e2eFulfilmentConfig, isE2eDomain, isE2eMailbox, E2E_SUBJECT_PREFIX } from "./e2e-test.js";
 import { ONBOARDING_CLASS, buildCheckIntroMail } from "./onboarding-core.js";
 
 export const CHECK150_ORDERS_FILE = "check150_orders.json";
@@ -342,8 +342,46 @@ export function buildDeliveryDraft(order, reportText) {
 }
 
 // ---------- Engine ----------
+// ---------- TF-088: kontrollierter E2E-Erfüllungstest für Testaufträge (Standard AUS) ----------
+// Ein Testauftrag durchläuft Audit → Bericht → Outbox → Mail-Worker NUR, wenn ALLES zutrifft (sonst bleibt er unberührt wie seit TF-084):
+//   - JARVIS_E2E_TEST_ENABLED + JARVIS_E2E_FULFILMENT_ENABLED=true + Domain- UND Postfach-Allowlist (Server-Konfiguration, keine fest codierte Freigabe)
+//   - der Auftrag ist ein CH-CHF-150-Testauftrag (test_order, environment TEST, gültige test_run_id, E2E-Bestätigung – kein Verkauf)
+//   - ausdrückliche Freigabe PRO AUFTRAG (approveE2eFulfilment, CLI), Domain und Lieferadresse stehen JETZT in der Allowlist, website == https://<domain>/
+// Wird vor JEDEM Schritt erneut geprüft (fail closed). Kein Verkauf, kein Umsatz, keine Provision, kein Repair-Pfad; der Versand läuft ausschliesslich
+// über die Repair-Outbox (der Mail-Worker prüft Allowlist + Freigabe unabhängig davon noch einmal).
+export function e2eFulfilmentCheck(order, env = process.env) {
+  const no = (reason) => ({ ok: false, reason });
+  if (!isTestOrder(order) || order.test_order !== true || order.environment !== "TEST") return no("kein Testauftrag");
+  if (order.offer_class !== CHECK150_OFFER || order.market === "VN" || isVnOrder(order)) return no("nur CH «Check & Anleitung»");
+  if (!TEST_RUN_ID_RE.test(String(order.test_run_id || "")) || order.confirmed?.source !== "e2e_test_confirmation") return no("keine gültige E2E-Kennung");
+  const cfg = e2eFulfilmentConfig(env);
+  if (!cfg.fulfilmentReady) return no("E2E-Erfüllungsfreigabe nicht aktiv");
+  const d = normDomain(order.domain);
+  if (!d || !isE2eDomain(cfg, d)) return no("Domain nicht in der E2E-Allowlist");
+  if (!isE2eMailbox(cfg, order.delivery_email)) return no("Lieferadresse nicht in der E2E-Allowlist");
+  if (String(order.website || "") !== `https://${d}/`) return no("Website weicht von der Sandbox-Domain ab");
+  return { ok: true };
+}
+export const e2eFulfilmentApproved = (order) => !!order?.e2e_fulfilment?.approved_at;
+// Ausdrückliche Freigabe eines Testauftrags (nur Chris, CLI). Verlangt: alle Konfigurationsbedingungen, ORDER_CONFIRMED, Zahlungsschwelle aus einer
+// Stripe-TESTzahlung bereits erfüllt (keine neue Zahlung), noch nichts gesendet. Schreibt nur das Freigabe-Flag – sonst nichts.
+export function approveE2eFulfilment(store, orderId, { env = process.env, now = new Date() } = {}) {
+  const order = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders?.[orderId];
+  if (!order) throw new Error("Auftrag nicht gefunden.");
+  const chk = e2eFulfilmentCheck(order, env);
+  if (!chk.ok) throw new Error(`E2E_BLOCKED: ${chk.reason}.`);
+  if (order.state !== "ORDER_CONFIRMED") throw new Error(`E2E_BLOCKED: nur ORDER_CONFIRMED kann freigegeben werden (aktuell ${order.state}).`);
+  if (order.delivery_sent_at || order.delivery_send_attempted_at || order.delivery_draft?.draft_id) throw new Error("E2E_BLOCKED: Auftrag hat bereits Lieferdaten – nie ein zweiter Lauf.");
+  if (e2eFulfilmentApproved(order)) throw new Error("E2E_BLOCKED: bereits freigegeben.");
+  const gate = paymentGateForOrder(store, order);
+  if (!gate.satisfied) throw new Error(`E2E_BLOCKED: Zahlungsschwelle nicht erfüllt (${gateText(gate)}) – es wird KEINE neue Zahlung ausgelöst.`);
+  order.e2e_fulfilment = { approved_at: now.toISOString(), approved_by: "cli", run_id: order.test_run_id };
+  order.updated_at = now.toISOString();
+  return saveOrder(store, order);
+}
+
 export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir), gmail = null, auditor = null,
-  onboarding = false, now = () => new Date(), log = () => {} } = {}) {
+  onboarding = false, now = () => new Date(), log = () => {}, env = process.env } = {}) {
   const block = (order, state, reason) => { order.blocked_reason = reason; transition(order, state, reason, now()); return saveOrder(store, order); };
   // TF-066: Onboarding-Start für CHECK – GENAU EINE kurze Nachricht (CUSTOMER_ONBOARDING_DIALOGUE) nach erfüllter Zahlungsschwelle:
   // Zahlung erhalten, kein Zugang nötig, optional ein Bereich, der zusätzlich berücksichtigt werden soll. Blockiert den Check nie;
@@ -361,6 +399,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
     return true;
   };
   const queueIntro = async (order, t) => {
+    if (isTestOrder(order)) return; // TF-088: Testaufträge bekommen nie eine Onboarding-Nachricht
     if (!onboarding || order.onboarding_intro || typeof gmail?.createDraft !== "function" || typeof gmail?.sendDraft !== "function" || !EMAIL_RE.test(String(order.delivery_email || ""))) return;
     const m = buildCheckIntroMail(order);
     try {
@@ -372,7 +411,18 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
   };
 
   async function step(order) {
-    if (isTestOrder(order)) return false; // TF-084: Testaufträge laufen nie durch den Erfüllungs-Workflow (kein Audit, kein Entwurf, keine Mail)
+    // TF-084: Testaufträge laufen nie durch den Erfüllungs-Workflow (kein Audit, kein Entwurf, keine Mail) – ausser TF-088: ausdrücklich freigegebener
+    // E2E-Erfüllungstest (Standard AUS), vor JEDEM Schritt erneut geprüft; Versand nur über die Outbox (Mail-Worker = einzige Sender Authority).
+    const e2e = isTestOrder(order);
+    if (e2e) {
+      if (!e2eFulfilmentApproved(order) || TERMINAL.has(order.state) || WAITING.has(order.state)) return false;
+      const chk = e2eFulfilmentCheck(order, env);
+      if (!chk.ok || typeof gmail?.outbox !== "string") {
+        log("warn", "check150_e2e_blocked", { order_id: order.order_id, reason: chk.ok ? "kein Outbox-Versandweg" : chk.reason });
+        block(order, "MANUAL_REVIEW_REQUIRED", `E2E_BLOCKED: ${chk.ok ? "kein Outbox-Versandweg" : chk.reason} – Testlauf gestoppt, nichts gesendet.`); return false;
+      }
+    }
+    const saleOk = () => (e2e ? true : !!confirmedCheck150Sale(store, order.domain, order.offer_class || CHECK150_OFFER)); // Testauftrag: E2E-Bestätigung (kein Verkauf)
     const t = now();
 
     if (order.state === "ORDER_RECEIVED" || order.state === "BLOCKED_ORDER_NOT_CONFIRMED") {
@@ -390,8 +440,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
       // ZAHLUNGSSCHWELLE (TF-041): Verkauf != Zahlung. Erst wenn kumulativ mindestens CHF 75 (erste Hälfte, payments.js)
       // tatsächlich als eingegangen verbucht sind, beginnt die bezahlte Leistung. Vorher: kein Audit, kein Bericht,
       // keine Anleitung, keine Liefermail. Wird je Lauf neu geprüft; voided/refunded Zahlungen zählen nicht.
-      const sale = confirmedCheck150Sale(store, order.domain, order.offer_class || CHECK150_OFFER);
-      if (!sale) { block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – Auftrag wartet."); return false; }
+      if (!saleOk()) { block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – Auftrag wartet."); return false; }
       const gate = paymentGateForOrder(store, order);
       if (!gate.satisfied) {
         if (order.state !== "BLOCKED_PAYMENT_NOT_RECEIVED") {
@@ -454,13 +503,14 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
         transition(order, "DELIVERY_SENDING", "Lieferentwurf bereits vorhanden (gleiche Berichtsversion)", t); saveOrder(store, order); return true;
       }
       const text = order.report_text_file && fs.existsSync(order.report_text_file) ? fs.readFileSync(order.report_text_file, "utf8") : buildCheck150Report(order, { now: t }).text;
-      const { subject, body, inline } = buildDeliveryDraft(order, text);
+      let { subject, body, inline } = buildDeliveryDraft(order, text);
+      if (e2e) { subject = E2E_SUBJECT_PREFIX + subject; body = `*** E2E-TESTLAUF (Sandbox-Domain, Stripe-Testzahlung) – keine echte Kundenmail ***\n\n${body}`; }
       try {
         if (order.delivery_draft?.draft_id && typeof gmail.updateDraft === "function") {
           await gmail.updateDraft(order.delivery_draft.draft_id, { subject, body });
           order.delivery_draft = { ...order.delivery_draft, report_hash: order.report_text_hash, inline, updated_at: t.toISOString() };
         } else {
-          const d = await gmail.createDraft({ to: order.delivery_email, subject, body, messageClass: FULFILLMENT_CLASS });
+          const d = await gmail.createDraft({ to: order.delivery_email, subject, body, messageClass: FULFILLMENT_CLASS, ...(e2e ? { e2eRunId: order.test_run_id } : {}) });
           order.delivery_draft = { draft_id: d.draftId, to: order.delivery_email, message_class: FULFILLMENT_CLASS,
             report_hash: order.report_text_hash, inline, created_at: t.toISOString() };
           order.delivery_draft_created_at = t.toISOString();
@@ -477,7 +527,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
     if (order.state === "DELIVERY_SENDING") {
       // Automatischer Versand der Service-E-Mail an den BESTÄTIGTEN Kunden (TF-041) – unmittelbar davor wird fail closed
       // erneut geprüft: Verkauf weiterhin bestätigt (nicht voided) UND Zahlungsschwelle weiterhin erfüllt.
-      if (!confirmedCheck150Sale(store, order.domain, order.offer_class || CHECK150_OFFER)) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – kein Versand."); return false; }
+      if (!saleOk()) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_ORDER_NOT_CONFIRMED", "Verkauf nicht mehr bestätigt (z. B. storniert) – kein Versand."); return false; }
       const gate = paymentGateForOrder(store, order);
       order.payment = gate;
       if (!gate.satisfied) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_PAYMENT_NOT_RECEIVED", `Zahlungsschwelle nicht mehr erfüllt (${gateText(gate)}) – kein Versand.`); return false; }
@@ -518,7 +568,8 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
       order.delivery_status = "sent";
       order.delivery_sent_at = t.toISOString();
       order.delivery_message_class = FULFILLMENT_CLASS; // Service-Mail eines bezahlten Auftrags – nie Cold-Outreach
-      log("info", "check150_delivery_sent", { order_id: order.order_id });
+      if (e2e) order.e2e_fulfilment = { ...order.e2e_fulfilment, delivered_at: t.toISOString() };
+      log("info", "check150_delivery_sent", { order_id: order.order_id, ...(e2e ? { e2e: true } : {}) });
       transition(order, "COMPLETED", "Service-E-Mail automatisch an den bestätigten Kunden gesendet (Zahlungsschwelle erfüllt)", t);
       saveOrder(store, order); return false;
     }
@@ -528,7 +579,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
 
   async function processAll() {
     const data = store.read(CHECK150_ORDERS_FILE, { schema: 1, orders: {} });
-    const open = Object.values(data.orders || {}).filter((o) => !TERMINAL.has(o.state) && !WAITING.has(o.state) && !isTestOrder(o));
+    const open = Object.values(data.orders || {}).filter((o) => !TERMINAL.has(o.state) && !WAITING.has(o.state) && (!isTestOrder(o) || e2eFulfilmentApproved(o)));
     let advanced = 0;
     for (const stored of open) {
       const order = structuredClone(stored);
@@ -552,7 +603,9 @@ export function check150Status(dir = WORKER_DIR) {
   for (const o of orders) states[o.state] = (states[o.state] || 0) + 1;
   return { total: orders.length, open: orders.filter((o) => !TERMINAL.has(o.state)).length, test_orders: all.length - orders.length, states,
     ready_for_delivery: states.READY_FOR_DELIVERY || 0, waiting_confirmation: states.BLOCKED_ORDER_NOT_CONFIRMED || 0,
-    waiting_payment: states.BLOCKED_PAYMENT_NOT_RECEIVED || 0, cancelled: states[CHECK150_CANCELLED] || 0 };
+    waiting_payment: states.BLOCKED_PAYMENT_NOT_RECEIVED || 0, cancelled: states[CHECK150_CANCELLED] || 0,
+    // TF-088: ausdrücklich freigegebene, noch nicht abgeschlossene E2E-Testaufträge (zählen NIE als «offen»; nur damit der Lauf sie anfasst).
+    e2e_runnable: all.filter((o) => isTestOrder(o) && e2eFulfilmentApproved(o) && !TERMINAL.has(o.state) && !WAITING.has(o.state)).length };
 }
 // Kundenphase fürs Dashboard (TF-041) – feste Wörter aus Zustand + Zahlung.
 export const CHECK150_PHASES = Object.freeze(["WAITING_FOR_CONFIRMATION", "WAITING_FOR_DEPOSIT", "DEPOSIT_RECEIVED", "AUDITING", "REPORT",
@@ -596,11 +649,11 @@ export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
 
 // ---------- Worker-Hook (eigenes Lock, No-op ohne offene Aufträge; blockiert weder Mail noch Discovery noch CHF-480) ----------
 // auditor nur für isolierte Tests (Lab-Auditor, TF-046); im Produktivbetrieb null = Standard-Auditor.
-export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, auditor = null, onboarding = false, log = createLogger(dir) } = {}) {
+export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, auditor = null, onboarding = false, log = createLogger(dir), env = process.env } = {}) {
   const status = check150Status(dir);
-  if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
+  if (!status.open && !status.e2e_runnable) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "check150.lock" })) return { busy: true };
-  try { return { busy: false, ...(await createCheck150Engine({ dir, gmail, auditor, onboarding, log }).processAll()) }; }
+  try { return { busy: false, ...(await createCheck150Engine({ dir, gmail, auditor, onboarding, log, env }).processAll()) }; }
   finally { releaseLock(dir, process.pid, "check150.lock"); }
 }
 
@@ -608,7 +661,7 @@ export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, audito
 // Zahlung verbuchen (TF-041): node payments.js record <order_id> --amount 75 – erst ab CHF 75 läuft der Auftrag.
 // node check-150-workflow.js --list | --show <id> | --create <domain> --email <lieferadresse> [--website URL] [--company NAME]
 //                            [--name ANREDE] | --create-confirmed <domain> --email <adresse> [--company] [--name] [--website]
-//                            | --create-test <sandbox-domain> --email <test-postfach> [--link <stripe-test-link>] | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>
+//                            | --create-test <sandbox-domain> --email <test-postfach> [--link <stripe-test-link>] | --approve-e2e-fulfilment <id> | --cancel <id> [--reason TEXT] | --run | --report <id> | --complete <id>
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
   const flag = (n) => { const i = argv.indexOf("--" + n); return i >= 0 ? argv[i + 1] : undefined; };
@@ -646,6 +699,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const o = createCheck150Order(store, { domain, delivery_email: flag("email"), company: "E2E-Test", contact_name: "E2E-Test", test: { run_id: testRunId(`check150:${normDomain(domain)}:${Date.now()}`) } });
       console.log(`TEST-Auftrag angelegt: ${o.order_id} (${o.state}, test_order=true, environment=TEST, CHF ${o.price_chf}, offen/unbezahlt). Kein Verkauf, keine Mail.`);
       if (flag("link")) { const { testPaymentLinkUrl } = await import("./payment-links.js"); const u = testPaymentLinkUrl(flag("link"), { orderId: o.order_id }); if (!u) throw new Error("Ungültiger Stripe-TEST-Payment-Link (erwartet https://buy.stripe.com/test_…)."); console.log(`Sandbox-Zahlungs-URL: ${u}`); }
+      return 0;
+    }
+    if (flag("approve-e2e-fulfilment")) {
+      // TF-088: ausdrückliche Freigabe EINES Testauftrags für den Erfüllungstest (Audit der Sandbox-Domain, Bericht, Outbox → Test-Postfach). Nur mit aktiver Server-Konfiguration.
+      const o = approveE2eFulfilment(store, flag("approve-e2e-fulfilment"));
+      console.log(`E2E-Erfüllungstest freigegeben: ${o.order_id} (TEST). Nächster Lauf (--run bzw. Service-Zyklus): Audit der Sandbox-Domain → Bericht → Outbox → Test-Postfach. Keine Zahlung, kein Verkauf, keine Provision.`);
       return 0;
     }
     if (flag("cancel")) {

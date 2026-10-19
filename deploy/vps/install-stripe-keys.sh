@@ -5,6 +5,7 @@
 #   deploy/vps/install-stripe-keys.sh <ssh-host> live     STRIPE_SECRET_KEY        (sk_live_… / rk_live_… – nur Repair-Service)
 #   deploy/vps/install-stripe-keys.sh <ssh-host> test     STRIPE_TEST_SECRET_KEY   (sk_test_… / rk_test_… – nur Repair-Service)
 #   deploy/vps/install-stripe-keys.sh <ssh-host> e2e      JARVIS_E2E_TEST_ENABLED / _DOMAINS / _MAILBOXES (keine Secrets; Mail-Worker + Repair)
+#   deploy/vps/install-stripe-keys.sh <ssh-host> fulfilment  JARVIS_E2E_FULFILMENT_ENABLED (TF-088, Standard false – nur für den kontrollierten CHF-150-Erfüllungstest)
 #   deploy/vps/install-stripe-keys.sh <ssh-host> status   nur Rechte + Schlüsselnamen (nie Werte)
 #
 # Ablage: /opt/jarvis-payment/stripe.env und /opt/jarvis-payment/e2e.env (root:root, Verzeichnis 0700, Dateien 0600). Deploys überschreiben sie nie.
@@ -19,7 +20,7 @@ REMOTE_SET=$(cat <<'R'
 set -euo pipefail
 D=/opt/jarvis-payment; F="$D/$1"; K="$2"
 case "$1" in stripe.env|e2e.env) ;; *) echo "Unbekannte Datei"; exit 2;; esac
-case "$K" in STRIPE_SECRET_KEY|STRIPE_TEST_SECRET_KEY|JARVIS_E2E_TEST_ENABLED|JARVIS_E2E_TEST_DOMAINS|JARVIS_E2E_TEST_MAILBOXES) ;; *) echo "Unbekannter Schlüssel"; exit 2;; esac
+case "$K" in STRIPE_SECRET_KEY|STRIPE_TEST_SECRET_KEY|JARVIS_E2E_TEST_ENABLED|JARVIS_E2E_TEST_DOMAINS|JARVIS_E2E_TEST_MAILBOXES|JARVIS_E2E_FULFILMENT_ENABLED) ;; *) echo "Unbekannter Schlüssel"; exit 2;; esac
 IFS= read -r V || true
 [ -n "$V" ] || { echo "Leer – nichts geändert."; exit 3; }
 sudo mkdir -p "$D"; sudo chown root:root "$D"; sudo chmod 700 "$D"
@@ -51,7 +52,12 @@ case "$WHAT" in
     printf '%s\n' "$mb" | send e2e.env JARVIS_E2E_TEST_MAILBOXES
     restart_repair
     echo "Mail-Worker liest e2e.env beim nächsten Mail-Deploy (deploy/vps/deploy.sh – geplante Wartung)." ;;
+  fulfilment)
+    read -r -p "JARVIS_E2E_FULFILMENT_ENABLED (true/false): " fe; [[ "$fe" =~ ^(true|false)$ ]] || { echo "nur true/false"; exit 1; }
+    printf '%s\n' "$fe" | send e2e.env JARVIS_E2E_FULFILMENT_ENABLED
+    restart_repair
+    echo "Mail-Worker liest e2e.env erst nach einem Mail-Deploy (deploy/vps/deploy.sh) – ohne ihn lehnt der Mail-Worker E2E-Testmails ab (fail closed)." ;;
   status)
     "$SSH" "$HOST" 'for f in /opt/jarvis-payment/stripe.env /opt/jarvis-payment/e2e.env; do echo "$f:"; if sudo test -f "$f"; then sudo stat -c "  %U:%G %a" "$f"; sudo cut -d= -f1 "$f" | sed "s/^/  gesetzt: /"; else echo "  fehlt"; fi; done' ;;
-  *) echo "live|test|e2e|status"; exit 1 ;;
+  *) echo "live|test|e2e|fulfilment|status"; exit 1 ;;
 esac

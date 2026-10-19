@@ -2,7 +2,12 @@
 
 Fortsetzbarer Rollout-Stand. Nur nicht-sensitive Fakten – niemals Tokens, Keys oder Credentials hier eintragen.
 
-Letzte Aktualisierung: 2026-10-19 (TF-086)
+Letzte Aktualisierung: 2026-10-19 (TF-088)
+
+## TF-088 – KONTROLLIERTER E2E-ERFÜLLUNGSTEST CHF 150 (2026-10-19, CODE READY, nicht committet/deployt)
+- Neu (Standard AUS): `JARVIS_E2E_FULFILMENT_ENABLED` (zusätzlich zur TF-080-Basisfreigabe + Domain-/Postfach-Allowlist) und Freigabe pro Auftrag (`check-150-workflow.js --approve-e2e-fulfilment <id>`). Dann durchläuft ein Testauftrag Audit (nur Sandbox-Domain) → Bericht → Repair-Outbox → Mail-Worker → Test-Postfach (`[E2E-TEST]`-Betreff). Kein Verkauf/Umsatz/Provision/Repair, keine neue Zahlung.
+- Mail-Worker-Konsument (`repair-outbox.js`) prüft eigenständig Allowlist + Freigabe; sonst `rejected/e2e_blocked`. Engine prüft vor jedem Schritt erneut; direkter Gmail-Weg für Testaufträge gesperrt.
+- `test/tf088.test.js` (10 Tests). Betrieb/Checkliste: `E2E_CHECK150_RUNBOOK.md`. Mail-Worker liest e2e.env nur nach Mail-Deploy.
 
 ## TF-086 – CRM: TEST-AUFTRÄGE KORREKT DURCH DIE WHITELIST (2026-10-19, CODE READY, nicht deployt)
 - Befund (auf Hetzner bestätigt): Mail-Worker läuft mit Code vor TF-084/085; `cleanCheck150` verlor `test_order`/`environment`, `moneyFields` verlor `commission_rate_bps: 0` → CHF-150-Testauftrag sah im CRM wie ein echter aus (zählte «offen», Kachel «in Prüfung», Provisions-Kandidat). Zahlungsanzeige (CHF 150 / PAID_FULL) war schon korrekt.

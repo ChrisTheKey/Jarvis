@@ -16,6 +16,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { TEST_RUN_ID_RE, E2E_SUBJECT_PREFIX, e2eFulfilmentConfig, isE2eMailbox } from "./e2e-test.js";
 
 // TF-066: + CUSTOMER_ONBOARDING_DIALOGUE (transaktionaler Auftragsdialog, z. B. CHECK-Startnachricht). Trägt ein Auftrag eine
 // order_id, sendet der Mail-Worker im gebundenen Auftrags-Thread (bzw. eröffnet ihn mit der ersten Nachricht und bindet ihn).
@@ -52,17 +53,19 @@ export function createOutboxMailer({ dir, now = () => new Date() } = {}) {
   const check = (id) => { if (!ID_RE.test(String(id || ""))) throw new Error("Outbox: unbekannte Auftrags-ID."); };
   return {
     outbox: dir,
-    async createDraft({ to, subject, body, messageClass, orderId = null, purpose = null, seq = null } = {}) {
+    async createDraft({ to, subject, body, messageClass, orderId = null, purpose = null, seq = null, e2eRunId = null } = {}) {
       if (!OUTBOX_CLASSES.includes(messageClass)) throw new Error("Outbox: nur Service-Mails (CUSTOMER_ACCESS_REQUEST / CUSTOMER_ORDER_FULFILLMENT / CUSTOMER_ONBOARDING_DIALOGUE).");
       if (orderId != null && !ORDER_ID_RE.test(String(orderId))) throw new Error("Outbox: Auftrags-ID ungültig.");
       if (messageClass === ONBOARDING_CLASS && !orderId) throw new Error("Outbox: Onboarding-Nachricht nur zu einem Auftrag.");
       if (purpose != null && !OUTBOX_PURPOSES.includes(purpose)) throw new Error("Outbox: Zweck ungültig.");
       if (!EMAIL_RE.test(String(to || ""))) throw new Error("Outbox: Empfänger ungültig.");
+      // TF-088: E2E-Testmail – nur Erfüllungsklasse, gültige test_run_id und gekennzeichneter Betreff; der Mail-Worker prüft zusätzlich die Allowlist.
+      if (e2eRunId != null && (!TEST_RUN_ID_RE.test(String(e2eRunId)) || messageClass !== "CUSTOMER_ORDER_FULFILLMENT" || !String(subject || "").startsWith(E2E_SUBJECT_PREFIX))) throw new Error("Outbox: E2E-Testmail ungültig.");
       if (!subject || !body || String(subject).length > MAX_SUBJECT || String(body).length > MAX_BODY) throw new Error("Outbox: Betreff/Text fehlt oder zu lang.");
       ensure();
       const id = "ob-" + crypto.randomBytes(12).toString("hex");
       writeAtomic(file(dir, id, "draft.json"), { v: 1, id, message_class: messageClass, to: String(to), subject: String(subject), body: String(body),
-        ...(orderId ? { order_id: String(orderId), purpose: purpose || null, ...(Number.isInteger(seq) ? { seq } : {}) } : {}), created_at: now().toISOString() });
+        ...(orderId ? { order_id: String(orderId), purpose: purpose || null, ...(Number.isInteger(seq) ? { seq } : {}) } : {}), ...(e2eRunId ? { e2e_run_id: String(e2eRunId) } : {}), created_at: now().toISOString() });
       return { draftId: id, threadId: null };
     },
     async updateDraft(id, { subject, body } = {}) {
@@ -121,7 +124,7 @@ export function outboxStatus(dir, { now = Date.now() } = {}) {
 // TF-066 onboarding (optional, Mail-Worker): route(rq) → { threadId } (Antwort im gebundenen Auftrags-Thread) | { newThread } |
 // { defer } (Auftragsstand noch nicht aktuell) | { reject } ; onSent(rq, info) bindet Auftrag ↔ Thread nach dem Versand;
 // threadLost(rq) → manuelle Prüfung (nie ein neuer freier Thread). Ohne onboarding: Auftrags-Mails wie bisher, Onboarding-Klasse abgelehnt.
-export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = () => {}, now = () => new Date(), max = 10, onboarding = null } = {}) {
+export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = () => {}, now = () => new Date(), max = 10, onboarding = null, env = process.env } = {}) {
   const out = { processed: 0, sent: 0, failed: 0, unclear: 0, rejected: 0, deferred: 0 };
   let names;
   try { names = fs.readdirSync(dir); } catch { return { ...out, missing: true }; }
@@ -150,6 +153,15 @@ export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = 
       continue;
     }
     const rq = readJson(file(dir, id, "request.json"));
+    // TF-088: Test-Mails (e2e_run_id oder [E2E-TEST]-Betreff) NUR an ein ausdrücklich freigegebenes Test-Postfach UND nur mit aktiver E2E-Erfüllungsfreigabe
+    // im Mail-Worker selbst (eigene Prüfung, unabhängig vom Repair-Service). Alles andere: abgelehnt, nie gesendet. Normale Kundenmails bleiben unverändert.
+    const isE2eMail = rq && (rq.e2e_run_id != null || String(rq.subject || "").startsWith(E2E_SUBJECT_PREFIX));
+    if (isE2eMail) {
+      const cfg = e2eFulfilmentConfig(env);
+      const e2eOk = TEST_RUN_ID_RE.test(String(rq.e2e_run_id || "")) && rq.message_class === "CUSTOMER_ORDER_FULFILLMENT" && String(rq.subject || "").startsWith(E2E_SUBJECT_PREFIX)
+        && cfg.fulfilmentReady && isE2eMailbox(cfg, rq.to);
+      if (!e2eOk) { result(id, "rejected", { message_class: OUTBOX_CLASSES.includes(rq.message_class) ? rq.message_class : null, reason: "e2e_blocked" }); continue; }
+    }
     const valid = rq && rq.id === id && OUTBOX_CLASSES.includes(rq.message_class) && EMAIL_RE.test(String(rq.to || ""))
       && rq.subject && rq.body && String(rq.subject).length <= MAX_SUBJECT && String(rq.body).length <= MAX_BODY
       && (rq.order_id == null || ORDER_ID_RE.test(String(rq.order_id))) && (rq.message_class !== ONBOARDING_CLASS || (!!rq.order_id && !!onboarding));

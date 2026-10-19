@@ -32,6 +32,16 @@ export function e2eConfig(env = process.env) {
   const enabled = String(get("JARVIS_E2E_TEST_ENABLED") || "").trim().toLowerCase() === "true";
   return Object.freeze({ enabled, domains, mailboxes, ready: enabled && domains.size > 0 && mailboxes.size > 0 });
 }
+// TF-088: ZUSÄTZLICHE, getrennte Freigabe für den CHF-150-Erfüllungs-Testlauf (Audit → Bericht → Outbox → Mail-Worker → Test-Postfach).
+// Standard AUS. Gilt nur zusammen mit der Basisfreigabe (JARVIS_E2E_TEST_ENABLED + Domain- und Postfach-Allowlist) – nie allein.
+export function e2eFulfilmentConfig(env = process.env) {
+  const get = typeof env === "function" ? env : (k) => env?.[k];
+  const base = e2eConfig(env);
+  const fulfilment = String(get("JARVIS_E2E_FULFILMENT_ENABLED") || "").trim().toLowerCase() === "true";
+  return Object.freeze({ ...base, fulfilment, fulfilmentReady: base.ready && fulfilment });
+}
+export const e2eFulfilmentStatus = (cfg = e2eFulfilmentConfig()) => ({ e2e_fulfilment: cfg.fulfilmentReady ? "READY" : "OFF", fulfilment_flag: cfg.fulfilment });
+export const E2E_SUBJECT_PREFIX = "[E2E-TEST] ";
 export const e2eStatus = (cfg = e2eConfig()) => ({ e2e_test_mode: cfg.ready ? "READY" : "NOT_READY", enabled: cfg.enabled, domains: cfg.domains.size, mailboxes: cfg.mailboxes.size });
 export const isE2eDomain = (cfg, domain) => !!cfg?.enabled && cfg.domains.has(String(domain || "").toLowerCase().replace(/^www\./, ""));
 export const isE2eMailbox = (cfg, email) => !!cfg?.enabled && cfg.mailboxes.has(String(email || "").trim().toLowerCase());
@@ -52,7 +62,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const orders = store.read("repair_orders.json", { orders: {} }).orders || {};
   const payments = Object.values(store.read("payments.json", { payments: {} }).payments || {});
   try {
-    if (cmd === "status") console.log(JSON.stringify(e2eStatus(), null, 2));
+    if (cmd === "status") console.log(JSON.stringify({ ...e2eStatus(), ...e2eFulfilmentStatus() }, null, 2));
     else if (cmd === "list") {
       const runs = {};
       for (const it of Object.values(forms.items)) if (it.is_test === true) {
