@@ -48,7 +48,8 @@
     "phonebook:diagnose": "node crm-service.js --phonebook-diagnose",
     "test:tf078": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf078.test.js test/tf077b.test.js",
     "test:tf079": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf079.test.js test/tf077.test.js test/tf077b.test.js test/tf077c.test.js test/tf077d.test.js test/onboarding-066.test.js test/tf071.test.js test/secure-access-041.test.js test/access-profile-043.test.js",
-    "test:tf080": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf080.test.js test/tf079.test.js test/tf068.test.js test/payments-041.test.js test/tf077c.test.js test/tf077b.test.js test/calling-065.test.js test/commission-063.test.js test/commission-064.test.js test/scope-063.test.js test/crm-detail-059.test.js test/secure-access-041.test.js"
+    "test:tf020-e2e": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf020-e2e-pipeline.test.js",
+    "test:tf080":"node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf080.test.js test/tf079.test.js test/tf068.test.js test/payments-041.test.js test/tf077c.test.js test/tf077b.test.js test/calling-065.test.js test/commission-063.test.js test/commission-064.test.js test/scope-063.test.js test/crm-detail-059.test.js test/secure-access-041.test.js"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",

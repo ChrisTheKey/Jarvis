@@ -233,7 +233,7 @@ test("L: keine beliebige Server-Aktion – nur die crm.*-Allowlist mit festem Pa
   assert.deepEqual(Object.keys(CRM_ACTIONS).sort(), ["crm.addCall", "crm.addNote", "crm.archive", "crm.getLead", "crm.listLeads", "crm.resolveContactForm", "crm.setDoNotContact", "crm.setNextAction", "crm.updateCallStatus", "crm.updateContactStatus", "crm.updateStage"]);
   // Dienst/Cloud: kein child_process, kein exec, kein Docker-Socket, kein Gmail
   for (const f of ["crm-service.js", "crm-api.js", "lead-crm.js", "public/crm-model.js", "public/crm.js"]) {
-    const src = fs.readFileSync(path.join(ROOT, f), "utf8").split("\n").map((l) => l.replace(/(^|\s)\/\/.*$/, "")).join("\n"); // Code ohne Kommentare
+    const src = fs.readFileSync(path.join(ROOT, f), "utf8").split(/\r?\n/).map((l) => l.replace(/(^|\s)\/\/.*$/, "")).join("\n"); // Code ohne Kommentare
     assert.equal(/child_process|execSync|spawn\(|eval\(|new Function|docker\.sock|gmail\.js|sendDraft|createDraft/.test(src), false, f);
   }
   const df = fs.readFileSync(path.join(ROOT, "deploy/vps/Dockerfile.crm"), "utf8");

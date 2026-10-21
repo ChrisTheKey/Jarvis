@@ -15,7 +15,7 @@ import { CRM_SCHEMA, emptyCrmState } from "../lead-crm.js";
 import { createOutboxMailer, processRepairOutbox } from "../repair-outbox.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const read = (f) => fs.readFileSync(path.join(ROOT, f), "utf8");
+const read = (f) => fs.readFileSync(path.join(ROOT, f), "utf8").replace(/\r\n/g, "\n"); // CRLF-Checkout (Windows, core.autocrlf) wie LF prüfen
 const T0 = new Date("2026-10-14T08:00:00Z");
 const SENDER = { name: "Chris Kälin", company: "Helvetic Webdesign", email: "chris@helvetic-webdesign.ch" };
 let dir, crm, g, store;
