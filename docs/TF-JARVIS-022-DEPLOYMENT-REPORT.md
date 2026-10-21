@@ -84,7 +84,7 @@ Nicht ausgeführt (Healthchecks bestanden). Vorbereiteter, datenneutraler Rückw
 
 | # | Blocker | Wer |
 |---|---|---|
-| G1 | **Gmail OAuth `expired_or_revoked`** → kein Mailabruf, keine Zustellung | Chris |
+| G1 | ~~Gmail OAuth `expired_or_revoked`~~ → **behoben 2026-10-21 14:32 UTC** (Neuautorisierung + Token-Tausch, `MAIL AUTH READY`, Details in `TF-JARVIS-023-MANUAL-ORDER-TEST-RESULTS.md`) | erledigt |
 | R1 | Repair-Service noch auf b2163bc (für TF-023 nötig: `deploy-repair.sh` von 16f17f5) | Chris (Freigabe) |
 | P1 | Ponytail-Installation | Chris |
 | B1–B3, B5 | Cold-E-Mail CH, CH-/VN-Calling, Stripe Live | Chris + Rechtsberatung |
