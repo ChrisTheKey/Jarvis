@@ -61,6 +61,17 @@ export const DEFAULT_DISCOVERY = {
   ],
   excludeDomains: [], // z. B. bekannte Grosskonzerne oder Chris’ eigene Kunden
   overpassUrl: "https://overpass-api.de/api/interpreter",
+  // TF-CRM-016: optionale Ausweich-Instanzen (gleiche Overpass-API). null = nur overpassUrl (bisheriges Verhalten). Reihenfolge = Priorität.
+  overpassUrls: null,
+  // Client-Timeout je Abfrage – muss über dem serverseitigen [timeout:90] liegen, sonst bricht der Client genau dann ab, wenn der Server antwortet.
+  overpassClientTimeoutMs: 120_000,
+  // Wiederholungen INNERHALB eines Laufs: Zufallszuschlag (0..20 %) auf die exponentielle Pause (nie auf Retry-After unter dessen Wert),
+  // Budget an Wiederholungs-Runden je Lauf (danach sofortiger Fehler → Lauf endet, Backoff) und Circuit-Breaker je Instanz.
+  searchRetryJitter: 0.2,
+  searchRetryBudget: 4,
+  searchBreakerThreshold: 3,
+  // Zufallszuschlag auf den Lauf-Backoff (0 = exakt 15 → 30 → 60 …). Nur ein Client → kein «Herdeneffekt», daher standardmässig aus.
+  backoffJitter: 0,
 };
 // Keine eigene Firmenwebsite: Social-Media-/Verzeichnis-/Plattformseiten werden vor dem Audit verworfen (Firmen mit eigener Website zuerst).
 const PLATFORM_RE = /(^|\.)(facebook|instagram|linkedin|twitter|x|youtube|tiktok|xing|pinterest|tripadvisor|booking|google|goo|linktr|yelp|local|search|moneyhouse|zefix|wikipedia|business)\.[a-z.]+$/i;
@@ -84,27 +95,81 @@ export const parseRetryAfter = (v, nowMs = Date.now()) => {
   if (/^\d+$/.test(String(v).trim())) return Math.min(+v * 1000, 86_400_000);
   const d = Date.parse(v); return Number.isFinite(d) ? Math.max(0, Math.min(d - nowMs, 86_400_000)) : null;
 };
-export function overpassSearch({ fetchFn = globalThis.fetch, url = DEFAULT_DISCOVERY.overpassUrl, retryMs = 30_000, minGapMs = 0, maxRetries = 2, maxWaitMs = 120_000,
+// TF-CRM-016: Fehlerkategorie einer Quellenabfrage – nur feste Kategorien (für Logs/Status, nie Rohtexte).
+export function classifySourceError(e) {
+  const m = String(e?.message || e || "");
+  if (/HTTP 429/.test(m) || e?.retryAfterMs) return "rate_limited";
+  if (e?.circuitOpen) return "circuit_open";
+  if (e?.budgetExhausted) return "retry_budget_exhausted";
+  if (/runtime error/i.test(m)) return /memory/i.test(m) ? "runtime_memory" : "runtime_timeout";
+  if (/HTTP 5\d\d/.test(m)) return "server_error";
+  if (/TimeoutError|timeout|aborted/i.test(m)) return "timeout";
+  if (/fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|network|socket/i.test(m)) return "network";
+  if (/HTTP 40[13]\b/.test(m)) return "forbidden"; // Zugriff verweigert – nie umgehen, sofort Backoff
+  if (/HTTP 4\d\d/.test(m)) return "client_error";
+  return "other";
+}
+const RETRYABLE_SOURCE = new Set(["server_error", "timeout", "network", "runtime_timeout", "runtime_memory"]);
+// Overpass antwortet bei Zeit-/Speicherüberschreitung oft mit HTTP 200 und «remark: runtime error …» und leeren/abgeschnittenen Treffern.
+// Das ist KEIN leeres Gebiet – sonst rückt der Cursor weiter und die Gemeinde gilt fälschlich als abgefragt.
+export const overpassRuntimeError = (body) => {
+  const remark = String(body?.remark || "");
+  if (!/runtime error/i.test(remark)) return null;
+  return new Error(`Overpass runtime error: ${/memory/i.test(remark) ? "memory" : "timeout"}`);
+};
+
+// TF-CRM-016 Schutz gegen Fehlerverstärkung: retryBudget = Wiederholungs-Runden je Suchinstanz (= je Lauf, Infinity = unbegrenzt wie bisher);
+// Circuit-Breaker: nach breakerThreshold Fehlversuchen in Folge wird eine Instanz für den Rest des Laufs übersprungen; sind alle offen → sofortiger
+// Fehler (circuit_open). Lauf-übergreifend wirkt der persistente Discovery-Backoff als Breaker (offen = backoffUntil, halb offen = nächster Lauf).
+export function overpassSearch({ fetchFn = globalThis.fetch, url = DEFAULT_DISCOVERY.overpassUrl, urls = null, retryMs = 30_000, minGapMs = 0, maxRetries = 2, maxWaitMs = 120_000,
+  clientTimeoutMs = DEFAULT_DISCOVERY.overpassClientTimeoutMs, onAttemptError = () => {}, jitter = 0, random = Math.random, retryBudget = Infinity, breakerThreshold = Infinity,
   sleep = (ms) => new Promise((res) => setTimeout(res, ms)) } = {}) {
-  let lastAt = 0, tail = Promise.resolve();
+  const hosts = Array.isArray(urls) && urls.filter(Boolean).length ? [...new Set(urls.filter(Boolean))] : [url];
+  let lastAt = 0, tail = Promise.resolve(), preferred = 0, budget = retryBudget;
+  const fails = hosts.map(() => 0);
   const gate = async () => { const wait = lastAt + minGapMs - Date.now(); if (wait > 0) await sleep(wait); lastAt = Date.now(); };
   const q = (s) => String(s).replace(/["\\]/g, "");
   const tagFilter = (c) => (c.value ? `["${q(c.key)}"="${q(c.value)}"]` : `["${q(c.key)}"]`);
   const WEB = `[~"^(website|contact:website)$"~"."]`;
+  // Je Runde jede Instanz einmal (ohne Pause beim Wechsel), erst nach einer vollen Runde die bisherige Pause (Retry-After bzw. retryMs · 2^n).
+  // Mit nur einer Instanz ist das exakt das bisherige Verhalten; zusätzlich werden Netz-/Timeout-Fehler und «runtime error» wiederholt.
   const ask = async (query) => {
-    let r;
-    for (let attempt = 0; ; attempt++) {
-      await gate();
-      r = await fetchFn(url, { method: "POST", headers: { "user-agent": OVERPASS_UA, accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ data: query }), signal: AbortSignal.timeout(90_000) });
-      lastAt = Date.now();
-      if (![429, 502, 503, 504].includes(r.status)) break;
-      const ra = parseRetryAfter(r.headers?.get?.("retry-after"));
-      const wait = ra ?? retryMs * 2 ** attempt;
-      if (attempt >= maxRetries || wait > maxWaitMs) { const e = new Error(`Overpass HTTP ${r.status}`); e.retryAfterMs = ra; throw e; }
+    for (let round = 0; ; round++) {
+      let last = null, lastRa = null, tried = 0;
+      for (let i = 0; i < hosts.length; i++) {
+        const h = (preferred + i) % hosts.length;
+        if (fails[h] >= breakerThreshold) continue;
+        tried++;
+        await gate();
+        let r = null, err = null;
+        try {
+          r = await fetchFn(hosts[h], { method: "POST", headers: { "user-agent": OVERPASS_UA, accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ data: query }), signal: AbortSignal.timeout(clientTimeoutMs) });
+        } catch (e) { err = e; }
+        lastAt = Date.now();
+        if (r && ![429, 502, 503, 504].includes(r.status)) {
+          if (!r.ok) throw new Error(`Overpass HTTP ${r.status}`); // 4xx: Abfrage fehlerhaft – Wiederholen hilft nicht
+          const body = await r.json();
+          const rt = overpassRuntimeError(body);
+          if (!rt) { preferred = h; fails[h] = 0; return body.elements || []; }
+          err = rt;
+        }
+        if (r && !err) { lastRa = parseRetryAfter(r.headers?.get?.("retry-after")); last = Object.assign(new Error(`Overpass HTTP ${r.status}`), { retryAfterMs: lastRa }); }
+        else {
+          const cat = classifySourceError(err);
+          if (!RETRYABLE_SOURCE.has(cat)) throw err;
+          last = err.message?.startsWith("Overpass") ? err : new Error(`Overpass ${cat}: ${String(err.message || err).slice(0, 80)}`);
+        }
+        fails[h]++;
+        onAttemptError({ host: h, category: classifySourceError(last) });
+      }
+      if (!tried) throw Object.assign(new Error("Overpass circuit open"), { circuitOpen: true });
+      const base = lastRa ?? retryMs * 2 ** round;
+      const wait = jitter > 0 ? Math.round(base * (1 + jitter * random())) : base;
+      if (round >= maxRetries || base > maxWaitMs) { last.retryAfterMs = lastRa; throw last; }
+      if (budget <= 0) throw Object.assign(last, { budgetExhausted: true, retryAfterMs: lastRa });
+      budget--;
       await sleep(wait);
     }
-    if (!r.ok) throw new Error(`Overpass HTTP ${r.status}`);
-    return (await r.json()).elements || [];
   };
   // Schweiz-Modus: Gemeinde eindeutig über die BFS-Gemeindenummer (keine Verwechslung gleichnamiger Orte); eine Abfrage über mehrere Branchen.
   // Findet Overpass die Gemeindefläche nicht (Tag fehlt), einmal über den Namen innerhalb des Kantons. Das Ergebnis meldet, ob die Fläche
@@ -252,7 +317,7 @@ export function discoveryStatus(dir = WORKER_DIR, now = new Date()) {
   };
 }
 
-export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, now = () => new Date(), log = createLogger(dir), pid = process.pid, force = false } = {}) {
+export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, now = () => new Date(), log = createLogger(dir), pid = process.pid, force = false, random = Math.random } = {}) {
   const store = createStore(dir);
   const cfg = discoveryConfig(store);
   if (!cfg.enabled && !force) return { skipped: "disabled" };
@@ -284,7 +349,7 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
   // Backoff bei Quellenfehlern (429/5xx/Netz): 15 → 30 → 60 … min, gedeckelt; Retry-After der Quelle hat Vorrang, wenn länger.
   const backoff = (stage, e) => {
     data.backoffCount = (data.backoffCount || 0) + 1;
-    let minutes = Math.min(cfg.backoffMaxMinutes, cfg.backoffMinutes * 2 ** (data.backoffCount - 1));
+    let minutes = Math.min(cfg.backoffMaxMinutes, Math.round(cfg.backoffMinutes * 2 ** (data.backoffCount - 1) * (1 + (cfg.backoffJitter || 0) * random())));
     if (e?.retryAfterMs) minutes = Math.min(cfg.backoffMaxMinutes, Math.max(minutes, Math.ceil(e.retryAfterMs / 60_000)));
     data.backoffUntil = new Date(+t + minutes * 60_000).toISOString();
     data.lastError = { at: t.toISOString(), stage, message: String(e.message || e).slice(0, 160) };
@@ -293,7 +358,9 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
   const out = { day, query: null, found: [], errors: [], searches: 0, audited: 0 };
   const startedAt = Date.now();
   try {
-    search ||= overpassSearch({ url: cfg.overpassUrl, minGapMs: cfg.searchMinGapMs });
+    search ||= overpassSearch({ url: cfg.overpassUrl, urls: cfg.overpassUrls, minGapMs: cfg.searchMinGapMs, clientTimeoutMs: cfg.overpassClientTimeoutMs,
+      jitter: cfg.searchRetryJitter, random, retryBudget: cfg.searchRetryBudget, breakerThreshold: cfg.searchBreakerThreshold,
+      onAttemptError: ({ host, category }) => log("warn", "discovery_source_attempt_failed", { host, category }) });
     auditor ||= createAuditor({ totalMs: cfg.auditTotalMs });
 
     // Täglich einmal: nicht qualifizierte Leads früherer Tage in den kompakten Dedupe-Index auslagern (discovered.json bleibt klein und schnell).
@@ -364,9 +431,15 @@ export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, n
       return { fresh, more };
     };
     const searchFailed = (e, query) => {
-      stats.errors++; out.errors.push({ stage: "search", error: e.message }); log("error", "discovery_search_failed", { query, error: e.message });
-      // 429 / Retry-After / zweiter Fehler im Lauf = Quelle überlastet → Abbruch + Backoff. Ein einzelner 5xx/Timeout (z. B. zu schwere Abfrage) betrifft nur dieses Gebiet.
-      return ++searchFails >= 2 || /HTTP 429/.test(e.message) || !!e.retryAfterMs;
+      const category = classifySourceError(e);
+      stats.errors++; out.errors.push({ stage: "search", error: e.message, category }); log("error", "discovery_search_failed", { query, error: e.message, category });
+      stats.searchErrors = { ...(stats.searchErrors || {}), [category]: ((stats.searchErrors || {})[category] || 0) + 1 };
+      // 429 / Retry-After / Zugriff verweigert / Breaker offen / Budget aufgebraucht / zweiter Quellenfehler im Lauf → Abbruch + Backoff.
+      // Ein einzelner 5xx/Timeout (z. B. zu schwere Abfrage) betrifft nur dieses Gebiet. 400/404 (fehlerhafte Einzelabfrage) zählt nicht als
+      // Quellenstörung – höchstens maxSearchesPerRun Abfragen je Lauf, also keine Endlosschleife.
+      if (["rate_limited", "forbidden", "circuit_open", "retry_budget_exhausted"].includes(category)) return true;
+      if (category === "client_error") return false;
+      return ++searchFails >= 2;
     };
     if (swiss) {
       // GANZE SCHWEIZ: Hauptcursor reihum durch alle Kantone/Gemeinden, Folgeabfragen (Gemeinde → Branche) begrenzt – Cursor persistent nach JEDER Abfrage.
