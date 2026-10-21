@@ -34,7 +34,8 @@ globalThis.fetch = async (url, opts = {}) => {
 // Register mit `drafts` eigenen Entwürfen und `already` heute gesendeten Mails (optional einem Fenster zugeordnet).
 function setup({ drafts = 10, already = 0, window = null } = {}) {
   const reg = { labelId: "Label_J", drafts: {}, sent: {}, sending: {} };
-  for (let i = 0; i < drafts; i++) reg.drafts["d" + i] = { messageId: "m-d" + i, threadId: "t-d" + i, to: `k${i}@x.ch`, subject: "S" };
+  // paymentLinkCheck: wie von createDraft geschrieben (TF-JARVIS-025) – ohne Ergebnis würde gmail.js den Inhalt nachladen.
+  for (let i = 0; i < drafts; i++) reg.drafts["d" + i] = { messageId: "m-d" + i, threadId: "t-d" + i, to: `k${i}@x.ch`, subject: "S", paymentLinkCheck: { ok: true, reasons: [] } };
   const now = new Date().toISOString();
   for (let i = 0; i < already; i++) reg.sent["old" + i] = { threadId: "o" + i, to: "x@y.ch", sentAt: now, ...(window && { window }) };
   fs.writeFileSync(REG, JSON.stringify(reg));

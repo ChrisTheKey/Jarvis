@@ -28,7 +28,7 @@ import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend, ensureColdDra
 import { publicLeads } from "./cloud-leads.js";
 import { loadRegistry, registryBlock, reconcileRegistry, publicRegistry, registryStatus, CRM_UNAVAILABLE } from "./lead-registry.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
-import { paymentOptions } from "./payment-links.js";
+import { paymentOptions, paymentLinkViolations } from "./payment-links.js";
 import { readOrdersExport } from "./onboarding-store.js";
 import { senderProfileFor, VN_SIGNATURE } from "./sender-profiles.js";
 import { processContactForms, DEFAULT_CONTACT_FORM_CONFIG, CONTACT_FORM_DRAFT_MODE } from "./contact-form.js";
@@ -400,6 +400,9 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       if (info.noIssues && CLAIM_RE.test(`${result.subject || ""} ${result.body || ""}`)) review = true; // keine erfundenen Website-Probleme
       if (info.escalate) review = true;
       if (!result.body || result.body.length > 6000 || AI_RE.test(result.body + (result.subject || ""))) review = true;
+      // TF-JARVIS-025: KI-Text mit nicht exakt freigegebenem Zahlungslink → nie automatisch senden, Chris prüft (gmail.js sperrt zusätzlich beim Versand).
+      const linkIssue = paymentLinkViolations(`${result.subject || ""}\n${result.body || ""}`).length > 0;
+      if (linkIssue) review = true;
       if (!result.body) result.body = "(Bitte selbst formulieren – der Entwurf konnte nicht automatisch geschrieben werden.)";
       state.actions[key] = { status: "creating", at: t.toISOString(), kind: info.kind, threadId: info.threadId, to: normEmail(info.to) };
       save();
@@ -416,7 +419,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       // (Telefon-/Terminwunsch meldet notify bereits). Ein Fehler hier stoppt den Worker nie.
       if (review && info.kind === "antwort" && !info.humanContact && info.sourceMessageId) {
         escalations.push({ threadId: info.threadId });
-        try { await escalate({ messageId: info.sourceMessageId, threadId: info.threadId, company: info.company || "", contactName: info.contactName || "", reason: info.escalateReason || result.reason || "unklar" }); }
+        try { await escalate({ messageId: info.sourceMessageId, threadId: info.threadId, company: info.company || "", contactName: info.contactName || "", reason: info.escalateReason || (linkIssue ? "nicht freigegebener Zahlungslink im Antwortentwurf" : null) || result.reason || "unklar" }); }
         catch (e) { log("error", "escalate_failed", { threadId: info.threadId, error: e.message }); }
       }
       log("info", "draft_prepared", { kind: info.kind, draftId: d.draftId, threadId: d.threadId, to: info.to, review, reason: result.reason });

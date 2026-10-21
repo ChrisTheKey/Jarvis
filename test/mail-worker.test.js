@@ -522,6 +522,33 @@ test("Antwort im zulässigen Thread wird gesendet und hat Vorrang", async () => 
   assert.equal(r.sends[0].kind, "antwort", "Antwort trotz Versandabstand sofort");
 });
 
+test("TF-JARVIS-025: KI-Antwort mit veränderter/unbekannter Zahlungsadresse → nie automatisch gesendet, zur Prüfung markiert und an Chris eskaliert", async () => {
+  const { PAYMENT_LINKS } = await import("../payment-links.js");
+  for (const link of [`${PAYMENT_LINKS.REPAIR_FIX_500}?client_reference_id=RF480-20261021-abc025&amount=1`, "https://buy.stripe.com/aaaaaaaaaaaaaaaa", "https://stripe-zahlung.ch/pay/480"]) {
+    g = fakeGmail(); dir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-worker-")); auto();
+    composeResult = () => ({ decision: "draft", reason: "", body: `Guten Tag Frau Muster\n\nHier der Zahlungslink:\n${link}\n\nFreundliche Grüsse` });
+    ownThread("t1", { replies: ["Klingt gut, was wäre der nächste Schritt?"], sentAt: new Date(+T0 - DAY) });
+    write("state.json", { compliantThreads: { t1: { basis: "opt_in" } } });
+    const esc = [];
+    const r = await createWorker({ dir, gmail: g, now: () => clock, log: () => {}, compose: async (task) => composeResult(task), escalate: async (e) => { esc.push(e); } }).tick();
+    assert.equal(r.plan[0].review, true, link);
+    assert.ok(g.calls.includes("review dr1"));
+    assert.deepEqual(sends(), [], link);
+    assert.equal(esc[0]?.reason, "nicht freigegebener Zahlungslink im Antwortentwurf");
+  }
+});
+
+test("TF-JARVIS-025: KI-Antwort mit exakt freigegebenem Zahlungslink wird im zulässigen Thread normal gesendet", async () => {
+  const { PAYMENT_LINKS } = await import("../payment-links.js");
+  auto();
+  composeResult = () => ({ decision: "draft", reason: "", body: `Guten Tag Frau Muster\n\nCheck & Reparatur (Festpreis CHF 480.00):\n${PAYMENT_LINKS.REPAIR_FIX_500}\n\nFreundliche Grüsse` });
+  ownThread("t1", { replies: ["Klingt gut, was wäre der nächste Schritt?"], sentAt: new Date(+T0 - DAY) });
+  write("state.json", { compliantThreads: { t1: { basis: "opt_in" } } });
+  const r = await worker().tick();
+  assert.equal(r.plan[0].review, false);
+  assert.equal(r.sends[0].kind, "antwort");
+});
+
 test("Echtversand ohne sender.name: nur Entwürfe", async () => {
   auto({ sender: { name: "" } });
   ownThread("t1", { replies: ["Wann passt es?"], sentAt: new Date(+T0 - DAY) });

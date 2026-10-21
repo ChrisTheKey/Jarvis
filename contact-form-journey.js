@@ -197,7 +197,9 @@ export async function processContactJourneys({ gmail, store, onboardingDir, boun
     j.pending = { key, kind, msg_id: msgId, status: "creating", at: t, ...(pay?.url ? { pay_seq: pay.seq } : {}) };
     persist();
     let d;
-    try { d = await gmail.replyDraftInThread(it.sent_thread_id, { to: it.customer_email, body, messageClass: C.ONBOARDING_CLASS, ...(j.order_id ? { orderId: j.order_id } : {}) }); }
+    // TF-JARVIS-025: die serverseitig erzeugte Checkout-Session ausdrücklich deklarieren – gmail.js sendet sonst keinen checkout.stripe.com-Link.
+    try { d = await gmail.replyDraftInThread(it.sent_thread_id, { to: it.customer_email, body, messageClass: C.ONBOARDING_CLASS, ...(j.order_id ? { orderId: j.order_id } : {}),
+      ...(pay?.url && body.includes(pay.url) ? { paymentUrls: [pay.url] } : {}) }); }
     catch (e) {
       if (TRANSIENT_RE.test(String(e.message))) { res.degraded ||= String(e.message).slice(0, 120); return "stop"; } // Recovery prüft Entwürfe
       j.pending = null; await halt(it, "MANUAL_REVIEW_REQUIRED", "Antwort im Kontaktformular-Verlauf nicht möglich (Thread nicht eindeutig)."); return "stop";

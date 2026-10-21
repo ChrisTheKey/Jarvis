@@ -72,6 +72,34 @@ export function paymentOptions() {
   }).filter(Boolean);
 }
 
+// TF-JARVIS-025 – Ausgangsprüfung für automatisch versendete Mails (gmail.js sendOwned, mail-worker prepare). Jede Adresse mit «stripe» im
+// Hostnamen (auch ohne Schema, auch Doppelgänger wie stripe-pay.ch) muss EXAKT freigegeben sein:
+//   buy.stripe.com      → nur ein Link aus PAYMENT_LINKS, genau so, wie paymentLinkFor ihn baut (gültige Auftrags-ID / E-Mail, keine weiteren Parameter)
+//   checkout.stripe.com → nur eine Session-URL, die der Vorlagen-Code beim Anlegen des Entwurfs ausdrücklich deklariert hat (TF-080-Anzahlung)
+// Alles andere → Verstoss (nur Grundcodes, nie die URL selbst – sie kann Auftrags-ID/E-Mail tragen). Leeres Array = in Ordnung.
+export const CHECKOUT_SESSION_URL_RE = /^https:\/\/checkout\.stripe\.com\/[^\s<>"']{4,600}$/;
+const STRIPE_URL_RE = /(?:https?:\/\/)?(?:[a-z0-9-]+\.)*[a-z0-9-]*stripe[a-z0-9-]*\.[a-z]{2,24}(?:[/?#][^\s<>"'()[\]{}]*)?/gi;
+const LINK_PARAMS = new Set(["client_reference_id", "prefilled_email"]);
+function linkViolation(raw, allowedCheckoutUrls) {
+  if (!/^https:\/\//.test(raw)) return "NOT_HTTPS";
+  let u; try { u = new URL(raw); } catch { return "UNPARSEABLE"; }
+  if (u.hostname === "buy.stripe.com") {
+    const cls = Object.keys(PAYMENT_LINKS).find((k) => PAYMENT_LINKS[k] === `https://buy.stripe.com${u.pathname}`);
+    if (!cls) return "UNKNOWN_PAYMENT_LINK";
+    const keys = [...u.searchParams.keys()];
+    if (u.hash || keys.some((k) => !LINK_PARAMS.has(k)) || new Set(keys).size !== keys.length) return "MODIFIED_PAYMENT_LINK";
+    const exact = paymentLinkFor(cls, { orderId: u.searchParams.get("client_reference_id"), email: u.searchParams.get("prefilled_email") });
+    return exact === raw ? null : "MODIFIED_PAYMENT_LINK";
+  }
+  if (u.hostname === "checkout.stripe.com") return CHECKOUT_SESSION_URL_RE.test(raw) && allowedCheckoutUrls.includes(raw) ? null : "UNDECLARED_CHECKOUT_LINK";
+  return "UNKNOWN_PAYMENT_HOST";
+}
+export function paymentLinkViolations(text, { allowedCheckoutUrls = [] } = {}) {
+  const allowed = Array.isArray(allowedCheckoutUrls) ? allowedCheckoutUrls : [];
+  return [...String(text ?? "").normalize("NFKC").matchAll(STRIPE_URL_RE)]
+    .map((m) => linkViolation(m[0].replace(/[.,;:!?]+$/, ""), allowed)).filter(Boolean).map((reason) => ({ reason }));
+}
+
 // TF-084: Stripe-TEST-Payment-Link (Sandbox) + client_reference_id eines TEST-Auftrags. Nur für die CLI `check-150-workflow.js --create-test`;
 // bewusst NICHT in PAYMENT_LINKS / paymentLinkFor (Kundenmails bekommen nie einen Testlink).
 export const TEST_PAYMENT_LINK_RE = /^https:\/\/buy\.stripe\.com\/test_[A-Za-z0-9]{10,64}$/;

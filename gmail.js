@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { paymentLinkViolations, CHECKOUT_SESSION_URL_RE } from "./payment-links.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -331,8 +332,17 @@ async function discardMismatch(draftId, threadId) {
     (removed ? " Der Entwurf wurde verworfen." : ` Bitte Entwurf ${draftId} in Gmail von Hand löschen, nicht senden.`));
 }
 
+// TF-JARVIS-025: Zahlungslink-Prüfung des Inhalts, den Jarvis selbst schreibt. Gesendet wird nur, wenn die Message-ID noch der
+// registrierten entspricht (assertOwnedDraft) – der hier geprüfte Text ist also genau der versendete. Nur Grundcodes, nie URLs.
+const declaredCheckoutUrls = (v) => (Array.isArray(v) ? v : []).filter((u) => typeof u === "string" && CHECKOUT_SESSION_URL_RE.test(u)).slice(0, 3);
+const linkCheck = (subject, body, paymentUrls = []) => {
+  const reasons = [...new Set(paymentLinkViolations(`${subject || ""}\n${body || ""}`, { allowedCheckoutUrls: paymentUrls }).map((v) => v.reason))];
+  return { ok: reasons.length === 0, reasons: reasons.slice(0, 5) };
+};
+
 export async function createDraft(fields) {
   const reg = loadRegistry();
+  const paymentUrls = declaredCheckoutUrls(fields.paymentUrls); // nur vom Vorlagen-Code deklarierte Stripe-Checkout-Session (TF-080)
   const lid = await labelId(reg);
   // TF-081: Absender-Alias nur für Kundenmails (Kontaktformular-Antworten, Service-Klassen) – nie für Cold-Entwürfe.
   const customerFacing = [CONTACT_FORM_DRAFT_MODE, CONTACT_FORM_AUTO_REPLY_MODE].includes(fields.mode) || SERVICE_MESSAGE_CLASSES.includes(fields.messageClass);
@@ -346,7 +356,8 @@ export async function createDraft(fields) {
   // Service-Mails bezahlter Kundenaufträge (TF-041) tragen ihre Nachrichtenklasse – nie zusammen mit einem Cold-Entwurf.
   const service = !cold.mode && SERVICE_MESSAGE_CLASSES.includes(fields.messageClass) ? { messageClass: fields.messageClass,
     ...(ORDER_ID_RE.test(String(fields.orderId || "")) ? { orderId: fields.orderId } : {}) } : {}; // TF-066: Auftrag des Service-Threads
-  updateRegistry((r) => { r.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, ...cold, ...service, createdAt: new Date().toISOString() }; });
+  updateRegistry((r) => { r.drafts[draft.id] = { ...info, to: fields.to, subject: fields.subject || "", ...reply, ...cold, ...service,
+    ...(paymentUrls.length ? { paymentUrls } : {}), paymentLinkCheck: linkCheck(fields.subject, fields.body, paymentUrls), createdAt: new Date().toISOString() }; });
   return { draftId: draft.id, ...info };
 }
 
@@ -357,7 +368,8 @@ export async function updateDraft(draftId, fields) {
   const customerFacing = [CONTACT_FORM_DRAFT_MODE, CONTACT_FORM_AUTO_REPLY_MODE].includes(entry.mode) || SERVICE_MESSAGE_CLASSES.includes(entry.messageClass);
   const draft = await gmail("PUT", `/drafts/${encodeURIComponent(draftId)}`, { message: { raw: rawMessage({ ...merged, from: customerFacing ? sendAs : null }), threadId: entry.threadId } });
   const info = await labelAndDescribe(draft.message.id, reg.labelId);
-  updateRegistry((r) => { r.drafts[draftId] = { ...entry, ...info, to: merged.to, subject: merged.subject, updatedAt: new Date().toISOString() }; });
+  updateRegistry((r) => { r.drafts[draftId] = { ...entry, ...info, to: merged.to, subject: merged.subject,
+    paymentLinkCheck: linkCheck(merged.subject, merged.body, entry.paymentUrls || []), updatedAt: new Date().toISOString() }; });
   return { draftId, ...info };
 }
 
@@ -412,10 +424,33 @@ export const sendPreparedLeadDraft = (draftId, { leadId, to, draftRef: ref, refO
   return sendOwned(draftId, { extra: { mode: COLD_DRAFT_MODE, leadId, draftRef: ref, sellerSend: true, ...(actor ? { sentBy: String(actor).slice(0, 20) } : {}), legalBasis: "NONE" } });
 });
 
+// TF-JARVIS-025: letzte Sperre vor JEDEM Versand (Vorlagen, KI-Antworten, Outbox, Verkäufer-Klick). Entwürfe ohne gespeichertes Prüfergebnis
+// (vor dem Update angelegt) werden vollständig geladen und geprüft; nicht lesbar → gesperrt (fail closed). Gesperrt bleibt gesperrt.
+// Die Meldung enthält bewusst weder «nicht gesendet» noch Netzwerkwörter: Aufrufer behandeln sie als manuelle Prüfung, nie als Wiederholung.
+export const PAYMENT_LINK_BLOCKED = "PAYMENT_LINK_BLOCKED";
+async function assertPaymentLinksSafe(draftId, entry) {
+  let check = entry.paymentLinkBlocked ? { ok: false, reasons: entry.paymentLinkBlocked.reasons || [] } : entry.paymentLinkCheck;
+  if (!check) {
+    const full = await gmail("GET", `/drafts/${encodeURIComponent(draftId)}?format=full`);
+    const p = full.message?.payload;
+    const subject = p?.headers?.find((h) => /^subject$/i.test(h.name))?.value || "";
+    check = p ? linkCheck(subject, bodyText(p), entry.paymentUrls || []) : { ok: false, reasons: ["CONTENT_UNREADABLE"] };
+  }
+  if (check.ok) return;
+  const reasons = (check.reasons || []).length ? check.reasons : ["UNKNOWN"];
+  if (!entry.paymentLinkBlocked) {
+    updateRegistry((r) => { if (r.drafts[draftId]) r.drafts[draftId].paymentLinkBlocked = { at: new Date().toISOString(), reasons }; });
+    await markDraftForReview(draftId).catch(() => {}); // Label JARVIS-PRUEFEN – Chris prüft den Entwurf in Gmail
+  }
+  throw Object.assign(new Error(`Zahlungslink nicht freigegeben (${PAYMENT_LINK_BLOCKED}: ${reasons.join(", ")}) – Versand gesperrt, Entwurf zur manuellen Prüfung markiert.`),
+    { code: PAYMENT_LINK_BLOCKED });
+}
+
 async function sendOwned(draftId, { window = null, extra = {} } = {}) {
   if (window !== null && !SEND_WINDOW_IDS.includes(window)) throw new Error(`Unbekanntes Versandfenster ${window} – nicht gesendet.`);
   const reg = loadRegistry();
   const { entry } = await assertOwnedDraft(draftId, reg);
+  await assertPaymentLinksSafe(draftId, entry);
   const now = new Date();
   if (sentToday(loadRegistry(), now) >= DAILY_SEND_LIMIT) throw new Error(`Tageslimit von ${DAILY_SEND_LIMIT} Jarvis-Mails (Europe/Zurich) erreicht – nicht gesendet.`);
   if (window && sentInWindow(window, loadRegistry(), now) >= WINDOW_SEND_LIMIT) throw new Error(`Fensterlimit von ${WINDOW_SEND_LIMIT} Jarvis-Mails (${window}) erreicht – nicht gesendet.`);
@@ -586,14 +621,14 @@ export async function replyToThread(threadId, { body, mode } = {}) {
 // TF-066: Antwort-Entwurf einer Service-Klasse im EIGENEN Auftrags-Thread. Anders als replyToThread wird der Empfänger NICHT aus
 // dem Thread abgeleitet, sondern ist fest vorgegeben (bestätigte Kundenadresse des Auftrags). Thread-Besitz wird wie bei readThread
 // geprüft (Register + Gmail); landet der Entwurf nicht im Thread, wird er verworfen. Gesendet wird nur über sendDraft.
-export async function replyDraftInThread(threadId, { to, body, messageClass, orderId = null } = {}) {
+export async function replyDraftInThread(threadId, { to, body, messageClass, orderId = null, paymentUrls = [] } = {}) {
   if (!SERVICE_MESSAGE_CLASSES.includes(messageClass)) throw new Error("Nur Service-Nachrichten im Auftrags-Thread.");
   if (!to || !body) throw new Error("Empfänger oder Text fehlt.");
   const { own, messages } = await fetchOwnedThread(threadId, loadRegistry());
   const mails = messages.filter((m) => !m.draft);
   const last = mails.at(-1);
   const subject = own[0]?.subject || last?.subject || "";
-  return createDraft({ to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId, messageClass, orderId,
+  return createDraft({ to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId, messageClass, orderId, paymentUrls,
     inReplyTo: last?.rfcMessageId || "", references: [last?.references, last?.rfcMessageId].filter(Boolean).join(" ") });
 }
 
