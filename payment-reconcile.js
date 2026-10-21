@@ -53,12 +53,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const base = String(env("JARVIS_CLOUD_URL") || "").replace(/\/+$/, ""), token = env("JARVIS_MAIL_WORKER_TOKEN");
       const call = async (body) => { const r = await fetch(`${base}/api/payments`, { method: "POST", headers: { "content-type": "application/json", "x-jarvis-worker": token }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(`api ${r.status}`); return r.json(); };
       const { events } = await call({ op: "inbox.pull" });
-      // TF-080: Stripe-Checkout-Ereignisse gehören der automatischen Prüfung (stripe-webhook.js, gleiche Logik wie im Repair-Service) – nie dem Altpfad.
+      // TF-080: Stripe-Checkout-Ereignisse gehören der automatischen Prüfung (stripe-webhook.js) – nie dem Altpfad.
+      // TF-JARVIS-024: hier weder verarbeitet noch quittiert – nur der Repair-Service (eigener Zustand, eigener Lock) holt sie ab. Sonst landen sie
+      // in einem anderen Container im falschen Zustand (UNKNOWN_SESSION) bzw. konkurrieren ohne Lock mit dem laufenden Service.
       const cx = events.filter((e) => String(e.key).startsWith("stripe-evt:")), legacy = events.filter((e) => !String(e.key).startsWith("stripe-evt:"));
       const results = reconcileAll(store, legacy.map((e) => e.tx));
-      if (cx.length) await (await import("./stripe-webhook.js")).syncStripePayments({ eventsOnly: true, inbox: { pull: async () => cx, ack: async () => {} } });
-      await call({ op: "inbox.ack", keys: events.map((e) => e.key) });
-      console.log(JSON.stringify({ events: events.length, checkout_events: cx.length, ...sum(results) }));
+      if (legacy.length) await call({ op: "inbox.ack", keys: legacy.map((e) => e.key) });
+      console.log(JSON.stringify({ events: legacy.length, checkout_events_left_for_repair_service: cx.length, ...sum(results) }));
     } else if (cmd === "reviews") {
       console.log(JSON.stringify((store.read(MONITOR_FILE, emptyMonitorState()).reviews || []).filter((r) => r.status === "OPEN"), null, 2));
     } else { console.log("Befehle: status | import-camt <datei.xml> | pull | reviews"); process.exit(1); }

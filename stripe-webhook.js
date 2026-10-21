@@ -68,6 +68,9 @@ export function bookCheckout(store, st, sess, { source = "webhook", now = new Da
   if (sess.amount_minor !== exp.amount_minor) return review("AMOUNT_MISMATCH");
   if (sess.payment_status !== "paid") return review("NOT_PAID");
   const reference = `stripe:${sess.payment_intent || sid}`;
+  // TF-JARVIS-024: Gate bereits durch eine ANDERE Zahlung erfüllt (Payment Link, Banküberweisung) → zweite Belastung nie still verbuchen (wie bookStaticLink).
+  const known = paymentsForOrder(store, a.order_id).some((p) => String(p.reference || "").toLowerCase() === reference.toLowerCase());
+  if (!known && paymentGateForOrder(store, { ...(full || {}), ...order }).satisfied) return review("DUPLICATE_PAYMENT");
   let payment_id = null, dup = false;
   try {
     payment_id = recordPayment(store, { order_id: a.order_id, amount: fromMinor(sess.amount_minor, "CHF"), currency: "CHF", source: a.provider_mode === "TEST" ? "stripe_test_checkout" : "stripe_checkout",
