@@ -271,8 +271,10 @@ export async function hostKeysOf(container) {
   return keys; // { ed25519, ecdsa, rsa }
 }
 // Hashes aller Dateien ausserhalb des Webroots (Home, /etc, /tmp, /srv) – Beweis «0 Write ausserhalb des Test-Webroots».
+// TF-JARVIS-021: public_html nur mit Rechten/Besitz (ohne mtime) – ein erlaubter Write IM Webroot ändert dessen mtime, und über eine
+// Minutengrenze hinweg liess das «ls -la» den Vergleich fälschlich fehlschlagen (CI-Lauf 39602454518).
 export async function outsideSnapshot(lab, container = lab.names.sshd) {
-  return (await docker(["exec", container, "sh", "-c", "find /home/labuser /etc /tmp /srv /root -path /home/labuser/public_html -prune -o -type f -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null | sort; ls -la /home/labuser"], { allowFail: true })).stdout;
+  return (await docker(["exec", container, "sh", "-c", "find /home/labuser /etc /tmp /srv /root -path /home/labuser/public_html -prune -o -type f -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null | sort; ls -la /home/labuser | grep -v ' public_html$'; stat -c '%A %U:%G %n' /home/labuser/public_html"], { allowFail: true })).stdout;
 }
 export async function webrootSnapshot(lab, container = lab.names.sshd) {
   return (await docker(["exec", container, "sh", "-c", "cd /home/labuser/public_html && find . -type f -print0 | xargs -0 sha256sum | sort; find . -type l | sort"])).stdout;

@@ -88,6 +88,9 @@ test("TF-047 Lab: Aufbau – Docker verfügbar, Lab-Mail-Worker (eigenes Projekt
   for (const k of ["mailRoot", "repairRoot"]) { lab[k] = path.join(lab.tmp, k); fs.mkdirSync(lab[k]); }
   lab.mailSecrets = path.join(lab.mailRoot, "secrets"); fs.mkdirSync(lab.mailSecrets);
   fs.mkdirSync(path.join(lab.repairRoot, "outbox"));
+  // TF-JARVIS-021: Linux-Docker (CI-Runner UID 1001) – Container laufen als 1000 (node). Auf dem VPS setzt repair-remote.sh die
+  // Besitzer per OWNER; im Lab (OWNER="") müssen die Bind-Mounts für 1000 beschreibbar sein (Docker Desktop: ohnehin der Fall).
+  if (process.platform !== "win32") for (const d of [lab.mailSecrets, ...["state", "outbox", "crm-export"].map((s) => path.join(lab.repairRoot, s))]) { fs.mkdirSync(d, { recursive: true }); fs.chmodSync(d, 0o777); }
   fs.writeFileSync(path.join(lab.mailRoot, ".env"), "JARVIS_MAIL_WORKER_TOKEN=lab047-worker-token-not-real\nANTHROPIC_API_KEY=lab047-must-never-be-copied\nJARVIS_SYNC_URL=https://jarvis-lab047.invalid\n");
   await cleanup();
   lab.appMail = path.join(lab.tmp, "app-mail"); fs.mkdirSync(lab.appMail);
@@ -231,5 +234,7 @@ async function cleanup() {
 test.after(async () => {
   if (!ENABLED) return;
   await cleanup();
+  // Von UID 1000 im Container angelegte Dateien/Verzeichnisse für den Runner-Benutzer löschbar machen (nur Linux).
+  if (lab.tmp && process.platform !== "win32") await docker(["run", "--rm", "-v", `${lab.tmp}:/w`, "node:22-alpine", "chmod", "-R", "a+rwX", "/w"], { allowFail: true, timeoutMs: 120_000 });
   if (lab.tmp) fs.rmSync(lab.tmp, { recursive: true, force: true });
 });
