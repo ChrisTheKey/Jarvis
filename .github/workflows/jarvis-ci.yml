@@ -1,0 +1,176 @@
+# TF-JARVIS-021 – Cloud-CI: alle umfangreichen Prüfungen laufen hier statt auf dem Laptop.
+# Sicherheitsrahmen: keine Secrets, keine Produktionsdaten, kein Deployment, nur lesender GITHUB_TOKEN.
+# Alle Tests arbeiten mit synthetischen Fixtures (firma-NNN.ch, *.test-Lab-Domains) – keine echten Mails, Anrufe oder Zahlungen.
+# Das Repository ist öffentlich: Logs und Artefakte enthalten deshalb ausschliesslich Testausgaben.
+name: jarvis-ci
+
+on:
+  push:
+    branches: ["tf-jarvis-**", "release/**", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jarvis-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+  # Keine echten Secrets im CI: der Secret-Scan prüft nur Muster, Tests nutzen ihre eigenen Attrappen.
+  JARVIS_SECRETS_DIR: /nonexistent-jarvis-secrets
+
+jobs:
+  static:
+    name: Syntax, Secret-Scan, Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts && mkdir -p reports
+      - name: Syntaxprüfung (node --check)
+        run: |
+          git ls-files -z '*.js' '*.mjs' ':!:public/**' | xargs -0 -n1 node --check
+          echo "Syntax OK: $(git ls-files '*.js' '*.mjs' ':!:public/**' | wc -l) Dateien" >> "$GITHUB_STEP_SUMMARY"
+      - name: Secret-Scan
+        run: node scripts/secret-scan.mjs
+      - name: Dependency-Audit (Root + calling/)
+        run: |
+          npm audit --omit=dev
+          npm audit --omit=dev --prefix calling
+
+  unit:
+    name: Unit-Suite (begrenzte Parallelität)
+    runs-on: ubuntu-24.04
+    needs: static
+    timeout-minutes: 45
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+      JARVIS_CHROMIUM_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts && mkdir -p reports
+      - name: npm test (--test-concurrency=2)
+        run: >-
+          npm test -- --test-concurrency=2
+          --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=junit --test-reporter-destination=reports/unit.xml
+      - name: Zusammenfassung
+        if: always()
+        run: node scripts/ci-junit-summary.mjs reports/unit.xml >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: report-unit
+          path: reports/
+          retention-days: 14
+          if-no-files-found: warn
+
+  e2e:
+    name: TF-020 End-to-End (13 Stufen)
+    runs-on: ubuntu-24.04
+    needs: static
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts && mkdir -p reports
+      - name: npm run test:tf020-e2e
+        run: >-
+          npm run test:tf020-e2e --
+          --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=junit --test-reporter-destination=reports/e2e.xml
+      - name: Zusammenfassung
+        if: always()
+        run: node scripts/ci-junit-summary.mjs reports/e2e.xml >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: report-e2e
+          path: reports/
+          retention-days: 14
+          if-no-files-found: warn
+
+  docker-labs:
+    # Eigener, kontrollierter Job: isolierte Docker-Labs (eigene Netze, nur 127.0.0.1-Ports, Laufzeit-Zugangsdaten), je Lab ein Runner.
+    name: Docker-Lab ${{ matrix.lab }}
+    runs-on: ubuntu-24.04
+    needs: static
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        lab: [repair, browser, full-order, separation, repair-quality]
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+      JARVIS_CHROMIUM_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts && mkdir -p reports
+      - run: docker version --format '{{.Server.Version}}'
+      - name: npm run test:${{ matrix.lab }}-integration
+        run: >-
+          npm run test:${{ matrix.lab }}-integration --
+          --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=junit --test-reporter-destination=reports/lab-${{ matrix.lab }}.xml
+      - name: Zusammenfassung
+        if: always()
+        run: node scripts/ci-junit-summary.mjs reports/lab-${{ matrix.lab }}.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Lab-Reste prüfen (keine Container/Volumes/Netze mit Lab-Label)
+        if: always()
+        run: |
+          docker ps -a --filter label=jarvis.lab=tf044 --format '{{.Names}}'
+          docker volume ls -q --filter label=jarvis.lab=tf044
+          docker network ls -q --filter label=jarvis.lab=tf044
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: report-lab-${{ matrix.lab }}
+          path: reports/
+          retention-days: 14
+          if-no-files-found: warn
+
+  report:
+    name: Release-Gate
+    runs-on: ubuntu-24.04
+    needs: [static, unit, e2e, docker-labs]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Ergebnis aller Pflicht-Jobs
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | node -e '
+            const n = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const rows = Object.entries(n).map(([k, v]) => `| ${k} | ${v.result} |`);
+            console.log(["## Release-Gate", "", "| Job | Ergebnis |", "|---|---|", ...rows].join("\n"));
+            process.exitCode = Object.values(n).every((v) => v.result === "success") ? 0 : 1;
+          ' | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[1]}"
