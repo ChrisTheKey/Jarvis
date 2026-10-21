@@ -95,6 +95,8 @@ test("TF-047 Lab: Aufbau – Docker verfügbar, Lab-Mail-Worker (eigenes Projekt
   await cleanup();
   lab.appMail = path.join(lab.tmp, "app-mail"); fs.mkdirSync(lab.appMail);
   execFileSync(TAR, ["-xzf", snapshot(path.join(lab.tmp, "a.tgz")), "-C", lab.appMail], { windowsHide: true });
+  // Linux: «./» im Archiv stammt aus mkdtemp (0700) und überträgt diesen Modus auf app-mail → /app wäre für UID 1000 unlesbar.
+  if (process.platform !== "win32") fs.chmodSync(lab.appMail, 0o755);
   lab.tgzA = path.join(lab.tmp, "a.tgz");
   fs.writeFileSync(path.join(lab.mailRoot, "docker-compose.yml"), `name: ${MAIL_PROJECT}
 services:
@@ -119,7 +121,7 @@ services:
     healthcheck: { interval: 3s, start_period: 5s, retries: 3 }
 `);
   await docker(["compose", "-p", MAIL_PROJECT, "-f", path.join(lab.mailRoot, "docker-compose.yml"), "up", "-d"], { timeoutMs: 600_000 });
-  await healthy(MAIL);
+  await healthy(MAIL).catch(async (e) => { const l = await docker(["logs", "--tail", "40", MAIL], { allowFail: true }); console.log(`[${MAIL} logs]\n${l.stdout}${l.stderr}`); throw e; });
   const t0 = ticks();
   await waitFor(async () => ticks() > t0 + 2, "Mail-Scheduler tickt");
   lab.mail0 = await inspect(MAIL);
