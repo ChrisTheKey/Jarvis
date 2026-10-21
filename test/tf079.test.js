@@ -181,11 +181,14 @@ async function confirmedOrder(W) {
 
 // ======================================================================================================================================
 test("TF-079 §3 Interesse: nur das Formularfeld «Interesse an» zählt (Check & Reparatur / CHF 480 / REPAIR_FIX_500), nie eine Problembeschreibung", () => {
-  for (const v of ["Check & Reparatur", "check und reparatur", "Check & Reparatur (CHF 480)", "Check & Reparatur – CHF 480.–", "CHF 480", "REPAIR_FIX_500", "«Check & Reparatur»"]) assert.ok(cf.repairInterestOf(v), v);
-  for (const v of ["Reparatur und Wartung", "Check & Anleitung", "CHF 150", "Website erstellen", "", null, "Meine Website hat einen Fehler, bitte reparieren"]) assert.equal(cf.repairInterestOf(v), false, String(v));
+  for (const v of ["Check & Reparatur", "check und reparatur", "Check & Reparatur (CHF 480)", "Check & Reparatur – CHF 480.–", "CHF 480", "REPAIR_FIX_500", "«Check & Reparatur»",
+    "Check & Reparatur (480 CHF)", "480 CHF"]) assert.ok(cf.repairInterestOf(v), v); // TF-JARVIS-028: exakter Optionstext des Live-Formulars
+  for (const v of ["Reparatur und Wartung", "Check & Anleitung", "Check & Anleitung (150 CHF)", "CHF 150", "150 CHF", "Check & Reparatur (150 CHF)", "Website erstellen", "", null,
+    "Meine Website hat einen Fehler, bitte reparieren"]) assert.equal(cf.repairInterestOf(v), false, String(v));
   const msg = (interest) => ({ messageId: "abcdef0123456789", rfcMessageId: "<x@netlify.com>", from: "formresponses@netlify.com", to: MAILBOX, deliveredTo: MAILBOX,
     subject: "Neue Kundenanfrage – submission from helvetic-webdesign-reperatur (anfrage)", body: body({ interest, msg: "Website kaputt, bitte reparieren!" }), internalDate: String(+T0), headers: { "authentication-results": [AUTH] } });
   assert.equal(cf.classifyInbound(msg("Check & Reparatur"), { cfg: CFG, ownAddresses: [MAILBOX] }).item.intent, cf.REPAIR_INTEREST);
+  assert.equal(cf.classifyInbound(msg("Check & Reparatur (480 CHF)"), { cfg: CFG, ownAddresses: [MAILBOX] }).item.intent, cf.REPAIR_INTEREST, "Optionstext des Live-Formulars");
   assert.equal(cf.classifyInbound(msg("Reparatur und Wartung"), { cfg: CFG, ownAddresses: [MAILBOX] }).item.intent, null, "Problemtext allein ist kein FIX");
 });
 

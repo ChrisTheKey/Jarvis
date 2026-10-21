@@ -185,7 +185,8 @@ export const interestOf = (raw) => String(raw ?? "").replace(/[\u0000-\u001f\u00
 // TF-079: «Interesse an» nennt eindeutig das Angebot «Check & Reparatur» (CHF 480, REPAIR_FIX_500). Nur das Formularfeld zählt – eine Problembeschreibung
 // in der Nachricht («meine Website hat einen Fehler») ist NIE ein Reparaturwunsch. Interesse ist keine Freigabe und kein Auftrag.
 export const REPAIR_INTEREST = "CONTACT_FORM_REPAIR_INTEREST";
-const REPAIR_INTEREST_RE = /^(?:check\s*(?:&|\+|und|and)\s*reparatur(?:\s*[(–-]?\s*chf\s*480(?:\.[-–]{1,2})?\s*\)?)?|chf\s*480(?:\.[-–]{1,2})?|repair_fix_500)$/i;
+// TF-JARVIS-028: Betrag in beiden Schreibweisen – das Live-Formular sendet «Check & Reparatur (480 CHF)».
+const REPAIR_INTEREST_RE = /^(?:check\s*(?:&|\+|und|and)\s*reparatur(?:\s*[(–-]?\s*(?:chf\s*480|480\s*chf)(?:\.[-–]{1,2})?\s*\)?)?|(?:chf\s*480|480\s*chf)(?:\.[-–]{1,2})?|repair_fix_500)$/i;
 export const repairInterestOf = (interest) => REPAIR_INTEREST_RE.test(String(interest ?? "").normalize("NFC").replace(/[«»"“”]/g, "").replace(/\s+/g, " ").trim());
 // Domain der Kundenangabe «Ihre Website» (ohne www.) – nur aus der validierten URL, sonst null.
 export const websiteDomain = (url) => { try { return url ? new URL(url).hostname.toLowerCase().replace(/^www\./, "") : null; } catch { return null; } };
