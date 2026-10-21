@@ -66,8 +66,9 @@ $SUDO cp "$R/app.new/deploy/vps/repair/docker-compose.yml" "$COMPOSE_NEW"
 OVR=(); [ -n "${COMPOSE_OVERRIDE:-}" ] && OVR=(-f "$COMPOSE_OVERRIDE")
 
 # TF-080: Stripe-/E2E-Konfiguration ausserhalb des Deploys (nur anlegen, wenn sie fehlt – nie überschreiben, nie lesen/ausgeben).
-$SUDO mkdir -p /opt/jarvis-payment && $SUDO chown root:root /opt/jarvis-payment && $SUDO chmod 700 /opt/jarvis-payment
-for f in stripe.env e2e.env; do [ -f "/opt/jarvis-payment/$f" ] || $SUDO sh -c "umask 077; : > /opt/jarvis-payment/$f"; $SUDO chown root:root "/opt/jarvis-payment/$f"; $SUDO chmod 600 "/opt/jarvis-payment/$f"; done
+# OWNER leer (nur Lab, ohne root): kein chown root:root – wie bei $R/.env; Rechte 700/600 gelten immer.
+$SUDO mkdir -p /opt/jarvis-payment && { [ -z "$OWNER" ] || $SUDO chown root:root /opt/jarvis-payment; } && $SUDO chmod 700 /opt/jarvis-payment
+for f in stripe.env e2e.env; do [ -f "/opt/jarvis-payment/$f" ] || $SUDO sh -c "umask 077; : > /opt/jarvis-payment/$f"; [ -z "$OWNER" ] || $SUDO chown root:root "/opt/jarvis-payment/$f"; $SUDO chmod 600 "/opt/jarvis-payment/$f"; done
 $SUDO grep -qE '^(ANTHROPIC_API_KEY|JARVIS_SERVER_CONTROL_TOKEN|GMAIL)' /opt/jarvis-payment/stripe.env && blocked "stripe.env enthält Mail-Secrets."
 echo "Stripe-Konfiguration: LIVE $($SUDO grep -qE '^STRIPE_SECRET_KEY=.+' /opt/jarvis-payment/stripe.env && echo CONFIGURED || echo NOT_CONFIGURED) · TEST $($SUDO grep -qE '^STRIPE_TEST_SECRET_KEY=.+' /opt/jarvis-payment/stripe.env && echo CONFIGURED || echo NOT_CONFIGURED)"
 
