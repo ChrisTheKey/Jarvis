@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { VIEWPORTS } from "./repair-render-test.js";
+import { siteAuditProbe, BROWSER_AUDIT_TYPES } from "./browser-site-audit.js";
 
 export { VIEWPORTS };
 export const BROWSER_METHOD = "Chromium Browser-Validierung (Desktop 1440×900, Smartphone 390×844)";
@@ -291,6 +292,7 @@ async function runViewport(browser, { vp, url, expected_domain, findings, timeou
     // Befund-spezifische Prüfung (nur allowlisted: Bild prüfen, Ziel-URL prüfen, reparierten Link anklicken – zuletzt, da er navigiert).
     const results = [];
     let clickLater = null;
+    let auditProbe = null; // TF-JARVIS-PRAXIS-002: gleiche Messung wie der Browser-Audit (Sprungmarken, abgeschnittene Bereiche)
     for (const f of findings) {
       const b = f.broken_path ? probe.findings.broken[f.broken_path] || { links: 0, images: 0 } : null;
       const e = f.expected_path ? probe.findings.expected[f.expected_path] : null;
@@ -314,6 +316,12 @@ async function runViewport(browser, { vp, url, expected_domain, findings, timeou
         r.present = out.overflow.horizontal;
         r.checks.no_horizontal_overflow = !out.overflow.horizontal;
         r.ok = f.type === "mobile_overflow" && vp !== "mobile" ? true : !out.overflow.horizontal;
+      } else if (BROWSER_AUDIT_TYPES.includes(f.type)) {
+        if (f.type !== "js_runtime_error") auditProbe ||= await evaluateStable(page, siteAuditProbe).catch(() => null);
+        if (f.type === "js_runtime_error") { r.present = out.console.page_errors > 0; r.checks.no_page_errors = !r.present; r.ok = !r.present; }
+        else if (!auditProbe) { r.ok = null; r.code = "probe_failed"; }
+        else if (f.type === "broken_anchor") { r.present = !!f.anchor && auditProbe.anchors.some((a) => a.anchor === f.anchor); r.checks.anchor_target_exists = !!f.anchor && !r.present; r.ok = r.checks.anchor_target_exists; }
+        else { r.present = auditProbe.clipped.length > 0; r.checks.no_clipped_content = !r.present; r.ok = !r.present; }
       } else { r.ok = null; r.code = "no_specific_check"; }
       if (r.ok === false) r.code = r.code || "finding_unresolved";
       results.push(r);
@@ -471,7 +479,7 @@ export function createBrowserValidator({ launch, allowHosts = null, contextOptio
     const expected = normDomain(expected_domain || hostOf(url));
     const scope = { desktop: true, mobile: true, navigation: true, ...validation_scope };
     const fs_ = findings.map((f) => ({ type: String(f.type || ""), broken_path: f.broken_path || null, expected_path: f.expected_path || null,
-      same_domain_expected: f.same_domain_expected !== false, phase }));
+      same_domain_expected: f.same_domain_expected !== false, phase, ...(typeof f.anchor === "string" ? { anchor: f.anchor.slice(0, 80) } : {}) }));
     const shotDir = screenshots ? fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-shot-")) : null;
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-chromium-"));
     let browser = null, out = null, created = 0;

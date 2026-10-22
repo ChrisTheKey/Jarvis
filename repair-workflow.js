@@ -73,7 +73,8 @@ import { combineDecisions, rollbackMatchesBaseline, safeSnapshot, browserRuntime
 import { REPAIR_FINDINGS_FILE, normalizeIssue, dedupeFindings, rankFindings } from "./site-findings.js";
 import { contentQuestionLines, buildReissueMail, MAX_AUTO_REISSUES, localeOf, ONBOARDING_CLASS } from "./onboarding-core.js";
 import { readBrief, listReissueRequests } from "./onboarding-store.js";
-import { e2eConfig, isE2eDomain } from "./e2e-test.js";
+import { e2eConfig, isE2eDomain, isE2eMailbox, E2E_SUBJECT_PREFIX } from "./e2e-test.js";
+import { combineAuditors } from "./browser-site-audit.js";
 import { cleanPlatform, cleanStated, resolvePlatform, connectorOf, nameOf, accessGuide, hostingQuestionLines } from "./hosting-detect.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
@@ -133,7 +134,8 @@ const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 // TF-047: OUTBOX_PENDING = Service-Mail liegt in der Repair-Outbox, der Mail-Worker hat noch nicht bestätigt → nächster Lauf, nie «gesendet».
 const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network|OUTBOX_PENDING/i;
 export const normDomain = (d = "") => String(d).trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
-const issueKey = (i) => { let p = i.url; try { p = new URL(i.url).pathname; } catch {} return `${i.type}|${p}`; };
+// TF-JARVIS-PRAXIS-002: Browser-Befunde tragen detail.key (Sprungmarke, Bereich …) – mehrere Befunde gleichen Typs je Seite bleiben unterscheidbar.
+const issueKey = (i) => { let p = i.url; try { p = new URL(i.url).pathname; } catch {} return `${i.type}|${p}${i.detail?.key ? `|${i.detail.key}` : ""}`; };
 const RELEVANT = new Set(["medium", "high", "critical"]);
 
 // ---------- Stack-Erkennung (nur aus öffentlich sichtbaren Signalen) ----------
@@ -162,15 +164,20 @@ const isProtectedIssue = (i = {}) => { let p = ""; try { p = new URL(i.page || i
 // ---------- Voll-Audit (gesamte freigegebene Website, passiv; nie erfundene Probleme) ----------
 // Stufe 1: Startseite + bis zu maxLinks verlinkte Unterseiten (Links/Bilder/Kontakt/Weiterleitungen/HTTP-Fehler). Der Bericht
 // nennt ehrlich, was geprüft wurde. Visuelle Mobile-/Desktop-Befunde kommen zusätzlich über deps.retester (falls konfiguriert).
-export async function fullSiteAudit(website, { auditor = null, now = () => new Date() } = {}) {
-  const a = auditor || createAuditor({ maxLinks: 80, maxImages: 25, totalMs: 10 * 60_000, now });
+// TF-JARVIS-PRAXIS-002: browserAuditor (browser-site-audit.js) ergänzt Befunde aus einem echten Browser (Sprungmarken, abgeschnittene
+// Bereiche, Laufzeitfehler); browser_audit.ok sagt, ob dieser Teil vollständig lief. detail = nur Metadaten für den Fix (≤ 3000 Zeichen).
+const safeDetail = (d) => { try { const s = JSON.stringify(d); return s.length <= 3000 ? JSON.parse(s) : null; } catch { return null; } };
+export async function fullSiteAudit(website, { auditor = null, browserAuditor = null, now = () => new Date() } = {}) {
+  const http = auditor || createAuditor({ maxLinks: 80, maxImages: 25, totalMs: 10 * 60_000, now });
+  const a = browserAuditor ? combineAuditors(http, browserAuditor) : http;
   const r = await a.audit(website);
   const issues = {};
   for (const i of r.issues || []) {
-    const id = "I" + sha(`${i.type}|${i.url}|${i.detectedAt}`).slice(0, 10);
+    const detail = i.detail && typeof i.detail === "object" ? safeDetail(i.detail) : null;
+    const id = "I" + sha(`${i.type}|${i.url}|${i.detectedAt}${detail?.key ? `|${detail.key}` : ""}`).slice(0, 10);
     issues[id] = {
       issue_id: id, type: i.type, severity: i.severity, page: i.page || i.url, evidence: i.evidence, url: i.url,
-      detectedAt: i.detectedAt, ...(i.location ? { location: i.location } : {}), ...(i.label ? { label: i.label } : {}), ...(i.reproducible !== undefined ? { reproducible: i.reproducible } : {}),
+      detectedAt: i.detectedAt, ...(i.location ? { location: i.location } : {}), ...(i.label ? { label: i.label } : {}), ...(i.reproducible !== undefined ? { reproducible: i.reproducible } : {}), ...(detail ? { detail } : {}),
       customer_text: selectCustomerVisibleFindings([i])[0]?.text || null,
       repairable: REPAIR_TYPES[i.type] === "fix" && !isProtectedIssue(i),
       protected: isProtectedIssue(i),
@@ -179,7 +186,7 @@ export async function fullSiteAudit(website, { auditor = null, now = () => new D
   }
   return { ok: r.reachable !== false, reachable: r.reachable, finalUrl: r.finalUrl || null, title: r.title || null,
     pages_checked: Math.max(1, Object.keys(r.pages || {}).length), requests: r.requests || 0,
-    html: r.pages?.home || "", issues, audited_at: (now() instanceof Date ? now() : new Date()).toISOString() };
+    html: r.pages?.home || "", issues, audited_at: (now() instanceof Date ? now() : new Date()).toISOString(), ...(r.browser_audit ? { browser_audit: r.browser_audit } : {}) };
 }
 
 // ---------- Order-Modell ----------
@@ -262,6 +269,40 @@ function createTestRepairOrder(store, { domain, website, company, delivery_email
   return saveOrder(store, order);
 }
 export const isTestOrder = (o) => o?.test_order === true || o?.environment === "TEST";
+
+// TF-JARVIS-PRAXIS-002: INTERNER ADMIN-TESTAUFTRAG (CHF 480) – nur durch Chris über die CLI, nur mit aktiver TF-080-Testfreigabe
+// (JARVIS_E2E_TEST_ENABLED + Domain in JARVIS_E2E_TEST_DOMAINS + Empfänger in JARVIS_E2E_TEST_MAILBOXES). Gleiche Pipeline wie ein Kunde
+// (Freigabe, Zugang, Backup, Audit, Plan, Reparatur, Validierung, Browser-Gate, Deployment, Bericht, Outbox), aber: keine Zahlung (die
+// Anzahlung ist ausdrücklich und protokolliert erlassen – payment_waiver), kein Verkauf/Umsatz/Provision, Betreff [E2E-TEST], nur der
+// Testempfänger. Strikte Bindung deploy_binding: Auftrag ↔ Domain ↔ Netlify-Site-ID ↔ Ziel (production) ↔ Quell-Deploy ↔ Testempfänger –
+// der Adapter prüft sie vor jedem Zugriff; eine Testkennung allein erlaubt NIE ein Deployment auf eine andere Site.
+export const INTERNAL_TEST_KIND = "INTERNAL_ADMIN_TEST";
+export function createInternalTestRepairOrder(store, { domain, delivery_email, netlify_site_id, source_deploy_id = null, company = null, contact_name = null, reference = null, website = null, e2e = e2eConfig(), now = new Date() } = {}) {
+  const d = normDomain(domain);
+  if (!e2e.ready || !isE2eDomain(e2e, d)) throw new Error("TEST_BLOCKED: Testfreigabe fehlt (JARVIS_E2E_TEST_ENABLED/_DOMAINS/_MAILBOXES) oder Domain nicht freigegeben.");
+  if (!isE2eMailbox(e2e, delivery_email)) throw new Error("TEST_BLOCKED: Empfänger ist kein freigegebenes Test-Postfach.");
+  if (!/^[0-9a-f-]{36}$/i.test(String(netlify_site_id || ""))) throw new Error("Netlify-Site-ID (UUID) für die Auftragsbindung erforderlich.");
+  if (source_deploy_id != null && !/^[0-9a-f]{24}$/i.test(String(source_deploy_id))) throw new Error("Quell-Deploy-ID ungültig.");
+  const run_id = `e2e-${sha(`internal|${d}|${now.getTime()}`).slice(0, 12)}`;
+  const site = (() => { try { const u = new URL(website || `https://${d}/`); return normDomain(u.hostname) === d && /^https?:$/.test(u.protocol) ? u.origin + "/" : null; } catch { return null; } })();
+  if (!site) throw new Error("Website muss auf der Auftrags-Domain liegen.");
+  const order = createTestRepairOrder(store, { domain: d, website: site, company, delivery_email, contact_name, run_id, now });
+  Object.assign(order, { test_kind: INTERNAL_TEST_KIND,
+    payment_waiver: { reason: INTERNAL_TEST_KIND, granted_by: "chris_cli", reference: reference ? String(reference).slice(0, 200) : null, at: now.toISOString() },
+    deploy_binding: { domain: d, netlify_site_id: String(netlify_site_id).toLowerCase(), deploy_target: "production", source_deploy_id: source_deploy_id ? String(source_deploy_id).toLowerCase() : null,
+      test_recipient: String(delivery_email).toLowerCase(), bound_at: now.toISOString() } });
+  order.confirmed = { source: "internal_admin_test", sale_date: null, confirmed_at: now.toISOString() };
+  order.state_history.push({ at: now.toISOString(), from: order.state, to: order.state, reason: `INTERNER TESTAUFTRAG ${run_id} – Anzahlung erlassen (keine Zahlung, keine Rechnung, keine Provision); gebunden an ${d} / Netlify-Site ${String(netlify_site_id).toLowerCase()}${source_deploy_id ? ` / Quell-Deploy ${source_deploy_id}` : ""} / Ziel production / Testempfänger` });
+  return saveOrder(store, order);
+}
+// Nur der interne Admin-Testauftrag liefert mit [E2E-TEST]-Betreff + e2eRunId (TF-088-Prüfung im Mail-Worker); TF-080-Testaufträge
+// (Stripe-TEST-Anzahlung) liefern unverändert über ihren bisherigen Weg.
+export const isInternalTestOrder = (o) => isTestOrder(o) && o?.test_kind === INTERNAL_TEST_KIND;
+// Erlass gilt NUR für einen internen Testauftrag mit vollständiger Bindung, dessen Domain UND Empfänger in der aktiven Testfreigabe stehen.
+export const internalTestWaiverOk = (order = {}, e2e = e2eConfig()) => isTestOrder(order) && order.test_kind === INTERNAL_TEST_KIND
+  && order.payment_waiver?.reason === INTERNAL_TEST_KIND && !!order.deploy_binding && normDomain(order.deploy_binding.domain) === normDomain(order.domain)
+  && String(order.deploy_binding.test_recipient || "") === String(order.delivery_email || "").toLowerCase()
+  && isE2eDomain(e2e, order.domain) && isE2eMailbox(e2e, order.delivery_email);
 // TF-080: Stripe meldet Rückerstattung/Streitfall zu einer bereits verbuchten Anzahlung → Auftrag anhalten (PAYMENT_REVIEW_REQUIRED, Chris entscheidet).
 // Nie automatisch erstatten, nie automatisch weiterarbeiten. Bereits abgeschlossene/stornierte Aufträge bleiben unverändert (nur Prüfeintrag).
 export function holdForPaymentReview(store, orderId, { reason, now = new Date() } = {}) {
@@ -545,7 +586,10 @@ function destroyOrderSecret(store, order, now) {
 // Zugangsprofil automatisch (ACCESS_PROFILE_PREFLIGHT). Ohne preflight bleibt alles wie in TF-042 (Profil von Chris).
 export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir), adapters = {}, auditor = null, retester = null,
   gmail = null, intake = null, router = null, preflight = null, alert = null, browserValidator = null, requireBrowser = false, autoDeliver = false,
-  onboardingDir = null, platformDetector = null, e2e = e2eConfig(), now = () => new Date(), log = () => {} } = {}) {
+  onboardingDir = null, platformDetector = null, e2e = e2eConfig(), browserAuditor = null, now = () => new Date(), log = () => {} } = {}) {
+  // TF-JARVIS-PRAXIS-002: browserAuditor = Browser-Audit (Sprungmarken, abgeschnittene Bereiche, Laufzeitfehler) zusätzlich zum HTTP-Audit.
+  // Zahlungs-Gate: bei internen Admin-Testaufträgen gilt der protokollierte Erlass (internalTestWaiverOk) – LIVE-Aufträge unverändert.
+  const gateFor = (order) => { const g = paymentGateForOrder(store, order); return !g.satisfied && internalTestWaiverOk(order, e2e) ? { ...g, satisfied: true, waived: INTERNAL_TEST_KIND } : g; };
   // TF-080: e2e (e2e-test.js) – Test-Aufträge laufen nur mit aktivem E2E-Modus UND Domain aus JARVIS_E2E_TEST_DOMAINS (vor jedem Schritt geprüft).
   // TF-071: platformDetector(order) → Befund aus öffentlichen Signalen (hosting-probe.js). Fehlt er oder ist der Befund unsicher,
   // fragt Jarvis den Kunden (WAITING_FOR_HOSTING_INFO) – nie wird ein Anbieter erraten.
@@ -708,7 +752,11 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
   };
   // TF-044: Host-Key-Fehler der SSH/SFTP-Transporte nie als «normaler» Fehler schlucken – bis zum Schritt durchreichen.
   const hostKeyStop = (e) => { if (HOST_KEY_STOP_CODES.has(e?.code)) throw e; return e; };
-  const audit = (website) => fullSiteAudit(website, { auditor, now });
+  const audit = (website) => fullSiteAudit(website, { auditor, browserAuditor, now });
+  const browserAuditIncomplete = (a) => !!browserAuditor && a?.browser_audit?.ok !== true;
+  // TF-JARVIS-PRAXIS-002: Quelle der Reparatur = gesicherter Stand des Adapters (z. B. ein ausdrücklich gebundener Netlify-Deploy);
+  // ohne eigene Quelle wie bisher die öffentliche Website.
+  const auditBase = (order) => order.backup?.source_url || order.website;
   // Wurde an der Website bereits etwas verändert (angewendete Fixes oder Deployment)?
   const changedWebsite = (order) => !!order.deployment || Object.values(order.issues || {}).some((i) => ["repaired", "still_broken"].includes(i.repair_status) || i.change_ref);
 
@@ -726,7 +774,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
   const browserFindings = (order, page) => (order.plan || []).filter((p) => issuePage(order, p) === page).map((p) => {
     const i = order.issues?.[p.issue_id] || {};
     const rep = typeof p.fix?.replacement === "string" && p.fix.replacement.startsWith("/") ? p.fix.replacement.split(/[?#]/)[0] : null;
-    return { type: i.type, broken_path: ["broken_link", "broken_image", "contact_page_broken"].includes(i.type) ? pathKey(i.url) : null, expected_path: rep };
+    return { type: i.type, broken_path: ["broken_link", "broken_image", "contact_page_broken"].includes(i.type) ? pathKey(i.url) : null, expected_path: rep,
+      ...(i.type === "broken_anchor" && i.detail?.anchor ? { anchor: String(i.detail.anchor) } : {}) };
   });
   // phase: baseline (vor der Änderung) | after (nach der Reparatur, mit VORHER-Vergleich) | rollback (Ausgangszustand bestätigen).
   const runBrowser = async (order, base, phase) => {
@@ -801,7 +850,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     if (order.delivery?.send_attempted_at) { await informChris(order, "delivery_unclear", "Versandstatus unklar"); return handOver(order, "unclear", "Versandstatus unklar (früherer Versuch ohne Bestätigung) – kein erneuter Versand, Chris prüft «Gesendet».", t); }
     try {
       if (!order.delivery?.draft_id) {
-        const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: FULFILLMENT_CLASS });
+        // Interner Testauftrag: [E2E-TEST]-Betreff + test_run_id – der Mail-Worker sendet nur an ein freigegebenes Test-Postfach (TF-088-Prüfung).
+        const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: FULFILLMENT_CLASS, ...(isInternalTestOrder(order) ? { e2eRunId: order.test_run_id } : {}) });
         order.delivery = { ...(order.delivery || {}), status: "draft_ready", draft_id: d.draftId, to: order.delivery_email, message_class: FULFILLMENT_CLASS,
           report_hash: sha(order.report.body), created_at: t.toISOString() };
         saveOrder(store, order); // Draft-ID sofort persistieren – ein Neustart erzeugt nie ein Duplikat
@@ -831,6 +881,12 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       manual(order, "TEST_ACCESS_BLOCKED: E2E-Test-Auftrag ohne aktiven E2E-Modus bzw. Domain nicht in JARVIS_E2E_TEST_DOMAINS – kein Zugang, keine Reparatur.");
       destroyOrderSecret(store, order, t); saveOrder(store, order); return false;
     }
+    // TF-JARVIS-PRAXIS-002: interner Admin-Testauftrag nur mit intakter Bindung + Testfreigabe (Domain UND Empfänger) – sonst STOP.
+    if (!TERMINAL.has(order.state) && order.test_kind === INTERNAL_TEST_KIND && !internalTestWaiverOk(order, e2e)) {
+      await informChris(order, "test_access_blocked", "Interner Testauftrag ohne gültige Bindung/Testfreigabe");
+      manual(order, "TEST_ACCESS_BLOCKED: interner Testauftrag ohne gültige Bindung (Domain/Site/Empfänger) oder ohne aktive Testfreigabe – keine Reparatur, kein Deployment.");
+      return false;
+    }
     // TF-046: stornierter (voided) Verkauf → nie Zugangs-Anfrage, Reparatur oder Lieferung. Schon verändert → Chris entscheidet.
     if (!TERMINAL.has(order.state) && repairSaleVoided(store, order)) {
       if (changedWebsite(order)) { await informChris(order, "sale_voided", "Verkauf storniert, Website bereits verändert"); manual(order, "Verkauf storniert (voided), Website wurde bereits verändert – kein automatischer Rollback, keine Lieferung; Chris entscheidet."); return false; }
@@ -840,7 +896,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
 
     // Zahlung fiel während der Arbeit unter die Schwelle (void/refund): vor jeder Änderung → warten; danach → Chris entscheidet.
     if (WORK_STATES.has(order.state)) {
-      const gate = paymentGateForOrder(store, order);
+      const gate = gateFor(order);
       if (!gate.satisfied) {
         order.payment = gate;
         if (changedWebsite(order)) { block(order, "PAYMENT_REVIEW_REQUIRED", `Zahlung unter die Schwelle gefallen (${gateText(gate)}), Website wurde bereits verändert – kein automatischer Rollback, Chris entscheidet.`); return false; }
@@ -865,7 +921,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       if (authorizationOk(order)) { transition(order, "ACCESS_CHECK", "Freigabe liegt vor", t); saveOrder(store, order); return true; }
       // TF-041: Zahlung ist KEINE Freigabe. Ist die Schwelle erfüllt, bekommt der Kunde den sicheren Link – dort erteilt er
       // Zugang UND (Pflicht) die Reparaturfreigabe. Vorher: keine Anfrage, kein Intake.
-      const gate = paymentGateForOrder(store, order);
+      const gate = gateFor(order);
       if (!samePaid(order.payment, gate)) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
       if (gate.satisfied && canRequestAccess(order) && !order.access_request?.sent_at) {
         transition(order, "ACCESS_REQUESTED", `Zahlungsschwelle erfüllt (${geText(gate)}) – sicherer Link für Zugang + Freigabe`, t);
@@ -877,7 +933,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     if (order.state === "PAYMENT_REQUIRED") {
       // ZAHLUNGSSCHWELLE (TF-041): wird je Lauf neu geprüft – vor kumulativ CHF 240 keine Zugangsdaten anfordern,
       // kein Login, keine Website-Änderung, keine Reparatur. Verbucht Chris die Zahlung, läuft der Auftrag automatisch weiter.
-      const gate = paymentGateForOrder(store, order);
+      const gate = gateFor(order);
       if (!gate.satisfied) {
         if (!samePaid(order.payment, gate)) { order.payment = gate; order.updated_at = t.toISOString(); saveOrder(store, order); }
         return false; // wartet auf Zahlung
@@ -890,7 +946,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     if (order.state === "ACCESS_CHECK") {
       if (!domainBound(order)) { block(order, "BLOCKED_NO_AUTHORIZATION", "Freigabe fehlt oder Domain (Auftrag/Freigabe/Zugang) stimmt nicht überein."); return false; }
       // ZAHLUNGSSCHWELLE (TF-041) VOR jedem Zugang: ohne kumulativ CHF 240 wird hier nichts geprüft und nichts angefragt.
-      const gate = paymentGateForOrder(store, order);
+      const gate = gateFor(order);
       order.payment = gate;
       if (!gate.satisfied) {
         transition(order, "PAYMENT_REQUIRED", `Zahlung ausstehend: ${gateText(gate)} eingegangen (payments.js record ${order.order_id}).`, t);
@@ -959,7 +1015,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       // Nach erfüllter Zahlungsschwelle wird der Kunde GENAU EINMAL automatisch per Service-Mail (CUSTOMER_ACCESS_REQUEST) um
       // SICHEREN Zugang gebeten – über einen auftragsgebundenen One-Time-Link. Danach wartet der Auftrag auf die Einreichung
       // (Zugang + Pflicht-Freigabe, syncAccessIntake) bzw. einen von Chris konfigurierten Adapter-Zugang. Nie Passwörter per Mail.
-      const gate = paymentGateForOrder(store, order);
+      const gate = gateFor(order);
       order.payment = gate;
       if (!gate.satisfied) { transition(order, "PAYMENT_REQUIRED", `Zahlungsschwelle nicht mehr erfüllt (${gateText(gate)}).`, t); saveOrder(store, order); return false; }
       if (!order.access_request?.sent_at) {
@@ -1005,7 +1061,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     if (order.state === "WAITING_FOR_HOSTING_INFO") {
       // TF-071: wartet auf die Plattform-Angabe des Kunden (Mail-Worker parst sie deterministisch in feste Wörter → Brief). Kein Link,
       // kein Zugang, keine Änderung. Mit Angabe: Kundenangabe + automatischer Befund (≥ MEDIUM) → minimaler Zugangsweg → ACCESS_REQUESTED.
-      const gate = paymentGateForOrder(store, order);
+      const gate = gateFor(order);
       if (!gate.satisfied) { order.payment = gate; transition(order, "PAYMENT_REQUIRED", `Zahlungsschwelle nicht mehr erfüllt (${gateText(gate)}).`, t); saveOrder(store, order); return false; }
       const b = onboardingDir ? readBrief(onboardingDir, order.order_id) : null;
       const stated = cleanStated(b?.platform);
@@ -1094,14 +1150,18 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       const branch = `repair/${order.order_id}`;
       const b = await adapter.backup(order, { branch }, accessCtx(order)).catch((e) => ({ error: hostKeyStop(e).message }));
       if (!b || !b.production_ref || !b.backup_ref || !b.rollback_point) { manual(order, "Backup unvollständig (Produktionsstand/Backup/Rollback-Punkt) – ohne Rollback keine Reparatur."); return false; }
+      // source_url (optional): öffentlich abrufbarer, gesicherter Stand, auf dem repariert wird – gleiches Schema wie die Website (produktiv HTTPS),
+      // ohne Zugangsdaten/Parameter.
+      const src = (() => { try { const u = new URL(String(b.source_url || "")); return u.protocol === new URL(order.website).protocol && /^https?:$/.test(u.protocol) && !u.username && !u.password && !u.search ? u.href : null; } catch { return null; } })();
       order.backup = { production_ref: String(b.production_ref), backup_ref: String(b.backup_ref), rollback_point: String(b.rollback_point),
-        branch: String(b.branch || branch), created_at: t.toISOString() };
+        branch: String(b.branch || branch), ...(src ? { source_url: src } : {}), created_at: t.toISOString() };
       transition(order, "FULL_AUDIT", "Backup + Rollback-Punkt erstellt", t); saveOrder(store, order); return true;
     }
 
     if (order.state === "FULL_AUDIT") {
-      const a = await audit(order.website);
+      const a = await audit(auditBase(order));
       if (!a.ok) { manual(order, "Website beim Voll-Audit nicht erreichbar – Zustand unklar, nicht experimentieren."); return false; }
+      if (browserAuditIncomplete(a)) { manual(order, "Browser-Audit (Desktop/Tablet/Smartphone) nicht vollständig – ohne vollständige Prüfung keine Reparatur."); return false; }
       order.audit_before = a;
       order.issues = a.issues;
       transition(order, "REPAIR_PLAN", `Voll-Audit: ${Object.keys(a.issues).length} Befunde`, t); saveOrder(store, order); return true;
@@ -1154,7 +1214,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         // TF-045: Browser-Baseline der betroffenen Seiten VOR jeder Änderung (Desktop + Smartphone, nur sichere Metadaten).
         // Ohne echten Browser keine automatische CHF-480-Reparatur – fail closed, es wurde nichts verändert.
         if (!browserValidator) { await informChris(order, "browser_unavailable", "Browser-Validierung nicht verfügbar"); manual(order, "Browser-Validierung (Chromium) nicht verfügbar – ohne echten Browser-Retest keine automatische Reparatur (fail closed). Nichts verändert."); return false; }
-        const base = await runBrowser(order, order.website, "baseline").catch(() => null);
+        const base = await runBrowser(order, auditBase(order), "baseline").catch(() => null);
         if (!base || Object.values(base.pages).some((p) => p.desktop?.load_ok !== true || p.mobile?.load_ok !== true)) { manual(order, "Browser-Baseline nicht erstellbar (Seite lädt im Browser nicht wie erwartet) – Zustand unklar, nichts verändert."); return false; }
         order.browser_baseline = { pages: base.pages, created_at: t.toISOString() };
         order.browser_gate = { required: true, desktop: "WARTET", mobile: "WARTET", navigation: "WARTET", regression: null, level: null };
@@ -1194,6 +1254,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       const target = v.preview_url || order.website;
       const after = await audit(target);
       if (!after.ok) return failValidation("Seite nach der Reparatur nicht ladbar.");
+      if (browserAuditIncomplete(after)) return failValidation("Browser-Audit nach der Reparatur nicht vollständig.");
       // Jeder reparierte Befund muss weg sein (gleiche Seite/gleicher Typ) – sonst ist die Reparatur nicht bestanden.
       const remaining = new Set(Object.values(after.issues).map(issueKey));
       const unresolved = Object.values(order.issues).filter((i) => i.repair_status === "repaired" && remaining.has(issueKey(i)));
@@ -1320,7 +1381,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       const expired = !!order.access_request?.sent_at && Date.parse(order.access_request.expires_at || 0) <= +t;
       if (!order.onboarding_required || order.state !== "ACCESS_REQUESTED" || intakeReceived(order) || !expired) { mark("skipped", "Neuer sicherer Link nicht nötig (Link noch gültig, Zugang erhalten oder Auftrag nicht wartend)."); continue; }
       if (sent >= MAX_AUTO_REISSUES) { mark("skipped", `Automatische Link-Neuausstellung ausgeschöpft (${MAX_AUTO_REISSUES}) – Chris entscheidet.`); await informChris(order, "reissue_limit", "Sicherer Link mehrfach abgelaufen"); saveOrder(store, order); continue; }
-      if (!paymentGateForOrder(store, order).satisfied || !canRequestAccess(order)) { mark("skipped", "Neuer Link nicht möglich (Zahlungsschwelle/Versandweg)."); continue; }
+      if (!gateFor(order).satisfied || !canRequestAccess(order)) { mark("skipped", "Neuer Link nicht möglich (Zahlungsschwelle/Versandweg)."); continue; }
       order.access_request_history = [...(order.access_request_history || []), { sent_at: order.access_request?.sent_at || null, expires_at: order.access_request?.expires_at || null,
         reissued_at: t.toISOString(), reason: `automatisch (${rq.reason})` }];
       order.access_request = null;
@@ -1553,7 +1614,9 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
 export function buildRepairDeliveryMail(order) {
   if (isVnOrder(order)) { const m = buildVnRepairDeliveryMail(order, { manualOpen: manualItems(order).length }); return { ...m, inline: m.body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS }; }
   const report = order.report?.body || "";
+  const test = isInternalTestOrder(order);
   const body = [
+    ...(test ? ["TESTAUFTRAG (intern) – keine Zahlung, keine Rechnung. Diese Nachricht ging nur an das Test-Postfach.", ""] : []),
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
     "",
     manualItems(order).length
@@ -1566,7 +1629,8 @@ export function buildRepairDeliveryMail(order) {
     "Chris",
     "Helvetic Webdesign",
   ].join("\n");
-  return { subject: order.report?.subject || `Webseiten-Check ${order.domain} – Abschlussbericht`, body, inline: body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS };
+  const subject = order.report?.subject || `Webseiten-Check ${order.domain} – Abschlussbericht`;
+  return { subject: test ? `${E2E_SUBJECT_PREFIX}${subject}` : subject, body, inline: body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS };
 }
 // Letzte Sperre vor dem Versand: der Bericht darf nie Zugangsdaten, Tokens, Hosts/IPs, Serverpfade, Backup-IDs, Commit-/Git-
 // Referenzen, Auftrags-IDs oder Debugdaten enthalten. Rückgabe: Grund (String) oder null.
@@ -1639,7 +1703,7 @@ export const PUBLIC_REPAIR_FIELDS = Object.freeze(["order_id", "company", "domai
 const gateWord = (v) => (v === "JA" || v === "NEIN" ? v : "WARTET");
 const regressionWord = (g) => (["KEINE", "GEFUNDEN", "ROLLBACK"].includes(g.regression) ? g.regression : null);
 // Adapter-Anzeige (TF-042): feste Wörter – nie Connector-Strings (enthalten z. B. Repo-Namen), nie Hosts/Pfade.
-const ADAPTER_WORDS = { github_netlify: "GITHUB_NETLIFY", wordpress: "WORDPRESS", sftp: "SFTP", ssh: "SSH" };
+const ADAPTER_WORDS = { github_netlify: "GITHUB_NETLIFY", wordpress: "WORDPRESS", sftp: "SFTP", ssh: "SSH", netlify_drop: "NETLIFY_DROP" };
 const adapterWord = (o) => (o.state === "BLOCKED_UNSUPPORTED_STACK" || (o.route && !o.route.adapter) ? "UNSUPPORTED"
   : ADAPTER_WORDS[o.route?.adapter] || (o.access?.ok ? ADAPTER_WORDS[o.stack?.type] : null) || null);
 export function publicRepairOrders(dir = WORKER_DIR, { max = 50 } = {}) {
@@ -1695,7 +1759,7 @@ let registryCache = null;
 function registryStatus() {
   if (!registryCache) {
     let ssh = false; try { createRequire(import.meta.url).resolve("ssh2"); ssh = true; } catch {}
-    registryCache = { status: "ACTIVE", adapters: ["github_netlify", "wordpress", "sftp", "ssh"], ssh_library: ssh, host_key_verifier: ssh ? "ACTIVE" : "UNAVAILABLE",
+    registryCache = { status: "ACTIVE", adapters: ["github_netlify", "netlify_drop", "wordpress", "sftp", "ssh"], ssh_library: ssh, host_key_verifier: ssh ? "ACTIVE" : "UNAVAILABLE",
       browser_validator: browserRuntimeStatus().status }; // TF-045: ACTIVE nur mit playwright-core + ausführbarem Chromium
   }
   return registryCache;
@@ -1708,6 +1772,8 @@ function registryStatus() {
 export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
   let adapters = {}, router = null, preflight = null;
   try { const m = await import("./repair-adapters/github-netlify.js"); adapters = { github_netlify: m.githubNetlifyAdapter({ dir }) }; } catch {}
+  // TF-JARVIS-PRAXIS-002: Netlify Drop (ohne Git) über die Netlify-API – nur mit Zuordnung in repair_netlify_drop.json + Token wirksam.
+  try { const m = await import("./repair-adapters/netlify-drop.js"); adapters = { ...adapters, netlify_drop: m.netlifyDropAdapter({ dir }) }; } catch {}
   try { const reg = await (await import("./repair-adapters/router.js")).createAdapterRegistry({ dir, legacy: adapters }); adapters = reg.adapters; router = reg.router; preflight = reg.preflight; } catch {}
   let retester = null;
   try { retester = await (await import("./repair-render-test.js")).loadRenderRetester(); } catch {}
@@ -1717,7 +1783,10 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
   // TF-071: Plattform-Erkennung aus öffentlichen Signalen. Nicht ladbar → null (= nie raten, der Kunde wird gefragt).
   let platformDetector = null;
   try { platformDetector = (await import("./hosting-probe.js")).createPlatformDetector(); } catch {}
-  return { adapters, retester, router, preflight, browserValidator, platformDetector };
+  // TF-JARVIS-PRAXIS-002: Browser-Audit (Chromium, 3 Viewports). Nicht ladbar → null (dann nur HTTP-Audit wie bisher).
+  let browserAuditor = null;
+  try { browserAuditor = await (await import("./browser-site-audit.js")).loadBrowserSiteAuditor(); } catch {}
+  return { adapters, retester, router, preflight, browserValidator, platformDetector, browserAuditor };
 }
 
 // ---------- Worker-Hook (eigenes Lock, nie zwei Läufe; ohne explizite Deps werden die Standard-Deps geladen) ----------
@@ -1729,7 +1798,7 @@ export async function loadDefaultRepairDeps({ dir = WORKER_DIR } = {}) {
 // TF-046: autoDeliver = true – nach bestandenem Abschluss-Gate geht der Bericht genau einmal an den Kunden (CUSTOMER_ORDER_FULFILLMENT).
 // auditor/alert nur für isolierte Tests (Lab-Auditor, Chris-Hinweis-Attrappe); im Produktivbetrieb null = Standard.
 export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retester = null, router = null, preflight = null, browserValidator = null, requireBrowser = true,
-  autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, onboardingDir = null, platformDetector = null, e2e = e2eConfig(), log = createLogger(dir) } = {}) {
+  autoDeliver = true, auditor = null, alert = null, gmail = null, intake = null, onboardingDir = null, platformDetector = null, e2e = e2eConfig(), browserAuditor = null, log = createLogger(dir) } = {}) {
   const status = repairOrdersStatus(dir);
   if (!status.open) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "repair.lock" })) return { busy: true };
@@ -1742,13 +1811,14 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
       preflight = preflight || defaults.preflight;
       browserValidator = browserValidator || defaults.browserValidator;
       platformDetector = platformDetector || defaults.platformDetector;
+      browserAuditor = browserAuditor || defaults.browserAuditor;
     }
     const store = createStore(dir);
     let access = null;
     const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => (o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED")
       || (o.state === "HOST_KEY_CONFIRMATION_REQUIRED" && o.host_key_request?.sent_at && !o.host_key_request.received_at));
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
-    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, onboardingDir, platformDetector, e2e, log });
+    const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, onboardingDir, platformDetector, e2e, browserAuditor, log });
     return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }
@@ -1824,6 +1894,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log(`Auftrag angelegt: ${o.order_id} (${o.state}).`);
       console.log(`Zahlungsschwelle (TF-041): Zugangs-Anfrage/Reparatur erst ab kumulativ CHF ${paymentThresholdChf(REPAIR_OFFER)} – Zahlung verbuchen: node payments.js record ${o.order_id} --amount ${paymentThresholdChf(REPAIR_OFFER)} --reference "<Bankreferenz>"`);
       console.log(`Freigabe kommt über das sichere Formular (Pflicht-Zustimmung) oder: node repair-workflow.js --authorize ${o.order_id} --domain ${o.domain} --source customer_reply_email --reference "<woher>"`);
+      return 0;
+    }
+    // TF-JARVIS-PRAXIS-002: interner Admin-Testauftrag (nur mit aktiver Testfreigabe; keine Zahlung, kein Verkauf, strikte Deploy-Bindung).
+    if (flag("create-internal-test")) {
+      const o = createInternalTestRepairOrder(store, { domain: flag("create-internal-test"), delivery_email: flag("email"), netlify_site_id: flag("site"), source_deploy_id: flag("source-deploy") || null,
+        company: flag("company"), contact_name: flag("name"), reference: flag("reference") });
+      console.log(`Interner Testauftrag: ${o.order_id} (${o.state}, ${o.environment}, ${o.test_run_id}) – Anzahlung erlassen, gebunden an ${o.deploy_binding.domain} / Site ${o.deploy_binding.netlify_site_id}${o.deploy_binding.source_deploy_id ? ` / Quell-Deploy ${o.deploy_binding.source_deploy_id}` : ""}.`);
+      console.log(`Freigabe: node repair-workflow.js --authorize ${o.order_id} --domain ${o.domain} --source written_confirmation --reference "<Beleg>"`);
       return 0;
     }
     if (flag("authorize")) { const o = authorizeRepair(store, flag("authorize"), { authorized_domain: flag("domain"), source: flag("source"), reference: flag("reference") }); console.log(`Freigabe gesetzt: ${o.order_id} → ${o.state}`); return 0; }

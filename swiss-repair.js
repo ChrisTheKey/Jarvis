@@ -102,9 +102,12 @@ export const REPAIR_TYPES = Object.freeze({
   missing_title: "fix", no_https: "fix", mixed_content: "check", slow_response: "check", no_https_redirect: "check",
   // Sichtbare Darstellungs-/Bedienfehler (z. B. aus einer Handy-Prüfung): zählen nur mit reproducible=true und benanntem Bereich (location).
   mobile_text_overlap: "fix", mobile_content_cut_off: "fix", contact_form_broken: "fix", button_broken: "fix", visible_layout_error: "fix",
+  // TF-JARVIS-PRAXIS-002: Browser-Audit (browser-site-audit.js) – Sprungmarke ohne Ziel, abgeschnittener Bereich, Laufzeitfehler eines Seitenskripts.
+  broken_anchor: "fix", content_clipped: "fix", js_runtime_error: "fix",
 });
 const REPRODUCIBLE = new Set(["broken_link", "contact_page_broken", "broken_image", "broken_mailto", "https_certificate", "redirect_loop", "missing_title", "no_https", "mixed_content", "no_https_redirect"]);
-export const VISUAL_TYPES = Object.freeze(["mobile_text_overlap", "mobile_content_cut_off", "contact_form_broken", "button_broken", "visible_layout_error"]);
+export const VISUAL_TYPES = Object.freeze(["mobile_text_overlap", "mobile_content_cut_off", "contact_form_broken", "button_broken", "visible_layout_error",
+  "broken_anchor", "content_clipped", "js_runtime_error"]);
 const VISUAL = new Set(VISUAL_TYPES);
 // Ein sichtbarer Fehler ohne bestätigte Reproduktion oder ohne konkreten Bereich ist nicht belegt → wird verworfen.
 const visualOk = (i) => !VISUAL.has(i.type) || (i.reproducible === true && typeof i.location === "string" && !!i.location.trim());
@@ -310,11 +313,14 @@ const CUSTOMER_TEXT = {
   contact_form_broken: () => ({ key: "contact", text: "Das Kontaktformular lässt sich derzeit nicht absenden", impact: "Besucher können Ihnen über das Formular so keine Nachricht schicken." }),
   button_broken: (i) => ({ key: `area:${areaKey(i.location)}`, text: `Der Button «${i.location}» funktioniert derzeit nicht`, impact: "Besucher kommen an dieser Stelle nicht weiter." }),
   visible_layout_error: (i) => ({ key: `area:${areaKey(i.location)}`, text: `Im Bereich «${i.location}» wird die Seite sichtbar verschoben dargestellt`, impact: "Der Inhalt ist an dieser Stelle schwer zu erfassen." }),
+  broken_anchor: (i) => ({ key: `area:${areaKey(i.location)}`, text: `Der Link «${i.location}» springt nicht zum vorgesehenen Bereich der Seite`, impact: "Besucher finden den gesuchten Inhalt (z. B. das Kontaktformular) so nicht." }),
+  content_clipped: (i) => ({ key: `area:${areaKey(i.location)}`, text: `Im Bereich «${i.location}» sind Inhalte abgeschnitten und nicht sichtbar`, impact: "Besucher sehen dadurch nicht alle Angaben dieses Bereichs." }),
+  js_runtime_error: () => ({ key: "script", text: "Beim Laden der Seite tritt ein Programmfehler auf, dadurch wird ein Teil der Seite nicht vollständig angezeigt", impact: "Einzelne Angaben fehlen oder funktionieren nicht wie vorgesehen." }),
 };
 // Priorisierung: zuerst Schweregrad, dann Besucherwirkung (Seite lädt nicht > Kontakt > Button/Warnung > Link > Darstellung > Bild > E-Mail-Link).
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 const IMPACT_RANK = { redirect_loop: 0, contact_page_broken: 1, contact_form_broken: 1, button_broken: 2, https_certificate: 2, broken_link: 3,
-  mobile_content_cut_off: 4, mobile_text_overlap: 5, visible_layout_error: 5, broken_image: 6, broken_mailto: 7 };
+  mobile_content_cut_off: 4, mobile_text_overlap: 5, visible_layout_error: 5, broken_image: 6, broken_mailto: 7, broken_anchor: 2, content_clipped: 4, js_runtime_error: 5 };
 const NEEDS_PAGE = new Set(["broken_link", "broken_image", "broken_mailto"]);
 // Fachbegriffe, Messwerte und Druck-/Angstsprache – dürfen nie in einer Kundenaussage stehen.
 export const CUSTOMER_JARGON_RE = /\bHTTPS?\b|\b[1-5]\d\d\b|Statuscode|\bCLS\b|\bLCP\b|\bFCP\b|Lighthouse|\bDOM\b|\bTLS\b|\bSSL\b|Zertifikat|Redirect|Weiterleitung|\bmeta\b|viewport|\bCTA\b|Endpunkt|Overflow|mailto|JavaScript|\bSEO\b|Ladezeit|Performance|<\/?[a-z]+>|Framework|Header/i;

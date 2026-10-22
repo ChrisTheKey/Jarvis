@@ -708,7 +708,7 @@ test("Dashboard: Adapter/Access/Backup/Rollback/Auto-fixable/Manual Review/Phase
   const pub = publicRepairOrders(dir);
   const o = pub.orders[0];
   assert.deepEqual([o.adapter, o.access_ok, o.backup_ok, o.rollback_ok, o.auto_fixable, o.manual_review, o.phase], ["WORDPRESS", true, true, true, 1, 0, "READY_FOR_DELIVERY"]);
-  assert.deepEqual(pub.adapter_registry.adapters, ["github_netlify", "wordpress", "sftp", "ssh"]);
+  assert.deepEqual(pub.adapter_registry.adapters, ["github_netlify", "netlify_drop", "wordpress", "sftp", "ssh"]);
   const c = cleanRepair({ ...pub, orders: [{ ...o, adapter: "wordpress_rest:geheim", host: "files.hoster-test.ch", remote_root: WEBROOT, phase: "LIVE_RETEST" }] });
   assert.equal(c.orders[0].adapter, null);
   assert.equal(c.orders[0].phase, "LIVE_RETEST");
