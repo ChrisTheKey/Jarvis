@@ -52,6 +52,11 @@ export function sanitizeUrl(raw, { max = 200 } = {}) {
   return u.href.slice(0, max);
 }
 const pathOf = (u) => { try { return new URL(u).pathname.slice(0, 160); } catch { return null; } };
+// TF-JARVIS-028: Seitenschlüssel für Link-Vergleiche. Hoster mit «Pretty URLs» (Netlify) liefern href="/x.html" als href="/x" aus
+// und bedienen /x, /x/ und /x.html gleich – daher gelten diese (und /index.html ≡ /) als dieselbe Seite. Nur .html/.htm und ein
+// abschliessender Schrägstrich fallen weg; andere Endungen, Gross-/Kleinschreibung, Host, Query und Fragment bleiben unberührt
+// (Query/Fragment sind im pathname ohnehin nicht enthalten). Im Seitenkontext (browserProbeScript, locateScript) steht dieselbe Zeile inline.
+export const pagePathKey = (p) => String(p || "/").replace(/\/index\.html?$/i, "/").replace(/\.html?$/i, "").replace(/(.)\/+$/, "$1") || "/";
 
 // ---------- Erlaubte Klickziele (alles andere wird nie angeklickt) ----------
 export const PROTECTED_INTERACTION_RE = /log-?in|anmeld|sign[- ]?(in|up)|registr|passw|checkout|kasse|warenkorb|\bcart\b|basket|bestell|\border\b|kaufen|\bbuy\b|\bpay|zahl|twint|newsletter|abonn|subscri|cookie|consent|akzept|accept|zustimm|einwillig|delete|lösch|entfern|upload|hochlad|account|konto|admin|wp-login|logout|abmeld|submit|absenden|\bsenden\b|\bsend\b/i;
@@ -82,6 +87,8 @@ export function browserProbeScript(arg = {}) {
   const de = document.documentElement, vw = de.clientWidth || window.innerWidth, vh = de.clientHeight || window.innerHeight;
   const vis = (el) => { if (!el) return false; const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && Number(s.opacity) !== 0; };
   const res = (u) => { try { const x = new URL(u, location.href); return { host: x.hostname, path: x.pathname, protocol: x.protocol }; } catch { return null; } };
+  const pageKey = (p) => String(p || "/").replace(/\/index\.html?$/i, "/").replace(/\.html?$/i, "").replace(/(.)\/+$/, "$1") || "/"; // = pagePathKey
+  const linkTo = (a, p) => { const r = res(a.getAttribute("href")); return !!r && pageKey(r.path) === pageKey(p); }; // Pretty URLs: /x.html ≡ /x ≡ /x/
   const q = (s) => document.querySelector(s);
   const header = q("header, [role=banner]"), nav = q("nav, [role=navigation]"), main = q("main, [role=main]"), footer = q("footer, [role=contentinfo]");
   const hero = q(".hero, #hero, [class*=hero]"), cta = q("a.cta, .cta a, a[class*=cta], a.btn-primary, a.button-primary");
@@ -111,11 +118,11 @@ export function browserProbeScript(arg = {}) {
   }
   const findings = { broken: {}, expected: {} };
   for (const p of arg.broken || []) {
-    findings.broken[p] = { links: [...document.querySelectorAll("a[href]")].filter((a) => res(a.getAttribute("href"))?.path === p && res(a.getAttribute("href"))?.host === location.hostname).length,
+    findings.broken[p] = { links: [...document.querySelectorAll("a[href]")].filter((a) => linkTo(a, p) && res(a.getAttribute("href"))?.host === location.hostname).length,
       images: [...document.images].filter((i) => res(i.getAttribute("src"))?.path === p).length };
   }
   for (const p of arg.expected || []) {
-    const as = [...document.querySelectorAll("a[href]")].filter((a) => res(a.getAttribute("href"))?.path === p);
+    const as = [...document.querySelectorAll("a[href]")].filter((a) => linkTo(a, p));
     const is = [...document.images].filter((i) => res(i.getAttribute("src"))?.path === p);
     findings.expected[p] = { links: as.length, links_visible: as.filter(vis).length,
       images: is.length, images_visible: is.filter(vis).length, images_loaded: is.filter((i) => i.complete && i.naturalWidth > 0).length };
@@ -136,6 +143,7 @@ export function browserProbeScript(arg = {}) {
 // kind = "toggle" | "link"; Links im Hauptinhalt haben Vorrang (dort steht der reparierte Verweis), danach der Rest der Seite.
 function locateScript({ kind, path: p }) {
   const vis = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; };
+  const pageKey = (q) => String(q || "/").replace(/\/index\.html?$/i, "/").replace(/\.html?$/i, "").replace(/(.)\/+$/, "$1") || "/"; // = pagePathKey
   const sel = kind === "toggle" ? "header button, nav button, header [role=button], nav [role=button], [aria-controls], [aria-expanded]" : "a[href]";
   const inMain = kind === "link" ? [...document.querySelectorAll("main a[href], [role=main] a[href]")] : [];
   const list = [...new Set([...inMain, ...document.querySelectorAll(sel)])];
@@ -149,7 +157,7 @@ function locateScript({ kind, path: p }) {
         in_form: !!el.closest("form"), text, label, menu_toggle: true, expanded: el.getAttribute("aria-expanded") } };
     }
     let u; try { u = new URL(el.getAttribute("href"), location.href); } catch { continue; }
-    if (u.pathname !== p) continue;
+    if (pageKey(u.pathname) !== pageKey(p)) continue;
     return { el, desc: { tag: "a", in_form: !!el.closest("form"), text, label, href_path: u.pathname, protocol: u.protocol, host: u.hostname,
       target_blank: el.getAttribute("target") === "_blank", download: el.hasAttribute("download"), contenteditable: el.isContentEditable } };
   }

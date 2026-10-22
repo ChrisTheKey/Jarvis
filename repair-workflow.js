@@ -374,6 +374,53 @@ export function revalidateRepairOrder(store, orderId, { domain, reason, env = pr
   return saveOrder(store, order);
 }
 
+// TF-JARVIS-028 (K9): einmalige QC-Wiederaufnahme EINES E2E-Testauftrags (github_netlify), dessen Browser-Retest der commitgebundenen
+// Vorschau nur am Fehlalarm «reparierter Link nicht gefunden» scheiterte (Pretty URLs: /x.html als /x ausgeliefert, im Validator
+// inzwischen normalisiert). Gleiche Schranken wie revalidateRepairOrder, zusätzlich: Grund «Retest nicht bestanden …», einziger
+// Browser-Befund HIGH:finding_unresolved (keine Live-Regression), passiver Abruf ok, Validierung an genau den Reparatur-Commit gebunden.
+// Zurück auf VALIDATION: validate() bindet erneut an Branch-Stand + Permalink des Commits, danach Browser-Retest – kein neuer Commit,
+// kein Backup, keine Mail.
+const RETEST_FAILED_RE = /^Retest nicht bestanden \(Desktop (ok|fehlgeschlagen), Smartphone (ok|fehlgeschlagen)\)\.$/;
+const QC_FALSE_ALARM = "HIGH:finding_unresolved";
+export function revalidateQcRepairOrder(store, orderId, { domain, reason, env = process.env, now = new Date() } = {}) {
+  if (!/^RF480-\d{8}-[0-9a-f]{6}$/.test(String(orderId || ""))) throw new Error("Ungültige Auftrags-ID.");
+  const why = String(reason || "").trim();
+  if (!why) throw new Error('Begründung ist Pflicht: --reason "<grund>".');
+  const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  const order = data.orders?.[orderId];
+  if (!order) throw new Error("Auftrag nicht gefunden.");
+  if (!domain || normDomain(domain) !== normDomain(order.domain)) throw new Error(`Domain "${domain || ""}" stimmt nicht mit dem Auftrag (${order.domain}) überein.`);
+  if (order.test_order !== true || order.environment !== "TEST" || !/^e2e-[0-9a-f]{12}$/.test(String(order.test_run_id || ""))) throw new Error("Nur für E2E-Testaufträge (TEST) – kein Echtauftrag.");
+  if (!isE2eDomain(e2eConfig(env), order.domain)) throw new Error("Keine freigegebene E2E-Sandbox-Domain (JARVIS_E2E_TEST_ENABLED/_DOMAINS).");
+  if ((order.qc_revalidations || []).length) throw new Error("QC wurde bereits einmal erneut aufgenommen – keine zweite Wiederaufnahme.");
+  if (order.state !== "VALIDATION_FAILED") throw new Error(`Nur im Zustand VALIDATION_FAILED (aktuell ${order.state}).`);
+  if (!RETEST_FAILED_RE.test(String(order.blocked_reason || ""))) throw new Error("Nur nach «Retest nicht bestanden …» – anderer Prüfgrund, nichts geändert.");
+  if ((order.route?.adapter || order.stack?.type) !== "github_netlify") throw new Error("Nur für den GitHub/Netlify-Adapter (commitgebundene Vorschau).");
+  if (order.customer_authorized_repair !== true) throw new Error("Keine dokumentierte Kundenfreigabe.");
+  const b = order.backup;
+  if (!b?.production_ref || !b.backup_ref || !b.rollback_point || !b.branch) throw new Error("Backup unvollständig – ohne Rollback keine Wiederaufnahme.");
+  if (order.deployment) throw new Error("Deployment vorhanden – keine Wiederaufnahme.");
+  const codes = order.browser_validation?.codes || [];
+  const found = order.regression?.found || [];
+  if (!codes.length || codes.some((c) => c !== QC_FALSE_ALARM) || !found.length || found.some((f) => f?.type !== QC_FALSE_ALARM) || order.regression?.live)
+    throw new Error(`Nur wenn der einzige Browser-Befund ${QC_FALSE_ALARM} ist (keine Live-/sonstige Regression) – anderer Browser-Befund, nichts geändert.`);
+  if (order.retest?.http_ok !== true) throw new Error("Der passive Seitenabruf im Retest war nicht in Ordnung – keine Wiederaufnahme.");
+  const items = (order.plan || []).map((p) => order.issues?.[p.issue_id]);
+  if (!items.length || items.some((i) => !i || i.repair_status !== "repaired" || !/^git:[0-9a-f]{40}$/.test(String(i.change_ref || ""))))
+    throw new Error("Nicht jeder Plan-Eintrag hat einen angewendeten Reparatur-Commit – keine Wiederaufnahme.");
+  const sha = String(items.at(-1).change_ref).slice(4);
+  const v = order.validation;
+  if (v?.build_ok !== true || v.preview_commit !== sha || !/^https:\/\/[0-9a-f]{24}--/.test(String(v.preview_url || "")))
+    throw new Error("Vorschau nicht an den Reparatur-Commit gebunden – keine Wiederaufnahme.");
+  order.qc_revalidations = [{ at: now.toISOString(), from_state: order.state, from_reason: order.blocked_reason, codes: [...codes], preview_commit: sha,
+    preview_deploy: v.preview_deploy || null, change_refs: items.map((i) => i.change_ref), reason: why.slice(0, 200) }];
+  order.blocked_reason = null;
+  order.regression = null;
+  if (order.browser_gate) order.browser_gate = { ...order.browser_gate, desktop: "WARTET", mobile: "WARTET", navigation: "WARTET", regression: null, level: null };
+  transition(order, "VALIDATION", `Erneute QC durch Chris (${why.slice(0, 120)}) – bestehender Reparatur-Commit ${sha.slice(0, 12)}, kein neuer Commit`, now);
+  return saveOrder(store, order);
+}
+
 // TF-045/TF-054: Abschluss-Gate. COMPLETED (und vorher READY_FOR_DELIVERY) nur, wenn die technische Adapter-Validierung, der öffentliche
 // HTTP-Retest und – sobald für den Auftrag ein Browser-Gate gilt – Desktop- UND Mobile-Browser-Validierung bestanden sind und
 // keine Regression offen ist. Ohne Browser-Gate (kein Plan/ältere Aufträge) gelten Desktop- und Smartphone-Retest wie bisher.
@@ -1794,6 +1841,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       try {
         const o = revalidateRepairOrder(store, flag("revalidate"), { domain: flag("domain"), reason: flag("reason") });
         console.log(`Erneut zur Validierung: ${o.order_id} → ${o.state} (nächster Worker-Lauf: Vorschau genau des Reparatur-Commits prüfen).`);
+      } finally { releaseLock(WORKER_DIR, process.pid, "repair.lock"); }
+      return 0;
+    }
+    if (flag("revalidate-qc")) {
+      if (!acquireLock(WORKER_DIR, { name: "repair.lock" })) throw new Error("Repair-Worker läuft gerade – nichts geändert, später erneut.");
+      try {
+        const o = revalidateQcRepairOrder(store, flag("revalidate-qc"), { domain: flag("domain"), reason: flag("reason") });
+        console.log(`Erneute QC: ${o.order_id} → ${o.state} (nächster Worker-Lauf: Vorschau des Reparatur-Commits validieren, dann Browser-Retest).`);
       } finally { releaseLock(WORKER_DIR, process.pid, "repair.lock"); }
       return 0;
     }
