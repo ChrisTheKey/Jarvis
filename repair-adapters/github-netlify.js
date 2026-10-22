@@ -99,16 +99,18 @@ export function githubNetlifyAdapter({ dir = WORKER_DIR, store = createStore(dir
     if (r.status !== 200 || typeof r.json?.content !== "string") return null;
     return { sha: r.json.sha, content: Buffer.from(r.json.content, "base64").toString("utf8") };
   }
-  // Dateien, die den kaputten Pfad referenzieren: GitHub-Code-Suche, sonst (Suche nicht verfügbar) begrenzter HTML-Scan.
+  // Dateien, die den kaputten Pfad referenzieren: GitHub-Code-Suche, sonst begrenzter HTML-Scan.
+  // TF-JARVIS-028: Die Suche antwortet für nicht (vollständig) indexierte Repos mit 200, 0 Treffern und incomplete_results – das
+  // ist kein Beleg für «nirgends referenziert». Nur vollständige Suchtreffer zählen; sonst (leer/unvollständig/Fehler) der Scan.
   async function filesReferencing(m, brokenPath, paths, ref) {
     const s = await gh(`/search/code?q=${encodeURIComponent(`"${brokenPath}" repo:${m.repo}`)}&per_page=10`);
-    if (s.status === 200 && Array.isArray(s.json?.items)) {
+    if (s.status === 200 && Array.isArray(s.json?.items) && s.json.items.length && s.json.incomplete_results !== true) {
       const hits = [];
       for (const it of s.json.items.slice(0, 10)) {
         const f = await getFile(m, it.path, ref);
         if (f && f.content.includes(brokenPath)) hits.push(it.path);
       }
-      return hits;
+      if (hits.length) return hits;
     }
     const scan = paths.filter((p) => /\.html?$/i.test(p) && !SKIP_PATH.test("/" + p)).slice(0, 40);
     const hits = [];

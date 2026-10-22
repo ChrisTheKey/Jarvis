@@ -313,6 +313,34 @@ export function authorizeRepair(store, orderId, { authorized_domain, source, ref
   return saveOrder(store, order);
 }
 
+// TF-JARVIS-028: Wiederaufnahme EINES E2E-Testauftrags nach einem korrigierten Planungsfehler (Plan leer, «Kein Befund mit eindeutiger
+// Ursache …»). Nur Chris (CLI), nur TEST-Auftrag auf freigegebener E2E-Sandbox-Domain, nur aus MANUAL_REVIEW_REQUIRED mit genau diesem
+// Grund, mit Kundenfreigabe + vollständigem Backup, ohne Plan/Deployment, höchstens EINMAL je Auftrag. Zurück auf FULL_AUDIT: frisches
+// Audit auf dem bestehenden Backup/Branch – keine neue Zugangsanfrage, keine Brief-Frage, keine Zahlung, kein zweites Backup.
+export const NO_UNIQUE_CAUSE_REASON = "Kein Befund mit eindeutiger Ursache automatisch reparierbar – manuelle Prüfung nötig.";
+export function replanRepairOrder(store, orderId, { domain, reason, env = process.env, now = new Date() } = {}) {
+  if (!/^RF480-\d{8}-[0-9a-f]{6}$/.test(String(orderId || ""))) throw new Error("Ungültige Auftrags-ID.");
+  const why = String(reason || "").trim();
+  if (!why) throw new Error('Begründung ist Pflicht: --reason "<grund>".');
+  const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  const order = data.orders?.[orderId];
+  if (!order) throw new Error("Auftrag nicht gefunden.");
+  if (!domain || normDomain(domain) !== normDomain(order.domain)) throw new Error(`Domain "${domain || ""}" stimmt nicht mit dem Auftrag (${order.domain}) überein.`);
+  if (order.test_order !== true || order.environment !== "TEST" || !/^e2e-[0-9a-f]{12}$/.test(String(order.test_run_id || ""))) throw new Error("Nur für E2E-Testaufträge (TEST) – kein Echtauftrag.");
+  if (!isE2eDomain(e2eConfig(env), order.domain)) throw new Error("Keine freigegebene E2E-Sandbox-Domain (JARVIS_E2E_TEST_ENABLED/_DOMAINS).");
+  if ((order.replans || []).length) throw new Error("Auftrag wurde bereits einmal neu geplant – keine zweite Wiederaufnahme.");
+  if (order.state !== "MANUAL_REVIEW_REQUIRED") throw new Error(`Nur im Zustand MANUAL_REVIEW_REQUIRED (aktuell ${order.state}).`);
+  if (order.blocked_reason !== NO_UNIQUE_CAUSE_REASON) throw new Error("Nur nach «Kein Befund mit eindeutiger Ursache …» – anderer Prüfgrund, nichts geändert.");
+  if (order.customer_authorized_repair !== true) throw new Error("Keine dokumentierte Kundenfreigabe.");
+  const b = order.backup;
+  if (!b?.production_ref || !b.backup_ref || !b.rollback_point || !b.branch) throw new Error("Backup unvollständig – ohne Rollback keine Wiederaufnahme.");
+  if ((order.plan || []).length || order.deployment) throw new Error("Plan oder Deployment vorhanden – keine Wiederaufnahme.");
+  order.replans = [{ at: now.toISOString(), from_state: order.state, from_reason: order.blocked_reason, reason: why.slice(0, 200) }];
+  order.blocked_reason = null;
+  transition(order, "FULL_AUDIT", `Neu geplant durch Chris (${why.slice(0, 120)}) – bestehendes Backup ${String(b.production_ref).slice(0, 12)}, Branch ${b.branch}`, now);
+  return saveOrder(store, order);
+}
+
 // TF-045/TF-054: Abschluss-Gate. COMPLETED (und vorher READY_FOR_DELIVERY) nur, wenn die technische Adapter-Validierung, der öffentliche
 // HTTP-Retest und – sobald für den Auftrag ein Browser-Gate gilt – Desktop- UND Mobile-Browser-Validierung bestanden sind und
 // keine Regression offen ist. Ohne Browser-Gate (kein Plan/ältere Aufträge) gelten Desktop- und Smartphone-Retest wie bisher.
@@ -1041,7 +1069,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       order.plan = plan;
       // Keine automatischen Massenänderungen.
       if (plan.length > MAX_AUTO_FIXES_PER_ORDER) { for (const p of plan) order.issues[p.issue_id].repair_status = "needs_review"; order.plan = []; manual(order, `${plan.length} automatisch behebbare Befunde – mehr als ${MAX_AUTO_FIXES_PER_ORDER} je Auftrag, keine Massenänderung, manuelle Prüfung.`); return false; }
-      if (!plan.length && repairables.length) { manual(order, "Kein Befund mit eindeutiger Ursache automatisch reparierbar – manuelle Prüfung nötig."); return false; }
+      if (!plan.length && repairables.length) { manual(order, NO_UNIQUE_CAUSE_REASON); return false; }
       if (plan.length && browserRequired()) {
         // TF-045: Browser-Baseline der betroffenen Seiten VOR jeder Änderung (Desktop + Smartphone, nur sichere Metadaten).
         // Ohne echten Browser keine automatische CHF-480-Reparatur – fail closed, es wurde nichts verändert.
@@ -1718,6 +1746,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       return 0;
     }
     if (flag("authorize")) { const o = authorizeRepair(store, flag("authorize"), { authorized_domain: flag("domain"), source: flag("source"), reference: flag("reference") }); console.log(`Freigabe gesetzt: ${o.order_id} → ${o.state}`); return 0; }
+    if (flag("replan")) {
+      // Gleicher Lock wie der Worker-Lauf: nie gleichzeitig mit runRepairOrders schreiben.
+      if (!acquireLock(WORKER_DIR, { name: "repair.lock" })) throw new Error("Repair-Worker läuft gerade – nichts geändert, später erneut.");
+      try {
+        const o = replanRepairOrder(store, flag("replan"), { domain: flag("domain"), reason: flag("reason") });
+        console.log(`Neu geplant: ${o.order_id} → ${o.state} (nächster Worker-Lauf: Voll-Audit + Reparaturplan auf dem bestehenden Backup).`);
+      } finally { releaseLock(WORKER_DIR, process.pid, "repair.lock"); }
+      return 0;
+    }
     if (argv.includes("--run")) {
       // TF-047: im separaten Repair-Service (kein Gmail) nur über die Repair-Outbox – der Mail-Worker sendet.
       const gmail = process.env.JARVIS_WORKER_ROLE === "repair" ? (await import("./repair-outbox.js")).createOutboxMailer({ dir: (await import("./repair-service.js")).OUTBOX_DIR })
