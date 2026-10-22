@@ -50,7 +50,7 @@ function snapshot(out, mutate = null) {
 function remoteDeploy(env) {
   return new Promise((resolve) => {
     execFile(lab.bash, [posix(path.join(ROOT, "deploy", "vps", "repair-remote.sh"))], { env: { ...process.env, SUDO: "", OWNER: "", HEALTH_TIMEOUT: "300",
-      R: posix(lab.repairRoot), PAY: posix(path.join(lab.tmp, "jarvis-payment")), MAIL_ROOT: posix(lab.mailRoot), MAIL_CONTAINER: MAIL, MAIL_PROJECT, REPAIR_PROJECT, REPAIR_CONTAINER: REPAIR,
+      R: posix(lab.repairRoot), PAY: posix(lab.payDir),MAIL_ROOT: posix(lab.mailRoot), MAIL_CONTAINER: MAIL, MAIL_PROJECT, REPAIR_PROJECT, REPAIR_CONTAINER: REPAIR,
       COMPOSE_OVERRIDE: posix(lab.override), ...env }, maxBuffer: 64 * 1024 * 1024, timeout: 1_500_000, windowsHide: true },
     (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: String(stdout) + String(stderr) }));
   });
@@ -86,6 +86,10 @@ test("TF-047 Lab: Aufbau – Docker verfügbar, Lab-Mail-Worker (eigenes Projekt
   lab.bash = bashPath();
   lab.tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-lab047-"));
   for (const k of ["mailRoot", "repairRoot"]) { lab[k] = path.join(lab.tmp, k); fs.mkdirSync(lab[k]); }
+  // TF-JARVIS-PRAXIS-002: Payment-Ablage des Labs (statt /opt/jarvis-payment) – für repair-remote.sh (PAY) UND für die direkten
+  // docker-compose-Aufrufe dieses Tests (env_file ${JARVIS_PAYMENT_DIR}).
+  lab.payDir = path.join(lab.tmp, "jarvis-payment");
+  process.env.JARVIS_PAYMENT_DIR = lab.payDir;
   lab.mailSecrets = path.join(lab.mailRoot, "secrets"); fs.mkdirSync(lab.mailSecrets);
   fs.mkdirSync(path.join(lab.repairRoot, "outbox"));
   // TF-JARVIS-021: Linux-Docker (CI-Runner UID 1001) – Container laufen als 1000 (node). Auf dem VPS setzt repair-remote.sh die

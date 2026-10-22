@@ -99,7 +99,9 @@ test("13 Einmaliger (nicht reproduzierbarer) Laufzeitfehler zählt nicht", () =>
 });
 
 // ---------- Vollständiger Engine-Lauf + 15. E-Mail-Deduplizierung ----------
-const DOMAIN = "praxis-test.netlify.app";
+// Testdomain ohne HSTS-Preload (Chrome stable erzwingt für *.netlify.app HTTPS; der Mock-Proxy spricht nur HTTP).
+const HOST_SUFFIX = "netlify-mock.test";
+const DOMAIN = `praxis-test.${HOST_SUFFIX}`;
 const MAILBOX = "test-postfach@example.ch";
 const ENV = { JARVIS_E2E_TEST_ENABLED: "true", JARVIS_E2E_TEST_DOMAINS: DOMAIN, JARVIS_E2E_TEST_MAILBOXES: MAILBOX, JARVIS_E2E_FULFILMENT_ENABLED: "true" };
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
@@ -126,7 +128,7 @@ const SITE = `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta n
 test("Engine end-to-end: Jarvis erkennt, plant, repariert, prüft (Entwurf + Browser), veröffentlicht, prüft live, liefert genau EINE Testmail", { skip, timeout: 600_000 }, async () => {
   const dir = tmp(), outbox = tmp(), store = createStore(dir);
   const e2e = e2eConfig(ENV);
-  const mock = createNetlifyMock({ siteName: "praxis-test", files: { "/index.html": SITE, "/style.css": "body{margin:0;font-family:sans-serif}", "/logo.png": PNG } });
+  const mock = createNetlifyMock({ siteName: "praxis-test", customDomain: DOMAIN, hostSuffix: HOST_SUFFIX, files: { "/index.html": SITE, "/style.css": "body{margin:0;font-family:sans-serif}", "/logo.png": PNG } });
   const sourceId = mock.site.published_deploy.id; // fehlerhafter Stand (gebundene Quelle)
   const otherLive = mock.addDeploy({ "/index.html": SITE.replace("footer-yaer", "footer-year"), "/style.css": "body{margin:0;font-family:sans-serif}", "/logo.png": PNG });
   mock.publish(otherLive); // Produktion = anderer Stand (wie bei Praxis Kälin: dort bereits von Hand korrigiert)
@@ -136,7 +138,7 @@ test("Engine end-to-end: Jarvis erkennt, plant, repariert, prüft (Entwurf + Bro
     const o = createInternalTestRepairOrder(store, { domain: DOMAIN, website: `http://${DOMAIN}/`, delivery_email: MAILBOX, netlify_site_id: mock.siteId, source_deploy_id: sourceId, company: "Physio Muster", contact_name: "Test", e2e });
     authorizeRepair(store, o.order_id, { authorized_domain: DOMAIN, source: "written_confirmation", reference: "Inhaber, Testlauf" });
     const launch = chromiumLauncher({ extraArgs: [`--proxy-server=http://127.0.0.1:${proxy.port}`, "--proxy-bypass-list=<-loopback>"] });
-    const adapter = netlifyDropAdapter({ dir, store, env: { JARVIS_REPAIR_NETLIFY_TOKEN: GOOD_TOKEN }, fetchFn: mock.fetchFn, sleep: async () => {}, pollMs: 1, permalinkOf: (id, s) => `http://${id}--${s.name}.netlify.app` });
+    const adapter = netlifyDropAdapter({ dir, store, env: { JARVIS_REPAIR_NETLIFY_TOKEN: GOOD_TOKEN }, fetchFn: mock.fetchFn, sleep: async () => {}, pollMs: 1, permalinkOf: (id, s) => `http://${id}--${s.name}.${HOST_SUFFIX}` });
     const httpAuditor = { audit: async (url) => { const r = await mock.fetchFn(url); const html = await r.text(); return { reachable: r.status === 200, finalUrl: url, title: "Physio Muster", pages: { home: html }, requests: 1, issues: [] }; } };
     const engine = createRepairEngine({ dir, store, adapters: { netlify_drop: adapter }, auditor: httpAuditor, browserAuditor: createBrowserSiteAuditor({ launch }),
       browserValidator: createBrowserValidator({ launch }), requireBrowser: true, autoDeliver: true, gmail: createOutboxMailer({ dir: outbox }), e2e });
@@ -154,7 +156,7 @@ test("Engine end-to-end: Jarvis erkennt, plant, repariert, prüft (Entwurf + Bro
     assert.ok(order.backup.source_url.includes(sourceId), "Audit auf dem gebundenen Quell-Deploy");
     assert.equal(order.backup.rollback_point, `netlify:${otherLive}`);
     // Entwurf geprüft, dann veröffentlicht; unveränderte Dateien erhalten
-    assert.equal(order.validation.build_ok, true); assert.match(order.validation.preview_url, /--praxis-test\.netlify\.app\/$/);
+    assert.equal(order.validation.build_ok, true); assert.match(order.validation.preview_url, /^http:\/\/[0-9a-f]{24}--praxis-test\.netlify-mock\.test\/$/);
     assert.equal(order.browser_gate.desktop, "JA"); assert.equal(order.browser_gate.mobile, "JA"); assert.equal(order.browser_gate.regression, "KEINE");
     assert.equal(order.deployment.deployed, true); assert.equal(order.deployment.live_retest_ok, true);
     const live = mock.site.published_deploy.id;

@@ -8,7 +8,9 @@ export const READONLY_TOKEN = "nfp_test_readonly_token_0123456789";
 const sha1 = (b) => crypto.createHash("sha1").update(b).digest("hex");
 const hex = (n) => crypto.randomBytes(n).toString("hex");
 
-export function createNetlifyMock({ siteName = "praxis-test", siteId = "11111111-2222-4333-8444-555555555555", files = {}, repoUrl = null, customDomain = null } = {}) {
+// hostSuffix: zusätzliche Test-Endung für Permalinks (z. B. «netlify-mock.test») – echte Browser (Chrome stable) erzwingen für *.netlify.app
+// HTTPS (HSTS-Preload), der Mock-Proxy spricht nur HTTP.
+export function createNetlifyMock({ siteName = "praxis-test", siteId = "11111111-2222-4333-8444-555555555555", files = {}, repoUrl = null, customDomain = null, hostSuffix = null } = {}) {
   const blobs = new Map();
   const deploys = new Map();
   const calls = [];
@@ -31,8 +33,8 @@ export function createNetlifyMock({ siteName = "praxis-test", siteId = "11111111
     return s ? { body: blobs.get(s), type: key.endsWith(".html") ? "text/html; charset=utf-8" : key.endsWith(".css") ? "text/css" : key.endsWith(".png") ? "image/png" : "application/octet-stream" } : null;
   }
   function resolveHost(host) {
-    const m = String(host).toLowerCase().match(/^([0-9a-f]{24})--([a-z0-9-]+)\.netlify\.app$/);
-    if (m && m[2] === siteName) return m[1];
+    const m = String(host).toLowerCase().match(/^([0-9a-f]{24})--([a-z0-9-]+)\.(.+)$/);
+    if (m && m[2] === siteName && (m[3] === "netlify.app" || (hostSuffix && m[3] === hostSuffix))) return m[1];
     if (host === `${siteName}.netlify.app` || (customDomain && host === customDomain)) return site.published_deploy.id;
     return null;
   }
