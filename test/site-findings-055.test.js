@@ -228,7 +228,7 @@ test("Backfill: Kandidaten ohne DNC/archiviert, eine Website je Schritt, Checkpo
   assert.equal(by["firma-001.ch"].errors.audit, "FULL"); assert.equal(by["firma-001.ch"].errors.count, 1);
   // TF-076: vollständig geprüft ohne Fehler → nicht im aktiven CRM (bleibt Prüfkandidat, Zustand NO_VERIFIED_ERRORS).
   assert.equal(by["firma-000.ch"], undefined);
-  const z = buildCrmLead("firma-000.ch", src()); assert.equal(z.errors.audit, "FULL"); assert.equal(z.errors.count, 0); assert.equal(z.admission, "NO_VERIFIED_ERRORS");
+  const z = buildCrmLead("firma-000.ch", src(), NOW); assert.equal(z.errors.audit, "FULL"); assert.equal(z.errors.count, 0); assert.equal(z.admission, "NO_VERIFIED_ERRORS");
   assert.equal(by["firma-003.ch"].errors.audit, "PARTIAL", "unvollständig → nur Mindestzahl");
   assert.equal(fs.readdirSync(s.data).filter((f) => f.includes(".tmp-")).length, 0, "keine Temp-Reste");
 });
