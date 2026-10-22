@@ -539,6 +539,25 @@ export function completeOrder(store, orderId, { now = new Date() } = {}) {
   return saveOrder(store, order);
 }
 
+// TF-JARVIS-PRAXIS-002: Bericht neu erzeugen (nur durch Chris), nachdem ein Bericht wegen unzulässiger Angaben gesperrt wurde
+// (report_unsafe) und die Ursache im Code behoben ist. Nur READY_FOR_DELIVERY, nie nach einem Entwurf/Versand; der neue Bericht muss
+// reportUnsafe bestehen – sonst bleibt alles unverändert. Danach versucht der nächste Lauf die Lieferung genau einmal (normaler Weg).
+export function rebuildCustomerReport(store, orderId, { now = new Date() } = {}) {
+  const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  const order = data.orders?.[orderId];
+  if (!order) throw new Error("Auftrag nicht gefunden.");
+  if (order.state !== "READY_FOR_DELIVERY") throw new Error(`Nur in READY_FOR_DELIVERY (aktuell ${order.state}).`);
+  if (order.delivery?.status !== "report_unsafe") throw new Error("Nur nach einem gesperrten Bericht (report_unsafe).");
+  if (order.delivery?.draft_id || order.delivery?.sent_at) throw new Error("Lieferung bereits vorbereitet/gesendet – kein neuer Bericht.");
+  const report = buildCustomerReport(order, { now });
+  const unsafe = reportUnsafe(report.body, order);
+  if (unsafe) throw new Error(`Neuer Bericht enthält weiterhin unzulässige Angaben (${unsafe}) – unverändert.`);
+  order.report = report;
+  order.delivery = { status: "none", previous: { status: "report_unsafe", handover_at: order.delivery.handover_at || null }, report_rebuilt_at: now.toISOString() };
+  order.state_history.push({ at: now.toISOString(), from: order.state, to: order.state, reason: "Bericht neu erzeugt (Chris) – Sperre report_unsafe aufgehoben, neuer Bericht geprüft" });
+  return saveOrder(store, order);
+}
+
 // Stornieren durch Chris (TF-041): terminal, Zugangsdaten werden zerstört, Datensatz bleibt erhalten. Nie nach COMPLETED.
 export function cancelRepairOrder(store, orderId, { reason = null, now = new Date() } = {}) {
   const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
@@ -1572,7 +1591,10 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
   const openForReview = issues.filter((i) => ["needs_review", "repair_failed", "still_broken"].includes(i.repair_status) || (i.repair_status === "open" && !i.repairable));
   const relevant = issues.filter((i) => i.type !== "customer_content_change" && (RELEVANT.has(i.severity) || i.customer_text));
   const manualOpen = manualItems(order).length;
-  const line = (i) => `• ${i.customer_text || "Ein technischer Punkt auf " + (i.page || "Ihrer Website")}`; // TF-066: Inhaltsänderungen mit eigenem Kundentext
+  // TF-JARVIS-PRAXIS-002: ohne Kundentext nie die volle Adresse (z. B. die Deploy-Adresse eines gebundenen Quell-Deploys) – nur
+  // «Startseite» bzw. der Pfad; sonst sperrt reportUnsafe («url») jeden Bericht mit einem offenen allgemeinen Punkt.
+  const pageLabel = (p) => { if (!p) return "Ihrer Website"; try { const u = new URL(p); return u.pathname && u.pathname !== "/" ? `der Seite «${u.pathname.slice(0, 80)}»` : "Ihrer Startseite"; } catch { return String(p); } };
+  const line = (i) => `• ${i.customer_text || "Ein technischer Punkt auf " + pageLabel(i.page)}`; // TF-066: Inhaltsänderungen mit eigenem Kundentext
   if (isVnOrder(order)) return { subject: vnReportSubject(order), body: buildVnRepairReport(order, { now, fixed, openForReview, relevant: relevant.length, manualOpen }), created_at: new Date().toISOString() };
   const body = [
     `Webseiten-Check – Abschlussbericht «Check & Reparatur» (CHF ${OFFERS[REPAIR_OFFER].price})`,
@@ -1979,8 +2001,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log("Beim nächsten Worker-Lauf geht genau EINE neue Zugangs-Anfrage mit neuem Link raus.");
       return 0;
     }
+    if (flag("rebuild-report")) { const o = rebuildCustomerReport(store, flag("rebuild-report")); console.log(`Bericht neu erzeugt: ${o.order_id} (${o.state}) – Lieferung im nächsten Lauf (--run).`); return 0; }
     if (flag("report")) { const o = store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders?.[flag("report")]; if (!o?.report) throw new Error("Kein Bericht vorhanden."); console.log(`${o.report.subject}\n\n${o.report.body}`); return 0; }
-    console.log("Befehle: --list | --show <id> | --create <domain> | --create-confirmed <domain> --email <adresse> | --authorize <id> --domain <d> --source <q> | --run | --complete <id> | --cancel <id> --reason <r> | --reissue-access <id> --reason <r> | --confirm-host-key <id> --fingerprint SHA256:… | --report <id>");
+    console.log("Befehle: --list | --show <id> | --create <domain> | --create-confirmed <domain> --email <adresse> | --authorize <id> --domain <d> --source <q> | --run | --complete <id> | --rebuild-report <id> | --cancel <id> --reason <r> | --reissue-access <id> --reason <r> | --confirm-host-key <id> --fingerprint SHA256:… | --report <id>");
     return 1;
   };
   run().then((c) => process.exit(c), (e) => { console.error("Fehler: " + e.message); process.exit(1); });

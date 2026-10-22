@@ -9,7 +9,7 @@ import path from "node:path";
 import { createStore } from "../mail-worker.js";
 import { netlifyDropAdapter, setDropMapping, bindingProblem, readNetlifyToken, NETLIFY_DROP_LOG } from "../repair-adapters/netlify-drop.js";
 import { locateStaticFix, applyStaticFix, anchorCandidates, idTypoCandidates } from "../static-site-fixes.js";
-import { createRepairOrder, createInternalTestRepairOrder, internalTestWaiverOk, authorizeRepair, createRepairEngine, REPAIR_ORDERS_FILE, INTERNAL_TEST_KIND, isTestOrder } from "../repair-workflow.js";
+import { createRepairOrder, createInternalTestRepairOrder, internalTestWaiverOk, authorizeRepair, createRepairEngine, REPAIR_ORDERS_FILE, INTERNAL_TEST_KIND, isTestOrder, buildCustomerReport, reportUnsafe, rebuildCustomerReport } from "../repair-workflow.js";
 import { e2eConfig } from "../e2e-test.js";
 import { createNetlifyMock, GOOD_TOKEN, READONLY_TOKEN } from "./netlify-mock.js";
 
@@ -282,4 +282,36 @@ test("14 Interner Testauftrag: Testfreigabe zur Laufzeit entzogen → TEST_ACCES
   const after = store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders[o.order_id];
   assert.equal(after.state, "MANUAL_REVIEW_REQUIRED"); assert.match(after.blocked_reason, /TEST_ACCESS_BLOCKED/);
   assert.equal(calls, 0);
+});
+
+test("Kundenbericht: offener allgemeiner Punkt ohne Kundentext nennt nie die Deploy-Adresse des Quell-Deploys – Bericht bleibt versandfähig", () => {
+  const src = "https://6ad2726a498d2003e5257f8f--praxis-kaelin.netlify.app/";
+  const order = { order_id: "RF480-20261022-abc123", domain: "praxis-kaelin.netlify.app", website: "https://praxis-kaelin.netlify.app/", backup: { source_url: src },
+    issues: {
+      a: { issue_id: "a", type: "broken_anchor", severity: "medium", page: src, url: src, repair_status: "repaired", customer_text: "Der Link «Termin vereinbaren» springt nicht zum vorgesehenen Bereich der Seite" },
+      b: { issue_id: "b", type: "missing_meta_description", severity: "low", page: src, url: src, repair_status: "open", repairable: false, customer_text: null },
+      c: { issue_id: "c", type: "missing_meta_description", severity: "low", page: `${src}team/`, url: `${src}team/`, repair_status: "open", repairable: false, customer_text: null } },
+    retest: { desktop: { ok: true, method: "Desktop" }, mobile: { ok: true, method: "Smartphone" } } };
+  const { body } = buildCustomerReport(order);
+  assert.ok(!body.includes("netlify.app/"), "keine Deploy-Adresse im Bericht");
+  assert.match(body, /Ein technischer Punkt auf Ihrer Startseite/);
+  assert.match(body, /Ein technischer Punkt auf der Seite «\/team\/»/);
+  assert.equal(reportUnsafe(body, order), null);
+  // Interne Serverpfade bleiben gesperrt (fail closed).
+  assert.equal(reportUnsafe(`${body}\n• Ein technischer Punkt auf der Seite «/wp-content/x.php»`, order), "pfad");
+});
+
+test("--rebuild-report: nur READY_FOR_DELIVERY + report_unsafe ohne Entwurf/Versand; neuer Bericht muss reportUnsafe bestehen", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "praxis002-rebuild-")), store = createStore(dir);
+  const src = "https://6ad2726a498d2003e5257f8f--praxis-kaelin.netlify.app/";
+  const base = { order_id: "RF480-20261022-abc124", state: "READY_FOR_DELIVERY", domain: "praxis-kaelin.netlify.app", website: "https://praxis-kaelin.netlify.app/", state_history: [],
+    issues: { b: { issue_id: "b", type: "missing_meta_description", severity: "low", page: src, url: src, repair_status: "open", repairable: false } },
+    report: { subject: "x", body: `• Ein technischer Punkt auf ${src}` }, delivery: { status: "report_unsafe", handover_at: "2026-10-22T21:49:20.541Z" } };
+  const put = (o) => store.write(REPAIR_ORDERS_FILE, { schema: 1, orders: { [o.order_id]: o } });
+  put(base);
+  const o = rebuildCustomerReport(store, base.order_id);
+  assert.equal(o.delivery.status, "none"); assert.equal(reportUnsafe(o.report.body, o), null); assert.ok(!o.report.body.includes(src));
+  assert.match(o.state_history.at(-1).reason, /Bericht neu erzeugt/);
+  for (const [o2, re] of [[{ ...base, state: "COMPLETED" }, /READY_FOR_DELIVERY/], [{ ...base, delivery: { status: "failed" } }, /report_unsafe/],
+    [{ ...base, delivery: { status: "report_unsafe", draft_id: "ob-1" } }, /bereits/]]) { put(o2); assert.throws(() => rebuildCustomerReport(store, base.order_id), re); }
 });
