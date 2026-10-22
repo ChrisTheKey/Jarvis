@@ -20,8 +20,8 @@ services:
     # nie im Deploy-Archiv, nie von Deploys überschrieben; Installation: deploy/vps/install-stripe-keys.sh). Leer = NOT_CONFIGURED.
     env_file:
       - ./.env
-      - /opt/jarvis-payment/stripe.env
-      - /opt/jarvis-payment/e2e.env
+      - ${JARVIS_PAYMENT_DIR:-/opt/jarvis-payment}/stripe.env
+      - ${JARVIS_PAYMENT_DIR:-/opt/jarvis-payment}/e2e.env
     volumes:
       # Repair-Zustand: Aufträge, Zahlungen, Tresor (nur Chiffrat), Host-Keys, Backups – Verzeichnis 700, Dateien 600.
       - ./state:/data/repair

@@ -8,11 +8,13 @@ const read = (f) => fs.readFileSync(new URL(`../deploy/vps/${f}`, import.meta.ur
 
 test("TF-JARVIS-028 deploy.sh / repair-remote.sh prüfen die Payment-Dateien mit Root-Rechten, bevor sie eine leere Datei anlegen", () => {
   for (const f of ["deploy.sh", "repair-remote.sh"]) {
-    const lines = read(f).split("\n").filter((l) => l.includes("/opt/jarvis-payment/") && /: >/.test(l));
+    // TF-JARVIS-PRAXIS-002: repair-remote.sh nutzt "$PAY" (Standard /opt/jarvis-payment, nur das Lab weicht ab).
+    const lines = read(f).split("\n").filter((l) => (l.includes("/opt/jarvis-payment/") || l.includes("$PAY/")) && /: >/.test(l));
     assert.ok(lines.length >= 1, `${f}: Anlege-Zeile vorhanden`);
     for (const l of lines) {
       assert.doesNotMatch(l, /(^|[;\s])\[\s+-f\s/, `${f}: keine unprivilegierte [ -f ]-Prüfung: ${l.trim()}`);
       assert.match(l, /(sudo|\$SUDO)\s+test\s+-f\s/, `${f}: Prüfung mit sudo/$SUDO: ${l.trim()}`);
     }
   }
+  assert.match(read("repair-remote.sh"), /^PAY="\$\{PAY:-\/opt\/jarvis-payment\}"\r?$/m, "Produktions-Standard unverändert");
 });

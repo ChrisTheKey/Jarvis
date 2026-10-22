@@ -50,7 +50,7 @@ function snapshot(out, mutate = null) {
 function remoteDeploy(env) {
   return new Promise((resolve) => {
     execFile(lab.bash, [posix(path.join(ROOT, "deploy", "vps", "repair-remote.sh"))], { env: { ...process.env, SUDO: "", OWNER: "", HEALTH_TIMEOUT: "300",
-      R: posix(lab.repairRoot), MAIL_ROOT: posix(lab.mailRoot), MAIL_CONTAINER: MAIL, MAIL_PROJECT, REPAIR_PROJECT, REPAIR_CONTAINER: REPAIR,
+      R: posix(lab.repairRoot), PAY: posix(path.join(lab.tmp, "jarvis-payment")), MAIL_ROOT: posix(lab.mailRoot), MAIL_CONTAINER: MAIL, MAIL_PROJECT, REPAIR_PROJECT, REPAIR_CONTAINER: REPAIR,
       COMPOSE_OVERRIDE: posix(lab.override), ...env }, maxBuffer: 64 * 1024 * 1024, timeout: 1_500_000, windowsHide: true },
     (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: String(stdout) + String(stderr) }));
   });

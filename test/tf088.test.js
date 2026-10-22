@@ -203,5 +203,5 @@ test("Betrieb: Installationsskript kennt den separaten Schalter (kein Standardwe
   assert.match(sh, /JARVIS_E2E_FULFILMENT_ENABLED/); assert.match(sh, /fulfilment\)/); assert.doesNotMatch(sh, /JARVIS_E2E_FULFILMENT_ENABLED=true/);
   const compose = fs.readFileSync(path.join(ROOT, "deploy", "vps", "docker-compose.yml"), "utf8");
   assert.match(compose, /\/opt\/jarvis-payment\/e2e\.env/);
-  assert.match(fs.readFileSync(path.join(ROOT, "deploy", "vps", "repair", "docker-compose.yml"), "utf8"), /\/opt\/jarvis-payment\/e2e\.env/, "auch der Repair-Service liest e2e.env");
+  assert.match(fs.readFileSync(path.join(ROOT, "deploy", "vps", "repair", "docker-compose.yml"), "utf8"), /\$\{JARVIS_PAYMENT_DIR:-\/opt\/jarvis-payment\}\/e2e\.env/, "auch der Repair-Service liest e2e.env (Standard /opt/jarvis-payment)");
 });
