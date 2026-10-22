@@ -72,6 +72,17 @@ export function replaceRefs(content, { fullUrl, brokenPath, replacement }) {
 
 const LOCATABLE = new Set(["broken_link", "contact_page_broken", "broken_image"]);
 
+// TF-JARVIS-028: unveränderliche Deploy-Adresse (https://<deploy-id>--<site>.netlify.app) – nie die Branch-Alias-URL.
+export function previewPermalink(d = {}) {
+  const id = String(d.id || "");
+  if (!/^[0-9a-f]{24}$/.test(id)) return null;
+  for (const u of [d.links?.permalink, d.deploy_url]) {
+    const s = String(u || "").replace(/^http:\/\//, "https://").replace(/\/$/, "");
+    if (new RegExp(`^https://${id}--[a-z0-9-]+\\.netlify\\.app$`).test(s)) return s;
+  }
+  return null;
+}
+
 export function githubNetlifyAdapter({ dir = WORKER_DIR, store = createStore(dir), env = process.env, fetchFn = globalThis.fetch,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)), buildTimeoutMs = 12 * 60_000, pollMs = 20_000, now = () => new Date() } = {}) {
 
@@ -202,17 +213,28 @@ export function githubNetlifyAdapter({ dir = WORKER_DIR, store = createStore(dir
 
     // Preview: Netlify baut den Reparatur-Branch (Branch-Deploys müssen auf der Site aktiviert sein). Wir warten auf
     // einen fertigen Branch-Deploy; Build-Fehler oder Timeout → build_ok false (fail closed).
+    // TF-JARVIS-028: Nur der Deploy GENAU des Reparatur-Commits zählt (commit_ref = Branch-Stand = letzter change_ref), geprüft über
+    // seinen Permalink. Ein älterer Branch-Deploy (z. B. vom Anlegen des Backup-Branches) oder die Branch-Alias-URL, die während des
+    // Builds noch den alten Stand zeigt, sind nie ein Nachweis.
     async validate(order) {
       const m = mappingFor(order);
       if (!m) return { build_ok: false };
       if (!order.plan?.length) return { build_ok: true }; // nichts geändert → nichts zu bauen
       const branch = branchOf(order);
+      const refs = order.plan.map((p) => order.issues?.[p.issue_id]?.change_ref).filter((r) => /^git:[0-9a-f]{40}$/.test(String(r || "")));
+      if (!refs.length) return { build_ok: false, error: "Reparatur-Commit unbekannt." };
+      const head = await gh(`/repos/${m.repo}/git/ref/heads/${encodeURIComponent(branch)}`);
+      const sha = head.status === 200 ? head.json?.object?.sha : null;
+      if (!sha || `git:${sha}` !== refs.at(-1)) return { build_ok: false, error: "Reparatur-Branch steht nicht auf dem Reparatur-Commit." };
       const deadline = Date.now() + buildTimeoutMs;
       for (;;) {
         const r = await nf(`/sites/${m.netlify_site_id}/deploys?branch=${encodeURIComponent(branch)}&per_page=5`);
-        const deploys = r.status === 200 && Array.isArray(r.json) ? r.json : [];
+        const deploys = (r.status === 200 && Array.isArray(r.json) ? r.json : []).filter((d) => d.commit_ref === sha);
         const ready = deploys.find((d) => d.state === "ready");
-        if (ready) return { build_ok: true, preview_url: ready.deploy_ssl_url || ready.ssl_url || ready.deploy_url };
+        if (ready) {
+          const url = previewPermalink(ready);
+          return url ? { build_ok: true, preview_url: url, preview_deploy: String(ready.id), preview_commit: sha } : { build_ok: false, error: "Preview-Permalink fehlt." };
+        }
         if (deploys.some((d) => d.state === "error")) return { build_ok: false };
         if (Date.now() > deadline) return { build_ok: false };
         await sleep(pollMs);

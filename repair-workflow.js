@@ -341,6 +341,39 @@ export function replanRepairOrder(store, orderId, { domain, reason, env = proces
   return saveOrder(store, order);
 }
 
+// TF-JARVIS-028: erneute Validierung EINES E2E-Testauftrags (github_netlify), dessen Reparatur-Commit bereits im Branch liegt, die
+// Validierung aber eine veraltete Branch-Vorschau geprüft hat («… weiterhin vorhanden»). Gleiche Schranken wie replanRepairOrder,
+// zusätzlich: jeder Plan-Eintrag hat einen konkreten Commit (git:<sha>), noch kein Deployment, höchstens EINMAL. Zurück auf VALIDATION
+// mit dem bestehenden Commit – kein neuer Commit, kein Backup, keine Mail; validate() prüft nur den Deploy genau dieses Commits.
+const STILL_PRESENT_RE = /^\d+ reparierte\(r\) Befund\(e\) weiterhin vorhanden\.$/;
+export function revalidateRepairOrder(store, orderId, { domain, reason, env = process.env, now = new Date() } = {}) {
+  if (!/^RF480-\d{8}-[0-9a-f]{6}$/.test(String(orderId || ""))) throw new Error("Ungültige Auftrags-ID.");
+  const why = String(reason || "").trim();
+  if (!why) throw new Error('Begründung ist Pflicht: --reason "<grund>".');
+  const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  const order = data.orders?.[orderId];
+  if (!order) throw new Error("Auftrag nicht gefunden.");
+  if (!domain || normDomain(domain) !== normDomain(order.domain)) throw new Error(`Domain "${domain || ""}" stimmt nicht mit dem Auftrag (${order.domain}) überein.`);
+  if (order.test_order !== true || order.environment !== "TEST" || !/^e2e-[0-9a-f]{12}$/.test(String(order.test_run_id || ""))) throw new Error("Nur für E2E-Testaufträge (TEST) – kein Echtauftrag.");
+  if (!isE2eDomain(e2eConfig(env), order.domain)) throw new Error("Keine freigegebene E2E-Sandbox-Domain (JARVIS_E2E_TEST_ENABLED/_DOMAINS).");
+  if ((order.revalidations || []).length) throw new Error("Auftrag wurde bereits einmal erneut validiert – keine zweite Wiederaufnahme.");
+  if (order.state !== "VALIDATION_FAILED") throw new Error(`Nur im Zustand VALIDATION_FAILED (aktuell ${order.state}).`);
+  if (!STILL_PRESENT_RE.test(String(order.blocked_reason || ""))) throw new Error("Nur nach «… weiterhin vorhanden» – anderer Prüfgrund, nichts geändert.");
+  if ((order.route?.adapter || order.stack?.type) !== "github_netlify") throw new Error("Nur für den GitHub/Netlify-Adapter (commit-gebundene Vorschau).");
+  if (order.customer_authorized_repair !== true) throw new Error("Keine dokumentierte Kundenfreigabe.");
+  const b = order.backup;
+  if (!b?.production_ref || !b.backup_ref || !b.rollback_point || !b.branch) throw new Error("Backup unvollständig – ohne Rollback keine Wiederaufnahme.");
+  if (order.deployment || order.regression?.found?.length) throw new Error("Deployment oder Regression vorhanden – keine Wiederaufnahme.");
+  const items = (order.plan || []).map((p) => order.issues?.[p.issue_id]);
+  if (!items.length || items.some((i) => !i || !["still_broken", "repaired"].includes(i.repair_status) || !/^git:[0-9a-f]{40}$/.test(String(i.change_ref || ""))))
+    throw new Error("Nicht jeder Plan-Eintrag hat einen angewendeten Reparatur-Commit – keine Wiederaufnahme.");
+  for (const i of items) i.repair_status = "repaired";
+  order.revalidations = [{ at: now.toISOString(), from_state: order.state, from_reason: order.blocked_reason, change_refs: items.map((i) => i.change_ref), reason: why.slice(0, 200) }];
+  order.blocked_reason = null;
+  transition(order, "VALIDATION", `Erneute Validierung durch Chris (${why.slice(0, 120)}) – bestehender Reparatur-Commit ${String(items.at(-1).change_ref).slice(4, 16)}, kein neuer Commit`, now);
+  return saveOrder(store, order);
+}
+
 // TF-045/TF-054: Abschluss-Gate. COMPLETED (und vorher READY_FOR_DELIVERY) nur, wenn die technische Adapter-Validierung, der öffentliche
 // HTTP-Retest und – sobald für den Auftrag ein Browser-Gate gilt – Desktop- UND Mobile-Browser-Validierung bestanden sind und
 // keine Regression offen ist. Ohne Browser-Gate (kein Plan/ältere Aufträge) gelten Desktop- und Smartphone-Retest wie bisher.
@@ -1122,7 +1155,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         return failValidation(`${unresolved.length} reparierte(r) Befund(e) weiterhin vorhanden.`);
       }
       const reg = regression(order.audit_before, after);
-      order.validation = { build_ok: true, preview_url: v.preview_url || null, target, audited_at: after.audited_at, open_issues: Object.keys(after.issues).length,
+      order.validation = { build_ok: true, preview_url: v.preview_url || null, ...(v.preview_commit ? { preview_deploy: v.preview_deploy, preview_commit: v.preview_commit } : {}),
+        target, audited_at: after.audited_at, open_issues: Object.keys(after.issues).length,
         open_keys: [...remaining].slice(0, 500) }; // TF-055: nur Typ|Pfad – für den CRM-Stand nach der Reparatur
       if (reg.length) { order.regression = { found: reg }; saveOrder(store, order); await rollbackThen(order, adapter, `Regression: ${reg.length} neue(r) relevante(r) Befund(e) nach der Reparatur`); return false; }
       order.regression = { found: [] };
@@ -1752,6 +1786,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       try {
         const o = replanRepairOrder(store, flag("replan"), { domain: flag("domain"), reason: flag("reason") });
         console.log(`Neu geplant: ${o.order_id} → ${o.state} (nächster Worker-Lauf: Voll-Audit + Reparaturplan auf dem bestehenden Backup).`);
+      } finally { releaseLock(WORKER_DIR, process.pid, "repair.lock"); }
+      return 0;
+    }
+    if (flag("revalidate")) {
+      if (!acquireLock(WORKER_DIR, { name: "repair.lock" })) throw new Error("Repair-Worker läuft gerade – nichts geändert, später erneut.");
+      try {
+        const o = revalidateRepairOrder(store, flag("revalidate"), { domain: flag("domain"), reason: flag("reason") });
+        console.log(`Erneut zur Validierung: ${o.order_id} → ${o.state} (nächster Worker-Lauf: Vorschau genau des Reparatur-Commits prüfen).`);
       } finally { releaseLock(WORKER_DIR, process.pid, "repair.lock"); }
       return 0;
     }

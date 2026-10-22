@@ -25,6 +25,8 @@ const NF_TOKEN = "nfp_FAKE_NUR_TEST_0987654321";
 const ENV = { [GITHUB_TOKEN_ENV]: GH_TOKEN, [NETLIFY_TOKEN_ENV]: NF_TOKEN };
 
 const b64 = (s) => Buffer.from(s, "utf8").toString("base64");
+const C1 = "c0ffee00000000000000000000000000000c0ffe"; // Reparatur-Commit (40 hex, wie GitHub)
+const DEP = "6ada115b8e67ea1ecd9bb0aa"; const PERMA = `https://${DEP}--muster.netlify.app`;
 const INDEX_HTML = '<html><body><a href="/team-alt">Unser Team</a><a href="/kontakt.html">Kontakt</a></body></html>';
 
 // Mock-Fetch: Router über URL+Methode, zeichnet jeden Aufruf auf. state.repaired wird vom PUT (Commit) gesetzt.
@@ -37,15 +39,15 @@ function mkFetch(state = {}) {
     if (url.includes("/repos/chris/muster-website/git/ref/heads/main")) return reply(200, { object: { sha: "aaa111" } });
     if (url.endsWith("/repos/chris/muster-website") ) return reply(200, { permissions: { push: state.push !== false } });
     if (url.includes("/git/refs") && method === "POST") return reply(state.branchExists ? 422 : 201, {});
-    if (url.includes("/git/ref/heads/repair")) return reply(200, { object: { sha: "aaa111" } });
+    if (url.includes("/git/ref/heads/repair")) return reply(200, { object: { sha: state.head || "aaa111" } });
     if (url.includes("/git/trees/aaa111")) return reply(200, { truncated: false, tree: [
       { path: "index.html", type: "blob" }, { path: "team.html", type: "blob" }, { path: "kontakt.html", type: "blob" }, { path: "img/logo.png", type: "blob" }] });
     if (url.includes("/search/code")) return reply(200, { items: [{ path: "index.html" }] });
     if (url.includes("/contents/index.html") && method === "GET") return reply(200, { sha: "f1", content: b64(state.repaired ? INDEX_HTML.replace("/team-alt", "/team.html") : INDEX_HTML) });
-    if (url.includes("/contents/index.html") && method === "PUT") { state.repaired = true; return reply(200, { commit: { sha: "ccc333" } }); }
+    if (url.includes("/contents/index.html") && method === "PUT") { state.repaired = true; state.head = C1; return reply(200, { commit: { sha: C1 } }); }
     if (url.includes("/merges") && method === "POST") { state.merged = true; return reply(state.mergeFails ? 409 : 201, {}); }
     if (url.includes(`/sites/${SITE_ID}/deploys?branch=repair`)) return reply(200, state.previewFails
-      ? [{ state: "error" }] : [{ state: "ready", deploy_ssl_url: "https://repair--muster.netlify.app", created_at: "2026-10-12T09:00:00Z" }]);
+      ? [{ id: DEP, state: "error", commit_ref: C1 }] : [{ id: DEP, state: "ready", commit_ref: C1, deploy_url: `http://${DEP}--muster.netlify.app`, deploy_ssl_url: "https://repair--muster.netlify.app", created_at: "2026-10-12T09:00:00Z" }]);
     if (url.includes(`/sites/${SITE_ID}/deploys?branch=main`)) return reply(200, [{ id: "dep1", state: "ready", created_at: "2026-10-12T09:30:00Z" }]);
     if (url.includes(`/sites/${SITE_ID}/deploys/dep0/restore`)) { state.rolledBack = true; return reply(200, {}); }
     if (url.includes(`/sites/${SITE_ID}`)) return reply(200, { custom_domain: state.siteDomain ?? "muster.ch", domain_aliases: [], published_deploy: { id: "dep0" }, ssl_url: `https://${state.siteDomain ?? "muster.ch"}` });
@@ -120,7 +122,7 @@ test("locate: eindeutige Ursache → Fix-Details; applyFix committet NUR im Repa
   assert.deepEqual(loc.fix, { files: ["index.html"], fullUrl: "https://muster.ch/team-alt", brokenPath: "/team-alt", replacement: "/team.html" });
   assert.match(loc.planned_change, /\/team-alt → \/team\.html/);
   const r = await adapter.applyFix({ issue_id: "I1", fix: loc.fix, planned_change: loc.planned_change }, ORDER);
-  assert.deepEqual(r, { ok: true, change_ref: "git:ccc333" });
+  assert.deepEqual(r, { ok: true, change_ref: `git:${C1}` });
   const put = calls.find((c) => c.method === "PUT");
   assert.ok(put && !put.url.includes("main")); // Commit geht in den Branch (Body), nie direkt auf main-URL
   assert.equal(await adapter.locate({ type: "slow_response", url: HOME }, ORDER), null); // nicht unterstützter Typ → nie raten
@@ -129,12 +131,12 @@ test("locate: eindeutige Ursache → Fix-Details; applyFix committet NUR im Repa
 test("Preview: ready → preview_url; Build-Fehler → build_ok false; Production-Merge erst bei deployProduction", async () => {
   const store = createStore(tmp());
   mapMuster(store);
-  const okA = mkAdapter(store);
-  const order = { ...ORDER, plan: [{ issue_id: "I1" }] };
+  const okA = mkAdapter(store, { state: { head: C1 } });
+  const order = { ...ORDER, plan: [{ issue_id: "I1" }], issues: { I1: { issue_id: "I1", change_ref: `git:${C1}` } } };
   const v = await okA.adapter.validate(order);
-  assert.deepEqual(v, { build_ok: true, preview_url: "https://repair--muster.netlify.app" });
+  assert.deepEqual(v, { build_ok: true, preview_url: PERMA, preview_deploy: DEP, preview_commit: C1 });
   assert.ok(!okA.calls.some((c) => c.url.includes("/merges"))); // Preview verändert Production nie
-  const bad = mkAdapter(store, { state: { previewFails: true } });
+  const bad = mkAdapter(store, { state: { previewFails: true, head: C1 } });
   assert.equal((await bad.adapter.validate(order)).build_ok, false);
   const d = await okA.adapter.deployProduction(order);
   assert.deepEqual(d, { ok: true, deploy_ref: "netlify:dep1" });
@@ -211,7 +213,8 @@ test("E2E: statisch gerenderte Site mit explizitem Mapping → github_netlify; B
   assert.deepEqual(saved.stack, { type: "github_netlify", evidence: ["explicit_mapping"] });
   assert.equal(saved.backup.rollback_point, "netlify:dep0");
   assert.equal(saved.plan[0].fix.replacement, "/team.html");
-  assert.equal(saved.validation.preview_url, "https://repair--muster.netlify.app");
+  assert.equal(saved.validation.preview_url, PERMA);
+  assert.equal(saved.validation.preview_commit, C1);
   assert.match(saved.retest.desktop.method, /1440×900/);
   assert.match(saved.retest.mobile.method, /390×844/);
   assert.deepEqual([saved.retest.desktop.ok, saved.retest.mobile.ok], [true, true]);
@@ -226,7 +229,7 @@ test("E2E: statisch gerenderte Site mit explizitem Mapping → github_netlify; B
   // Kundenbericht: verständlich, ohne interne IDs, Git-SHAs, Dateipfade, Preview-URLs.
   const body = saved.report.body;
   assert.ok(body.startsWith("Webseiten-Check – Abschlussbericht"));
-  for (const verboten of [order_id, "git:", "ccc333", "aaa111", "index.html", "netlify.app", "repair/", GH_TOKEN]) assert.ok(!body.includes(verboten), `Bericht enthält "${verboten}"`);
+  for (const verboten of [order_id, "git:", C1, "aaa111", "index.html", "netlify.app", "repair/", GH_TOKEN]) assert.ok(!body.includes(verboten), `Bericht enthält "${verboten}"`);
   assert.ok(body.includes("Smartphone") && body.includes("Desktop") && body.includes("live"));
 });
 
