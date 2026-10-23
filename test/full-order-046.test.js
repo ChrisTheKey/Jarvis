@@ -194,7 +194,7 @@ test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240
   assert.equal(deliveries[0].to, EMAIL);
   assert.deepEqual([o.delivery.status, o.delivery.message_class, !!o.delivery.sent_at], ["sent", FULFILLMENT_CLASS, true]);
   const body = deliveries[0].body;
-  for (const must of ["Gefundene relevante Punkte: 2", "Behoben wurden:", "Nicht automatisch repariert", "Desktop geprüft: Ja", "Mobile geprüft: Ja", "Retest", "erfolgreich", "temporären Zugang"]) assert.ok(body.includes(must), `Bericht: ${must}`);
+  for (const must of ["Gefundene Punkte: 2", "Behoben wurden:", "Nicht behoben (bitte kontaktieren Sie mich):", "Desktop geprüft: Ja", "Mobile geprüft: Ja", "Retest): Abgeschlossen", "temporären Zugang"]) assert.ok(body.includes(must), `Bericht: ${must}`);
   assert.equal(reportUnsafe(body, o), null);
   for (const bad of [TEST_SECRET, id, o.backup.backup_ref, "p1", "lab:1", "live:lab", "/home/", "127.0.0.1", "Bearer"]) assert.ok(!body.includes(bad), `Bericht enthält ${bad}`);
 

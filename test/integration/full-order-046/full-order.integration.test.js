@@ -321,7 +321,7 @@ if (!ENABLED) {
     // TF-055: der geschützte AGB-Link auf dem Impressum bleibt bewusst offen → abgeschlossen MIT manuellem Punkt, nie «COMPLETED».
     assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS", `${states.join(" → ")} · ${o.blocked_reason} · ${JSON.stringify(o.delivery)} · ${JSON.stringify(o.browser_validation?.codes)}`);
     assert.ok(inOrder(states, ["ACCESS_CHECK", "ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED_WITH_MANUAL_ITEMS"]), states.join(" → "));
-    assert.match(o.report.body, /Die automatisch reparierbaren Probleme wurden behoben\. Weitere Punkte erfordern eine manuelle Prüfung\./);
+    assert.match(o.report.body, /Behoben wurden:\n• [\s\S]+\nNicht behoben \(bitte kontaktieren Sie mich\):\n• /);
 
     // Profil automatisch (kein Chris-Schritt).
     assert.deepEqual([o.route.adapter, o.access_profile.profile_status, o.access_profile.interface], ["wordpress", "PROFILE_READY", "wordpress_rest"]);
@@ -362,7 +362,7 @@ if (!ENABLED) {
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].to, EMAIL);
     const body = deliveries[0].body;
-    for (const must of ["Gefundene relevante Punkte: 3", "Behoben wurden:", "Nicht automatisch repariert", "Desktop geprüft: Ja", "Mobile geprüft: Ja", "Retest", "erfolgreich", "temporären Zugang"])
+    for (const must of ["Gefundene Punkte: 3", "Behoben wurden:", "Nicht behoben (bitte kontaktieren Sie mich):", "Desktop geprüft: Ja", "Mobile geprüft: Ja", "Retest): Abgeschlossen", "temporären Zugang"])
       assert.ok(body.includes(must), `Bericht: ${must}`);
     assert.equal(reportUnsafe(body, o), null);
     for (const bad of ["https://", "127.0.0.1", "/home/", "public_html", "wp-json", id, ...bk.entries.map((e) => e.backup_id), o.backup.production_ref, "Bearer", "console"]) assert.ok(!body.includes(bad), `Bericht enthält ${bad}`);

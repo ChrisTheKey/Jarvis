@@ -158,12 +158,12 @@ test("Abschluss-Gate: jeder Pflichtpunkt einzeln fehlend → kein COMPLETED (Aut
   }
 });
 
-test("Bericht behauptet nie «vollständig repariert»: offene Punkte werden als nicht automatisch repariert genannt", () => {
+test("Bericht behauptet nie «vollständig repariert»: offene Punkte werden als nicht behoben genannt", () => {
   const order = { domain: "muster.ch", plan: [{ issue_id: "A" }], retest: { desktop: { ok: true }, mobile: { ok: true }, http_ok: true },
     issues: { A: { type: "broken_link", severity: "medium", repair_status: "repaired", customer_text: "Link A führte auf eine Fehlerseite" },
       B: { type: "broken_link", severity: "medium", repair_status: "needs_review", customer_text: "Link B führt auf eine Fehlerseite" } } };
   const body = buildCustomerReport(order).body;
-  assert.match(body, /Nicht automatisch repariert/);
+  assert.match(body, /Nicht behoben \(bitte kontaktieren Sie mich\):\n• Link B führt auf eine Fehlerseite/); assert.match(body, /Gefundene Punkte: 2/);
   assert.ok(body.includes("Link B führt auf eine Fehlerseite"));
   assert.doesNotMatch(body, /vollständig repariert|alle (Fehler|Punkte|Befunde) (wurden )?behoben/i);
 });

@@ -1585,42 +1585,72 @@ export function buildHostKeyConfirmationMail(order, { link = null, expires_at = 
 
 // ---------- Kundenbericht (verständlich, ohne Fachjargon; wird nur gespeichert, nie automatisch versendet) ----------
 // Für den Kunden: keine internen IDs, keine Git-Referenzen, keine Roh-Evidence, keine internen Pfade, keine Tokens.
+// Verbindlicher Standard (docs/ABSCHLUSSMAIL-STANDARD.md): Gesamtzahl = behoben + nicht behoben, jeder Punkt einzeln, nur Angaben aus dem Auftrag.
+// Kundentexte für Befunde, die swiss-repair.js bewusst nicht als Kundenbefund führt (v. a. «low») – statt «Ein technischer Punkt».
+const REPORT_TEXT = {
+  missing_meta_description: (p) => `Auf ${p} fehlt die Kurzbeschreibung für Suchmaschinen (Meta-Beschreibung)`,
+  missing_title: (p) => `Auf ${p} fehlt der Seitentitel, der im Browser-Tab und bei Suchmaschinen erscheint`,
+  missing_alt: (p) => `Auf ${p} fehlt bei Bildern die Bildbeschreibung (wichtig für Barrierefreiheit und Suchmaschinen)`,
+  missing_lang: (p) => `Auf ${p} ist die Sprache der Seite nicht hinterlegt`,
+  http_error: (p) => `Auf ${p} erscheint beim Aufruf eine Fehlerseite`,
+  mixed_content: (p) => `Auf ${p} werden Inhalte unverschlüsselt nachgeladen – Browser können sie blockieren`,
+  outdated_content: (p) => `Auf ${p} sind veraltete Angaben zu sehen`,
+  no_https: () => "Die Website ist nicht verschlüsselt (HTTPS) erreichbar",
+  no_https_redirect: () => "Die unverschlüsselte Adresse leitet nicht automatisch auf die sichere Version (HTTPS) weiter",
+  outdated_cms: () => "Das Website-System ist veraltet und sollte aktualisiert werden",
+  outdated_library: () => "Die Website verwendet eine veraltete Programm-Bibliothek",
+  outdated_technology: () => "Die Website verwendet veraltete Technik",
+  slow_response: () => "Die Website lädt sehr langsam",
+  unreachable: () => "Die Website war bei der Prüfung nicht erreichbar",
+};
 export function buildCustomerReport(order, { now = new Date() } = {}) {
   const issues = Object.values(order.issues || {});
   const fixed = issues.filter((i) => i.repair_status === "repaired");
-  const openForReview = issues.filter((i) => ["needs_review", "repair_failed", "still_broken"].includes(i.repair_status) || (i.repair_status === "open" && !i.repairable));
-  const relevant = issues.filter((i) => i.type !== "customer_content_change" && (RELEVANT.has(i.severity) || i.customer_text));
-  const manualOpen = manualItems(order).length;
   // TF-JARVIS-PRAXIS-002: ohne Kundentext nie die volle Adresse (z. B. die Deploy-Adresse eines gebundenen Quell-Deploys) – nur
   // «Startseite» bzw. der Pfad; sonst sperrt reportUnsafe («url») jeden Bericht mit einem offenen allgemeinen Punkt.
   const pageLabel = (p) => { if (!p) return "Ihrer Website"; try { const u = new URL(p); return u.pathname && u.pathname !== "/" ? `der Seite «${u.pathname.slice(0, 80)}»` : "Ihrer Startseite"; } catch { return String(p); } };
-  const line = (i) => `• ${i.customer_text || "Ein technischer Punkt auf " + pageLabel(i.page)}`; // TF-066: Inhaltsänderungen mit eigenem Kundentext
-  if (isVnOrder(order)) return { subject: vnReportSubject(order), body: buildVnRepairReport(order, { now, fixed, openForReview, relevant: relevant.length, manualOpen }), created_at: new Date().toISOString() };
+  // TF-066: Inhaltsänderungen mit eigenem Kundentext; Platzhalter nur, wenn es keine konkrete Beschreibung gibt.
+  const line = (i) => `• ${i.customer_text || REPORT_TEXT[i.type]?.(pageLabel(i.page)) || "Ein technischer Punkt auf " + pageLabel(i.page)}`;
+  if (isVnOrder(order)) {
+    const openForReview = issues.filter((i) => ["needs_review", "repair_failed", "still_broken"].includes(i.repair_status) || (i.repair_status === "open" && !i.repairable));
+    const relevant = issues.filter((i) => i.type !== "customer_content_change" && (RELEVANT.has(i.severity) || i.customer_text));
+    return { subject: vnReportSubject(order), body: buildVnRepairReport(order, { now, fixed, openForReview, relevant: relevant.length, manualOpen: manualItems(order).length }), created_at: new Date().toISOString() };
+  }
+  // Alles, was nicht repariert und erneut geprüft ist, ist «nicht behoben» (auch zurückgerollt/gescheitert) – nie stillschweigend weggelassen.
+  const notFixed = issues.filter((i) => i.repair_status !== "repaired");
+  const found = issues.filter((i) => i.type !== "customer_content_change").length; // Inhaltswünsche des Kunden sind keine gefundenen Fehler
+  const r = order.retest || {}, g = order.browser_gate || {};
+  const checked = (v, gate) => v?.ok === true && (!g.required || gate === "JA");
+  const result = (v) => (v ? `${v.ok ? "in Ordnung" : "nicht in Ordnung"}${v.method ? ` (${v.method})` : ""}` : "nicht geprüft");
+  const retestDone = r.http_ok === true && r.desktop?.ok === true && r.mobile?.ok === true;
   const body = [
     `Webseiten-Check – Abschlussbericht «Check & Reparatur» (CHF ${OFFERS[REPAIR_OFFER].price})`,
     "",
     `Website: ${order.domain}`,
-    `Datum: ${(order.retest?.tested_at || now.toISOString()).slice(0, 10)}`,
+    `Datum: ${(r.tested_at || now.toISOString()).slice(0, 10)}`,
     "",
     "Was geprüft wurde:",
     `Ihre Startseite und die von dort verlinkten Unterseiten – Links, Navigation, Bilder, Kontaktbereich sowie die Darstellung auf Smartphone und Desktop.`,
     "",
-    `Gefundene relevante Punkte: ${relevant.length}`,
+    `Gefundene Punkte: ${found}`,
     "",
-    // TF-055: bleibt ein relevanter Punkt offen, steht das klar oben – nie «vollständig repariert».
-    ...(manualOpen ? [fixed.length ? "Die automatisch reparierbaren Probleme wurden behoben. Weitere Punkte erfordern eine manuelle Prüfung."
-      : "Es gab keine automatisch reparierbaren Probleme. Die gefundenen Punkte erfordern eine manuelle Prüfung.", ""] : []),
     fixed.length ? "Behoben wurden:" : "Behoben wurde nichts – es gab keine im Paket abgedeckten, automatisch behebbaren Fehler.",
     ...fixed.map((i) => `${line(i)} – behoben und erneut geprüft.`),
     "",
-    ...(openForReview.length ? ["Nicht automatisch repariert – zur Besprechung (nicht automatisch verändert):", ...openForReview.map(line), ""] : []),
+    ...(notFixed.length ? ["Nicht behoben (bitte kontaktieren Sie mich):", ...notFixed.map(line), ""] : []),
     "Abschlusskontrolle:",
-    `Desktop: ${order.retest?.desktop?.ok ? "geprüft, in Ordnung" : "siehe Hinweis"} (${order.retest?.desktop?.method || "–"}).`,
-    `Smartphone: ${order.retest?.mobile?.ok ? "geprüft, in Ordnung" : "siehe Hinweis"} (${order.retest?.mobile?.method || "–"}).`,
-    // TF-045: nur nach bestandenem Browser-Gate – einfache Sätze, keine Logs, Requests, Screenshots, Pfade oder Debugdaten.
-    ...(order.browser_gate?.desktop === "JA" && order.browser_gate?.mobile === "JA" && order.browser_gate?.regression === "KEINE"
-      ? ["", "Desktop geprüft: Ja", "Mobile geprüft: Ja", `Navigation geprüft: ${order.browser_gate.navigation === "JA" ? "Ja" : "Nein"}`, "Keine neuen relevanten Darstellungsfehler gefunden."] : []),
-    ...(order.retest?.http_ok === true && order.retest?.desktop?.ok && order.retest?.mobile?.ok ? ["Erneute Prüfung nach der Reparatur (Retest): erfolgreich."] : []),
+    `Desktop: ${result(r.desktop)}`,
+    `Smartphone: ${result(r.mobile)}`,
+    "",
+    `Desktop geprüft: ${checked(r.desktop, g.desktop) ? "Ja" : "Nein"}`,
+    `Mobile geprüft: ${checked(r.mobile, g.mobile) ? "Ja" : "Nein"}`,
+    `Erneute Prüfung nach der Reparatur (Retest): ${retestDone ? "Abgeschlossen" : "Nicht abgeschlossen"}`,
+    "",
+    // TF-045: einfache Sätze, keine Logs, Requests, Screenshots, Pfade oder Debugdaten.
+    g.regression === "KEINE" ? "Bei der Abschlussprüfung im Browser wurden keine neuen Darstellungsfehler gefunden."
+      : g.regression === "GEFUNDEN" ? "Bei der Abschlussprüfung im Browser wurden neue Darstellungsfehler gefunden."
+      : r.http_ok === true ? "Bei der erneuten Prüfung wurden keine neuen Fehler gegenüber vorher gefunden (ohne Darstellungsprüfung im Browser)."
+      : "Eine Prüfung auf neue Darstellungsfehler wurde nicht abgeschlossen.",
     "",
     order.deployment?.deployed ? "Die Korrekturen sind auf Ihrer Website live und wurden danach erneut geprüft."
       : order.plan?.length ? "Die Korrekturen sind vorbereitet und werden nach Rücksprache aufgeschaltet." : "An Ihrer Website wurde nichts verändert.",
@@ -1641,9 +1671,7 @@ export function buildRepairDeliveryMail(order) {
     ...(test ? ["TESTAUFTRAG (intern) – keine Zahlung, keine Rechnung. Diese Nachricht ging nur an das Test-Postfach.", ""] : []),
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
     "",
-    manualItems(order).length
-      ? `Ihr Auftrag «Check & Reparatur» für ${order.domain} ist abgeschlossen. Die automatisch reparierbaren Probleme wurden behoben. Weitere Punkte erfordern eine manuelle Prüfung – Details im Abschlussbericht:`
-      : `Ihr Auftrag «Check & Reparatur» für ${order.domain} ist abgeschlossen. Hier ist Ihr Abschlussbericht:`,
+    "Hier ist Ihr Abschlussbericht:",
     "",
     report,
     "",

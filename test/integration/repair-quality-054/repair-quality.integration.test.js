@@ -329,7 +329,7 @@ if (!ENABLED) {
     const deliveries = ctx.gmail.sentOf(FULFILLMENT_CLASS);
     assert.equal(deliveries.length, 1);
     assert.equal(reportUnsafe(deliveries[0].body, o), null);
-    assert.ok(deliveries[0].body.includes("Behoben wurden:") && !/Nicht automatisch repariert/.test(deliveries[0].body), "Bericht: beide behoben, nichts offen");
+    assert.ok(deliveries[0].body.includes("Behoben wurden:") && !/Nicht behoben/.test(deliveries[0].body), "Bericht: beide behoben, nichts offen");
     assert.equal(fs.existsSync(path.join(ctx.dir, ACCESS_VAULT_DIR, `${id}.json`)), false, "Credentials nach COMPLETED zerstört");
     for (const [f, text] of filesOf(ctx.dir)) assertNoSecrets(f, text);
     assertNoSecrets("Logs", ctx.logs.join("\n"));

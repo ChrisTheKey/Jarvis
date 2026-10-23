@@ -294,8 +294,10 @@ test("Kundenbericht: offener allgemeiner Punkt ohne Kundentext nennt nie die Dep
     retest: { desktop: { ok: true, method: "Desktop" }, mobile: { ok: true, method: "Smartphone" } } };
   const { body } = buildCustomerReport(order);
   assert.ok(!body.includes("netlify.app/"), "keine Deploy-Adresse im Bericht");
-  assert.match(body, /Ein technischer Punkt auf Ihrer Startseite/);
-  assert.match(body, /Ein technischer Punkt auf der Seite «\/team\/»/);
+  assert.match(body, /• Auf Ihrer Startseite fehlt die Kurzbeschreibung für Suchmaschinen \(Meta-Beschreibung\)/);
+  assert.match(body, /• Auf der Seite «\/team\/» fehlt die Kurzbeschreibung für Suchmaschinen \(Meta-Beschreibung\)/);
+  assert.doesNotMatch(body, /Ein technischer Punkt/, "konkrete Beschreibung statt Platzhalter");
+  assert.match(body, /Gefundene Punkte: 3/);
   assert.equal(reportUnsafe(body, order), null);
   // Interne Serverpfade bleiben gesperrt (fail closed).
   assert.equal(reportUnsafe(`${body}\n• Ein technischer Punkt auf der Seite «/wp-content/x.php»`, order), "pfad");

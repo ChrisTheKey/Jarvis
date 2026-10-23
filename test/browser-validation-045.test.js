@@ -163,7 +163,7 @@ test("Desktop + Mobile Erfolg: Baseline VOR der Änderung → Fix → Browser-Re
   assert.deepEqual([o.browser_gate.desktop, o.browser_gate.mobile, o.browser_gate.navigation, o.browser_gate.regression, o.browser_gate.level], ["JA", "JA", "JA", "KEINE", "NONE"]);
   assert.equal(o.retest.http_ok, true);
   assert.deepEqual(completionGate(o), { ok: true, missing: [] });
-  for (const line of ["Desktop geprüft: Ja", "Mobile geprüft: Ja", "Navigation geprüft: Ja", "Keine neuen relevanten Darstellungsfehler gefunden."]) assert.ok(o.report.body.includes(line), line);
+  for (const line of ["Desktop geprüft: Ja", "Mobile geprüft: Ja", "Retest): Abgeschlossen", "keine neuen Darstellungsfehler gefunden."]) assert.ok(o.report.body.includes(line), line);
   for (const bad of [/console/i, /screenshot/i, /request/i, /\/home\/|\/var\/|public_html/, /https?:\/\/muster\.ch\/team/, /pageerror|TypeError|HIGH|MEDIUM/]) assert.ok(!bad.test(o.report.body), `Bericht enthält ${bad}`);
   const pub = publicRepairOrders(dir).orders[0];
   assert.deepEqual([pub.browser_desktop, pub.browser_mobile, pub.browser_regression], ["JA", "JA", "KEINE"]);

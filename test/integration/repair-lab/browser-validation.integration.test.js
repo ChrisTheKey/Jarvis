@@ -160,7 +160,7 @@ if (!ENABLED) {
     assert.deepEqual([o.browser_gate.desktop, o.browser_gate.mobile, o.browser_gate.navigation, o.browser_gate.regression], ["JA", "JA", "JA", "KEINE"]);
     assert.deepEqual([o.validation.build_ok, o.retest.http_ok, o.retest.browser], [true, true, true]);
     assert.deepEqual(completionGate(o), { ok: true, missing: [] });
-    for (const line of ["Desktop geprüft: Ja", "Mobile geprüft: Ja", "Navigation geprüft: Ja", "Keine neuen relevanten Darstellungsfehler gefunden."]) assert.ok(o.report.body.includes(line), line);
+    for (const line of ["Desktop geprüft: Ja", "Mobile geprüft: Ja", "Retest): Abgeschlossen", "keine neuen Darstellungsfehler gefunden."]) assert.ok(o.report.body.includes(line), line);
     assert.ok(!/console|screenshot|public_html|127\.0\.0\.1|https?:\/\//i.test(o.report.body), "Bericht ohne Debugdaten/URLs/Pfade");
     assertSafeBrowserRecord(o);
     const pub = publicRepairOrders(dir).orders.find((x) => x.order_id === id);

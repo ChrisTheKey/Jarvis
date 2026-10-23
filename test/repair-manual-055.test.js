@@ -93,10 +93,10 @@ test("Test 2: 1 reparierbar + 1 geschützt → reparierbarer behoben, geschützt
   assert.deepEqual(st, [["broken_image", "open", true], ["contact_page_broken", "repaired", false]]);
   assert.equal(w.st.writes, 1, "geschützter Befund nie angefasst");
   assert.equal(o.completion.kind, "WITH_MANUAL_ITEMS");
-  assert.match(o.report.body, /Die automatisch reparierbaren Probleme wurden behoben\. Weitere Punkte erfordern eine manuelle Prüfung\./);
+  assert.match(o.report.body, /Behoben wurden:\n• .+ – behoben und erneut geprüft\.\n\nNicht behoben \(bitte kontaktieren Sie mich\):\n• /);
   const sent = gmail.calls.find((c) => c.op === "create" && c.messageClass === FULFILLMENT_CLASS);
   assert.ok(sent, "Bericht geht an den Kunden – mit ehrlicher Formulierung");
-  assert.match(sent.body, /Weitere Punkte erfordern eine manuelle Prüfung/);
+  assert.match(sent.body, /Nicht behoben \(bitte kontaktieren Sie mich\):/);
   for (const t of [o.report.body, sent.body, sent.subject]) assert.doesNotMatch(t, FORBIDDEN_CLAIMS);
   assert.match(o.state_history.at(-1).reason, /1 Punkt\(e\) erfordern eine manuelle Prüfung/);
   // Terminal: kein Storno, kein zweiter Abschluss; Dashboard zeigt den eigenen Zustand.
@@ -152,10 +152,11 @@ test("manualItems: low-Hinweise zählen nicht, geschützt/needs_review/≥medium
   // Bericht ohne Reparatur, nur geschützte Punkte: nie «behoben» behaupten.
   const body = buildCustomerReport({ domain: "muster.ch", plan: [], retest: { desktop: { ok: true }, mobile: { ok: true }, http_ok: true },
     issues: { P: { type: "broken_image", severity: "medium", repair_status: "open", protected: true, customer_text: "Auf der Seite «Datenschutz» wird ein Bild nicht angezeigt" } } }).body;
-  assert.match(body, /Es gab keine automatisch reparierbaren Probleme\. Die gefundenen Punkte erfordern eine manuelle Prüfung\./);
+  assert.match(body, /Behoben wurde nichts/);
+  assert.match(body, /Nicht behoben \(bitte kontaktieren Sie mich\):\n• Auf der Seite «Datenschutz» wird ein Bild nicht angezeigt/);
   assert.doesNotMatch(body, FORBIDDEN_CLAIMS);
   const mail = buildRepairDeliveryMail({ domain: "muster.ch", report: { body }, issues: { P: { severity: "medium", repair_status: "open", protected: true } } });
-  assert.match(mail.body, /Weitere Punkte erfordern eine manuelle Prüfung/);
+  assert.match(mail.body, /Nicht behoben \(bitte kontaktieren Sie mich\):/);
 });
 
 test("I + J: Repair→CRM – vorher 3 Fehler (vollständig), Reparatur behebt 2 → CRM zählt 1, geschützter Punkt bleibt sichtbar", async () => {
