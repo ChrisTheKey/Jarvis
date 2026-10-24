@@ -230,7 +230,7 @@ test("L: keine beliebige Server-Aktion – nur die crm.*-Allowlist mit festem Pa
     { action: "crm.addCall", params: { lead_id: "a.ch", result: "NO_ANSWER", at: "2099-01-01T00:00:00Z" } }, { action: "crm.addNote", params: { lead_id: "a.ch", text: "x".repeat(2001) } }, "crm.addNote", null, []];
   for (const b of bad) assert.equal(validateCrmAction(b, { now: NOW }).ok, false, JSON.stringify(b)?.slice(0, 80));
   // TF-077B: + crm.resolveContactForm (Kontaktformular-Anfrage erledigt, nur lead_id).
-  assert.deepEqual(Object.keys(CRM_ACTIONS).sort(), ["crm.addCall", "crm.addNote", "crm.archive", "crm.getLead", "crm.listLeads", "crm.resolveContactForm", "crm.setDoNotContact", "crm.setNextAction", "crm.updateCallStatus", "crm.updateContactStatus", "crm.updateStage"]);
+  assert.deepEqual(Object.keys(CRM_ACTIONS).sort(), ["crm.addCall", "crm.addNote", "crm.archive", "crm.createManualLead", "crm.getLead", "crm.listLeads", "crm.resolveContactForm", "crm.setDoNotContact", "crm.setNextAction", "crm.updateCallStatus", "crm.updateContactStatus", "crm.updateStage"]);
   // Dienst/Cloud: kein child_process, kein exec, kein Docker-Socket, kein Gmail
   for (const f of ["crm-service.js", "crm-api.js", "lead-crm.js", "public/crm-model.js", "public/crm.js"]) {
     const src = fs.readFileSync(path.join(ROOT, f), "utf8").split("\n").map((l) => l.replace(/(^|\s)\/\/.*$/, "")).join("\n"); // Code ohne Kommentare

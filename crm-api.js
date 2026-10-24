@@ -46,11 +46,11 @@ const agentKey = (controlToken, label) => { const t = String(controlToken || "")
 export const crmAgentToken = (controlToken) => agentKey(controlToken, "jarvis-crm-agent-v1");
 export const vnAgentToken = (controlToken) => agentKey(controlToken, "jarvis-vn-agent-v1");
 
-const publicRequest = (r) => ({ request_id: r.request_id, action: r.action, lead_id: r.params?.lead_id || null, status: r.status, created_at: r.created_at,
+const publicRequest = (r) => ({ request_id: r.request_id, action: r.action, lead_id: r.params?.lead_id || r.params?.domain || null, status: r.status, created_at: r.created_at,
   finished_at: r.finished_at || null, error: r.error || null, code: r.code || null, actor_user_id: r.actor_user_id || null });
 const auditEntry = (t, x) => ({ ts: t.toISOString(), request_id: x.request_id || null, actor_user_id: x.actor_user_id || null,
   action: typeof x.action === "string" && Object.hasOwn(CRM_ACTIONS, x.action) ? x.action : "invalid",
-  lead_id: typeof x.lead_id === "string" && LEAD_ID_RE.test(x.lead_id) ? x.lead_id : null, outcome: x.outcome, code: x.code || null });
+  lead_id: typeof (x.lead_id || x.params?.domain) === "string" && LEAD_ID_RE.test(x.lead_id || x.params?.domain) ? (x.lead_id || x.params?.domain) : null, outcome: x.outcome, code: x.code || null });
 function expire(requests, t) {
   return requests.map((r) => r.status === "pending" && +t > Date.parse(r.expires_at) ? { ...r, status: "expired", finished_at: t.toISOString(), error: "VPS hat den Auftrag nicht abgeholt – nicht gespeichert." }
     : r.status === "running" && +t > Date.parse(r.lease_until) ? { ...r, status: "failed", finished_at: t.toISOString(), error: "Kein Ergebnis vom VPS – Stand bitte prüfen." } : r);
@@ -159,7 +159,7 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
       x.finished_at = t.toISOString();
       x.code = body.ok === true ? null : typeof body.code === "string" && /^[A-Z_]{2,30}$/.test(body.code) ? body.code : "FAILED";
       x.error = body.ok === true ? null : String(body.error || "Fehlgeschlagen").replace(/[^\p{L}\p{N} .,:;()–\/'’-]/gu, "").slice(0, 200);
-      leadId = x.params?.lead_id || null;
+      leadId = x.params?.lead_id || x.params?.domain || null;
       cur.audit.push(auditEntry(t, { ...x, lead_id: leadId, outcome: body.ok === true ? "success" : "failure" }));
       return { status: 200, body: { ok: true } };
     });
@@ -335,6 +335,28 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
       return reply(val.status, { error: val.error, code: val.code });
     }
     if (val.action === "crm.listLeads") return reply(200, { generated_at: v?.generated_at || null, total: leads.length, leads });
+    if (val.action === "crm.createManualLead") {
+      if (!owner) {
+        await mutate((cur, t) => { cur.audit.push(auditEntry(t, { request_id: newId(), actor_user_id: actor.user_id, action: val.action, lead_id: val.params.domain, outcome: "denied", code: "OWNER_ONLY" })); return { status: 200, body: {} }; });
+        return reply(403, { error: "Manuelle TEST-Leads dürfen nur vom OWNER erfasst werden.", code: "OWNER_ONLY" });
+      }
+      if (!can(actor, "crm.write")) return forbidden();
+      const existing = everything.find((l) => l.domain === val.params.domain) || null;
+      if (existing && !(existing.is_test === true && existing.manual_test?.source === "MANUAL_TEST")) {
+        await mutate((cur, t) => { cur.audit.push(auditEntry(t, { request_id: newId(), actor_user_id: actor.user_id, action: val.action, lead_id: val.params.domain, outcome: "denied", code: "DOMAIN_EXISTS" })); return { status: 200, body: {} }; });
+        return reply(409, { error: "Domain ist bereits einem anderen Lead zugeordnet.", code: "DOMAIN_EXISTS" });
+      }
+      const r = await mutate((cur, t) => {
+        const rid = newId();
+        if (!online(cur, t)) { cur.audit.push(auditEntry(t, { request_id: rid, actor_user_id: actor.user_id, action: val.action, lead_id: val.params.domain, outcome: "denied", code: "SERVER_OFFLINE" })); return { status: 503, body: { error: "CRM-Dienst auf dem VPS meldet sich nicht – nichts gespeichert.", code: "SERVER_OFFLINE" } }; }
+        if (cur.rate.length >= RATE.writes) { cur.audit.push(auditEntry(t, { request_id: rid, actor_user_id: actor.user_id, action: val.action, lead_id: val.params.domain, outcome: "denied", code: "RATE_LIMIT" })); return { status: 429, body: { error: "Zu viele Änderungen – bitte kurz warten.", code: "RATE_LIMIT" } }; }
+        cur.rate.push({ at: t.toISOString() });
+        const x = { request_id: rid, action: val.action, params: val.params, status: "pending", created_at: t.toISOString(), expires_at: new Date(+t + REQUEST_TTL_MS).toISOString(), actor_user_id: actor.user_id };
+        cur.requests.push(x); cur.watch_at = t.toISOString(); cur.audit.push(auditEntry(t, { ...x, lead_id: val.params.domain, outcome: "queued" }));
+        return { status: 202, body: { request: publicRequest(x) } };
+      });
+      return reply(r.status, r.body);
+    }
     const known = everything.find((l) => l.lead_id === val.params.lead_id) || null;
     const lead = known && canSeeLead(actor, known, asg) ? leads.find((l) => l.lead_id === known.lead_id) : null;
     if (!lead && known && !owner) {

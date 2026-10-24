@@ -194,6 +194,8 @@ function render() {
   const now = new Date(), st = crmStats(S.leads, now);
   setMeta(t("crm.meta", S.leads.length, fmt(S.generated_at), S.online) + (S.backup?.last_at ? t("crm.metaBackup", fmt(S.backup.last_at), S.backup.offsite_ok) : "")
     + (S.actor?.role === "OWNER" && S.pbProvider ? ` · ${t("pb.status", S.pbProvider)}` : ""), !S.online);
+  const manualButton = $("crmManualBtn");
+  if (manualButton) manualButton.hidden = S.actor?.role !== "OWNER";
   renderHot();
   const cards = $("crmCards");
   cards.replaceChildren(...Object.keys(CARDS).map((k) => el("button", { type: "button", class: `crm-card${k === "dnc" ? " dnc" : k === "follow_ups" ? " fu" : k === "customers" ? " ok" : ""}`,
@@ -527,6 +529,56 @@ async function exportCsv() {
   } catch (e) { setMeta(t("export.fail", e.message), true); }
 }
 
+const MANUAL_TEST_FINDINGS = Object.freeze([
+  { key: "PK-001", type: "contact_page_broken", text: "Der Link #kontakt erreicht den Kontaktbereich nicht.", page: "https://praxis-kaelin.netlify.app/", severity: "high", confirmed: true },
+  { key: "PK-002", type: "javascript_error", text: "Der Footer-Jahreswert verursacht einen JavaScript-Fehler.", page: "https://praxis-kaelin.netlify.app/", severity: "high", confirmed: true },
+  { key: "PK-003", type: "mobile_content_cut_off", text: "Die Notfall-Kacheln sind auf schmalen Mobilansichten abgeschnitten.", page: "https://praxis-kaelin.netlify.app/", severity: "medium", confirmed: true },
+  { key: "PK-004", type: "broken_link", text: "Die rechtlichen Footer-Links führen auf keinen Inhalt.", page: "https://praxis-kaelin.netlify.app/", severity: "medium", confirmed: true },
+  { key: "PK-005", type: "button_broken", text: "Der mobile Menübutton hat keine zugängliche Beschriftung bzw. keinen Zustand.", page: "https://praxis-kaelin.netlify.app/", severity: "medium", confirmed: true },
+]);
+const MANUAL_TEST_DOMAIN = "praxis-kaelin.netlify.app";
+const MANUAL_TEST_OFFERS = Object.freeze({ check_chf: 150, repair_chf: 480, check_link: "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00", repair_link: "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01" });
+function manualLeadPanel() {
+  const status = el("p", { class: "crm-status", id: "crmManualStatus", "aria-live": "polite" });
+  const field = (name, label, value, type = "text") => el("label", { class: "crm-manual-field" }, el("span", {}, label), el("input", { name, type, value, required: true, maxlength: name === "email" ? "200" : "253" }));
+  const form = el("form", { class: "crm-form crm-manual-form", id: "crmManualForm", onsubmit: createManualLead });
+  form.append(field("name", "Name", "Praxis Kälin"), field("domain", "Domain", MANUAL_TEST_DOMAIN), field("email", "Kontakt", "helvetic.webdesign@proton.me", "email"),
+    el("p", { class: "crm-note" }, "Quelle MANUAL_TEST · Typ WEBSITE_REPAIR · Environment TEST · Priorität HIGH · Status MANUAL_TEST_AUTHORIZED · 5 bestätigte Befunde"),
+    el("button", { type: "submit", class: "crm-btn primary" }, "TEST-Lead anlegen / aktualisieren"), status);
+  return el("section", { class: "crm-manual-panel", id: "crmManualPanel" }, el("h3", {}, "Manuellen TEST-Lead erfassen"), el("p", { class: "crm-note" }, "Nur OWNER. Serverseitig domain-dedupliziert und von Geschäftskennzahlen ausgeschlossen."), form);
+}
+function toggleManualLead() {
+  if (S.actor?.role !== "OWNER") return;
+  const slot = $("crmManualSlot");
+  if (slot.childElementCount) { slot.replaceChildren(); return; }
+  slot.replaceChildren(manualLeadPanel());
+}
+async function createManualLead(e) {
+  e.preventDefault();
+  if (S.actor?.role !== "OWNER") return;
+  const form = e.currentTarget, out = $("crmManualStatus");
+  const say = (tx, cls = "wait") => { if (out) { out.textContent = tx; out.className = `crm-status ${cls}`; } };
+  const params = { name: form.elements.namedItem("name").value, domain: form.elements.namedItem("domain").value, email: form.elements.namedItem("email").value,
+    source: "MANUAL_TEST", lead_type: "WEBSITE_REPAIR", environment: "TEST", priority: "HIGH", status: "MANUAL_TEST_AUTHORIZED",
+    checked_at: new Date().toISOString(), findings: MANUAL_TEST_FINDINGS, repair_offer: MANUAL_TEST_OFFERS };
+  form.querySelector("button[type=submit]").disabled = true; say("TEST-Lead wird über die CRM-Queue erfasst …");
+  try {
+    const q = await api("", { method: "POST", body: JSON.stringify({ action: "crm.createManualLead", params }) });
+    if (q.status !== 202) { say(errMsg(q.status, q.body), "bad"); return; }
+    const rid = q.body.request.request_id;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, i < 4 ? 1000 : 2000));
+      const r = await api(`?request=${rid}&watch=1`), req = r.body?.request;
+      if (!req || ["pending", "running"].includes(req.status)) continue;
+      if (req.status === "done") { say("TEST-Lead gespeichert und auditiert.", "ok"); await load(); openLead(MANUAL_TEST_DOMAIN); }
+      else say(req.code ? I.codeMsg(req.code, req.error) : req.error || `Nicht gespeichert (${req.status}).`, "bad");
+      return;
+    }
+    say("Keine Bestätigung vom CRM-Dienst erhalten.", "bad");
+  } catch { say("CRM-Dienst nicht erreichbar.", "bad"); }
+  finally { form.querySelector("button[type=submit]").disabled = false; }
+}
+
 // ---------- Gerüst ----------
 function build() {
   const sel = (k, label, opts) => el("select", { id: "crmF_" + k, "aria-label": label }, el("option", { value: "" }, label), opts.map(([v, tx]) => el("option", { value: v }, tx)));
@@ -534,8 +586,10 @@ function build() {
   box.replaceChildren(
     el("div", { class: "crm-top" }, el("h2", { id: "crmTitle" }, t("crm.title")), el("span", { class: "meta", id: "crmMeta" }, ""),
       el("button", { type: "button", class: "crm-btn", onclick: load }, t("btn.refresh")), el("button", { type: "button", class: "crm-btn", onclick: exportCsv }, t("btn.csv")),
+      el("button", { type: "button", class: "crm-btn", id: "crmManualBtn", hidden: true, onclick: toggleManualLead }, "MANUAL TEST-Lead"),
       el("button", { type: "button", class: "crm-btn", id: "crmOnbBtn", onclick: toggleOnboarding }, onboardingTexts(I.locale).panel),
       el("button", { type: "button", class: "crm-btn", onclick: close }, t("btn.close"))),
+    el("div", { id: "crmManualSlot" }),
     el("div", { id: "crmOnbSlot" }),
     // TF-077B: KONTAKTFORMULAR – SOFORT BEARBEITEN – sichtbar ganz oben, vor allen Karten und der Liste.
     el("section", { class: "crm-hot", id: "crmHot", "aria-live": "polite" }),

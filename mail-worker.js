@@ -33,6 +33,7 @@ import { readOrdersExport } from "./onboarding-store.js";
 import { senderProfileFor, VN_SIGNATURE } from "./sender-profiles.js";
 import { processContactForms, DEFAULT_CONTACT_FORM_CONFIG, CONTACT_FORM_DRAFT_MODE } from "./contact-form.js";
 import { draftRef, SERVER_SEND_USERS } from "./mail-access.js";
+import { MANUAL_TEST_MAIL, isManualTestMail } from "./mail-requests.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -107,6 +108,8 @@ const AI_RE = /\b(KI|AI|Claude|Jarvis|ChatGPT|künstliche Intelligenz|language m
 const UNSUB_RE = /abmelden|unsubscribe|désinscri|disiscriv|h[uủ]y đăng ký|huỷ đăng ký|không muốn nhận thêm email|không liên hệ/i;
 // Behauptete Website-Mängel – ohne dokumentierte websiteIssues darf eine Erstmail so etwas nicht enthalten.
 export const CLAIM_RE = /(fehler|defekt|kaputt|funktioniert nicht|nicht erreichbar|nicht mehr erreichbar|404|zertifikat|veraltet|langsam|unsicher|broken|not working|outdated|slow|certificate|erreur|cass[ée]|errore|non funziona)/i;
+const isBoundManualTestDraft = (draft = {}) => isManualTestMail({ manual_test: true, manual_test_lead_id: MANUAL_TEST_MAIL.lead_id,
+  recipient: draft.to, subject: draft.subject, body: draft.body });
 
 // Versandgrundlage eines Leads – entscheidet ausschliesslich die TF-024-Permission-Engine (email-permission.js).
 // approved (Chris hat den Lead in seine Liste gesetzt) ist zusätzlich nötig, ersetzt aber nie die Grundlage.
@@ -712,6 +715,8 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         if (!rq.expires_at || Date.parse(rq.expires_at) <= +t) { cloudSet(id, "expired", "Abgelaufen, bevor der lokale Worker ihn prüfen konnte."); continue; }
         if (rq.delivery === "send_prepared") { await sendPrepared(id, rq, to); continue; }
         if (!EMAIL_RE.test(to) || !rq.subject || !rq.body) { cloudSet(id, "blocked", "Empfänger, Betreff oder Text ungültig."); continue; }
+        const manualTest = rq.manual_test === true;
+        if (manualTest && !isManualTestMail(rq)) { cloudSet(id, "blocked", "MANUAL_TEST-Auftrag ist nicht exakt an den autorisierten Praxis-Kälin-Test gebunden."); continue; }
         if (supp[to] || exclude.has(to)) { cloudSet(id, "blocked", "Empfänger ist gesperrt (Abmeldung/Suppression)."); continue; }
         // delivery "draft": nur ein Gmail-Entwurf, nie gesendet (kein state.actions-Eintrag, also nie in der Send-Queue).
         // Neue Mails als COLD_LEAD_DRAFT_ONLY (gmail.js verweigert jeden Jarvis-Send); Chris prüft und sendet selbst in Gmail.
@@ -730,6 +735,25 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
           state.cloudDrafts[key] = { draftId: d.draftId, threadId: d.threadId, at: t.toISOString() };
           save();
           cloudSet(id, "drafted", "Entwurf liegt in Gmail – senden nur durch Chris.");
+          continue;
+        }
+        // Der einzige bewusst freigegebene Sonderfall für einen internen E2E-Test:
+        // weiterhin nur OWNER-Auftrag, gültiger Worker mit compliant_auto und echte Gmail-OAuth.
+        // Keine KI, keine CRM-/Marketing-Grundlage und keine anderen Empfänger.
+        if (manualTest) {
+          if (!auto) { cloudSet(id, "blocked", "MANUAL_TEST benötigt den autorisierten Versandmodus compliant_auto."); continue; }
+          const key = "cloud:" + id;
+          if (state.actions[key]) continue;
+          if (free() <= 0) { notes.push("Tageslimit erreicht – MANUAL_TEST-Auftrag wird im nächsten Durchlauf geprüft."); continue; }
+          state.actions[key] = { status: "creating", at: t.toISOString(), kind: "cloud-auftrag", threadId: null, to, manualTest: true, manualTestLeadId: MANUAL_TEST_MAIL.lead_id };
+          save();
+          const d = await gmail.createDraft({ to, subject: rq.subject, body: rq.body });
+          state.actions[key] = { status: "prepared", at: t.toISOString(), kind: "cloud-auftrag", threadId: d.threadId, draftId: d.draftId, review: false, to,
+            autoSend: true, paced: false, manualTest: true, manualTestLeadId: MANUAL_TEST_MAIL.lead_id, cloudRequest: id };
+          state.prepared[d.draftId] = { key, at: t.toISOString(), kind: "cloud-auftrag" };
+          used++;
+          cloudSet(id, "accepted_local", "Gebundener interner TEST-Auftrag geprüft – wird jetzt gesendet.");
+          save();
           continue;
         }
         // TF-064: VN-/Verkäufer-Aufträge sind immer COLD_LEAD_DRAFT_ONLY – nie ein Versand, keine Versandgrundlage aus Metadaten.
@@ -907,10 +931,13 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         if (suppNow[to] || suppNow[a.to] || exclude.has(to)) { blockAt(key, a, "suppressed", "Empfänger ist gesperrt (Abmeldung/Suppression)."); continue; }
         if (!EMAIL_RE.test(to)) { blockAt(key, a, "blocked", "Empfänger ungültig."); continue; }
         // Cold-Lead-Entwürfe (und Altlasten aus TF-022) sendet Jarvis nie – nur Chris manuell in Gmail. Vor allen anderen Prüfungen.
-        if (a.kind === "einzelmail" || fresh.drafts[a.draftId]?.mode === COLD_MODE) { blockAt(key, a, "cold_draft_never_auto", "COLD_LEAD_DRAFT_ONLY – nur manueller Versand durch Chris."); continue; }
-        if (fresh.drafts[a.draftId]?.mode === CONTACT_FORM_DRAFT_MODE) { blockAt(key, a, "contact_form_draft_never_auto", "CONTACT_FORM_DRAFT_ONLY – nur manueller Versand durch Chris."); continue; }
-        if (!state.compliantThreads[a.threadId]) { blockAt(key, a, "blocked_no_legal_basis", "Keine Versandgrundlage für diesen Thread."); continue; }
-        if (a.basisFrom === "lead" || a.kind === "erstkontakt") {
+        if (!a.manualTest && (a.kind === "einzelmail" || fresh.drafts[a.draftId]?.mode === COLD_MODE)) { blockAt(key, a, "cold_draft_never_auto", "COLD_LEAD_DRAFT_ONLY – nur manueller Versand durch Chris."); continue; }
+        if (!a.manualTest && fresh.drafts[a.draftId]?.mode === CONTACT_FORM_DRAFT_MODE) { blockAt(key, a, "contact_form_draft_never_auto", "CONTACT_FORM_DRAFT_ONLY – nur manueller Versand durch Chris."); continue; }
+        if (a.manualTest && (!isBoundManualTestDraft(fresh.drafts[a.draftId]) || a.manualTestLeadId !== MANUAL_TEST_MAIL.lead_id || a.to !== MANUAL_TEST_MAIL.recipient)) {
+          blockAt(key, a, "manual_test_binding_failed", "MANUAL_TEST-Bindung von Empfänger, Betreff oder Text ist ungültig."); continue;
+        }
+        if (!a.manualTest && !state.compliantThreads[a.threadId]) { blockAt(key, a, "blocked_no_legal_basis", "Keine Versandgrundlage für diesen Thread."); continue; }
+        if (!a.manualTest && (a.basisFrom === "lead" || a.kind === "erstkontakt")) {
           const lead = (Array.isArray(freshLeads) ? freshLeads : []).find((l) => normEmail(l?.email) === to);
           if (!legalBasis(lead, t)) { blockAt(key, a, "blocked_no_legal_basis", "Versandgrundlage nicht mehr gültig (blocked_no_legal_basis)."); continue; }
         }

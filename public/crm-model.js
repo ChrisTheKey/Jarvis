@@ -98,7 +98,7 @@ export function sellerSendState(lead, requests = []) {
 
 // ---------- TF-077B: Kontaktformular CONTACT_FORM_P0 (höchste Priorität, eigener Abschnitt ganz oben) ----------
 // TF-080: E2E-Testlead (Kontaktformular-Test, Identität test-cf-…) – im CRM sichtbar, aber nie anrufbar, nie Verkäufer-/Umsatz-/Kennzahlen.
-export const isTestLead = (l) => l?.is_test === true || l?.contact_form?.is_test === true || /^test-cf-/.test(String(l?.lead_id || ""));
+export const isTestLead = (l) => l?.is_test === true || l?.environment === "TEST" || l?.manual_test?.environment === "TEST" || l?.contact_form?.is_test === true || /^test-cf-/.test(String(l?.lead_id || ""));
 export const contactFormOpen = (l) => !!l?.contact_form && l.contact_form.lead_source === "CONTACT_FORM" && l.contact_form.open === true && !l.archived;
 // Rangstufe der kanonischen Reihenfolge: 0 offene Kontaktformular-Anfrage · 1 ausdrücklicher Rückruf/heisser Lead · 2 übrige.
 const HOT_STAGES = ["INTERESTED", "CHECK_150_INTEREST", "REPAIR_480_INTEREST"];
@@ -470,7 +470,7 @@ export const SORTS = Object.freeze({
 // In der Standardsortierung (Priorität) folgen ausdrückliche Rückrufe/heisse Leads, dann die übrigen qualifizierten Leads.
 export function sortLeads(list = [], key = "priority", now = new Date()) {
   const s = SORTS[key] || SORTS.priority;
-  const rank = (l) => (s === SORTS.priority ? hotRank(l, now) : contactFormOpen(l) ? 0 : 1);
+  const rank = (l) => (isTestLead(l) ? -1 : s === SORTS.priority ? hotRank(l, now) : contactFormOpen(l) ? 0 : 1);
   return [...list].sort((a, b) => rank(a) - rank(b) || (contactFormOpen(a) && contactFormOpen(b) ? cfOrder(a, b) : 0) || s.cmp(a, b) || SORTS.company.cmp(a, b));
 }
 // „Next best lead“: höchste Priorität unter den offenen, nicht gesperrten Leads (Anzeige – keine Aktion).

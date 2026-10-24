@@ -33,6 +33,16 @@ const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i;
 const HEX_RE = /^[0-9a-f]{10,24}$/;
 const REQ_RE = /^[0-9a-f-]{36}$/;
+const MANUAL_DOMAIN_RE = /^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const MANUAL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{1,39}$/;
+const MANUAL_TYPE_RE = /^[a-z_]{3,40}$/;
+export const MANUAL_TEST_OFFERS = Object.freeze({
+  check_chf: 150,
+  repair_chf: 480,
+  check_link: "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00",
+  repair_link: "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01",
+});
+export const MANUAL_TEST_ACTION = "crm.createManualLead";
 
 // ---------- Hilfen ----------
 const str = (v, n) => (typeof v === "string" ? v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").replace(/[ \t]+/g, " ").trim().slice(0, n) : null) || null;
@@ -47,6 +57,52 @@ export const telHref = (normalized) => (typeof normalized === "string" && /^\+41
 // TF-063: Vietnam-Nummern (+84, 9–10 Ziffern nach der Landesvorwahl) – nur für VN-Leads.
 export const telHrefVn = (normalized) => (typeof normalized === "string" && /^\+84\d{9,10}$/.test(normalized) ? `tel:${normalized}` : null);
 export const draftUrl = (messageId) => (typeof messageId === "string" && HEX_RE.test(messageId) ? `https://mail.google.com/mail/u/0/#drafts?compose=${messageId}` : null);
+
+// Manueller TEST-Lead: bewusst enger als ein allgemeines Importformat. Damit kann die CRM-Erfassung genutzt werden,
+// ohne Discovery-/Outreach-Quellen oder Geschäftskennzahlen zu verändern.
+export function cleanManualFindings(findings) {
+  if (!Array.isArray(findings) || findings.length < 1 || findings.length > 30) return [];
+  return findings.map((f) => {
+    if (!f || typeof f !== "object" || Array.isArray(f)) return null;
+    const key = typeof f.key === "string" && MANUAL_KEY_RE.test(f.key) ? f.key : null;
+    const type = typeof f.type === "string" && MANUAL_TYPE_RE.test(f.type) ? f.type : null;
+    const tx = text(f.text, 240);
+    const page = httpUrl(f.page, 300);
+    const severity = SEVERITIES.includes(f.severity) ? f.severity : null;
+    if (!key || !type || !tx || !page || !severity || f.confirmed !== true) return null;
+    return { key, type, text: tx, page, status: "BESTÄTIGT", confirmed: true, severity, verified_at: iso(f.verified_at) || null, manual: true };
+  }).every(Boolean) ? findings.map((f) => {
+    const key = f.key, type = f.type, tx = text(f.text, 240), page = httpUrl(f.page, 300), severity = f.severity;
+    return { key, type, text: tx, page, status: "BESTÄTIGT", confirmed: true, severity, verified_at: iso(f.verified_at) || null, manual: true };
+  }) : [];
+}
+
+function cleanManualParams(raw, now) {
+  const allowed = ["name", "domain", "email", "source", "lead_type", "environment", "priority", "status", "checked_at", "findings", "repair_offer"];
+  if (Object.keys(raw).some((k) => !allowed.includes(k))) return { error: "BAD_PARAMS", message: "Manual-Lead: unbekanntes Feld." };
+  const name = str(raw.name, 120), domain = typeof raw.domain === "string" ? raw.domain.trim().toLowerCase() : "";
+  const email = typeof raw.email === "string" ? raw.email.trim().toLowerCase() : "";
+  if (!name || !domain || !MANUAL_DOMAIN_RE.test(domain) || normDomain(domain) !== domain) return { error: "BAD_PARAMS", message: "Manual-Lead: Domain ungültig." };
+  if (!EMAIL_RE.test(email) || email.length > 200 || /[\r\n,;]/.test(email)) return { error: "BAD_PARAMS", message: "Manual-Lead: genau eine E-Mail-Adresse erforderlich." };
+  if (raw.source !== "MANUAL_TEST" || raw.lead_type !== "WEBSITE_REPAIR" || raw.environment !== "TEST" || raw.priority !== "HIGH" || raw.status !== "MANUAL_TEST_AUTHORIZED")
+    return { error: "BAD_PARAMS", message: "Manual-Lead: nur der autorisierte TEST-Typ ist zulässig." };
+  if (!iso(raw.checked_at) || Date.parse(raw.checked_at) > +now + 86_400_000 || Date.parse(raw.checked_at) < Date.parse("2020-01-01T00:00:00Z"))
+    return { error: "BAD_PARAMS", message: "Manual-Lead: Prüfzeitpunkt ungültig." };
+  const findings = cleanManualFindings(raw.findings);
+  if (!findings.length) return { error: "BAD_PARAMS", message: "Manual-Lead: mindestens ein bestätigter Befund erforderlich." };
+  const offer = raw.repair_offer;
+  if (!offer || typeof offer !== "object" || offer.check_chf !== MANUAL_TEST_OFFERS.check_chf || offer.repair_chf !== MANUAL_TEST_OFFERS.repair_chf
+    || offer.check_link !== MANUAL_TEST_OFFERS.check_link || offer.repair_link !== MANUAL_TEST_OFFERS.repair_link)
+    return { error: "BAD_PARAMS", message: "Manual-Lead: TEST-Angebote oder Links stimmen nicht." };
+  return { params: { name, domain, email, source: raw.source, lead_type: raw.lead_type, environment: raw.environment, priority: raw.priority,
+    status: raw.status, checked_at: raw.checked_at, findings, repair_offer: { ...MANUAL_TEST_OFFERS } } };
+}
+
+function manualErrors(manual, findings, now) {
+  const checked = iso(manual?.checked_at) || now.toISOString();
+  return { audit: "FULL", count: findings.length, exact: true, checked_at: checked, full_checked_at: checked, scope: "Playwright Desktop und Mobile",
+    top: findings.slice(0, 2), items: findings, resolved: 0, manual_open: findings.length, repair: null };
+}
 
 // ---------- Befunde ----------
 // Bestätigt = vom Cold-Register als Kundentext geführt (customer_findings; TF-050 erneut öffentlich geprüft, 1–3 im Entwurf).
@@ -210,6 +266,8 @@ const resolvedNow = (src, domain, now) => {
 export function crmUniverse(src = {}, now = new Date()) {
   const leads = src.registry?.leads || {};
   const ids = new Set(Object.keys(src.directory?.leads || {}));
+  // Manuelle Leads leben ausschliesslich im CRM-eigenen Zustand und haben keine Discovery-/Gmail-Quelle.
+  for (const id of Object.keys(src.crm?.leads || {})) ids.add(id);
   for (const [id, l] of Object.entries(leads)) if (CRM_REGISTRY_STATUSES.has(l?.status) || l?.customer_status === "customer" || qualifiedPreDraft(l)) ids.add(id);
   // Cold-Entwurf in der Queue (queued) zählt schon – nicht erst mit gmail_draft_id.
   for (const [id, r] of Object.entries(src.reviews || {})) if (r?.draft_mode === COLD_MODE && (r.gmail_draft_id || r.status === "queued")) ids.add(id);
@@ -278,8 +336,9 @@ export function effectiveStage(entry, f) {
 }
 export function buildCrmLead(id, src = {}, now = new Date()) {
   const reg = src.registry?.leads?.[id] || null, dir = src.directory?.leads?.[id] || null, rv = src.reviews?.[id] || null, crm = src.crm?.leads?.[id] || null;
+  const manual = crm?.manual && typeof crm.manual === "object" ? crm.manual : null;
   const cfSrc = contactFormLeads(src)[id] || null;
-  const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || (id.includes("@") || id.startsWith("cf-") || id.startsWith("test-cf-") ? "" : id)) || null;
+  const domain = normDomain(dir?.domain || reg?.domain || rv?.domain || manual?.domain || (id.includes("@") || id.startsWith("cf-") || id.startsWith("test-cf-") ? "" : id)) || null;
   const hist = historyOf(src, domain); // TF-058: niedrigste Priorität – füllt nur, was Registry/Review/Verzeichnis nicht kennen
   const histOnly = !!hist && !reg && !dir && !rv;
   const d = draftInfo(dir, rv, src.gmail, reg);
@@ -289,9 +348,11 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     status: "AUDIT", confirmed: false, severity: oneOf(f.severity, SEVERITIES), verified_at: iso(f.verified_at) || iso(hist.last_verified_at), type: str(f.type, 40), target: httpUrl(f.target),
     label: str(f.label, 40), http_status: httpStatusOf(f), location: str(f.location, 60), viewport: Number.isInteger(f.viewport) ? f.viewport : null,
     area: oneOf(f.area, AREAS), heading: str(f.heading, 40) }));
+  const manualFindings = manual?.source === "MANUAL_TEST" ? cleanManualFindings(manual.findings) : [];
+  if (manualFindings.length) findings = manualFindings;
   // TF-055: Website-Zustand – vollständiger Audit (passiv bzw. nach Reparatur) oder nur Teilprüfung („mindestens“). Je Domain.
   const sf = domain ? src.siteFindings?.domains?.[domain] : null;
-  const errors = siteHealth({ full: sf?.full || null, incomplete: sf?.partial || null, repair: domain ? src.repairFindings?.orders?.[domain] || null : null,
+  const errors = manualFindings.length ? manualErrors(manual, manualFindings, now) : siteHealth({ full: sf?.full || null, incomplete: sf?.partial || null, repair: domain ? src.repairFindings?.orders?.[domain] || null : null,
     partial: findings, partialCheckedAt: rv || reg?.last_audited_at ? maxIso(iso(reg?.last_audited_at), iso(rv?.updated_at)) : hist ? iso(hist.last_verified_at) : null, now });
   const regDnc = !!(reg?.do_not_contact || reg?.opt_out || reg?.suppressed);
   const flags = { do_not_contact: !!crm?.do_not_contact || regDnc, customer: reg?.customer_status === "customer", not_interested: reg?.customer_status === "not_interested",
@@ -310,10 +371,10 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   const contactAuto = flags.replied ? "REPLIED" : calls.some((c) => REACHED.has(c.result)) ? "REACHED" : calls.length ? "CALLED" : flags.manual_sent ? "EMAIL_SENT" : "NOT_CONTACTED";
   const lead = {
     lead_id: id,
-    company: str(dir?.company_name || reg?.company || rv?.company || hist?.company || (cfOnly ? cfSrc.company || cfSrc.name : null), 120),
+    company: str(dir?.company_name || reg?.company || rv?.company || hist?.company || manual?.name || (cfOnly ? cfSrc.company || cfSrc.name : null), 120),
     domain,
     website: httpUrl(dir?.website_url) || httpUrl(reg?.website) || httpUrl(hist?.website) || (cfOnly ? httpUrl(cfSrc.website) : null) || (domain ? `https://${domain}/` : null),
-    email: [dir?.email, reg?.business_email, rv?.recipient, hist?.business_email, cfOnly ? cfSrc.email : null].map((e) => String(e || "").trim().toLowerCase()).find((e) => EMAIL_RE.test(e)) || null,
+    email: [dir?.email, reg?.business_email, rv?.recipient, hist?.business_email, manual?.email, cfOnly ? cfSrc.email : null].map((e) => String(e || "").trim().toLowerCase()).find((e) => EMAIL_RE.test(e)) || null,
     phone: str(dir?.phone || (cfOnly ? cfSrc.phone : null), 30), phone_tel: phonebook.status === "PHONEBOOK_STAR_PRESENT" ? null : telHref(dir?.phone_normalized) || cfTel,
     phone_confidence: oneOf(dir?.phone_confidence, ["high", "medium"]),
     ...(cfOnly && cfMarket === "VN" ? { market: "VN" } : {}),
@@ -340,6 +401,8 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     do_not_contact_at: iso(crm?.do_not_contact_at), archived: !!crm?.archived,
     crm_created_at: iso(crm?.created_at),
     updated_at: maxIso(iso(crm?.updated_at), iso(dir?.contact_enriched_at), iso(reg?.last_updated_at), iso(rv?.updated_at), iso(dir?.first_seen_at), iso(hist?.updated_at)),
+    ...(manual?.source === "MANUAL_TEST" ? { manual_test: { source: "MANUAL_TEST", lead_type: "WEBSITE_REPAIR", environment: "TEST", priority: "HIGH", status: "MANUAL_TEST_AUTHORIZED",
+      checked_at: iso(manual.checked_at), findings_total: manualFindings.length, repair_offer: manual.repair_offer && { ...MANUAL_TEST_OFFERS } } } : {}),
   };
   const cf = cleanContactForm(cfSrc);
   if (cf) lead.contact_form = cf; // nur wenn vorhanden – kein Zusatzgewicht in der Sicht für Leads ohne Anfrage
@@ -352,8 +415,8 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     lead.contact_form = cleanContactForm({ ...cfSrc, ...st, inbound: cfOnly, callback_phone_match: phoneMatch, call_eligibility: cfSrc.is_test === true ? "TEST_BLOCKED" : callable ? "CALLBACK_REQUESTED" : "CALL_NOT_CURRENTLY_ELIGIBLE" });
   }
   // TF-080: E2E-Testlead – sichtbar mit TEST-Kennzeichen, nie anrufbar (kein Anruf-Link), nie Website-/Audit-Ziel.
-  if (isTestLead(lead) || cfSrc?.is_test === true) Object.assign(lead, { is_test: true, environment: "TEST", test_run_id: lead.contact_form?.test_run_id || null, phone_tel: null, website: null });
-  lead.priority = priorityOf(lead);
+  if (isTestLead(lead) || manual?.environment === "TEST" || cfSrc?.is_test === true) Object.assign(lead, { is_test: true, environment: "TEST", test_run_id: lead.contact_form?.test_run_id || null, phone_tel: null, website: null });
+  lead.priority = manual?.priority === "HIGH" ? { score: 100, level: "HIGH", reasons: ["MANUAL_TEST_HIGH"] } : priorityOf(lead);
   lead.follow_up = followUpBucket(lead, now);
   lead.call_recommended = callRecommended(lead);
   // TF-076: Aufnahme ins aktive CRM (crm-model.js crmAdmission). Nur VPS-intern (nie in der Cloud-Allowlist): Zustand für Zähler/Bericht.
@@ -389,6 +452,7 @@ const P = {
 export const CRM_ACTIONS = Object.freeze({
   "crm.listLeads": { kind: "read", params: [], required: [] },
   "crm.getLead": { kind: "read", params: ["lead_id"], required: ["lead_id"] },
+  [MANUAL_TEST_ACTION]: { kind: "write", params: ["name", "domain", "email", "source", "lead_type", "environment", "priority", "status", "checked_at", "findings", "repair_offer"], required: ["name", "domain", "email", "source", "lead_type", "environment", "priority", "status", "checked_at", "findings", "repair_offer"], label: "Manualen TEST-Lead erfassen" },
   "crm.updateStage": { kind: "write", params: ["lead_id", "stage"], required: ["lead_id", "stage"], label: "Status ändern" },
   "crm.updateContactStatus": { kind: "write", params: ["lead_id", "contact_status"], required: ["lead_id", "contact_status"], label: "Kontaktstatus" },
   "crm.updateCallStatus": { kind: "write", params: ["lead_id", "call_status"], required: ["lead_id", "call_status"], label: "Telefonstatus" },
@@ -410,6 +474,10 @@ export function validateCrmAction(input, { now = new Date() } = {}) {
   const def = CRM_ACTIONS[action];
   const raw = input.params ?? {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return deny(400, "BAD_PARAMS", "params muss ein Objekt sein.");
+  if (action === MANUAL_TEST_ACTION) {
+    const manual = cleanManualParams(raw, now);
+    return manual.error ? deny(400, manual.error, manual.message) : { ok: true, action, kind: "write", params: manual.params };
+  }
   const params = {};
   for (const [k, v] of Object.entries(raw)) {
     if (!def.params.includes(k)) return deny(400, "BAD_PARAMS", `Parameter ${String(k).slice(0, 20)} ist nicht erlaubt.`);
@@ -438,13 +506,33 @@ export function validateCrmAction(input, { now = new Date() } = {}) {
 
 // Eine geprüfte Schreibaktion auf den CRM-Zustand anwenden (rein, ohne I/O). Idempotent je request_id.
 // lookup(lead_id) → aktuelle CRM-Sicht des Leads oder null (unbekannt/fremd → abgelehnt).
-export function applyCrmAction(state, req, { now = new Date(), lookup } = {}) {
+export function applyCrmAction(state, req, { now = new Date(), lookup, findByDomain } = {}) {
   const fail = (code, error) => ({ ok: false, code, error });
   const v = validateCrmAction({ action: req?.action, params: req?.params }, { now });
   if (!v.ok) return fail(v.code, v.error);
   if (v.kind !== "write") return fail("NOT_A_WRITE", "Keine Schreibaktion.");
   const rid = typeof req.request_id === "string" && REQ_RE.test(req.request_id) ? req.request_id : null;
-  if (rid && state.meta.applied[rid]) return { ok: true, duplicate: true, lead_id: v.params.lead_id, changed: [] };
+  if (rid && state.meta.applied[rid]) return { ok: true, duplicate: true, lead_id: v.params.lead_id || v.params.domain, changed: [] };
+  if (v.action === MANUAL_TEST_ACTION) {
+    const p = v.params, lead_id = p.domain;
+    const existing = (findByDomain ? findByDomain(lead_id) : lookup ? lookup(lead_id) : null);
+    const prior = state.leads[lead_id];
+    const isOwnManual = !!(prior?.manual?.source === "MANUAL_TEST" || (existing?.is_test && existing?.manual_test?.source === "MANUAL_TEST"));
+    if (existing && !isOwnManual) return fail("DOMAIN_EXISTS", "Domain ist bereits einem anderen Lead zugeordnet.");
+    const t = now.toISOString();
+    const e = structuredClone(prior || newCrmEntry(lead_id, now));
+    e.manual = { name: p.name, domain: p.domain, email: p.email, source: p.source, lead_type: p.lead_type, environment: p.environment,
+      priority: p.priority, status: p.status, checked_at: p.checked_at, findings: p.findings, repair_offer: p.repair_offer };
+    e.updated_at = t;
+    state.leads[lead_id] = e;
+    if (rid) {
+      state.meta.applied[rid] = t;
+      const keys = Object.keys(state.meta.applied);
+      if (keys.length > APPLIED_KEEP) for (const k of keys.slice(0, keys.length - APPLIED_KEEP)) delete state.meta.applied[k];
+    }
+    state.updated_at = t;
+    return { ok: true, lead_id, changed: ["manual"] };
+  }
   const { lead_id } = v.params, p = v.params;
   const cur = lookup ? lookup(lead_id) : null;
   if (!cur) return fail("UNKNOWN_LEAD", "Unbekannter Lead – nur bestehende Jarvis-Leads können bearbeitet werden.");
@@ -582,6 +670,8 @@ export function cleanCrmLead(l) {
     archived: l.archived === true, crm_created_at: iso(l.crm_created_at), updated_at: iso(l.updated_at),
     priority: { score: Number.isInteger(pr.score) ? Math.max(-100, Math.min(100, pr.score)) : 0, level: oneOf(pr.level, PRIORITY_LEVELS, "LOW"),
       reasons: (Array.isArray(pr.reasons) ? pr.reasons : []).slice(0, 10).map((r) => str(r, 60)).filter(Boolean) },
+    ...(l.manual_test?.source === "MANUAL_TEST" ? { manual_test: { source: "MANUAL_TEST", lead_type: "WEBSITE_REPAIR", environment: "TEST", priority: "HIGH", status: "MANUAL_TEST_AUTHORIZED",
+      checked_at: iso(l.manual_test.checked_at), findings_total: n(l.manual_test.findings_total, 0, 1000), repair_offer: l.manual_test.repair_offer && { ...MANUAL_TEST_OFFERS } } } : {}),
     follow_up: oneOf(l.follow_up, ["OVERDUE", "TODAY", "LATER"]), call_recommended: l.call_recommended === true && !isTestLead(l),
     ...(isTestLead(l) ? { is_test: true, environment: "TEST", test_run_id: typeof l.test_run_id === "string" && /^e2e-[0-9a-f]{12}$/.test(l.test_run_id) ? l.test_run_id : null, phone_tel: null } : {}),
   };

@@ -14,6 +14,16 @@ export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bod
 export const REQUEST_STATUSES = ["pending", "processing", "accepted_local", "blocked", "sent", "drafted", "failed", "expired"];
 export const FINAL_STATUSES = ["blocked", "sent", "drafted", "failed", "expired"];
 export const INTENTS = ["sales", "follow_up", "reply", "info"];
+// Eng begrenzter einmaliger interner E2E-Test. Diese Bindung ist absichtlich im Mailpfad
+// wiederholt und nicht nur in der CRM-Oberfläche hinterlegt: Empfänger, Betreff, Domain,
+// Testkennzeichnung und beide Sandbox-Links dürfen nicht von einem allgemeinen Auftrag abweichen.
+export const MANUAL_TEST_MAIL = Object.freeze({
+  lead_id: "praxis-kaelin.netlify.app",
+  recipient: "helvetic.webdesign@proton.me",
+  subject: "[TEST] Technische Auffälligkeiten auf Ihrer Webseite – Praxis Kälin",
+  check_link: "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00",
+  repair_link: "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01",
+});
 // delivery "draft": der Worker legt nur einen Gmail-Entwurf an (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie von sich aus.
 // delivery "send_prepared" (TF-077B, SEND_PREPARED_LEAD_DRAFT): ein Verkäufer hat «E-Mail lossenden» geklickt – der Worker sendet GENAU den
 // vorbereiteten Jarvis-Entwurf dieses Leads (draft_ref), ohne Betreff/Text aus der Cloud. Empfänger = CRM-Adresse des Leads.
@@ -28,7 +38,7 @@ export const LEASE_MS = 10 * 60_000;
 export const HEARTBEAT_STALE_MS = 5 * 60_000;
 const LOCK_LIMIT = 2000, LOCK_DAYS = 30, CLAIM_MAX = 10;
 const REF_RE = /^[a-f0-9]{12,32}$/;
-const FIELDS = ["request_id", "recipient", "subject", "body", "optional_thread_reference", "intent", "ttl_hours", "delivery", "draft_ref"];
+const FIELDS = ["request_id", "recipient", "subject", "body", "optional_thread_reference", "intent", "ttl_hours", "delivery", "draft_ref", "manual_test", "manual_test_lead_id"];
 const ID_RE = /^[a-z0-9][a-z0-9-]{7,63}$/;
 const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i;
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
@@ -43,6 +53,16 @@ export function cleanMeta(m) {
   const locale = ["de-CH", "vi-VN"].includes(m.locale) ? m.locale : null;
   const lead_id = typeof m.lead_id === "string" && META_LEAD_RE.test(m.lead_id) ? m.lead_id : null;
   return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id } : null;
+}
+
+export function isManualTestMail(input = {}) {
+  if (!input || typeof input !== "object" || input.manual_test !== true || input.manual_test_lead_id !== MANUAL_TEST_MAIL.lead_id) return false;
+  if (String(input.recipient || "").trim().toLowerCase() !== MANUAL_TEST_MAIL.recipient || input.subject !== MANUAL_TEST_MAIL.subject) return false;
+  if (input.delivery !== undefined && input.delivery !== "send") return false;
+  if (input.optional_thread_reference || input.draft_ref || input.meta) return false;
+  const body = typeof input.body === "string" ? input.body : "";
+  return body.includes(MANUAL_TEST_MAIL.lead_id) && body.includes("5 technische Fehler") && body.includes("CHF 150.–") && body.includes("CHF 480.–")
+    && body.includes(MANUAL_TEST_MAIL.check_link) && body.includes(MANUAL_TEST_MAIL.repair_link) && /\bTEST\b/u.test(body);
 }
 
 // Kurzer, nicht-kryptografischer Fingerabdruck (FNV-1a) für den Duplikat-Schutz.
@@ -65,6 +85,9 @@ export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "ch
   const recipient = typeof input.recipient === "string" ? input.recipient.trim().toLowerCase() : "";
   if (!recipient || recipient.length > L.recipientChars || /[\r\n,;]/.test(recipient) || !EMAIL_RE.test(recipient)) return { error: "Empfänger ungültig (genau eine E-Mail-Adresse)." };
   if (input.delivery !== undefined && !DELIVERIES.includes(input.delivery)) return { error: "delivery ungültig (send, draft oder send_prepared)." };
+  const manualTest = input.manual_test === true;
+  if (manualTest && !isManualTestMail(input)) return { error: "MANUAL_TEST-Auftrag ist nicht exakt an den autorisierten Praxis-Kälin-Test gebunden." };
+  if (!manualTest && (input.manual_test !== undefined || input.manual_test_lead_id !== undefined)) return { error: "MANUAL_TEST-Felder sind nur für den gebundenen Testauftrag erlaubt." };
   const prepared = input.delivery === "send_prepared";
   // send_prepared: nie Betreff/Text aus der Cloud – gesendet wird ausschliesslich der vorbereitete Entwurf (draft_ref) des Leads aus den Metadaten.
   if (prepared && (input.subject || input.body || input.optional_thread_reference)) return { error: "send_prepared: kein Betreff, kein Text, kein Thread." };
@@ -85,8 +108,9 @@ export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "ch
       request_id: input.request_id || newId(), created_at: created, expires_at: new Date(+now + ttl * 3_600_000).toISOString(),
       requested_by: requestedBy, recipient, subject, body, optional_thread_reference: ref,
       intent: INTENTS.includes(input.intent) ? input.intent : "sales", status: "pending", reason: null, updated_at: created,
-      fingerprint: prepared ? fingerprint(recipient, "send_prepared", cleanMeta(meta).lead_id, input.draft_ref) : fingerprint(recipient, subject.toLowerCase(), body, ...(delivery === "draft" ? ["draft"] : [])),
+      fingerprint: prepared ? fingerprint(recipient, "send_prepared", cleanMeta(meta).lead_id, input.draft_ref) : fingerprint(recipient, subject.toLowerCase(), body, ...(delivery === "draft" ? ["draft"] : []), ...(manualTest ? ["manual_test", MANUAL_TEST_MAIL.lead_id] : [])),
       mail_class: "manual_chris_mail", delivery, lease_owner: null, lease_expires_at: null, attempts: 0, ...(cleanMeta(meta) ? { meta: cleanMeta(meta) } : {}),
+      ...(manualTest ? { manual_test: true, manual_test_lead_id: MANUAL_TEST_MAIL.lead_id } : {}),
       ...(prepared ? { draft_ref: input.draft_ref } : {}),
     },
   };
@@ -103,6 +127,7 @@ function clean(r) {
     intent: INTENTS.includes(r.intent) ? r.intent : "sales", status: REQUEST_STATUSES.includes(r.status) ? r.status : "pending",
     reason: s(r.reason, MAIL_REQUEST_LIMITS.reasonChars), updated_at: s(r.updated_at, 40), fingerprint: s(r.fingerprint, 16),
     mail_class: "manual_chris_mail", delivery: DELIVERIES.includes(r.delivery) ? r.delivery : "send", lease_owner: s(r.lease_owner, 20), lease_expires_at: s(r.lease_expires_at, 40), attempts: Number.isFinite(r.attempts) ? r.attempts : 0,
+    ...(r.manual_test === true && r.manual_test_lead_id === MANUAL_TEST_MAIL.lead_id ? { manual_test: true, manual_test_lead_id: MANUAL_TEST_MAIL.lead_id } : {}),
     ...(cleanMeta(r.meta) ? { meta: cleanMeta(r.meta) } : {}), ...(r.delivery === "send_prepared" && DRAFT_REF_RE.test(r.draft_ref || "") ? { draft_ref: r.draft_ref } : {}),
   };
 }
@@ -233,6 +258,7 @@ export function serviceStatus(state, now = new Date(), dedicated = false) {
 // Sicht für den Browser: kein Fingerabdruck, kein Lease-Inhaber, Text gekürzt.
 export const publicView = (r) => ({ request_id: r.request_id, created_at: r.created_at, expires_at: r.expires_at, recipient: r.recipient, subject: r.subject,
   intent: r.intent, mail_class: r.mail_class || "manual_chris_mail", delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at, optional_thread_reference: r.optional_thread_reference,
+  ...(r.manual_test === true && r.manual_test_lead_id === MANUAL_TEST_MAIL.lead_id ? { manual_test: true, manual_test_lead_id: MANUAL_TEST_MAIL.lead_id } : {}),
   ...(r.delivery === "send_prepared" ? { lead_id: r.meta?.lead_id || null, draft_ref: r.draft_ref || null } : {}) });
 // TF-077B: Sicht eines Verkäufers auf seine eigenen Aufträge – ohne Empfängeradresse und Text.
 const sellerView = (r) => ({ request_id: r.request_id, created_at: r.created_at, delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at,

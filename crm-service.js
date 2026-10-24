@@ -146,7 +146,8 @@ export function applyRequest({ dataDir, sources, req, now = new Date(), source =
     const src = { ...sources(), crm: st };
     const known = crmUniverse(src);
     const lookup = (id) => (known.has(id) ? buildCrmLead(id, src, now) : null);
-    const res = applyCrmAction(st, req, { now, lookup });
+    const findByDomain = (domain) => [...known].map((id) => buildCrmLead(id, src, now)).find((lead) => lead?.domain === domain) || null;
+    const res = applyCrmAction(st, req, { now, lookup, findByDomain });
     if (res.ok && !res.duplicate) saveCrm(dataDir, st);
     audit(dataDir, { request_id: req.request_id || null, action: String(req.action || "").slice(0, 40), lead_id: res.lead_id || (typeof req.params?.lead_id === "string" ? req.params.lead_id.slice(0, 120) : null),
       source, outcome: res.ok ? (res.duplicate ? "duplicate" : "success") : "denied", code: res.code || null, changed: res.changed || [] });
