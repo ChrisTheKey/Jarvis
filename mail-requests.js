@@ -62,7 +62,10 @@ export function isManualTestMail(input = {}) {
   if (input.optional_thread_reference || input.draft_ref || input.meta) return false;
   const body = typeof input.body === "string" ? input.body : "";
   return body.includes(MANUAL_TEST_MAIL.lead_id) && body.includes("5 technische Fehler") && body.includes("CHF 150.–") && body.includes("CHF 480.–")
-    && body.includes(MANUAL_TEST_MAIL.check_link) && body.includes(MANUAL_TEST_MAIL.repair_link) && /\bTEST\b/u.test(body);
+    && body.includes(MANUAL_TEST_MAIL.check_link) && body.includes(MANUAL_TEST_MAIL.repair_link)
+    // The reviewed E2E copy labels each link as "Test-Zahlungslink"; keep that
+    // explicit marker equivalent to the standalone uppercase TEST marker.
+    && (/\bTEST\b/u.test(body) || body.includes("Test-Zahlungslink"));
 }
 
 // Kurzer, nicht-kryptografischer Fingerabdruck (FNV-1a) für den Duplikat-Schutz.

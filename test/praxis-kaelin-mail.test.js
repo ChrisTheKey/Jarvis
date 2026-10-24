@@ -41,6 +41,28 @@ const MAIL = {
   ].join("\n"),
 };
 
+const MAIL_WITH_REVIEWED_BODY = {
+  ...MAIL,
+  request_id: "mr-praxis-kaelin-reviewed-body",
+  body: [
+    "Grüezi", "",
+    "Bei unserer technischen Überprüfung Ihrer Webseite praxis-kaelin.netlify.app haben wir 5 technische Fehler festgestellt.", "",
+    "Dabei handelt es sich unter anderem um:", "",
+    "- Der Link «Termin vereinbaren» verwendet den Hash #kontakt, für den auf der Seite kein Ziel existiert; der Kontaktbereich wird dadurch nicht erreicht.",
+    "- Beim Laden der Seite tritt durch einen Tippfehler im Footer-Skript ein JavaScript-TypeError auf; die Jahreszahl im Footer bleibt leer.",
+    "- Auf mobilen Geräten liegen vier der fünf Notfall-Kacheln ausserhalb des sichtbaren Bereichs und werden abgeschnitten.", "",
+    "Wir bieten Ihnen zwei Möglichkeiten zur Behebung beziehungsweise weiteren Abklärung:", "",
+    "1. Webseiten-Check & Anleitung – CHF 150.–", "",
+    "Sie erhalten eine Übersicht der festgestellten Fehler sowie eine Anleitung zur Behebung.", "",
+    "Test-Zahlungslink:", "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00", "",
+    "2. Webseiten-Check & Reparatur – CHF 480.–", "",
+    "Wir überprüfen Ihre Webseite, beheben die vereinbarten technischen Fehler und kontrollieren anschliessend das Ergebnis.", "",
+    "Test-Zahlungslink:", "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01", "",
+    "Nach Ihrer Bestellung melden wir uns bezüglich der nächsten Schritte.", "",
+    "Freundliche Grüsse", "", "Helvetic Webdesign", "Webseiten-Check & Reparatur",
+  ].join("\n"),
+};
+
 function fakeGmail({ sendError = null } = {}) {
   const state = { drafts: {}, sent: {}, calls: [], n: 0 };
   const gmail = {
@@ -67,7 +89,7 @@ function fakeGmail({ sendError = null } = {}) {
 
 function addManualRequest(dir, input = MAIL) {
   const result = addRequest([], input, { now: NOW, requestedBy: "chris" });
-  assert.equal(result.status, 201);
+  assert.equal(result.status, 201, result.error);
   inboxAdd(createStore(dir), [result.request], NOW);
   return result.request;
 }
@@ -83,6 +105,11 @@ test("Praxis-Kälin-Mail: manueller TEST-Auftrag ist streng gebunden und idempot
   assert.equal(addRequest([], { ...MAIL, recipient: "andere@example.test" }, { now: NOW, requestedBy: "chris" }).status, 400);
   assert.equal(addRequest([], { ...MAIL, manual_test_lead_id: "andere.example" }, { now: NOW, requestedBy: "chris" }).status, 400);
   assert.equal(addRequest([], { ...MAIL, body: MAIL.body.replace("CHF 480.–", "CHF 4.80") }, { now: NOW, requestedBy: "chris" }).status, 400);
+});
+
+test("Praxis-Kälin-Mail: der freigegebene Nachweistext mit Test-Zahlungslink wird als TEST erkannt", () => {
+  const result = addRequest([], MAIL_WITH_REVIEWED_BODY, { now: NOW, requestedBy: "chris" });
+  assert.equal(result.status, 201, result.error);
 });
 
 test("Praxis-Kälin-Mail: Worker sendet den autorisierten Testauftrag genau einmal ohne KI", async () => {
