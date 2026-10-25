@@ -11,14 +11,14 @@ Zuletzt aktualisiert: 2026-10-25 (Einrichtung Development Control Center)
 - Kontaktformular → Gespräch → sicherer Zugang → Reparatur (TF-079), Geräte-Kopplung (TF-074).
 - Kontrollierter E2E-Test CHF 150 (TF-088, Standard AUS) und CRM-Test-Kennzeichnung (TF-086).
 - Netlify-Drop-Adapter, Browser-Audit, interner CHF-480-Testauftrag (TF-JARVIS-PRAXIS-002: «CODE READY, nicht deployt»).
-- Development Control Center: `AGENTS.md`, `CLAUDE.md`, Worktrees `dev/claude` + `dev/codex`, `scripts/dev-check.mjs`, Codex-/Claude-Schutzregeln.
+- Development Control Center: `AGENTS.md`, `CLAUDE.md`, Worktrees `agent-claude/main` + `agent-codex/main`, `scripts/dev-check.mjs`, Codex-/Claude-Schutzregeln.
 
 ## In Arbeit
 | Wer | Branch/Worktree | Aufgabe |
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
-| Claude | `dev/claude` | – (frei) |
-| Codex | `dev/codex` | – (frei) |
+| Claude | `agent-claude/main` | – (frei) |
+| Codex | `agent-codex/main` | – (frei) |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -32,14 +32,14 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 6. **Test-Falle im Hauptordner:** `npm test` im Hauptordner startet die untracked Datei `crm_manual_test.mjs` (passt auf das Node-Testmuster `*_test.mjs`), öffnet einen sichtbaren Browser zur Produktions-Loginseite und wartet auf Eingabe. Tests deshalb in den Worktrees ausführen, oder Datei umbenennen/verschieben (Entscheidung Chris).
 
 ## Verifikation der Zentrale (2026-10-25)
-- Codex CLI 0.164 (`codex exec` im Worktree `Jarvis-codex`): las `AGENTS.md`, führte `dev-check` aus, committete auf `dev/codex` (nach Freigabe der Git-Schreibpfade in `.codex/config.toml`; erster Versuch scheiterte an der Sandbox). Hinweis: in der Sandbox legt Codex den Index über einen Umweg an – nach einem Codex-Commit `git status` prüfen, ggf. `git reset` (nur Index).
+- Codex CLI 0.164 (`codex exec` im Worktree `Jarvis-codex`): las `AGENTS.md`, führte `dev-check` aus, committete auf `agent-codex/main` (nach Freigabe der Git-Schreibpfade in `.codex/config.toml`; erster Versuch scheiterte an der Sandbox). Hinweis: in der Sandbox legt Codex den Index über einen Umweg an – nach einem Codex-Commit `git status` prüfen, ggf. `git reset` (nur Index).
 - Claude Code 2.1.310 (`claude -p` im Worktree `Jarvis-claude`): liest `CLAUDE.md` → `AGENTS.md`; `dev-check` über `allow`-Regeln in `.claude/settings.json` ohne Rückfrage ausführbar.
 - Unit-Suite im Worktree: 1197 Tests, 1165 pass, 16 fail (Baseline, Fehler siehe oben). Mit `JARVIS_CHROMIUM_PATH` auf den vorhandenen Chromium bestehen die Chromium-Tests; verbleibend (Stichprobe von 8 Dateien, 98 Tests): 7 fail = Punkte 2–5 oben plus «Engine end-to-end» (`browser-audit-praxis002`).
 - Neue Tests der Zentrale: `test/dev-control-center.test.js` (5/5 pass).
 
 ## Offene Aufgaben (Backlog, Priorität nach Chris)
 - Fehler 1–5 oben beheben (je ein kleiner Commit mit Test).
-- Commit der uncommitteten Arbeit im Hauptordner (Chris) – danach `dev/*` rebasen.
+- Commit der uncommitteten Arbeit im Hauptordner (Chris) – danach `agent-*/main` rebasen.
 - TF-JARVIS-PRAXIS-002 und TF-086/088: Deployment ausstehend (nur nach Freigabe von Chris).
 - TF-056: Token-Rotation blockiert (kein Netlify-CLI-Login am PC).
 - Stripe-Integration: siehe `STRIPE_INTEGRATION_TODO.md`.

@@ -22,14 +22,15 @@ Siehe `AGENTS.md` (Abschnitt «Verzeichnisse»). Zusätzlich: `.claude/` (Claude
 | | Claude Code | Codex CLI |
 |---|---|---|
 | Worktree | `C:\Users\Administrator\Documents\Chris\Jarvis-claude` | `C:\Users\Administrator\Documents\Chris\Jarvis-codex` |
-| Branch | `dev/claude` | `dev/codex` |
+| Branch | `agent-claude/main` | `agent-codex/main` |
 | Regeln | `CLAUDE.md` → `@AGENTS.md` | `AGENTS.md` |
 | Schutz | `.claude/settings.json` (deny-Liste) | `.codex/config.toml` (Sandbox `workspace-write`, kein Netz, Approval `on-request`) + `.codex/rules/jarvis.rules` |
 | Zugriff | liest/schreibt/testet/committet den ganzen Quellcode des Worktrees | dasselbe |
 
 - Beide Branches starten vom selben Stand und sind unabhängig. Hauptordner `Jarvis` (Branch `claude/jarvis-voice-dashboard-9phl5w`) ist Chris' Integrationsstand und wird von den Werkzeugen nicht bearbeitet.
 - Worktrees enthalten keine `.secrets/`, kein `.env`, keine `data/`-Kundendaten (sind git-ignoriert) – die Werkzeuge können Produktion nicht versehentlich ansprechen. Tests nutzen Attrappen.
-- Integration (durch Chris oder auf Anweisung): in `Jarvis` `git merge dev/claude` bzw. `git merge dev/codex` (oder `git cherry-pick`), Tests, dann erst Push/Deploy. Konflikte entscheidet Chris; wer zweiter integriert, rebased: `git rebase claude/jarvis-voice-dashboard-9phl5w`.
+- Integration (durch Chris oder auf Anweisung): in `Jarvis` `git merge agent-claude/main` bzw. `git merge agent-codex/main` (oder `git cherry-pick`), Tests, dann erst Push/Deploy. Konflikte entscheidet Chris; wer zweiter integriert, rebased: `git rebase claude/jarvis-voice-dashboard-9phl5w`.
+- Isolation: eigenes `node_modules` je Worktree; Git-Schreibrechte von Codex nur auf `refs/heads/agent-codex/*` und den eigenen Worktree-Index (Claude nutzt `agent-claude/*`), so kann keiner den Branch des anderen oder `main` verändern.
 - Worktrees (neu) einrichten: `powershell -File scripts/setup-dev-worktrees.ps1` (idempotent).
 
 ## 4. Entwicklungsbefehle
