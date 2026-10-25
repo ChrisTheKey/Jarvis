@@ -2,10 +2,11 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-25 (Release-Gate: Tests grün, Push/Deploy ausstehend)
+Zuletzt aktualisiert: 2026-10-25 (menschliche Calling-Regression korrigiert, Push/Deploy ausstehend)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
+- Korrektur des LiveKit-Entfernungsauftrags: menschlicher Calling-Lesezugang für alle vier Rollen, CRM-Call-History/Rückrufe im Calling-Dashboard und CH/VN-Mitarbeiter-UI wiederhergestellt; autonome Start-/Worker-/Providerpfade bleiben fail-closed.
 - P0-Abschlussprüfung: Gmail-, Stripe-, Discovery- und CRM-Einstiegspunkte verwenden das zentrale Capability-Gate; Dockerfile-Kopiellisten ergänzt; Chromium-Testpfad mit vorhandenem Chromium verifiziert.
 - Always-on Mail-Worker auf VPS (alleiniger Sender), Gmail-OAuth, Versandfenster/Tageslimit, DNC-Durchsetzung (TF-047…056).
 - CRM-Dienst `jarvis-crm` mit allen qualifizierten Leads (TF-053/057), Reparatur-Dienst `jarvis-repair`.
@@ -20,7 +21,7 @@ Zuletzt aktualisiert: 2026-10-25 (Release-Gate: Tests grün, Push/Deploy aussteh
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | P0-Capability-Gate und Entfernung autonomer Telefonie abgeschlossen; Server-Bereinigung offen |
+| Codex | `agent-codex/main` | Menschliche Calling-Regression abgeschlossen; lokaler Commit folgt, Push/Deployment verboten |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 

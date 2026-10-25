@@ -45,7 +45,21 @@ export const CRM_SYSTEM_TTL_MS = 24 * 3_600_000; // Ergebnis-Übernahme ins CRM 
 const AUDIT_KEEP = 500, CAMPAIGN_KEEP = 50, RECENT_CALLS_KEEP = 200;
 const ID_RE = /^[0-9a-f-]{36}$/;
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-export const canUseCalling = (actor) => !!actor && (actor.role === "OWNER" || actor.role === "SALES_AGENT_VN");
+// The calling dashboard is also the read-only history view for human sellers.
+// Keep every role that has CRM read access; autonomous calling never uses this
+// predicate because its agent path is removed below.
+export const canUseCalling = (actor) => !!actor && ["OWNER", "SALES_MANAGER_CH", "SALES_AGENT_CH", "SALES_AGENT_VN"].includes(actor.role);
+
+// Convert the authoritative CRM call_history into the dashboard's read model.
+// Human employees record calls through crm.addCall; no provider or dialer is
+// involved, and the source remains synthetic/CRM data only.
+export function manualCallsFromLeads(leads = []) {
+  return (Array.isArray(leads) ? leads : []).flatMap((lead) => (Array.isArray(lead?.call_history) ? lead.call_history : []).map((call) => ({
+    lead_id: lead.lead_id, company: lead.company || null, market: lead.market || "CH", call_id: call.id || null,
+    started_at: call.at || null, status: "COMPLETED", outcome: call.result || null, summary: call.note || null,
+    callback_at: call.follow_up_at || null, dry_run: false,
+  })));
+}
 const emptyControl = () => ({ schema: SCHEMA, campaigns: [], calls: {}, commands: [], service: null, config: {}, audit: [] });
 const emptyHistory = () => ({ schema: SCHEMA, calls: [] });
 const emptyConsents = () => ({ schema: SCHEMA, leads: {}, dnc: {} });
@@ -393,10 +407,13 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
     const t = now();
     const [ctl, history, consents, leads, asg] = await Promise.all([read("control", emptyControl), read("history", emptyHistory), read("consents", emptyConsents), allLeads(), readAssignments()]);
     const byId = new Map(leads.map((l) => [l.lead_id, l]));
-    // TF-068: Calling nur Vietnam – auch der Owner sieht/steuert hier nur VN (CH-Leads bleiben im CRM, werden nie vom Agenten angerufen).
-    const inScope = (l) => !!l && canSeeLead(actor, l, asg) && leadMarket(l) === "VN";
-    const marketsOf = [...CALLING_MARKETS];
+    // Human calling follows the existing CRM assignment scope in both markets.
+    // The old VN-only restriction belonged to the removed autonomous agent.
+    const inScope = (l) => !!l && canSeeLead(actor, l, asg);
+    const marketsOf = actor.role === "OWNER" ? ["CH", "VN"] : [...(actor.markets || [])];
     const visibleCall = (c) => marketsOf.includes(c.market) && (owner || inScope(byId.get(c.lead_id)));
+    const manualCalls = manualCallsFromLeads(leads.filter(inScope));
+    const visibleManualCalls = manualCalls.filter((c) => visibleCall(c));
     const svc = serviceView(ctl, t);
     const lim = limitsOf(ctl);
     const today = callsToday(ctl, history, t);
@@ -418,7 +435,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
         const l = byId.get(leadId);
         if (!l) return reply(404, { error: "Unbekannter Lead.", code: "UNKNOWN_LEAD" });
         if (!inScope(l)) return reply(403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: "OUT_OF_SCOPE" });
-        const calls = [...history.calls, ...Object.values(ctl.calls)].filter((c) => c.lead_id === leadId).sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+        const calls = [...history.calls, ...Object.values(ctl.calls), ...visibleManualCalls].filter((c) => c.lead_id === leadId).sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
         const last = calls.at(-1) || null;
         const cs = consents.leads?.[leadId] || {};
         const e = eligibility(l, ctxOf(l));
@@ -440,9 +457,11 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
       }
       // Rückrufe im eigenen Scope (Kudoshin: eigene; Owner: alle VN).
       if (url.searchParams.get("view") === "callbacks") {
+        const manualCallbacks = visibleManualCalls.filter((c) => c.outcome === "CALLBACK_REQUESTED" && c.callback_at && !consents.dnc?.[c.lead_id])
+          .map((c) => ({ lead_id: c.lead_id, company: c.company, callback_at: c.callback_at, call_id: c.call_id }));
         const list = Object.entries(consents.leads || {}).filter(([id, x]) => x?.requested_callback?.callback_at && !consents.dnc?.[id] && inScope(byId.get(id)))
           .map(([id, x]) => ({ lead_id: id, company: byId.get(id)?.company || null, callback_at: x.requested_callback.callback_at, call_id: x.requested_callback.call_id || null }))
-          .sort((a, b) => a.callback_at.localeCompare(b.callback_at));
+          .concat(manualCallbacks).sort((a, b) => a.callback_at.localeCompare(b.callback_at));
         return reply(200, { callbacks: list.slice(0, 200) });
       }
       const campaigns = ctl.campaigns.filter((c) => marketsOf.includes(c.market) && (owner || c.owner_user_id === actor.user_id))
@@ -450,7 +469,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
           owner_user_id: c.owner_user_id, created_at: c.created_at, planned: c.items.length,
           counts: Object.fromEntries(["QUEUED", "ACTIVE", "DONE", "RETRY_LATER", "QUEUE_WAITING_FOR_WINDOW", "CALL_STATE_REVIEW_REQUIRED", "SKIPPED", "CANCELLED"].map((s) => [s, c.items.filter((i) => i.state === s).length])) }));
       const d = zurichDay(t);
-      const todays = history.calls.filter((c) => visibleCall(c) && c.started_at && zurichDay(new Date(c.started_at)) === d);
+      const todays = [...history.calls, ...visibleManualCalls].filter((c) => visibleCall(c) && c.started_at && zurichDay(new Date(c.started_at)) === d);
       const n = (f) => todays.filter(f).length;
       const queue = ctl.campaigns.filter((c) => marketsOf.includes(c.market) && ["RUNNING", "PAUSED"].includes(c.status))
         .reduce((s, c) => s + c.items.filter((i) => ["QUEUED", "RETRY_LATER", "QUEUE_WAITING_FOR_WINDOW"].includes(i.state)).length, 0);
@@ -468,7 +487,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
         stats_today: { active: active.length, queued: queue, called: todays.length, reached: n((c) => REACHED_OUTCOMES.includes(c.outcome)), no_answer: n((c) => NO_ANSWER_OUTCOMES.includes(c.outcome)),
           interested: n((c) => c.outcome === "INTERESTED"), callbacks: n((c) => c.outcome === "CALLBACK_REQUESTED"), dnc: n((c) => c.outcome === "DO_NOT_CALL"), errors: n((c) => c.outcome === "FAILED"),
           review_required: n((c) => c.review_required), costs: Object.keys(costs).length ? costs : "NO_PROVIDER_DATA" },
-        active_calls: active.map(pubCall), recent_calls: history.calls.filter(visibleCall).slice(-20).reverse().map(pubCall), campaigns,
+        active_calls: active.map(pubCall), recent_calls: [...history.calls, ...visibleManualCalls].filter(visibleCall).slice(-20).reverse().map(pubCall), campaigns,
         ...(owner ? { audit: (ctl.audit || []).slice(-30).reverse() } : {}) });
     }
 

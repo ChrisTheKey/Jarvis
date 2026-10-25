@@ -376,9 +376,8 @@ function renderDrawer() {
     l.notes.length ? el("ul", { class: "crm-hist" }, [...l.notes].reverse().map((n) => el("li", {}, el("time", {}, fmt(n.at)), n.text))) : el("p", { class: "crm-note" }, t("noNotes")),
     ...(l.market === "VN" ? [el("h4", {}, t("sec.draft")), draftForm(l, blocked)] : []),
     ...(l.market === "VN" && ["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) ? [el("h4", {}, t("sec.order")), orderBox(l, blocked)] : []),
-    // TF-065: Calling-Agent-Sektion (letzter Anruf, Ergebnis, Dauer, Rückruf, Versuche, Zusammenfassung) – nur Chris und Kudoshin, Server prüft den Scope.
-    // TF-068: Calling nur Vietnam – Sektion nur bei VN-Leads (Kudoshin: Anrufen, Chris: Überwachung).
-    ...(["SALES_AGENT_VN", "OWNER"].includes(S.actor?.role) && l.market === "VN" ? [el("h4", {}, callingTexts(I.locale).lead.h), el("h5", {}, t("sec.callIssues")), callIssuesBox(l), leadCallBox(l, I.locale)] : []),
+    // TF-065/068: Menschliche Calling-Sektion (letzter Anruf, Ergebnis, Rückruf, Notiz und Scope) für alle CRM-Verkäufer.
+    ...(["OWNER", "SALES_MANAGER_CH", "SALES_AGENT_CH", "SALES_AGENT_VN"].includes(S.actor?.role) ? [el("h4", {}, callingTexts(I.locale).lead.h), el("h5", {}, t("sec.callIssues")), callIssuesBox(l), leadCallBox(l, I.locale)] : []),
     // TF-066: Kunden-Onboarding der Aufträge dieses Leads (Server prüft Bereich/Markt; nie Zugangsdaten).
     el("h4", {}, onboardingTexts(I.locale).h), leadOnboardingBox(l, I.locale),
     el("h4", {}, t("sec.admin")),
