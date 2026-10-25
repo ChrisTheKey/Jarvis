@@ -5,6 +5,8 @@
 // Bewusst ohne Node-Abhängigkeiten: läuft lokal (Node), als Netlify Function und in der Edge Function.
 // Nie in der Cloud: Gmail-Zugangsdaten, OAuth-Tokens, .secrets, lokale Pfade, Befehle, Anhänge.
 import { safeEqual, findSensitiveKeys } from "./shared-state.js";
+import { MANUAL_TEST_MAIL, isManualTestMail } from "./manual-test-mail.js";
+export { MANUAL_TEST_MAIL, isManualTestMail };
 import { cleanCore } from "./cloud-core.js";
 import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import { mailAccessFor, draftRefOf, DRAFT_REF_RE, SELLER_SEND_DAILY_LIMIT } from "./mail-access.js";
@@ -14,16 +16,6 @@ export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bod
 export const REQUEST_STATUSES = ["pending", "processing", "accepted_local", "blocked", "sent", "drafted", "failed", "expired"];
 export const FINAL_STATUSES = ["blocked", "sent", "drafted", "failed", "expired"];
 export const INTENTS = ["sales", "follow_up", "reply", "info"];
-// Eng begrenzter einmaliger interner E2E-Test. Diese Bindung ist absichtlich im Mailpfad
-// wiederholt und nicht nur in der CRM-Oberfläche hinterlegt: Empfänger, Betreff, Domain,
-// Testkennzeichnung und beide Sandbox-Links dürfen nicht von einem allgemeinen Auftrag abweichen.
-export const MANUAL_TEST_MAIL = Object.freeze({
-  lead_id: "praxis-kaelin.netlify.app",
-  recipient: "helvetic.webdesign@proton.me",
-  subject: "[TEST] Technische Auffälligkeiten auf Ihrer Webseite – Praxis Kälin",
-  check_link: "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00",
-  repair_link: "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01",
-});
 // delivery "draft": der Worker legt nur einen Gmail-Entwurf an (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie von sich aus.
 // delivery "send_prepared" (TF-077B, SEND_PREPARED_LEAD_DRAFT): ein Verkäufer hat «E-Mail lossenden» geklickt – der Worker sendet GENAU den
 // vorbereiteten Jarvis-Entwurf dieses Leads (draft_ref), ohne Betreff/Text aus der Cloud. Empfänger = CRM-Adresse des Leads.
@@ -55,18 +47,6 @@ export function cleanMeta(m) {
   return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id } : null;
 }
 
-export function isManualTestMail(input = {}) {
-  if (!input || typeof input !== "object" || input.manual_test !== true || input.manual_test_lead_id !== MANUAL_TEST_MAIL.lead_id) return false;
-  if (String(input.recipient || "").trim().toLowerCase() !== MANUAL_TEST_MAIL.recipient || input.subject !== MANUAL_TEST_MAIL.subject) return false;
-  if (input.delivery !== undefined && input.delivery !== "send") return false;
-  if (input.optional_thread_reference || input.draft_ref || input.meta) return false;
-  const body = typeof input.body === "string" ? input.body : "";
-  return body.includes(MANUAL_TEST_MAIL.lead_id) && body.includes("5 technische Fehler") && body.includes("CHF 150.–") && body.includes("CHF 480.–")
-    && body.includes(MANUAL_TEST_MAIL.check_link) && body.includes(MANUAL_TEST_MAIL.repair_link)
-    // The reviewed E2E copy labels each link as "Test-Zahlungslink"; keep that
-    // explicit marker equivalent to the standalone uppercase TEST marker.
-    && (/\bTEST\b/u.test(body) || body.includes("Test-Zahlungslink"));
-}
 
 // Kurzer, nicht-kryptografischer Fingerabdruck (FNV-1a) für den Duplikat-Schutz.
 function fingerprint(...parts) {

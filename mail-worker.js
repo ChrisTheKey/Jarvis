@@ -33,7 +33,7 @@ import { readOrdersExport } from "./onboarding-store.js";
 import { senderProfileFor, VN_SIGNATURE } from "./sender-profiles.js";
 import { processContactForms, DEFAULT_CONTACT_FORM_CONFIG, CONTACT_FORM_DRAFT_MODE } from "./contact-form.js";
 import { draftRef, SERVER_SEND_USERS } from "./mail-access.js";
-import { MANUAL_TEST_MAIL, isManualTestMail } from "./mail-requests.js";
+import { MANUAL_TEST_MAIL, isManualTestMail } from "./manual-test-mail.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");

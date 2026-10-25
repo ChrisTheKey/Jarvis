@@ -25,6 +25,13 @@ export const WEBHOOK_ENV = Object.freeze({ LIVE: "STRIPE_WEBHOOK_SECRET", TEST: 
 const SESSION_RE = Object.freeze({ LIVE: /^cs_live_[A-Za-z0-9]{8,200}$/, TEST: /^cs_test_[A-Za-z0-9]{8,200}$/ });
 const ID_RE = /^[a-z]{2,4}_[A-Za-z0-9_]{6,200}$/;
 const getter = (env) => (typeof env === "function" ? env : (k) => env?.[k]);
+// TF-081 – Checkout-Studio-Einstellungen (Szenario A, siehe STRIPE_INTEGRATION_TODO.md). Nur Parameter, die in JEDER Stripe-API-Version gültig sind –
+// Jarvis sendet keinen Stripe-Version-Header (Kontostandard gilt). Bewusst NICHT gesendet (versionsabhängig, sonst lehnt Stripe die Session ab):
+//   ui_mode (vor 2026-03-25.dahlia «hosted», ab dahlia «hosted_page» – «hosted» wird dort abgelehnt; Standard ist in beiden die gehostete Seite),
+//   origin_context (erst ab 2025-07-30.basil), integration_identifier (erst ab 2026-03-25.dahlia), payment_method_collection (nur subscription).
+export const CHECKOUT_STUDIO = Object.freeze({ billing_address_collection: "auto", phone_number_collection: Object.freeze({ enabled: false }),
+  automatic_tax: Object.freeze({ enabled: false }), allow_promotion_codes: false, submit_type: "auto" });
+const HOSTED_UI = [undefined, null, "hosted", "hosted_page"]; // Antwort muss die gehostete Seite sein (beide Versions-Schreibweisen)
 
 // Schlüssel je Modus – nur intern (nie zurückgeben/loggen).
 const keyOf = (env, mode) => { const v = String(getter(env)(KEY_ENV[mode]) || "").trim(); return KEY_RE[mode]?.test(v) ? v : null; };
@@ -89,7 +96,7 @@ export async function createCheckoutSession({ env, order, mode = modeOfOrder(ord
   const meta = { order_id: order.order_id, offer_class: order.offer_class, market: "CH", purpose: PURPOSE, environment: mode };
   const back = (s) => `${origin}/zahlung.html?s=${s}${mode === "TEST" ? "&m=test" : ""}`; // Rückkehrseite ist NIE ein Zahlungsbeleg
   const s = await call(env, mode, { method: "POST", path: "/checkout/sessions", idem: idempotencyKey(order.order_id, mode, seq), fetchFn, body: {
-    mode: "payment", client_reference_id: order.order_id, locale: "de", success_url: back("ok"), cancel_url: back("abbruch"),
+    mode: "payment", ...CHECKOUT_STUDIO, client_reference_id: order.order_id, locale: "de", success_url: back("ok"), cancel_url: back("abbruch"),
     expires_at: Math.floor(+now / 1000) + SESSION_TTL_S,
     ...(order.delivery_email ? { customer_email: order.delivery_email } : {}),
     line_items: { 0: { quantity: 1, price_data: { currency: "chf", unit_amount: exp.amount_minor,
@@ -97,8 +104,8 @@ export async function createCheckoutSession({ env, order, mode = modeOfOrder(ord
     metadata: meta, payment_intent_data: { metadata: meta, description: `Anzahlung ${order.order_id}` },
   } });
   const safe = safeSession(s, mode);
-  // Antwort prüfen (nie blind übernehmen): Modus, Betrag, Währung, Bindung an den Auftrag.
-  if (!safe || safe.livemode !== (mode === "LIVE") || safe.amount_minor !== exp.amount_minor || safe.currency !== "CHF" || safe.metadata.order_id !== order.order_id || !safe.url)
+  // Antwort prüfen (nie blind übernehmen): gehostete Seite, Modus, Betrag, Währung, Bindung an den Auftrag.
+  if (!safe || !HOSTED_UI.includes(s.ui_mode) || safe.livemode !== (mode === "LIVE") || safe.amount_minor !== exp.amount_minor || safe.currency !== "CHF" || safe.metadata.order_id !== order.order_id || !safe.url)
     throw Object.assign(new Error("Unerwartete Checkout-Antwort."), { code: "BAD_RESPONSE" });
   return safe;
 }

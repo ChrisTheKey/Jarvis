@@ -131,13 +131,21 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
     return { v, vn, leads: [...ch.filter((l) => !cfVn.has(l.lead_id)), ...vnl.map((l) => (cfVn.has(l.lead_id) ? { ...l, contact_form: { ...cfVn.get(l.lead_id), inbound: false } } : l))] };
   }
   // Agent-Pull/Result für eine Warteschlange (CH- oder VN-Dienst).
-  async function agentPull(mut, body, storeView) {
+  async function agentPull(mut, body, storeView, storeViewPage = null) {
     let stored = null;
     if (body.view !== undefined) {
       const v = body.view;
       if (!v || typeof v !== "object" || !Array.isArray(v.leads) || v.leads.length > MAX_VIEW_LEADS) return reply(400, { error: "view ungültig." });
       stored = await storeView(v);
       if (stored === false) return reply(409, { error: "Gleichzeitige Änderung – bitte erneut versuchen." });
+    }
+    if (body.view_page !== undefined) {
+      if (!storeViewPage) return reply(400, { error: "view_page nicht unterstützt." });
+      const p = body.view_page;
+      if (!p || typeof p !== "object" || !/^[a-f0-9]{12,64}$/.test(p.upload_id || "") || !Number.isInteger(p.page_index) || !Number.isInteger(p.page_count) || p.page_index < 0 || p.page_count < 1 || p.page_index >= p.page_count || !Array.isArray(p.leads) || p.leads.length > MAX_VIEW_LEADS) return reply(400, { error: "view_page ungültig." });
+      stored = await storeViewPage(p);
+      if (stored === false) return reply(409, { error: "Gleichzeitige Änderung – bitte erneut versuchen." });
+      if (!stored.complete) return reply(200, { requests: [], hot: false, stored: false, upload_complete: false });
     }
     const r = await mut((cur, t) => {
       cur.agent_seen_at = t.toISOString();
@@ -231,13 +239,31 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
     if (isAgent) {
       if (req.method !== "POST") return reply(405, { error: "Agent: nur POST." });
       if (body.op === "pull") {
-        const r = await agentPull(mutate, body, async (v) => {
-          const leads = cleanChLeads(v.leads);
+          const r = await agentPull(mutate, body, async (v) => {
+            const leads = cleanChLeads(v.leads);
           const t = now();
           const b = v.backup && typeof v.backup === "object" ? { last_at: iso(v.backup.last_at), offsite_ok: v.backup.offsite_ok === true, generations: Number.isInteger(v.backup.generations) ? Math.min(v.backup.generations, 1000) : 0 } : null;
           const ok = await patchView(() => ({ leads, total: leads.length, generated_at: iso(v.generated_at) || t.toISOString(), received_at: t.toISOString(), backup: b, phonebook_provider: cleanProviderStatus(v.phonebook_provider) }));
-          return ok ? leads.length : false;
-        });
+            return ok ? leads.length : false;
+          }, async (p) => {
+            let complete = false;
+            const ok = await patchView((cur) => {
+              const uploads = cur?._crm_page_uploads && typeof cur._crm_page_uploads === "object" ? { ...cur._crm_page_uploads } : {};
+              const old = uploads[p.upload_id] && uploads[p.upload_id].page_count === p.page_count ? uploads[p.upload_id] : { page_count: p.page_count, pages: {} };
+              const pages = { ...old.pages, [String(p.page_index)]: p.leads };
+              uploads[p.upload_id] = { page_count: p.page_count, pages, meta: { total: p.total, generated_at: p.generated_at, stats: p.stats, backup: p.backup, phonebook_provider: p.phonebook_provider } };
+              complete = Object.keys(pages).length === p.page_count;
+              if (!complete) return { ...(cur || {}), _crm_page_uploads: uploads };
+              const all = []; for (let i = 0; i < p.page_count; i++) all.push(...(pages[String(i)] || []));
+              const clean = cleanChLeads(all);
+              const meta = uploads[p.upload_id].meta;
+              const next = { ...meta, leads: clean, total: clean.length, received_at: new Date().toISOString() };
+              delete uploads[p.upload_id];
+              if (Object.keys(uploads).length) next._crm_page_uploads = uploads;
+              return next;
+            });
+            return ok ? { complete } : false;
+          });
         if (r instanceof Response) return r;
         return reply(r.status, r.body);
       }

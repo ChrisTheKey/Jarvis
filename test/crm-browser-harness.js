@@ -21,9 +21,16 @@ const BROWSERS = [process.env.CHROME_PATH, "C:/Program Files/Google/Chrome/Appli
 export const exe = BROWSERS.find((p) => fs.existsSync(p));
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json" };
 
+const FIXTURE_NOW = "2026-10-14T10:00:00Z";
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+const shiftDates = (v, ms) => typeof v === "string" ? (ISO_RE.test(v) ? new Date(Date.parse(v) + ms).toISOString() : v)
+  : Array.isArray(v) ? v.map((x) => shiftDates(x, ms)) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shiftDates(x, ms)])) : v;
+
 // TF-063: Anmeldung wie in Produktion (Session-Cookie über /api/auth/*); vnLeads = optionale VN-Sicht, seller = Verkäufer-Passwörter.
 export async function startServer({ n = 387, prepare = null, vnLeads = null, sellers = null, snapshot = null } = {}) {
-  const src = makeSources(n), dirs = writeSources(src);
+  // Die Browser-Tests laufen mit der echten Uhr (Server + Browser). Fixture-Zeitpunkte relativ zur Fixture-Zeit (14.10.2026) auf «jetzt»
+  // verschieben – sonst wird die synthetische Teilprüfung nach 7 Tagen realer Zeit als «veraltet» angezeigt (Alter bleibt wie entworfen).
+  const src = shiftDates(makeSources(n), Date.now() - Date.parse(FIXTURE_NOW)), dirs = writeSources(src);
   const repairDir = path.join(dirs.base, "repair-export"); fs.mkdirSync(repairDir);
   if (prepare) prepare({ ...dirs, repairDir });
   const sources = createSourceReader({ dataDir: dirs.data, mailDir: dirs.mail, repairDir });
