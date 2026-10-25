@@ -41,3 +41,5 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 
 ## Letzte Verifikation der Zentrale
 Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderungen der Regeln gepflegt).
+### Codex-Verifikation
+- 2026-10-25, Check-Ergebnis: `node scripts/dev-check.mjs` OK (Syntax: 0 Dateien; keine Secret-/Kundendaten-Pfade geändert).
