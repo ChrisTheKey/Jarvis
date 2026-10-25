@@ -35,6 +35,7 @@ export const BACKUP_STATUS = "crm_backup_status.json";
 export const BACKUP_DIR = "crm_backups";
 export const BACKUP_FILES = Object.freeze([CRM_FILE, CRM_AUDIT_FILE, "lead_contact_directory.json"]);
 export const VIEW_RESEND_MS = 30 * 60_000;
+export const VIEW_PAGE_BYTES = 5_500_000;
 export const STALE_REQUEST_MS = 5 * 60_000;
 export const ADMISSION_FILE = "crm_admission.json";
 
@@ -238,6 +239,25 @@ export async function phonebookDiagnose({ dataDir, sources, env = process.env, n
 
 export const backupSummary = (dataDir) => { try { const s = JSON.parse(fs.readFileSync(path.join(dataDir, BACKUP_STATUS), "utf8")); return { last_at: s.last_at || null, offsite_ok: !!s.offsite_ok, generations: s.generations || 0 }; } catch { return null; } };
 
+// Uploads the CRM view in bounded pages. The cloud keeps the existing { leads, total, ... } client contract;
+// pages are only a transport detail used when one JSON POST would exceed the API request limit.
+export function splitCrmView(view, maxBytes = VIEW_PAGE_BYTES) {
+  const leads = Array.isArray(view?.leads) ? view.leads : [];
+  const meta = { total: view.total, generated_at: view.generated_at, stats: view.stats, backup: view.backup, phonebook_provider: view.phonebook_provider };
+  const upload_id = String(view.fp || crypto.createHash("sha256").update(JSON.stringify(leads)).digest("hex").slice(0, 24));
+  const pages = [];
+  let current = [];
+  const fits = (items) => Buffer.byteLength(JSON.stringify({ op: "pull", view_page: { upload_id, page_index: 0, page_count: 1, ...meta, leads: items } })) < maxBytes;
+  for (const lead of leads) {
+    const candidate = [...current, lead];
+    if (current.length && !fits(candidate)) { pages.push(current); current = [lead]; }
+    else current = candidate;
+    if (!fits(current)) throw new Error("CRM-Lead ist größer als die sichere Upload-Grenze.");
+  }
+  if (current.length || !pages.length) pages.push(current);
+  return pages.map((items, page_index) => ({ upload_id, page_index, page_count: pages.length, ...meta, leads: items }));
+}
+
 // ---------- Agent: holt CRM-Aufträge ab, meldet Ergebnis + aktuelle Sicht (nur Allowlist-Felder) ----------
 export { crmAgentToken }; // Ableitung des Agent-Schlüssels: genau eine Definition (crm-api.js)
 export function createCrmAgent({ dataDir, sources, url, token, fetchFn = globalThis.fetch, now = () => new Date(), log = () => {} }) {
@@ -264,7 +284,16 @@ export function createCrmAgent({ dataDir, sources, url, token, fetchFn = globalT
       if (!backoff && (v.fp !== sent.fp || +now() - sent.at > VIEW_RESEND_MS)) payload = { view: v.body };
     } catch (e) { log({ event: "view_failed", error: String(e.message).slice(0, 160) }); }
     let pulled;
-    try { pulled = await post({ op: "pull", ...payload }); }
+    try {
+      if (payload.view && Buffer.byteLength(JSON.stringify(payload)) >= VIEW_PAGE_BYTES) {
+        const pages = splitCrmView(payload.view);
+        for (const page of pages) {
+          pulled = await post({ op: "pull", view_page: page });
+          if (pulled.status !== 200) break;
+        }
+        log({ event: "view_paged", bytes: Buffer.byteLength(JSON.stringify(payload.view)), leads: payload.view.leads?.length || 0, pages: pages.length });
+      } else pulled = await post({ op: "pull", ...payload });
+    }
     catch (e) { log({ event: "pull_failed", error: String(e.message).slice(0, 120) }); return { hot: false, handled: 0, status: 0 }; }
     // Sicht zu gross (413): Aufträge trotzdem abholen (Pull ohne Sicht), damit Notizen/DNC/Anrufe nicht blockiert sind. Die Sicht in der Cloud
     // bleibt dann veraltet – sichtbar über view_too_large im Log und viewStatus 413 im Health-File (nie stillschweigend).
