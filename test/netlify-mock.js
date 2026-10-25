@@ -2,6 +2,9 @@
 // + ein HTTP-Proxy, über den ein echter Chromium dieselben Inhalte sieht. Keine echte Netlify-Site, kein Netzwerk nach aussen.
 import crypto from "node:crypto";
 import http from "node:http";
+import https from "node:https";
+import net from "node:net";
+import { makeSelfSignedCert } from "./self-signed-cert.js";
 
 export const GOOD_TOKEN = "nfp_test_good_token_0123456789";
 export const READONLY_TOKEN = "nfp_test_readonly_token_0123456789";
@@ -94,16 +97,29 @@ export function createNetlifyMock({ siteName = "praxis-test", siteId = "11111111
   }
 
   // HTTP-Proxy für Chromium (--proxy-server): gleiche Inhalte wie fetchFn, über echte HTTP-Antworten.
+  // *.netlify.app steht in der HSTS-Preload-Liste: Chromium schickt CONNECT und spricht TLS. Der Proxy tunnelt deshalb auf einen lokalen
+  // HTTPS-Server mit Wegwerf-Zertifikat (Chromium dafür mit --ignore-certificate-errors starten); der Inhalt kommt weiterhin aus fetchFn.
   function startProxy() {
     return new Promise((resolve) => {
-      const srv = http.createServer(async (req, res) => {
-        let target; try { target = new URL(req.url); } catch { res.writeHead(400); return res.end(); }
+      const answer = (secure) => async (req, res) => {
+        let target; try { target = new URL(secure ? "http://" + req.headers.host + req.url : req.url); } catch { res.writeHead(400); return res.end(); }
         const r = await fetchFn(target.href, { method: req.method });
-        const headers = Object.fromEntries(r.headers.entries());
-        res.writeHead(r.status, headers);
+        res.writeHead(r.status, Object.fromEntries(r.headers.entries()));
         res.end(Buffer.from(await r.arrayBuffer()));
+      };
+      const tls = https.createServer(makeSelfSignedCert(), answer(true));
+      const srv = http.createServer(answer(false));
+      srv.on("connect", (req, client, head) => {
+        const upstream = net.connect(tls.address().port, "127.0.0.1", () => {
+          client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+          if (head.length) upstream.write(head);
+          upstream.pipe(client); client.pipe(upstream);
+        });
+        const drop = () => { upstream.destroy(); client.destroy(); };
+        upstream.on("error", drop); client.on("error", drop);
       });
-      srv.listen(0, "127.0.0.1", () => resolve({ port: srv.address().port, close: () => new Promise((r) => srv.close(r)) }));
+      tls.listen(0, "127.0.0.1", () => srv.listen(0, "127.0.0.1", () => resolve({ port: srv.address().port,
+        close: () => Promise.all([new Promise((r) => srv.close(r)), new Promise((r) => tls.close(r))]).then(() => {}) })));
     });
   }
   const filesOf = (deployId) => Object.fromEntries(Object.entries(deploys.get(deployId)?.files || {}).map(([p, s]) => [p, blobs.get(s)]));

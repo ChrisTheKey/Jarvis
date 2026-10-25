@@ -135,7 +135,7 @@ test("Engine end-to-end: Jarvis erkennt, plant, repariert, prüft (Entwurf + Bro
     setDropMapping(store, DOMAIN, { netlify_site_id: mock.siteId, site_name: "praxis-test", reference: "Test" });
     const o = createInternalTestRepairOrder(store, { domain: DOMAIN, website: `http://${DOMAIN}/`, delivery_email: MAILBOX, netlify_site_id: mock.siteId, source_deploy_id: sourceId, company: "Physio Muster", contact_name: "Test", e2e });
     authorizeRepair(store, o.order_id, { authorized_domain: DOMAIN, source: "written_confirmation", reference: "Inhaber, Testlauf" });
-    const launch = chromiumLauncher({ extraArgs: [`--proxy-server=http://127.0.0.1:${proxy.port}`, "--proxy-bypass-list=<-loopback>"] });
+    const launch = chromiumLauncher({ extraArgs: [`--proxy-server=http://127.0.0.1:${proxy.port}`, "--proxy-bypass-list=<-loopback>", "--ignore-certificate-errors"] });
     const adapter = netlifyDropAdapter({ dir, store, env: { JARVIS_REPAIR_NETLIFY_TOKEN: GOOD_TOKEN }, fetchFn: mock.fetchFn, sleep: async () => {}, pollMs: 1, permalinkOf: (id, s) => `http://${id}--${s.name}.netlify.app` });
     const httpAuditor = { audit: async (url) => { const r = await mock.fetchFn(url); const html = await r.text(); return { reachable: r.status === 200, finalUrl: url, title: "Physio Muster", pages: { home: html }, requests: 1, issues: [] }; } };
     const engine = createRepairEngine({ dir, store, adapters: { netlify_drop: adapter }, auditor: httpAuditor, browserAuditor: createBrowserSiteAuditor({ launch }),
