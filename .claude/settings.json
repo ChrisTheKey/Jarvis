@@ -14,7 +14,16 @@
       "Bash(npx netlify:*)",
       "Bash(bash deploy/vps/:*)",
       "Bash(./deploy/vps/:*)",
-      "Bash(sh deploy/vps/:*)"
+      "Bash(sh deploy/vps/:*)",
+      "Bash(git -C:*)",
+      "Bash(git -c:*)",
+      "Read(**/.secrets/**)",
+      "PowerShell(git push:*)",
+      "PowerShell(ssh:*)",
+      "PowerShell(scp:*)",
+      "PowerShell(docker:*)",
+      "PowerShell(netlify:*)",
+      "PowerShell(bash deploy/vps/:*)"
     ]
   }
 }

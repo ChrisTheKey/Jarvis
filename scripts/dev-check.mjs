@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = new Set(process.argv.slice(2));
-const git = (...a) => execFileSync("git", a, { cwd: ROOT, encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+const git = (...a) => execFileSync("git", ["-c", "core.quotePath=false", ...a], { cwd: ROOT, encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
 let failed = false;
 const step = (name, ok, detail = "") => { console.log(`${ok ? "OK  " : "FEHL"} ${name}${detail ? " – " + detail : ""}`); if (!ok) failed = true; };
 
@@ -20,7 +20,7 @@ const js = files.filter((f) => /\.(m?js)$/.test(f) && fs.existsSync(path.join(RO
 const bad = js.filter((f) => spawnSync(process.execPath, ["--check", f], { cwd: ROOT }).status !== 0);
 step("Syntax", bad.length === 0, bad.length ? "Fehler in " + bad.join(", ") : `${js.length} Datei(en)`);
 
-const forbidden = files.filter((f) => /(^|\/)(\.secrets|\.env$|data\/lead_|data\/crm_|exports\/)|token\.json$|_token\.json$/.test(f));
+const forbidden = files.filter((f) => /(^|\/)(\.secrets\/|\.env(\..*)?$|data\/lead_|data\/crm_|exports\/)|token\.json$/.test(f));
 step("Keine Secret-/Kundendaten-Pfade geändert", forbidden.length === 0, forbidden.join(", "));
 
 step("Secret-Scan", spawnSync(process.execPath, ["scripts/secret-scan.mjs"], { cwd: ROOT, stdio: "inherit" }).status === 0);
