@@ -27,7 +27,7 @@ import { canSeeLead, sellerOf, scopeLeads } from "../sales-scope.js";
 import { ordersFromSnapshot } from "../commission-ledger.js";
 import { memoryStore } from "../shared-state.js";
 import { createPaymentsHandler } from "../payments-api.js";
-import { signStripePayload, stripeStatus, verifyStripeWebhook, normalizeCheckoutEvent, idempotencyKey } from "../stripe-payments.js";
+import { signStripePayload, stripeStatus, verifyStripeWebhook, normalizeCheckoutEvent, idempotencyKey, createCheckoutSession, CHECKOUT_STUDIO } from "../stripe-payments.js";
 import { syncStripePayments, STRIPE_FILE, processCheckoutEvent } from "../stripe-webhook.js";
 import { e2eConfig, testRunId } from "../e2e-test.js";
 import { cleanRepair } from "../server-control.js";
@@ -71,7 +71,7 @@ function fakeStripe() {
       sessions[id] = { id, object: "checkout.session", livemode: mode === "live", status: "open", payment_status: "unpaid", amount_total: Number(p.get("line_items[0][price_data][unit_amount]")),
         currency: p.get("line_items[0][price_data][currency]"), payment_intent: null, expires_at: Number(p.get("expires_at")), url: `https://checkout.stripe.com/c/pay/${id}`,
         metadata: Object.fromEntries(["order_id", "offer_class", "market", "purpose", "environment"].map((k) => [k, p.get(`metadata[${k}]`)])),
-        _customer_email: p.get("customer_email"), _success_url: p.get("success_url"), _pi_meta: p.get("payment_intent_data[metadata][order_id]"), _types: p.get("payment_method_types[0]") };
+        _customer_email: p.get("customer_email"), _success_url: p.get("success_url"), _pi_meta: p.get("payment_intent_data[metadata][order_id]"), _types: p.get("payment_method_types[0]"), _body: Object.fromEntries(p), _idem: idem };
       byIdem[idem] = id;
       return json(200, sessions[id]);
     }
@@ -578,6 +578,50 @@ test("TF-080 §27 Bereinigung: nur genau ein Testlauf, nie Platzhalter, echte Da
   assert.equal(Object.values(after).find((x) => x.customer_email === REALMAIL).archived_test, undefined, "echte Anfrage unberührt");
   assert.deepEqual(Object.keys(cf.publicContactForms({ items: after }).leads), [REAL], "Test aus dem CRM, echter Lead bleibt");
   assert.equal(Object.values(s.read(REPAIR_ORDERS_FILE, { orders: {} }).orders)[0].state, "CANCELLED");
+});
+
+test("TF-081 Checkout-Studio-Einstellungen im POST /v1/checkout/sessions (Szenario A) – Jarvis-Bindungen bleiben, versionsabhängige Parameter nie gesendet", async () => {
+  const W = world();
+  W.g.notify("e2e0000000000081", formBody(TEST_FORM));
+  W.g.notify("real000000000081", formBody(REAL_FORM));
+  await W.mailTick();
+  W.say(TESTBOX, `Sandbox Pruefer <${TESTBOX}>`, "Ja, ich bestätige den Auftrag.");
+  W.say(REALMAIL, `Anna Muster <${REALMAIL}>`, "Ja, ich bestätige den Auftrag.");
+  await W.tick(2);
+  assert.equal(W.stripe.calls.filter((c) => c.method === "POST" && c.path === "/v1/checkout/sessions").length, 2);
+  for (const o of W.orders()) {
+    const mode = o.test_order ? "TEST" : "LIVE";
+    const s = Object.values(W.stripe.sessions).find((x) => x.metadata.order_id === o.order_id), b = s._body;
+    // Studio-Parameter
+    assert.deepEqual([b.mode, b.billing_address_collection, b["phone_number_collection[enabled]"], b["automatic_tax[enabled]"], b.allow_promotion_codes, b.submit_type],
+      ["payment", "auto", "false", "false", "false", "auto"], mode);
+    // versionsabhängig/unzulässig → nie gesendet (gehostete Seite ist Stripe-Standard; Antwort wird geprüft)
+    for (const k of ["ui_mode", "origin_context", "integration_identifier", "payment_method_collection"]) assert.equal(b[k], undefined, `${k} nicht gesendet`);
+    assert.ok(!Object.keys(b).some((k) => /^payment_method_types/.test(k) || /^line_items\[0\]\[price\]$/.test(k)), "keine hart kodierten Zahlungsarten/Preis-IDs");
+    // bestehende Jarvis-Werte
+    assert.deepEqual([b["line_items[0][price_data][unit_amount]"], b["line_items[0][price_data][currency]"], b["line_items[0][quantity]"]], ["24000", "chf", "1"]);
+    const q = mode === "TEST" ? "&m=test" : "";
+    assert.deepEqual([b.success_url, b.cancel_url], [`https://jarvis.test/zahlung.html?s=ok${q}`, `https://jarvis.test/zahlung.html?s=abbruch${q}`]);
+    assert.deepEqual([b.client_reference_id, b.locale, b["metadata[order_id]"], b["metadata[offer_class]"], b["metadata[market]"], b["metadata[purpose]"], b["metadata[environment]"]],
+      [o.order_id, "de", o.order_id, "REPAIR_FIX_500", "CH", "REPAIR_DEPOSIT", mode]);
+    assert.deepEqual([b["payment_intent_data[metadata][order_id]"], b["payment_intent_data[metadata][environment]"], b["payment_intent_data[description]"]], [o.order_id, mode, `Anzahlung ${o.order_id}`]);
+    assert.equal(b.customer_email, o.test_order ? TESTBOX : REALMAIL);
+    assert.ok(Number(b.expires_at) > Math.floor(+T0 / 1000));
+    assert.equal(s._idem, idempotencyKey(o.order_id, mode));
+  }
+  // ohne Kunden-E-Mail → kein customer_email (Stripe fragt selbst)
+  const one = fakeStripe();
+  const order = { order_id: "RF480-20261019-abc081", offer_class: "REPAIR_FIX_500", market: "CH" };
+  await createCheckoutSession({ env: KEYS, order, origin: "https://jarvis.test", now: T0, fetchFn: one.fetchFn });
+  assert.equal(one.last()._body.customer_email, undefined);
+  assert.deepEqual(Object.keys(CHECKOUT_STUDIO).sort(), ["allow_promotion_codes", "automatic_tax", "billing_address_collection", "phone_number_collection", "submit_type"]);
+  // Antwort muss die gehostete Seite sein (hosted / hosted_page je nach Kontoversion) – eingebettet/elements → fail closed.
+  for (const [ui, ok] of [["hosted", true], ["hosted_page", true], ["embedded_page", false], ["elements", false], ["embedded", false]]) {
+    const f = fakeStripe();
+    const fetchFn = async (url, init) => { const r = await f.fetchFn(url, init); const j = await r.json(); return json(r.status, { ...j, ui_mode: ui }); };
+    const p = createCheckoutSession({ env: KEYS, order: { ...order, order_id: `RF480-20261019-ui-${ui}` }, origin: "https://jarvis.test", now: T0, fetchFn });
+    if (ok) assert.ok((await p).url, ui); else await assert.rejects(p, (e) => e.code === "BAD_RESPONSE", ui);
+  }
 });
 
 test("cleanup", () => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
