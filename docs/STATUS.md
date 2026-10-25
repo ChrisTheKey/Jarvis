@@ -56,3 +56,4 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 
 ## Letzte Verifikation der Zentrale
 Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderungen der Regeln gepflegt).
+- Claude-Integrationstest: OK
