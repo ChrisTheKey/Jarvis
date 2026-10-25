@@ -22,7 +22,7 @@ Zuletzt aktualisiert: 2026-10-25 (finale Freigabeprüfung abgeschlossen, Push/De
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | Finale Freigabeprüfung abgeschlossen; lokaler Commit folgt, Push/Deployment verboten |
+| Codex | `agent-codex/main` | TF-JARVIS-024: Bestandsaufnahme abgeschlossen; CRM-Preview/Bestätigung/atomare Auftragsaktion offen, Push/Deployment verboten |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
