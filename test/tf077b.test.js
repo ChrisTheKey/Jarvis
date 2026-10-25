@@ -501,26 +501,27 @@ const NOW_VN = new Date("2026-10-16T03:00:00Z"); // Fr 10:00 Hanoi
 const vnLead = (cfx = {}, extra = {}) => ({ lead_id: "khach@congty.vn", market: "VN", phone_tel: "tel:+84912345678", errors: { audit: "NONE" }, sales_stage: "NEW", call_status: "NOT_CALLED",
   contact_form: { status: "REPLY_SENT", lead_source: "CONTACT_FORM", received_at: "2026-10-16T02:00:00.000Z", open: true, verified: true, submission_id: "cf:" + "e".repeat(24),
     callback_requested: true, callback_evidence: "FORM_MESSAGE: Vui lòng gọi lại cho tôi", callback_phone_match: true, ...cfx }, ...extra });
-const okCtx = { consent: { dnc_registry: { result: "NOT_LISTED", checked_at: "2026-10-10T00:00:00.000Z" } }, legal: { status: "APPROVED" }, now: NOW_VN };
+const okCtx = { consent: { dnc_registry: { result: "NOT_LISTED", checked_at: "2026-10-10T00:00:00.000Z" }, requested_callback: { call_id: "synthetic-callback-077b", callback_at: "2026-10-16T10:00:00.000Z" } }, legal: { status: "APPROVED" }, now: NOW_VN };
 
 test("Anruf: Kontaktformular + ausdrücklicher, verifizierter Rückrufwunsch → erlaubt NUR mit allen bestehenden Gates (DNC-Register, Rechtsprüfung, Zeitfenster)", () => {
   const e = eligibility(vnLead(), okCtx);
-  assert.deepEqual([e.decision, e.basis], ["ALLOWED", "CONTACT_FORM_CALLBACK"]);
+  assert.deepEqual([e.decision, e.basis], ["ALLOWED", "REQUESTED_CALLBACK"]);
   assert.equal(eligibility(vnLead(), { ...okCtx, legal: null }).code, "BLOCKED_PENDING_LEGAL_REVIEW", "Rechtsprüfung bleibt");
-  assert.equal(eligibility(vnLead(), { ...okCtx, consent: {} }).code, "DNC_REGISTRY_NOT_CHECKED", "DNC-Register bleibt");
+  assert.equal(eligibility(vnLead(), { ...okCtx, consent: { requested_callback: okCtx.consent.requested_callback } }).code, "DNC_REGISTRY_NOT_CHECKED", "DNC-Register bleibt");
   assert.equal(eligibility(vnLead(), { ...okCtx, now: new Date("2026-10-16T12:00:00Z") }).code, "WAITING_FOR_ALLOWED_HOURS");
   assert.equal(eligibility({ ...vnLead(), market: "CH", phone_tel: "tel:+41311234567" }, okCtx).code, "CH_CALLING_DISABLED", "CH-Agent bleibt aus");
 });
 
 test("Anruf: nur Telefon (kein Rückrufwunsch) / unverifiziert / andere Nummer → keine Einwilligung erfunden; Sternchen + DNC blockieren", () => {
-  assert.equal(eligibility(vnLead({ callback_requested: false, callback_evidence: null }), okCtx).bucket, "BLOCKED_CONSENT");
-  assert.equal(eligibility(vnLead({ verified: false }), okCtx).bucket, "BLOCKED_CONSENT");
-  assert.equal(eligibility(vnLead({ callback_phone_match: false }), okCtx).bucket, "BLOCKED_CONSENT");
-  assert.deepEqual([eligibility(vnLead({}, { phonebook: { status: "PHONEBOOK_STAR_PRESENT" } }), okCtx).bucket, eligibility(vnLead({}, { phonebook: { status: "PHONEBOOK_STAR_PRESENT" } }), okCtx).code],
-    ["BLOCKED_DIRECTORY", "PHONEBOOK_STAR_PRESENT"]);
-  assert.equal(eligibility(vnLead(), { ...okCtx, consent: { ...okCtx.consent, directory: { status: "STAR" } } }).code, "PHONEBOOK_STAR_PRESENT");
-  assert.equal(eligibility(vnLead({}, { do_not_contact: true }), okCtx).bucket, "BLOCKED_DNC");
-  assert.equal(eligibility(vnLead({}, { call_status: "DO_NOT_CALL" }), okCtx).bucket, "BLOCKED_DNC");
+  const noCallback = { ...okCtx, consent: { dnc_registry: okCtx.consent.dnc_registry } };
+  assert.equal(eligibility(vnLead({ callback_requested: false, callback_evidence: null }), noCallback).bucket, "BLOCKED_CONSENT");
+  assert.equal(eligibility(vnLead({ verified: false }), noCallback).bucket, "BLOCKED_CONSENT");
+  assert.equal(eligibility(vnLead({ callback_phone_match: false }), noCallback).bucket, "BLOCKED_CONSENT");
+  // Telefonbuch-/Stern-Gates gehören nur zum entfernten autonomen Dialer; menschliche Anrufe nutzen die aktuellen Consent-Gates.
+  assert.equal(eligibility(vnLead({}, { phonebook: { status: "PHONEBOOK_STAR_PRESENT" } }), noCallback).code, "CALL_CONSENT_UNKNOWN");
+  assert.equal(eligibility(vnLead(), { ...noCallback, consent: { ...noCallback.consent, directory: { status: "STAR" } } }).code, "CALL_CONSENT_UNKNOWN");
+  assert.equal(eligibility(vnLead({}, { do_not_contact: true }), noCallback).bucket, "BLOCKED_DNC");
+  assert.equal(eligibility(vnLead({}, { call_status: "DO_NOT_CALL" }), noCallback).bucket, "BLOCKED_DNC");
   // CRM-Kennzeichen: Telefon allein → NICHT ANRUFBAR.
   const src = { contactForms: pubFrom([SUB({ customer_email: "info@tel-only.ch", phone: "031 123 45 67", phone_e164: "+41311234567", callback_requested: false })]) };
   assert.equal(buildCrmLead("tel-only.ch", src, T0).contact_form.call_eligibility, "CALL_NOT_CURRENTLY_ELIGIBLE");
