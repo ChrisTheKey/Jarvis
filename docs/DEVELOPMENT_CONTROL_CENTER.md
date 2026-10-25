@@ -68,3 +68,11 @@ Grenze: Die Sperrlisten sind Präfix-Regeln gegen Versehen. Ein Werkzeug mit She
 
 ## 9. Freigaben, die nur Chris erteilt
 Push/Merge in den Hauptbranch · jedes Deployment/jeder Container-Neustart · SSH/VPS-Zugriff · Stripe Live · E2E-Läufe mit echten Mails (TF-080/088) · kostenpflichtige APIs · Lockerung der Sandbox (`danger-full-access`, Netzwerk an) · Installation weiterer Werkzeuge.
+
+## Verifizierter Parallel-Workflow (2026-10-25)
+- **Claude** (`Jarvis-claude`, `agent-claude/main`) und **Codex** (`Jarvis-codex`, `agent-codex/main`) ändern, testen (`dev-check`) und committen unabhängig. Verifiziert mit je einem Doku-Commit (`ca7eee8` Claude, `fa35063` Codex).
+- **Codex-Commit-Fehler (behoben):** `.codex/config.toml` hatte `writable_roots` auf `refs/heads/dev` statt `refs/heads/agent-codex`, Codex konnte den Branch-Ref nicht schreiben.
+- **Bekannte Eigenheit:** Die Sandbox sperrt Codex den Worktree-Index (`.git/worktrees/Jarvis-codex/index.lock`). Der Commit gelingt, der Index bleibt aber veraltet (`MM`). Nach jedem Codex-Commit: `git reset -q` im Worktree (nur Index, ändert keine Dateien).
+- **Kein gegenseitiges Überschreiben:** getrennte Branch-Namensräume, getrenntes `node_modules`, Codex schreibt nur `agent-codex/*`. Austausch nur per Merge durch den jeweils anderen Worktree (`git merge agent-claude/main` im Codex-Worktree und umgekehrt) oder durch Chris.
+- **Headless-Claude** (`claude -p`) braucht freigegebene Schreibrechte (`--permission-mode acceptEdits` wird vom Auto-Mode-Klassifikator aus einer Agentensitzung heraus abgelehnt): Chris startet es selbst oder arbeitet interaktiv.
+- Integration in `claude/jarvis-voice-dashboard-9phl5w`, Push und Deployment nur durch Chris.
