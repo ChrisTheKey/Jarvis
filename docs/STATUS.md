@@ -37,6 +37,11 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 - Unit-Suite im Worktree: 1197 Tests, 1165 pass, 16 fail (Baseline, Fehler siehe oben). Mit `JARVIS_CHROMIUM_PATH` auf den vorhandenen Chromium bestehen die Chromium-Tests; verbleibend (Stichprobe von 8 Dateien, 98 Tests): 7 fail = Punkte 2–5 oben plus «Engine end-to-end» (`browser-audit-praxis002`).
 - Neue Tests der Zentrale: `test/dev-control-center.test.js` (5/5 pass).
 
+## Release-Gate 2026-10-25 (Merge/Push/Deploy GESTOPPT)
+- Volle Suite in `Jarvis-claude` (eigene node_modules, `JARVIS_CHROMIUM_PATH` gesetzt): 1203 Tests, 1184 pass, 7 fail, 12 skip. `npm start` (Port 3999): HTTP 200, danach beendet.
+- Fehlschläge (alle schon in der Baseline): `browser-audit-praxis002` Engine end-to-end; `crm-browser-053` K und L; `dnc-mail-053` G; `lead-crm-053` L; `service-separation-047` IMAGES; `server-control` valid CONTROL action. Regel «Bei fehlgeschlagenen Tests kein Deploy» → kein Push, kein Deployment, keine Produktionsänderung. Die lokalen Commits auf `claude/jarvis-voice-dashboard-9phl5w` sind nicht gepusht.
+- Zu klären: Chris' uncommittete Arbeit im Hauptordner (crm-*, server-control-Test, tf080) berührt genau diese Bereiche; erst committen und testen, dann Gate wiederholen.
+
 ## Offene Aufgaben (Backlog, Priorität nach Chris)
 - Fehler 1–5 oben beheben (je ein kleiner Commit mit Test).
 - Commit der uncommitteten Arbeit im Hauptordner (Chris) – danach `agent-*/main` rebasen.
