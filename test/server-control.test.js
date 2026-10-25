@@ -28,7 +28,9 @@ function setup({ env = ENV, t0 = Date.parse("2026-10-08T10:00:00Z") } = {}) {
 }
 function fakeVps(dir, over = {}) {
   const calls = [];
-  const snap = () => collectSnapshot({ dir, startedAt: "2026-10-08T09:00:00.000Z", core: { role: "vps", schema_version: 1, scheduler: { morning: { start: "09:30", limit: 50, executed: true }, afternoon: { start: "14:30", limit: 50, executed: false } }, backup: { last_at: new Date().toISOString(), ok: true, generations: 2 } },
+  // Testrechner-unabhängig: echte Platten-/Speicherbelegung des Entwicklungs-PCs (z. B. Platte > 90 %) darf den Mock-Health-Check nicht kippen.
+  const snap = () => { const x = rawSnap(); return { ...x, system: { ...x.system, disk_pct: 50, mem_pct: 50 } }; };
+  const rawSnap = () => collectSnapshot({ dir, startedAt: "2026-10-08T09:00:00.000Z", core: { role: "vps", schema_version: 1, scheduler: { morning: { start: "09:30", limit: 50, executed: true }, afternoon: { start: "14:30", limit: 50, executed: false } }, backup: { last_at: new Date().toISOString(), ok: true, generations: 2 } },
     mail: { worker: "VPS ACTIVE", authority: "VPS", self: true, last_iteration_at: new Date().toISOString() }, queue: { pending: 0, processing: 0 }, backup: { last_at: new Date().toISOString(), ok: true, generations: 2 },
     healthy: () => true, lastIterationAt: new Date().toISOString(), env: { JARVIS_COMMIT: "abc1234", JARVIS_DEPLOYED_AT: "2026-10-08T08:00:00Z" } });
   const deps = {
