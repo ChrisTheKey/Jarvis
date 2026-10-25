@@ -16,13 +16,14 @@ Zuletzt aktualisiert: 2026-10-25 (finale Freigabeprüfung abgeschlossen, Push/De
 - Kontrollierter E2E-Test CHF 150 (TF-088, Standard AUS) und CRM-Test-Kennzeichnung (TF-086).
 - Netlify-Drop-Adapter, Browser-Audit, interner CHF-480-Testauftrag (TF-JARVIS-PRAXIS-002: «CODE READY, nicht deployt»).
 - Development Control Center: `AGENTS.md`, `CLAUDE.md`, Worktrees `agent-claude/main` + `agent-codex/main`, `scripts/dev-check.mjs`, Codex-/Claude-Schutzregeln.
+- Regulärer Node-Testlauf entdeckt nur versionierte Dateien aus `test/`; der manuelle CRM-Browser-Test bleibt als expliziter Direktaufruf erhalten.
 
 ## In Arbeit
 | Wer | Branch/Worktree | Aufgabe |
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | Finale Freigabeprüfung abgeschlossen; lokaler Commit folgt, Push/Deployment verboten |
+| Codex | `agent-codex/main` | – (frei) |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -33,7 +34,7 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 3. **`test/dnc-mail-053.test.js` G** und **`test/lead-crm-053.test.js` L:** Quellcode-Textprüfungen (Compose-Mount `:ro`, crm.*-Allowlist in `crm-service.js`) schlagen an – Test und Code laufen auseinander.
 4. **`test/service-separation-047.test.js` IMAGES:** «Repair-Image fehlt mail-requests.js» – Dockerfile.repair und importierte Module stimmen nicht überein. Vor dem nächsten Repair-Deploy klären.
 5. **`test/server-control.test.js`:** «valid CONTROL action (Mock)» liefert `failed` statt `done`.
-6. **Test-Falle im Hauptordner:** `npm test` im Hauptordner startet die untracked Datei `crm_manual_test.mjs` (passt auf das Node-Testmuster `*_test.mjs`), öffnet einen sichtbaren Browser zur Produktions-Loginseite und wartet auf Eingabe. Tests deshalb in den Worktrees ausführen, oder Datei umbenennen/verschieben (Entscheidung Chris).
+6. **Test-Falle im Hauptordner:** Die untracked Datei `crm_manual_test.mjs` passt auf das Node-Testmuster `*_test.mjs`, öffnet einen sichtbaren Browser zur Produktions-Loginseite und wartet auf Eingabe. Die reguläre Discovery ist jetzt auf den versionierten Ordner `test` begrenzt; der manuelle Test bleibt als expliziter Direktaufruf erhalten.
 
 ## Verifikation der Zentrale (2026-10-25)
 - Codex CLI 0.164 (`codex exec` im Worktree `Jarvis-codex`): las `AGENTS.md`, führte `dev-check` aus, committete auf `agent-codex/main` (nach Freigabe der Git-Schreibpfade in `.codex/config.toml`; erster Versuch scheiterte an der Sandbox). Hinweis: in der Sandbox legt Codex den Index über einen Umweg an – nach einem Codex-Commit `git status` prüfen, ggf. `git reset` (nur Index).
