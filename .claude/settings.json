@@ -1,5 +1,18 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(node scripts/dev-check.mjs:*)",
+      "Bash(node scripts/run-unit-tests.mjs:*)",
+      "Bash(node scripts/secret-scan.mjs)",
+      "Bash(npm test:*)",
+      "Bash(npm run test:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ],
     "deny": [
       "Read(./.secrets/**)",
       "Read(./.env)",

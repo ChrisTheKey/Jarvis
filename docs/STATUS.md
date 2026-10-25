@@ -31,6 +31,12 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 5. **`test/server-control.test.js`:** «valid CONTROL action (Mock)» liefert `failed` statt `done`.
 6. **Test-Falle im Hauptordner:** `npm test` im Hauptordner startet die untracked Datei `crm_manual_test.mjs` (passt auf das Node-Testmuster `*_test.mjs`), öffnet einen sichtbaren Browser zur Produktions-Loginseite und wartet auf Eingabe. Tests deshalb in den Worktrees ausführen, oder Datei umbenennen/verschieben (Entscheidung Chris).
 
+## Verifikation der Zentrale (2026-10-25)
+- Codex CLI 0.164 (`codex exec` im Worktree `Jarvis-codex`): las `AGENTS.md`, führte `dev-check` aus, committete auf `dev/codex` (nach Freigabe der Git-Schreibpfade in `.codex/config.toml`; erster Versuch scheiterte an der Sandbox). Hinweis: in der Sandbox legt Codex den Index über einen Umweg an – nach einem Codex-Commit `git status` prüfen, ggf. `git reset` (nur Index).
+- Claude Code 2.1.310 (`claude -p` im Worktree `Jarvis-claude`): liest `CLAUDE.md` → `AGENTS.md`; `dev-check` über `allow`-Regeln in `.claude/settings.json` ohne Rückfrage ausführbar.
+- Unit-Suite im Worktree: 1197 Tests, 1165 pass, 16 fail (Baseline, Fehler siehe oben). Mit `JARVIS_CHROMIUM_PATH` auf den vorhandenen Chromium bestehen die Chromium-Tests; verbleibend (Stichprobe von 8 Dateien, 98 Tests): 7 fail = Punkte 2–5 oben plus «Engine end-to-end» (`browser-audit-praxis002`).
+- Neue Tests der Zentrale: `test/dev-control-center.test.js` (5/5 pass).
+
 ## Offene Aufgaben (Backlog, Priorität nach Chris)
 - Fehler 1–5 oben beheben (je ein kleiner Commit mit Test).
 - Commit der uncommitteten Arbeit im Hauptordner (Chris) – danach `dev/*` rebasen.
