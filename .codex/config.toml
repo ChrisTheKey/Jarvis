@@ -11,6 +11,6 @@ network_access = false
 writable_roots = [
   'C:\Users\Administrator\Documents\Chris\Jarvis\.git\objects',
   'C:\Users\Administrator\Documents\Chris\Jarvis\.git\worktrees\Jarvis-codex',
-  'C:\Users\Administrator\Documents\Chris\Jarvis\.git\refs\heads\dev',
-  'C:\Users\Administrator\Documents\Chris\Jarvis\.git\logs\refs\heads\dev',
+  'C:\Users\Administrator\Documents\Chris\Jarvis\.git\refs\heads\agent-codex',
+  'C:\Users\Administrator\Documents\Chris\Jarvis\.git\logs\refs\heads\agent-codex',
 ]
