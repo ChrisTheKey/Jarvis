@@ -6,3 +6,4 @@ deploy/vps/Dockerfile.repair text eol=lf
 deploy/vps/repair/*.yml text eol=lf
 deploy/vps/Dockerfile.vn text eol=lf
 deploy/vps/vn/*.yml text eol=lf
+.githooks/* text eol=lf
