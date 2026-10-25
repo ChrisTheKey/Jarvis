@@ -8,7 +8,7 @@ Node.js (>=18, ESM, keine Build-Stufe) – Sprach-Dashboard plus Always-on-Diens
 Lead-Suche → CRM → Mail-Worker (Gmail) → Kontaktformular/Onboarding → Reparatur → Stripe-Zahlung → Provision.
 
 ## Arbeitsweise (Pflicht)
-1. Arbeite NUR in deinem Worktree: Claude in `..\Jarvis-claude` (Branch `dev/claude`), Codex in `..\Jarvis-codex` (Branch `dev/codex`). Nie im Hauptordner `Jarvis` (Chris' Arbeitsstand, enthält uncommittete Änderungen) und nie in den anderen `Jarvis-*`-Worktrees.
+1. Arbeite NUR in deinem Worktree: Claude in `..\Jarvis-claude` (Branch `agent-claude/main`), Codex in `..\Jarvis-codex` (Branch `agent-codex/main`). Nie im Hauptordner `Jarvis` (Chris' Arbeitsstand, enthält uncommittete Änderungen) und nie in den anderen `Jarvis-*`-Worktrees.
 2. Vor Beginn: `docs/STATUS.md` lesen; nach Abschluss aktualisieren (Abschnitt «In Arbeit» / «Erledigt» / «Offen» / «Bekannte Fehler»), im selben Commit.
 3. Kleine, thematisch getrennte Commits. Vor jedem Commit: `node scripts/dev-check.mjs` (schnell, läuft auch als pre-commit-Hook), vor Übergabe: `node scripts/dev-check.mjs --full`.
 4. Keine bestehende Funktion entfernen, keine unnötigen Architekturänderungen, Stil der Umgebung beibehalten (Deutsch in Texten/Kommentaren, `TF-xxx`-Kennungen).
@@ -35,7 +35,7 @@ Lead-Suche → CRM → Mail-Worker (Gmail) → Kontaktformular/Onboarding → Re
 | Lokaler Start (Dashboard) | `npm start` (Port 3000, lokal, ungefährlich) |
 | Worktrees (neu) einrichten | `powershell -File scripts/setup-dev-worktrees.ps1` |
 
-`node_modules` im Worktree ist eine Junction auf den Hauptordner (kein Neu-Install nötig).
+Jeder Worktree hat sein eigenes `node_modules` (`npm ci --ignore-scripts`, kein Teilen mit dem Hauptordner). Chromium für Browser-Tests: `JARVIS_CHROMIUM_PATH` (siehe Handbuch).
 
 ## Verzeichnisse
 `*.js` im Wurzelverzeichnis = Module (Lead-Suche `lead-*`, `vn-*`; CRM `crm-*`, `lead-crm.js`; Mail `mail-worker.js`, `gmail.js`; Reparatur `repair-*`, `swiss-repair.js`, `check-150-workflow.js`; Zahlung `stripe-*`, `payment*.js`, `commission-ledger.js`; Auth `auth-*`, `access-*`; Server `server.js`, `server-control.js`) · `netlify/` Funktionen + Edge (Cloud-Gateway) · `public/` UI · `deploy/vps/` Dockerfiles + Deploy-Skripte (PRODUKTION) · `repair-adapters/` Hosting-Adapter · `calling/` Anruf-Dienst · `scripts/` Werkzeuge · `test/` Tests · `workspace/` Jarvis-Persona/Arbeitsordner (`workspace/CLAUDE.md` gilt nur für den laufenden Jarvis, nicht für Entwicklung) · `docs/` Doku.

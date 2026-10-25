@@ -33,3 +33,9 @@ test("Codex: Sandbox auf Worktree, kein Netzwerk, Produktions-Befehle verboten",
 test("pre-commit-Hook ruft dev-check auf", () => {
   assert.match(read(".githooks/pre-commit"), /dev-check\.mjs/);
 });
+
+test("pre-push-Hook sperrt Push aus Agenten-Worktrees; Codex-Schreibrechte nur auf eigenen Branch-Namensraum", () => {
+  assert.match(read(".githooks/pre-push"), /worktrees\/Jarvis-codex/);
+  const c = read(".codex/config.toml");
+  assert.ok(c.includes("agent-codex") && !c.includes("agent-claude\\"), "Codex darf nur agent-codex schreiben");
+});

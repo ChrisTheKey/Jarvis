@@ -1,0 +1,5 @@
+#!/bin/sh
+# Agenten-Worktrees (Claude/Codex) duerfen nie pushen; Push nur aus dem Hauptordner durch Chris (AGENTS.md).
+case "$(git rev-parse --git-dir)" in
+  */worktrees/Jarvis-claude|*/worktrees/Jarvis-codex) echo "pre-push: Push aus Agenten-Worktree gesperrt." >&2; exit 1;;
+esac

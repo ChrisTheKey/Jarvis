@@ -6,7 +6,7 @@ approval_policy = "on-request"
 [sandbox_workspace_write]
 network_access = false
 # Ein Worktree-Commit schreibt ins Git-Verzeichnis des Hauptrepos (ausserhalb des Worktrees). Nur das Nötige freigeben:
-# Objekte, den eigenen Worktree-Index sowie Referenzen/Logs des Branch-Namensraums dev/*. Pfade gelten für diese Maschine
+# Objekte, den eigenen Worktree-Index sowie Referenzen/Logs des Branch-Namensraums agent-codex/* (exklusiv für Codex; Claude nutzt agent-claude/*). Pfade gelten für diese Maschine
 # (Neuaufbau: scripts/setup-dev-worktrees.ps1).
 writable_roots = [
   'C:\Users\Administrator\Documents\Chris\Jarvis\.git\objects',
