@@ -6,7 +6,7 @@ FROM node:22-alpine
 RUN apk add --no-cache tzdata
 ENV NODE_ENV=production TZ=Asia/Ho_Chi_Minh JARVIS_VN_DIR=/data/vn
 WORKDIR /app
-COPY package.json vn-discovery.js site-auditor.js site-findings.js lead-crm.js phonebook-compliance.js lead-db.js category-labels.js ./
+COPY package.json vn-discovery.js site-auditor.js site-findings.js lead-crm.js phonebook-compliance.js lead-db.js category-labels.js security-capabilities.js ./
 COPY public/crm-model.js public/i18n.js ./public/
 COPY data/vietnam-admin.json ./data/
 COPY deploy/vps/vn-derive-token.mjs ./deploy/vps/

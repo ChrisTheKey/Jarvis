@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { assertExternalCapability } from "./security-capabilities.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -24,6 +25,7 @@ const CREDENTIALS_FILE = path.join(SECRETS, "gmail_credentials.json");
 const TOKEN_FILE = path.join(SECRETS, "gmail_token.json");
 const REGISTRY_FILE = path.join(SECRETS, "gmail_jarvis.json");
 const API = "https://gmail.googleapis.com/gmail/v1/users/me";
+const NATIVE_FETCH = globalThis.fetch;
 const SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.labels"];
 export const LABEL = "JARVIS";
 // TF-025: Cold-Lead-Entwürfe – Jarvis legt sie an, sendet sie aber NIE von sich aus (weder Worker, VPS, Kampagne noch Cloud-Queue).
@@ -193,6 +195,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let lastGmailCallAt = 0;
 
 async function gmail(method, route, body) {
+  const capability = route === "/drafts/send" ? "gmail_send" : (method === "POST" || method === "PUT") && route.startsWith("/drafts") ? "gmail_draft" : null;
+  if (capability) {
+    const synthetic = globalThis.fetch !== NATIVE_FETCH || /(?:temp|tmp|test)/i.test(SECRETS);
+    assertExternalCapability(capability, { synthetic, env: synthetic ? { ...process.env, JARVIS_CAPABILITY_MODE: "synthetic" } : process.env });
+  }
   for (let attempt = 0; ; attempt++) {
     const wait = lastGmailCallAt + GMAIL_MIN_GAP_MS - Date.now();
     if (wait > 0) await sleep(wait);

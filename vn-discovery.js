@@ -25,6 +25,7 @@ import { normalizeCrmState, applyCrmAction, effectiveStage, cleanCrmLead, CRM_SC
 import { priorityOf, followUpBucket, callRecommended, CALL_STATUSES, CONTACT_STATUSES, crmActive, compactCrmLead } from "./public/crm-model.js";
 import { displayCategory, categoryKey } from "./category-labels.js";
 import { ISSUE_TYPE_TEXT } from "./public/i18n.js";
+import { assertExternalCapability } from "./security-capabilities.js";
 
 export const VN_DAILY_WEBSITE_AUDITS = 1000;
 export const VN_TZ = "Asia/Ho_Chi_Minh";
@@ -273,6 +274,9 @@ export function createVnAgent({ store, url, token, fetchFn = globalThis.fetch, n
   };
 }
 export async function runService({ dir = process.env.JARVIS_VN_DIR || "/data/vn", env = process.env, fetchFn = globalThis.fetch, log = (lvl, ev, x = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), lvl, event: ev, ...x })) } = {}) {
+  const synthetic = fetchFn !== globalThis.fetch;
+  assertExternalCapability("lead_discovery", { env: synthetic ? { ...env, JARVIS_CAPABILITY_MODE: "synthetic" } : env, synthetic });
+  assertExternalCapability("lead_import", { env: synthetic ? { ...env, JARVIS_CAPABILITY_MODE: "synthetic" } : env, synthetic });
   const store = createVnStore(dir);
   const { units, dataset } = loadVnAdmin();
   const limit = Math.min(VN_DAILY_WEBSITE_AUDITS, Number(env.VN_DAILY_WEBSITE_AUDITS) || VN_DAILY_WEBSITE_AUDITS);

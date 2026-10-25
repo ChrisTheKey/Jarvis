@@ -6,6 +6,7 @@ Zuletzt aktualisiert: 2026-10-25 (Release-Gate: Tests grün, Push/Deploy aussteh
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
+- P0-Abschlussprüfung: Gmail-, Stripe-, Discovery- und CRM-Einstiegspunkte verwenden das zentrale Capability-Gate; Dockerfile-Kopiellisten ergänzt; Chromium-Testpfad mit vorhandenem Chromium verifiziert.
 - Always-on Mail-Worker auf VPS (alleiniger Sender), Gmail-OAuth, Versandfenster/Tageslimit, DNC-Durchsetzung (TF-047…056).
 - CRM-Dienst `jarvis-crm` mit allen qualifizierten Leads (TF-053/057), Reparatur-Dienst `jarvis-repair`.
 - Stripe-Anzahlung, Zahlungslinks, Nachfassen, Webhook, Zahlungs-Gate (TF-080/081/084/085).

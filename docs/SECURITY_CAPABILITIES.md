@@ -1,5 +1,11 @@
 # Lokale Capability-Sperre
 
+Adapter-Einbindung: Gmail nutzt `gmail_draft`/`gmail_send`, Stripe nutzt
+`paid_api`, Discovery nutzt `lead_discovery`/`lead_import`, und lokale CRM-
+Schreibzugriffe mit `JARVIS_LOCAL_DEV=true` nutzen `crm_write`. Synthetische
+Fetch-Adapter sind nur explizit markiert erlaubt; `JARVIS_RUNTIME=production`
+bewahrt bestehende Produktionsverträge.
+
 `security-capabilities.js` ist der zentrale, fail-closed Policy-Kern für
 externe und produktive Aktionen. Ohne eine explizite Runtime-Freigabe sind
 alle Capabilities `DENY`:

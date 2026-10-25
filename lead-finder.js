@@ -16,6 +16,7 @@ import { swissSignals, qualifyRepairLead, ensureColdDraft, discoverBusinessConta
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock, heartbeat, legalBasis, normEmail, zurichDay } from "./mail-worker.js";
 import { loadGeo, saveGeo, nextJob, advance, enqueue, coverage, categoryKey, categoryLabel, matchCategory, findMunicipality, GEO_FILE } from "./swiss-areas.js";
 import { knownKeys, recordLead, registryBlock, fromDiscovered, TRACKED_DISCOVERY, crmDoNotContact } from "./lead-registry.js";
+import { assertExternalCapability } from "./security-capabilities.js";
 
 export const DISCOVERY_LOCK = "discovery.lock";
 // Overpass verlangt eine erkennbare Anwendung als User-Agent (generische Browser-Kennungen werden mit 406 abgelehnt).
@@ -318,6 +319,10 @@ export function discoveryStatus(dir = WORKER_DIR, now = new Date()) {
 }
 
 export async function runDiscovery({ dir = WORKER_DIR, gmail, search, auditor, now = () => new Date(), log = createLogger(dir), pid = process.pid, force = false, random = Math.random } = {}) {
+  if (!search || !auditor) {
+    const synthetic = /(?:temp|tmp|test)/i.test(String(process.env.JARVIS_SECRETS_DIR || dir));
+    assertExternalCapability("lead_discovery", { synthetic, env: synthetic ? { ...process.env, JARVIS_CAPABILITY_MODE: "synthetic" } : process.env });
+  }
   const store = createStore(dir);
   const cfg = discoveryConfig(store);
   if (!cfg.enabled && !force) return { skipped: "disabled" };
