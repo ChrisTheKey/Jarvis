@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.secrets/**)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(docker:*)",
+      "Bash(netlify:*)",
+      "Bash(npx netlify:*)",
+      "Bash(bash deploy/vps/:*)",
+      "Bash(./deploy/vps/:*)",
+      "Bash(sh deploy/vps/:*)"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+# Codex execpolicy – Produktions-/Secret-Schutz (siehe AGENTS.md). Freigaben gibt nur Chris.
+prefix_rule(pattern = ["git", "push"], decision = "forbidden", justification = "Push nur durch Chris.")
+prefix_rule(pattern = ["git", "reset", "--hard"], decision = "forbidden", justification = "Zerstoerend.")
+prefix_rule(pattern = ["git", "clean"], decision = "forbidden", justification = "Zerstoerend.")
+prefix_rule(pattern = ["ssh"], decision = "forbidden", justification = "Kein Produktionszugriff ohne Freigabe.")
+prefix_rule(pattern = ["scp"], decision = "forbidden", justification = "Kein Produktionszugriff ohne Freigabe.")
+prefix_rule(pattern = ["docker"], decision = "forbidden", justification = "Keine Container ohne Freigabe.")
+prefix_rule(pattern = ["netlify"], decision = "forbidden", justification = "Kein Deployment ohne Freigabe.")
+prefix_rule(pattern = ["npx", "netlify"], decision = "forbidden", justification = "Kein Deployment ohne Freigabe.")
+prefix_rule(pattern = [["bash", "sh", "./deploy/vps/deploy.sh"], ["deploy/vps/deploy.sh", "deploy/vps/deploy-calling.sh", "deploy/vps/deploy-contacts.sh", "deploy/vps/deploy-crm.sh", "deploy/vps/deploy-repair.sh", "deploy/vps/deploy-vn.sh"]], decision = "forbidden", justification = "Produktives Deployment.")

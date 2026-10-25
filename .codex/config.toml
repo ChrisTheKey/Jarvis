@@ -1,0 +1,7 @@
+# Codex CLI – Projektprofil Jarvis (greift im vertrauten Projektordner / Worktree)
+# Voller Lese-/Schreibzugriff auf den Worktree, kein Netzwerk, kein Zugriff ausserhalb.
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+network_access = false
