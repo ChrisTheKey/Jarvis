@@ -1,15 +1,14 @@
-// /api/calling – Jarvis Calling Agent (TF-065). Gleiches Muster wie /api/crm: der Browser wählt NIE selbst, sondern legt geprüfte Kampagnen
-// (nur lead_id, Markt, Modus, Parallelität) an; der Dienst jarvis-calling auf dem VPS holt ausgehend ab, bekommt erst beim Abholen – nach
-// erneuter Berechtigungsprüfung – die Nummer aus dem autoritativen Lead und meldet strukturierte Ergebnisse zurück.
+import crypto from "node:crypto";
+
+// /api/calling – CRM-Anrufdaten für menschliche Vertriebsmitarbeiter. Autonome
+// Autonome Agenten und Calling-Worker sind entfernt; dieser Endpunkt liefert nur
+// CRM-Listen, Historie, Status und Rückrufdaten.
 //
 //   Browser:  Session-Cookie (auth-core.js). Zugang NUR OWNER (Chris) und SALES_AGENT_VN (Kudoshin, nur eigene VN-Leads). Alle anderen 403, ohne Sitzung 401.
-//   Dienst:   x-jarvis-calling = HMAC-SHA256(JARVIS_SERVER_CONTROL_TOKEN, "jarvis-calling-agent-v1") – eigener Schlüssel, nur pull/event.
 //
 // Der Browser darf weder Telefonnummer, Caller-ID, Trunk, Room noch Agent-Namen senden (400). Kein «force»: Berechtigung, DNC und
 // Marktregeln gelten auch für den OWNER. Speicher (Blobs «jarvis-calling»): control (Kampagnen, aktive Anrufe, Dienststatus, Limits),
 // history (abgeschlossene Anrufe, ohne Nummer), consents (Rückrufe, Zustimmungen, Anruf-DNC). Keine Aufnahmen, keine Audiodaten.
-import crypto from "node:crypto";
-import { safeEqual } from "./shared-state.js";
 import { resolveActor, isOwner, deny, forbidden } from "./auth-core.js";
 import { canSeeLead, sellerOf, leadMarket, emptyAssignments } from "./sales-scope.js";
 import { LEAD_ID_RE } from "./lead-crm.js";
@@ -18,9 +17,9 @@ import { DETAIL_WORDS_VI, ISSUE_TYPE_TEXT } from "./public/i18n.js";
 import { migrateCallingControl, migrateCallingHistory, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import {
   SCHEMA, MARKETS, MODES, CALL_OUTCOMES, FINAL_OUTCOMES, REACHED_OUTCOMES, NO_ANSWER_OUTCOMES, DEFAULTS, LIMIT_BOUNDS, FORBIDDEN_CLIENT_FIELDS,
-  AGENT_TOKEN_LABEL, CALL_LEASE_MS, HARD_MAX_CONCURRENCY, eligibility, previewCounts, planClaims, applyOutcomeToItem, effectiveMax, clampConcurrency,
-  e164Of, maskPhone, zurichDay, nextWindowStart, crmActionsFor, buildLeadContext, cleanSummary, isoOrNull,
-  CALLING_MARKETS, CONSENT_SOURCES, CONSENT_SCOPE, LEGAL_STATES, FREQUENCY_MS, validateToolCall, phoneHash, callFlag, leadList, callSecondsLeft,
+  HARD_MAX_CONCURRENCY, eligibility, previewCounts,
+  e164Of, maskPhone, zurichDay, isoOrNull,
+  CALLING_MARKETS, CONSENT_SOURCES, CONSENT_SCOPE, LEGAL_STATES, phoneHash, callFlag, leadList,
 } from "./calling-core.js";
 
 // TF-072: Direktlinks der verifizierten Fehler EINES Leads (betroffene Seite + ggf. Ziel; nur sichere öffentliche http(s)-Adressen aus der
@@ -46,7 +45,6 @@ export const CRM_SYSTEM_TTL_MS = 24 * 3_600_000; // Ergebnis-Übernahme ins CRM 
 const AUDIT_KEEP = 500, CAMPAIGN_KEEP = 50, RECENT_CALLS_KEEP = 200;
 const ID_RE = /^[0-9a-f-]{36}$/;
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-export const callingAgentToken = (control) => { const t = String(control || "").trim(); return t.length >= 32 ? crypto.createHmac("sha256", t).update(AGENT_TOKEN_LABEL).digest("hex") : ""; };
 export const canUseCalling = (actor) => !!actor && (actor.role === "OWNER" || actor.role === "SALES_AGENT_VN");
 const emptyControl = () => ({ schema: SCHEMA, campaigns: [], calls: {}, commands: [], service: null, config: {}, audit: [] });
 const emptyHistory = () => ({ schema: SCHEMA, calls: [] });
@@ -108,32 +106,11 @@ export function validateUserOp(body) {
   return { ok: true, params: p };
 }
 
-// Dienststatus (vom VPS gemeldet) → öffentliche Anzeige. Nie Werte von Secrets, nur Ja/Nein + Modellnamen.
-const bool = (v) => v === true;
-function cleanServiceStatus(s) {
-  const x = s && typeof s === "object" ? s : {};
-  const str = (v, n = 80) => (typeof v === "string" ? v.replace(/[^\w .:()\/@+-]/g, "").slice(0, n) : null);
-  const models = (m) => (m && typeof m === "object" ? { stt: str(m.stt), tts: str(m.tts), llm: str(m.llm) } : null);
-  return { configured: { voice_vn: x.configured?.voice_vn === "VOICE_VERIFIED" ? "VOICE_VERIFIED" : "VOICE_NOT_VERIFIED",
-      livekit: bool(x.configured?.livekit), livekit_url: bool(x.configured?.livekit_url), api_credentials: bool(x.configured?.api_credentials), trunk_ch: bool(x.configured?.trunk_ch),
-      trunk_vn: bool(x.configured?.trunk_vn), caller_id_ch: bool(x.configured?.caller_id_ch), caller_id_vn: bool(x.configured?.caller_id_vn), transfer_ch: bool(x.configured?.transfer_ch), transfer_vn: bool(x.configured?.transfer_vn) },
-    livekit_reachable: bool(x.livekit_reachable), worker_registered: bool(x.worker_registered), trunk_ch_verified: bool(x.trunk_ch_verified), trunk_vn_verified: bool(x.trunk_vn_verified),
-    dry_run: x.dry_run !== false, recording: false, voice_vn: x.configured?.voice_vn === "VOICE_VERIFIED" ? "VOICE_VERIFIED" : "VOICE_NOT_VERIFIED",
-    default_concurrency: Number.isInteger(x.default_concurrency) ? Math.max(1, Math.min(HARD_MAX_CONCURRENCY, x.default_concurrency)) : DEFAULTS.default_concurrency,
-    max_concurrency: Number.isInteger(x.max_concurrency) ? Math.max(1, Math.min(HARD_MAX_CONCURRENCY, x.max_concurrency)) : DEFAULTS.max_concurrency,
-    provider_limit: Number.isInteger(x.provider_limit) && x.provider_limit > 0 ? Math.min(x.provider_limit, 100) : null,
-    models: { CH: models(x.models?.CH), VN: models(x.models?.VN) }, commit: str(x.commit, 40), started_at: isoOrNull(x.started_at), active: Number.isInteger(x.active) ? x.active : 0 };
-}
+// Der frühere Provider-/Worker-Status ist absichtlich nicht mehr vorhanden.
 export function serviceView(control, now) {
-  const seen = control?.service?.seen_at;
-  const online = !!seen && +now - Date.parse(seen) < AGENT_STALE_MS;
-  const s = control?.service?.status ? control.service.status : cleanServiceStatus(null);
-  const livekit = !online ? "OFFLINE" : !s.configured.livekit ? "NOT_CONFIGURED" : s.livekit_reachable && s.worker_registered ? "ONLINE" : "OFFLINE";
-  const sip = (m) => (!online ? "OFFLINE" : !s.configured.livekit || !s.configured[`trunk_${m}`] ? "NOT_CONFIGURED" : s[`trunk_${m}_verified`] ? "READY" : "NOT_VERIFIED");
-  return { online, seen_at: seen || null, livekit, sip_ch: "DISABLED", sip_vn: sip("vn"), dry_run: s.dry_run, recording: "OFF", worker_registered: s.worker_registered,
-    voice_vn: s.voice_vn || "VOICE_NOT_VERIFIED", caller_id_vn: s.configured.caller_id_vn ? "CONFIGURED" : "NOT_CONFIGURED",
-    models: s.models, default_concurrency: s.default_concurrency, max_concurrency: effectiveMax(s), provider_limit: s.provider_limit, commit: s.commit,
-    transfer: { CH: s.configured.transfer_ch ? "CONFIGURED" : "TRANSFER_NOT_CONFIGURED", VN: s.configured.transfer_vn ? "CONFIGURED" : "TRANSFER_NOT_CONFIGURED" } };
+  return { online: false, removed: true, code: "AUTONOMOUS_CALLING_REMOVED", seen_at: null, dry_run: true,
+    recording: "OFF", worker_registered: false, default_concurrency: DEFAULTS.default_concurrency,
+    max_concurrency: DEFAULTS.max_concurrency, provider_limit: null, active: 0 };
 }
 const limitsOf = (control) => ({ daily_call_cap: Number.isInteger(control?.config?.daily_call_cap) ? control.config.daily_call_cap : DEFAULTS.daily_call_cap,
   max_campaign_size: Number.isInteger(control?.config?.max_campaign_size) ? control.config.max_campaign_size : DEFAULTS.max_campaign_size });
@@ -173,25 +150,6 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
     // TF-080: E2E-Testleads kommen nie in eine Anrufliste/Statistik (eligibility sperrt zusätzlich mit TEST_BLOCKED).
     return [...(v.state?.leads || []).map((l) => ({ ...l, market: chMarket(l) })), ...(vn.state?.leads || []).map((l) => ({ ...l, market: "VN" }))].filter(crmActive).filter((l) => !isTestLead(l));
   }
-  // System-Aufträge in die bestehende CRM-/VN-Warteschlange (gleiche crm.*-Allowlist, Akteur system:calling). Der jeweilige Dienst übernimmt sie.
-  async function enqueueCrm(market, actions, t) {
-    const getStore = market === "VN" ? getVnQueueStore : getCrmQueueStore;
-    if (!getStore || !actions.length) return [];
-    const store = await getStore();
-    for (let i = 0; i < 6; i++) {
-      const { state, etag } = await store.get();
-      const cur = { requests: [], audit: [], rate: [], agent_seen_at: null, watch_at: null, ...(state || {}) };
-      const ids = [];
-      for (const a of actions) {
-        const rid = newId(); ids.push(rid);
-        cur.requests.push({ request_id: rid, action: a.action, params: a.params, status: "pending", created_at: t.toISOString(), expires_at: new Date(+t + CRM_SYSTEM_TTL_MS).toISOString(), actor_user_id: "system:calling" });
-        cur.audit.push({ ts: t.toISOString(), request_id: rid, actor_user_id: "system:calling", action: a.action, lead_id: a.params.lead_id, outcome: "queued", code: null });
-      }
-      cur.requests = cur.requests.slice(-100); cur.audit = cur.audit.slice(-500);
-      if (await store.set(cur, etag)) return ids;
-    }
-    return [];
-  }
   const audit = (cur, t, x) => { cur.audit = [...(cur.audit || []), { ts: t.toISOString(), ...x }].slice(-AUDIT_KEEP); };
   // TF-068: Rechtsprüfung (Owner) – ohne dokumentierte Freigabe gilt BLOCKED_PENDING_LEGAL_REVIEW.
   const legalOf = (ctl) => (ctl?.config?.legal_vn?.status === "APPROVED" ? { status: "APPROVED" } : { status: "BLOCKED_PENDING_LEGAL_REVIEW" });
@@ -208,24 +166,10 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
   const ctxFor = (l, { consents, dncSet, t, legal, lastIdx }) => ({ consent: consents.leads?.[l.lead_id] || null, dncSet, now: t, legal, lastCallAt: lastIdx.get(phoneHash(e164Of(l))) ?? null });
   // Echte Anrufe zusätzlich nur mit verifizierter VN-Stimme und autorisierter Caller-ID (Decree 91: Anrufer nicht verbergen).
   const realBlockOf = (status) => (status.dry_run ? null : !status.configured.caller_id_vn ? "CALLER_ID_NOT_CONFIGURED" : status.voice_vn !== "VOICE_VERIFIED" ? "VOICE_NOT_VERIFIED" : null);
-  // DNC sofort: Anruf-DNC dauerhaft, offene Positionen dieses Leads raus, CRM (nicht im Dry Run).
-  async function applyDnc(lead_id, market, call_id, t, dry) {
-    await mutate("consents", emptyConsents, (s) => {
-      s.leads ||= {}; s.dnc ||= {};
-      s.dnc[lead_id] = s.dnc[lead_id] || { at: t.toISOString(), source: "call", call_id };
-      const x = s.leads[lead_id] || {}; delete x.requested_callback; s.leads[lead_id] = { ...x, dnc: true };
-      return { status: 200 };
-    });
-    await mutate("control", emptyControl, (cur) => {
-      for (const k of cur.campaigns) for (const x of k.items) if (x.lead_id === lead_id && !["ACTIVE", "DONE", "CANCELLED"].includes(x.state)) { x.state = "CANCELLED"; x.last_code = "DNC"; }
-      audit(cur, t, { actor_user_id: "system:calling", action: "dnc", lead_id, call_id, result: "success" });
-      return { status: 200 };
-    });
-    if (!dry) await enqueueCrm(market, [{ action: "crm.setDoNotContact", params: { lead_id, value: true, reason: market === "VN" ? "Điện thoại: không gọi lại" : "Telefon: nicht mehr anrufen" } }], t);
-  }
-
-  // ----- Dienst: Abholen (Status melden, freie Slots füllen) -----
-  async function agentPull(body) {
+  /* Autonomous agent pull/event/tool handlers were removed. Human CRM
+     calling data remains below: eligibility, history, callbacks, DNC and
+     employee-visible status are still read from the calling stores. */
+  /*
     const t = now();
     const status = cleanServiceStatus(body.status);
     const known = new Set(Array.isArray(body.active_call_ids) ? body.active_call_ids.filter((x) => typeof x === "string" && ID_RE.test(x)) : []);
@@ -418,23 +362,22 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
     if (r.status === 200 && dnc) await applyDnc(dnc.lead_id, dnc.market, dnc.call_id, t, dnc.dry);
     return reply(r.status, r.body);
   }
+  */
 
   return async (req) => {
     await migrateIdentity();
     const url = new URL(req.url);
-    const control = env("JARVIS_SERVER_CONTROL_TOKEN");
-    const agentToken = callingAgentToken(control);
-    if (req.method === "GET" && url.searchParams.has("probe")) return reply(200, { configured: !!agentToken });
-    const isAgent = !!agentToken && safeEqual(req.headers.get("x-jarvis-calling"), agentToken);
+    if (req.method === "GET" && url.searchParams.has("probe")) return reply(410, { error: "Autonome Telefonie ist entfernt.", code: "AUTONOMOUS_CALLING_REMOVED" });
+    const isAgent = false;
     let actor = null;
     if (!isAgent) {
       const r = await resolveActor(req, { env, getAuthStore, now });
       if (!r.actor) return deny(r);
       actor = r.actor;
-      if (!canUseCalling(actor)) return forbidden("Kein Zugang zum Calling Agent.");
+      if (!canUseCalling(actor)) return forbidden("Kein Zugang zu den CRM-Anrufdaten.");
     }
     if (!["GET", "POST"].includes(req.method)) return reply(405, { error: "Nur GET oder POST." });
-    const limit = isAgent ? 2_000_000 : MAX_BODY;
+    const limit = MAX_BODY;
     if (Number(req.headers.get("content-length") || 0) > limit) return reply(413, { error: "Zu gross." });
     let body = {};
     if (req.method === "POST") {
@@ -444,13 +387,6 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
       if (!body || typeof body !== "object" || Array.isArray(body)) return reply(400, { error: "Ungültige Anfrage." });
     }
 
-    if (isAgent) {
-      if (req.method !== "POST") return reply(405, { error: "Dienst: nur POST." });
-      if (body.op === "pull") return agentPull(body);
-      if (body.op === "event") return agentEvent(body);
-      if (body.op === "tool") return agentTool(body);
-      return reply(400, { error: "Unbekannte Operation." });
-    }
 
     // ----- Browser (Chris / Kudoshin) -----
     const owner = isOwner(actor);
@@ -473,17 +409,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
       seller: c.seller || null, seller_id: c.seller_id || c.seller || null, phone: c.phone_masked, status: c.status, outcome: c.outcome || null, started_at: c.started_at, answered_at: c.answered_at || null,
       ended_at: c.ended_at || null, duration_s: c.duration_s ?? null, callback_at: c.callback_at || null, summary: c.summary || null, short_summary: c.summary || null, dry_run: !!c.dry_run,
       review_required: !!c.review_required, transfer: c.transfer || null, attempt: c.attempt || 1, consent_evidence_reference: c.consent_evidence_reference || null, cost: c.cost || null });
-    const canStart = (m) => {
-      if (!CALLING_MARKETS.includes(m)) return { ok: false, code: "CH_CALLING_DISABLED" };
-      if (halted) return { ok: false, code: "EMERGENCY_STOP" };
-      if (!svc.online) return { ok: false, code: "SERVICE_OFFLINE" };
-      if (svc.livekit === "NOT_CONFIGURED") return { ok: false, code: "NOT_CONFIGURED" };
-      if (svc.livekit !== "ONLINE") return { ok: false, code: "LIVEKIT_OFFLINE" };
-      if (svc[`sip_${m.toLowerCase()}`] !== "READY") return { ok: false, code: "SIP_NOT_CONFIGURED" };
-      if (!svc.dry_run && svc.voice_vn !== "VOICE_VERIFIED") return { ok: false, code: "VOICE_NOT_VERIFIED" };
-      if (!svc.dry_run && svc.caller_id_vn !== "CONFIGURED") return { ok: false, code: "CALLER_ID_NOT_CONFIGURED" };
-      return { ok: true, code: null };
-    };
+    const canStart = () => ({ ok: false, code: "AUTONOMOUS_CALLING_REMOVED" });
 
     if (req.method === "GET") {
       const leadId = url.searchParams.get("lead");
@@ -532,7 +458,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
       // Kosten nur aus Provider-Daten, je Währung getrennt; ohne Daten → NO_PROVIDER_DATA (nie geschätzt).
       const costs = {};
       for (const c of todays) if (c.cost) costs[c.cost.currency] = Math.round(((costs[c.cost.currency] || 0) + c.cost.amount) * 10_000) / 10_000;
-      const svcOut = { ...svc, models: { VN: svc.models?.VN || null }, transfer: { VN: svc.transfer.VN } };
+      const svcOut = { ...svc };
       return reply(200, { actor: { user_id: actor.user_id, role: actor.role, locale: actor.locale, markets: marketsOf, can_start_calls: canStartCalls(actor) }, service: svcOut,
         legal: { VN: legal.status, ...(owner ? { reference: ctl.config?.legal_vn?.reference || null, at: ctl.config?.legal_vn?.at || null } : {}) },
         emergency_stop: { active: halted, ...(owner ? { at: ctl.config?.halted_at || null, reason: ctl.config?.halted_reason || null } : {}) },
@@ -652,14 +578,17 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
         daily_call_cap: lim.daily_call_cap, calls_today: today, max_campaign_size: lim.max_campaign_size, max_concurrency: svc.max_concurrency, can_start: canStart(p.market) });
     }
     if (p.op === "campaign.start" || p.op === "call.start") {
-      const market = p.op === "call.start" ? leadMarket(byId.get(p.lead_id) || {}) : p.market;
+      // call.start ist nur noch ein historischer API-Name. Es gibt keinen
+      // Worker/Provider-Konsumenten mehr; daher wird kein Anruf eingeplant.
+      return reply(410, { error: "Autonome Telefonie ist entfernt.", code: "AUTONOMOUS_CALLING_REMOVED" });
+      /* const market = p.op === "call.start" ? leadMarket(byId.get(p.lead_id) || {}) : p.market;
       if (p.op === "call.start" && !byId.get(p.lead_id)) return reply(404, { error: "Unbekannter Lead.", code: "UNKNOWN_LEAD" });
       if (!marketsOf.includes(market)) return reply(403, { error: "Markt nicht in Ihrem Bereich.", code: "OUT_OF_SCOPE" });
       const s = pickLeads(market, p);
       if (s.error) return s.error;
       if (p.confirmed !== true) return reply(400, { error: "Ausdrückliche Bestätigung fehlt.", code: "CONFIRMATION_REQUIRED" });
       const cs = canStart(market);
-      if (!cs.ok) return reply(409, { error: market === "VN" ? "LiveKit/SIP chưa được cấu hình" : "LiveKit/SIP noch nicht eingerichtet", code: cs.code });
+      if (!cs.ok) return reply(409, { error: "Autonome Telefonie ist entfernt.", code: cs.code });
       const mode = p.op === "call.start" ? "SINGLE" : p.mode;
       const pl = planFor(market, s.leads);
       if (mode === "SINGLE" && s.leads.length !== 1) return reply(400, { error: "EINZELN: genau ein Lead.", code: "SINGLE_NEEDS_ONE" });
@@ -676,7 +605,7 @@ export function createCallingHandler({ env, getCallingStore, getAuthStore = null
         audit(cur, t, { actor_user_id: actor.user_id, action: p.op, campaign_id, market, mode, concurrency, planned: ids.length, dry_run: pl.dry_run, result: "queued" });
         return { status: 202, body: { campaign_id, market, mode, concurrency, planned: ids.length, dry_run: pl.dry_run } };
       });
-      return reply(r.status, r.body);
+      return reply(r.status, r.body); */
     }
     // pause / resume / stop / cancel – nur eigene Kampagnen (Kudoshin) bzw. alle (Owner); Markt im Scope.
     const r = await mutate("control", emptyControl, (cur) => {

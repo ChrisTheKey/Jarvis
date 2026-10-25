@@ -1,5 +1,4 @@
-// /api/calling – Jarvis Calling Agent (TF-065). Siehe calling-api.js. Braucht in Netlify nur die bestehende Variable JARVIS_SERVER_CONTROL_TOKEN
-// (der Dienst jarvis-calling nutzt daraus einen abgeleiteten, eigenen Schlüssel). KEINE LiveKit-Secrets in Netlify – die liegen nur auf dem VPS.
+// /api/calling – CRM-Anrufdaten für menschliche Vertriebsmitarbeiter.
 import { createCallingHandler } from "../../calling-api.js";
 import { netlifyBlobStore } from "../../shared-state.js";
 import { netlifyAuthStore } from "../../auth-core.js";

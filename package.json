@@ -32,13 +32,13 @@
     "test:tf063": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/auth-063.test.js test/scope-063.test.js test/commission-063.test.js test/vn-063.test.js test/lap-vi-browser-063.test.js",
     "vn-report": "node vn-discovery.js --report",
     "test:tf064": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/pricing-064.test.js test/commission-064.test.js test/vn-order-064.test.js test/mail-064.test.js test/vn-transactional-064.test.js",
-    "test:tf065": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/calling-065.test.js test/calling-browser-065.test.js",
+    "test:tf065": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/livekit-agent-removal.test.js test/human-calling-regression.test.js",
     "test:tf066": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/onboarding-066.test.js test/onboarding-browser-066.test.js",
-    "test:tf068": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf068.test.js test/calling-065.test.js test/calling-browser-065.test.js test/calling-browser-068.test.js",
-    "test:tf070": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf070.test.js test/auth-063.test.js test/scope-063.test.js test/commission-064.test.js test/vn-order-064.test.js test/mail-064.test.js test/tf068.test.js test/lap-vi-browser-063.test.js test/calling-browser-068.test.js",
+    "test:tf068": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/human-calling-regression.test.js test/payments-041.test.js test/commission-063.test.js test/commission-064.test.js",
+    "test:tf070": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/human-calling-regression.test.js test/auth-063.test.js test/scope-063.test.js test/commission-064.test.js test/vn-order-064.test.js test/mail-064.test.js test/lap-vi-browser-063.test.js",
     "test:tf071": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf071.test.js test/onboarding-066.test.js test/onboarding-browser-066.test.js",
-    "test:tf072": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf072.test.js test/tf072-browser.test.js test/crm-detail-059.test.js test/commission-063.test.js test/commission-064.test.js",
-    "test:tf073": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf073.test.js test/tf072.test.js test/auth-063.test.js test/scope-063.test.js test/commission-064.test.js",
+    "test:tf072": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/human-calling-regression.test.js test/crm-detail-059.test.js test/commission-063.test.js test/commission-064.test.js",
+    "test:tf073": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf073.test.js test/auth-063.test.js test/scope-063.test.js test/commission-064.test.js",
     "test:tf074": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf074.test.js test/tf073.test.js test/shared-state.test.js test/server-control.test.js test/commission-064.test.js",
     "device:pair": "node device-agent.js --pair-stdin",
     "device:status": "node device-agent.js --status",
@@ -48,7 +48,7 @@
     "phonebook:diagnose": "node crm-service.js --phonebook-diagnose",
     "test:tf078": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf078.test.js test/tf077b.test.js",
     "test:tf079": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf079.test.js test/tf077.test.js test/tf077b.test.js test/tf077c.test.js test/tf077d.test.js test/onboarding-066.test.js test/tf071.test.js test/secure-access-041.test.js test/access-profile-043.test.js",
-    "test:tf080": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf080.test.js test/tf079.test.js test/tf068.test.js test/payments-041.test.js test/tf077c.test.js test/tf077b.test.js test/calling-065.test.js test/commission-063.test.js test/commission-064.test.js test/scope-063.test.js test/crm-detail-059.test.js test/secure-access-041.test.js"
+    "test:tf080": "node scripts/run-unit-tests.mjs --test-concurrency=1 test/tf080.test.js test/tf079.test.js test/payments-041.test.js test/tf077c.test.js test/tf077b.test.js test/human-calling-regression.test.js test/commission-063.test.js test/commission-064.test.js test/scope-063.test.js test/crm-detail-059.test.js test/secure-access-041.test.js"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.3",

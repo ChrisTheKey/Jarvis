@@ -164,6 +164,6 @@ async function load() {
 }
 $("accessBtn")?.addEventListener("click", () => { $("ownerAdmin").hidden = false; render(); load(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("ownerAdmin").hidden) $("ownerAdmin").hidden = true; });
-// TF-065: Calling Agent (Owner) – Status, Vorschau, Kampagnen, aktive Anrufe. Der Server prüft Rolle, Scope und Berechtigung.
+// CRM-Anrufe (Owner) – Historie, Rückrufe und Vertriebsstatus. Der Server prüft Rolle und Scope.
 $("callingBtn")?.addEventListener("click", () => { const b = $("callingAgent"); b.hidden = false; mountCalling(b, { locale: "de-CH", onClose: () => { b.hidden = true; } }); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("callingAgent") && !$("callingAgent").hidden) $("callingAgent").hidden = true; });

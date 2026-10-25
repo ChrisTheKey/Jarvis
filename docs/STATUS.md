@@ -5,6 +5,7 @@ Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im
 Zuletzt aktualisiert: 2026-10-25 (Release-Gate: Tests grün, Push/Deploy ausstehend)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
+- P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
 - Always-on Mail-Worker auf VPS (alleiniger Sender), Gmail-OAuth, Versandfenster/Tageslimit, DNC-Durchsetzung (TF-047…056).
 - CRM-Dienst `jarvis-crm` mit allen qualifizierten Leads (TF-053/057), Reparatur-Dienst `jarvis-repair`.
 - Stripe-Anzahlung, Zahlungslinks, Nachfassen, Webhook, Zahlungs-Gate (TF-080/081/084/085).
@@ -18,7 +19,7 @@ Zuletzt aktualisiert: 2026-10-25 (Release-Gate: Tests grün, Push/Deploy aussteh
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | – (frei) |
+| Codex | `agent-codex/main` | P0-Capability-Gate und Entfernung autonomer Telefonie abgeschlossen; Server-Bereinigung offen |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -47,6 +48,7 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 - Codex-Grenze: In der Windows-Sandbox kann Codex den Worktree-Index (`.git/worktrees/Jarvis-codex`) nicht beschreiben; Commits gelingen nur über einen Plumbing-Umweg (Index danach veraltet, `git reset`) oder gar nicht. Zuverlässig: Codex ändert und testet, der Commit läuft ausserhalb der Sandbox (`git commit` im Worktree). Alternative nur mit Freigabe: Codex mit `--sandbox danger-full-access` für Commits.
 
 ## Offene Aufgaben (Backlog, Priorität nach Chris)
+- Spätere Server-Bereinigung: LiveKit-Agent-Container, Calling-Worker, VPS-Dockerfile/Deploy-Skript und zugehörige Secrets nach ausdrücklicher Freigabe entfernen; diese Arbeiten wurden lokal nicht ausgeführt.
 - Fehler 1–5 oben beheben (je ein kleiner Commit mit Test).
 - Commit der uncommitteten Arbeit im Hauptordner (Chris) – danach `agent-*/main` rebasen.
 - TF-JARVIS-PRAXIS-002 und TF-086/088: Deployment ausstehend (nur nach Freigabe von Chris).
