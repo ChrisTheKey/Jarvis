@@ -19,6 +19,7 @@ import { scopeLeads, canSeeLead, leadMarket, fairDistribution, applyDistribution
 import { csvLabelsFor } from "./public/i18n.js";
 import { migrateCrmQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import { mailAccessFor, leadForMail } from "./mail-access.js";
+import { assertExternalCapability } from "./security-capabilities.js";
 
 export const REQUEST_TTL_MS = 3 * 60_000;
 export const LEASE_MS = 2 * 60_000;
@@ -208,6 +209,10 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
       if (raw.length > limit) return reply(413, { error: "Zu gross." });
       try { body = JSON.parse(raw || "{}"); } catch { return reply(400, { error: "Ungültiges JSON." }); }
       if (!body || typeof body !== "object" || Array.isArray(body)) return reply(400, { error: "Ungültige Anfrage." });
+    }
+
+    if (req.method === "POST" && env("JARVIS_LOCAL_DEV") === "true") {
+      assertExternalCapability("crm_write", { env: { JARVIS_CAPABILITY_MODE: env("JARVIS_CAPABILITY_MODE") || "deny" }, synthetic: env("JARVIS_CAPABILITY_MODE") === "synthetic" });
     }
 
     // ----- VN-Discovery-Dienst auf dem VPS (nur VN-Sicht + VN-Queue) -----

@@ -264,7 +264,7 @@ form.cmd button.stop { color: var(--red); }
     <div class="pill" id="state">Bereit</div>
     <div class="pill mode" id="modePill" title="Wo Jarvis gerade läuft">–</div>
     <button type="button" class="pill nav" id="crmBtn" title="Lead-CRM: alle Leads, Probleme, Kontakt, Status, Anrufe, Notizen, Follow-ups">CRM</button>
-    <button type="button" class="pill nav" id="callingBtn" title="LiveKit Calling Agent: Status, Kampagnen, Anrufe (nur Owner)">CALLING AGENT</button>
+    <button type="button" class="pill nav" id="callingBtn" title="CRM-Anrufe: Historie, Rückrufe und Vertriebsstatus">CRM-ANRUFE</button>
     <button type="button" class="pill nav" id="accessBtn" title="Zugänge der Verkäufer, Provisionen und Lead-Zuweisungen (nur Owner)">ZUGÄNGE</button>
     <button type="button" class="pill nav" id="logoutBtn" title="Sitzung beenden">ABMELDEN</button>
   </header>
@@ -537,7 +537,7 @@ form.cmd button.stop { color: var(--red); }
 <!-- TF-063: Zugänge / Provision / Zuweisungen (nur Owner) – Inhalt baut owner-admin.js; alle Rechte prüft der Server. -->
 <div class="crm" id="ownerAdmin" hidden role="dialog" aria-modal="true" aria-labelledby="oaTitle"></div>
 
-<!-- TF-065: Calling Agent (nur Owner im HUD; Kudoshin in sales.html) – Inhalt baut calling-ui.js; alle Rechte prüft /api/calling. -->
+<!-- CRM-Anrufe für Mitarbeitende – Inhalt baut calling-ui.js; Rechte prüft /api/calling. -->
 <div class="crm" id="callingAgent" hidden role="dialog" aria-modal="true" aria-labelledby="caTitle"></div>
 
 <div class="boot" id="boot">

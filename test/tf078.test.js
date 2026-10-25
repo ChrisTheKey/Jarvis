@@ -241,7 +241,7 @@ test("Bestehende Leads ohne Prüfung bleiben sichtbar (Migration) – CRM wird n
   for (const l of v.leads.map(cleanCrmLead)) { assert.ok(!("phonebook" in l), "UI: Nicht geprüft"); assert.ok(l.phone_tel); }
 });
 
-test("Anruf-Gates: Stern nie anrufbar; UNKNOWN nie automatisch; CLEAR braucht weiterhin alle rechtlichen Gates", () => {
+test("Autonome Anruf-Gates bleiben entfernt; Telefonbuch-Status erteilt keine menschliche Einwilligung", () => {
   assert.deepEqual(pb.coldCallPhonebookGate({ phonebook: { status: "PHONEBOOK_STAR_PRESENT" } }), { ok: false, code: "PHONEBOOK_STAR_PRESENT" });
   for (const s of ["PHONEBOOK_STAR_UNKNOWN", "PHONEBOOK_LOOKUP_FAILED", undefined]) assert.deepEqual(pb.coldCallPhonebookGate({ phonebook: s ? { status: s } : undefined }), { ok: false, code: "PHONEBOOK_NOT_VERIFIED_CLEAR" });
   assert.equal(pb.coldCallPhonebookGate({ phonebook: { status: "PHONEBOOK_STAR_CLEAR" } }).ok, true);
@@ -254,7 +254,9 @@ test("Anruf-Gates: Stern nie anrufbar; UNKNOWN nie automatisch; CLEAR braucht we
   const klar = cleanCrmLead(buildCrmLead("klar.ch", src)), stern = cleanCrmLead(buildCrmLead("stern.ch", src));
   assert.equal(eligibility(klar, {}).decision, "BLOCKED");
   assert.equal(eligibility(klar, { legal: { status: "APPROVED" } }).code, "CH_CALLING_DISABLED");
-  assert.deepEqual([eligibility(stern, { legal: { status: "APPROVED" } }).bucket, eligibility(stern, {}).code], ["BLOCKED_DIRECTORY", "PHONEBOOK_STAR_PRESENT"]);
+  // Der frühere autonome Dialer ist entfernt. Ein Telefonbuch-Stern bleibt CRM-/Compliance-Information,
+  // erzeugt aber keinen autonomen Directory-Blockcode und keine Einwilligung für einen Mitarbeiteranruf.
+  assert.equal(eligibility(stern, { legal: { status: "APPROVED" } }).code, "CH_CALLING_DISABLED");
   const vn = { ...klar, market: "VN", phone_tel: "tel:+84912345678" };
   assert.equal(eligibility(vn, { legal: { status: "APPROVED" } }).bucket, "BLOCKED_CONSENT", "kein Anruf ohne Einwilligung, auch mit CLEAR");
 });

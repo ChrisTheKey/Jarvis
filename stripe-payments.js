@@ -13,6 +13,7 @@
 //   - Zahlungsarten bestimmt das Stripe-Konto (dynamische Zahlungsarten: Karte, TWINT, … sofern dort aktiviert) – nichts hart kodiert.
 import crypto from "node:crypto";
 import { offerInfo, toMinor, ORDER_ID_RE } from "./pricing.js";
+import { assertExternalCapability } from "./security-capabilities.js";
 
 export const MODES = Object.freeze(["LIVE", "TEST"]);
 export const PURPOSE = "REPAIR_DEPOSIT";
@@ -61,6 +62,8 @@ const form = (obj, prefix = "", out = []) => {
   return out;
 };
 async function call(env, mode, { method = "GET", path, body = null, idem = null, fetchFn = globalThis.fetch }) {
+  const synthetic = fetchFn !== globalThis.fetch;
+  assertExternalCapability("paid_api", { env: synthetic ? { ...env, JARVIS_CAPABILITY_MODE: "synthetic" } : env, synthetic });
   const key = keyOf(env, mode);
   if (!key) { const e = new Error("STRIPE_NOT_CONFIGURED"); e.code = "NOT_CONFIGURED"; throw e; }
   const r = await fetchFn(`${API}${path}`, { method, headers: { authorization: `Bearer ${key}`, ...(body ? { "content-type": "application/x-www-form-urlencoded" } : {}), ...(idem ? { "idempotency-key": idem } : {}) },
