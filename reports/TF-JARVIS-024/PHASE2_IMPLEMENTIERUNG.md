@@ -58,4 +58,4 @@ Diese offenen Punkte sind bewusst nicht durch eine unsichere Umgehung geschlosse
 
 ## Git
 
-Lokaler Commit: `6701c44 TF-024: add CRM sales intake preview flow`. Kein Push, Merge oder Deployment.
+Lokaler Commit im Codex-Worktree: siehe aktuelle Git-Historie (`TF-024: add CRM sales intake preview flow`). Kein Push, Merge oder Deployment.
