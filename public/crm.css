@@ -88,6 +88,9 @@
 .crm-drawer .kv { margin: 0; } .crm-drawer .kv b { white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .crm-dnc-banner { margin: 10px 0; padding: 8px 10px; border: 1px solid var(--red); background: rgba(255,93,108,.16); color: #ffd9dd; font-weight: 700; letter-spacing: .1em; }
 .crm-qa { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.crm-salesbox { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; flex-basis: 100%; }
+.crm-sales-start { font-weight: 800; }
+.crm-sales-msg { color: var(--cyan-2); }
 .crm-find { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
 .crm-find li { border-left: 2px solid var(--amber); padding-left: 9px; }
 .crm-find li.audit { border-left-color: var(--line); }

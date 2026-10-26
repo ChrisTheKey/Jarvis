@@ -2,7 +2,7 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-25 (finale Freigabeprüfung abgeschlossen, Push/Deploy ausstehend)
+Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 Phase 2 lokal implementiert; sichere Integrationsgates noch offen)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
@@ -22,7 +22,7 @@ Zuletzt aktualisiert: 2026-10-25 (finale Freigabeprüfung abgeschlossen, Push/De
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | TF-JARVIS-024: Bestandsaufnahme abgeschlossen; CRM-Preview/Bestätigung/atomare Auftragsaktion offen, Push/Deployment verboten |
+| Codex | `agent-codex/main` | TF-JARVIS-024 Phase 2: CRM-Button, Vorschau/Bestätigung und idempotente `sales_intake`-Queue lokal implementiert; Auftrags-/Tresor-Materialisierung offen, Push/Deployment verboten |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 

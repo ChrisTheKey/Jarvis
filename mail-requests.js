@@ -10,6 +10,7 @@ export { MANUAL_TEST_MAIL, isManualTestMail };
 import { cleanCore } from "./cloud-core.js";
 import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import { mailAccessFor, draftRefOf, DRAFT_REF_RE, SELLER_SEND_DAILY_LIMIT } from "./mail-access.js";
+import { buildSalesIntakePreview, salesOrderRefs, salesVaultLink } from "./sales-intake.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
   ttlHours: 24, maxTtlHours: 72, duplicateHours: 24, bodyBytes: 16_000 };
@@ -19,7 +20,7 @@ export const INTENTS = ["sales", "follow_up", "reply", "info"];
 // delivery "draft": der Worker legt nur einen Gmail-Entwurf an (COLD_LEAD_DRAFT_ONLY) – Jarvis sendet ihn nie von sich aus.
 // delivery "send_prepared" (TF-077B, SEND_PREPARED_LEAD_DRAFT): ein Verkäufer hat «E-Mail lossenden» geklickt – der Worker sendet GENAU den
 // vorbereiteten Jarvis-Entwurf dieses Leads (draft_ref), ohne Betreff/Text aus der Cloud. Empfänger = CRM-Adresse des Leads.
-export const DELIVERIES = ["send", "draft", "send_prepared"];
+export const DELIVERIES = ["send", "draft", "send_prepared", "sales_intake"];
 // Wiederholen nach einem Fehlschlag ist erlaubt (der Worker sendet nur einen noch unversendet in Gmail liegenden Entwurf), aber begrenzt.
 export const SEND_PREPARED_MAX_ATTEMPTS = 3;
 const OPEN_OR_SENT = ["pending", "processing", "accepted_local", "sent"];
@@ -44,7 +45,9 @@ export function cleanMeta(m) {
   const market = ["CH", "VN"].includes(m.market) ? m.market : null;
   const locale = ["de-CH", "vi-VN"].includes(m.locale) ? m.locale : null;
   const lead_id = typeof m.lead_id === "string" && META_LEAD_RE.test(m.lead_id) ? m.lead_id : null;
-  return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id } : null;
+  const sales = m.sales_intake === true && typeof m.preview_ref === "string" && /^[a-f0-9]{64}$/.test(m.preview_ref)
+    ? { sales_intake: true, preview_ref: m.preview_ref, order150_id: m.order150_id, order480_id: m.order480_id } : {};
+  return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id, ...sales } : null;
 }
 
 
@@ -362,6 +365,8 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     let body;
     try { body = JSON.parse((await req.text()).slice(0, MAIL_REQUEST_LIMITS.bodyBytes) || "{}"); } catch { return reply(400, { error: "Ungültiges JSON." }); }
     if (body?.op === "send_lead_draft") return sendPrepared(queue, body, actor);
+    if (body?.op === "sales_intake_preview") return salesPreview(body, actor);
+    if (body?.op === "sales_intake_confirm") return salesConfirm(queue, body, actor);
     if (body?.op !== "lead_draft") return reply(403, { error: "Keine Berechtigung für diese Aktion.", code: "FORBIDDEN" });
     if (Object.keys(body).some((k) => !LEAD_DRAFT_FIELDS.includes(k))) return reply(400, { error: "Nur lead_id, subject und body sind erlaubt (kein Empfänger).", code: "BAD_PARAMS" });
     // TF-077: Entwürfe entstehen im einzigen verbundenen Gmail (Chris) – Verkäufer ohne eigene verbundene Mailbox nie (kein Fallback auf Chris).
@@ -379,6 +384,41 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     const meta = { actor_user_id: actor.user_id, market: lead.market === "VN" ? "VN" : "CH", locale: lead.market === "VN" ? "vi-VN" : actor.locale, lead_id: lead.lead_id };
     const r = await queue.create({ recipient: lead.email, subject: body.subject, body: body.body, intent: "sales", delivery: "draft" }, actor.user_id, meta);
     return r.status >= 400 ? reply(r.status, { error: r.error, code: "BAD_PARAMS" }) : reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "draft", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
+  }
+
+  async function salesPreview(body, actor) {
+    const mail = mailAccessFor(actor);
+    if (!mail.send_prepared && actor.role !== "OWNER") return reply(403, { error: "Keine Berechtigung für den Erstmail-Versand.", code: "FORBIDDEN" });
+    if (Object.keys(body).some((k) => !["op", "lead_id"].includes(k)) || typeof body.lead_id !== "string") return reply(400, { error: "Nur lead_id ist erlaubt.", code: "BAD_PARAMS" });
+    if (!resolveLead) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
+    const found = await resolveLead(actor, body.lead_id);
+    if (!found?.lead) return reply(found?.status || 403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: found?.code || "OUT_OF_SCOPE" });
+    const lead = found.lead;
+    if (lead.market === "VN") return reply(403, { error: "Die Erstmail ist nur für Schweizer Leads verfügbar.", code: "FORBIDDEN" });
+    const refs = salesOrderRefs(lead.lead_id, now());
+    const origin = env("JARVIS_WEB_ORIGIN");
+    const vault = salesVaultLink({ origin, leadId: lead.lead_id, orderId: refs.order480Id, secret: env("JARVIS_SALES_VAULT_SECRET") });
+    const result = buildSalesIntakePreview({ lead, ...refs, vaultLink: vault, now: now() });
+    if (!result.ok) return reply(result.code === "NO_CONTACT_PERMISSION" ? 403 : 409, { error: result.reason, code: result.code });
+    return reply(200, { preview_ref: result.preview_ref, preview: result.preview });
+  }
+
+  async function salesConfirm(queue, body, actor) {
+    const mail = mailAccessFor(actor);
+    if (!mail.send_prepared && actor.role !== "OWNER") return reply(403, { error: "Keine Berechtigung für den Erstmail-Versand.", code: "FORBIDDEN" });
+    if (Object.keys(body).some((k) => !["op", "lead_id", "preview_ref", "confirmed"].includes(k)) || body.confirmed !== true || !/^[a-f0-9]{64}$/.test(String(body.preview_ref || "")))
+      return reply(400, { error: "Ausdrückliche Bestätigung und gültige Vorschau-Referenz fehlen.", code: "CONFIRMATION_REQUIRED" });
+    if (!resolveLead) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
+    const found = await resolveLead(actor, body.lead_id);
+    if (!found?.lead) return reply(found?.status || 403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: found?.code || "OUT_OF_SCOPE" });
+    const lead = found.lead, refs = salesOrderRefs(lead.lead_id, now());
+    const vault = salesVaultLink({ origin: env("JARVIS_WEB_ORIGIN"), leadId: lead.lead_id, orderId: refs.order480Id, secret: env("JARVIS_SALES_VAULT_SECRET") });
+    const result = buildSalesIntakePreview({ lead, ...refs, vaultLink: vault, now: now() });
+    if (!result.ok || result.preview_ref !== body.preview_ref) return reply(409, { error: "Die Vorschau ist abgelaufen oder wurde geändert. Bitte neu laden.", code: "PREVIEW_CHANGED" });
+    const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id, sales_intake: true, preview_ref: result.preview_ref, order150_id: refs.order150Id, order480_id: refs.order480Id };
+    const r = await queue.create({ recipient: result.preview.recipient, subject: result.preview.subject, body: result.preview.body, intent: "sales", delivery: "sales_intake" }, actor.user_id, meta);
+    if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
+    return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
   }
 
   // TF-077B «E-Mail lossenden» (SEND_PREPARED_LEAD_DRAFT): nur lead_id + draft_ref vom Browser. Geprüft: Recht (Giuliano/Mario/Damiano, Owner),

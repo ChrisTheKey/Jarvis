@@ -15,7 +15,7 @@ const MOBILE = matchMedia("(max-width: 860px)");
 let I = createI18n(document.documentElement.dataset.locale || "de-CH");
 const t = (...a) => I.t(...a);
 const S = { leads: [], filters: {}, sort: "priority", card: "", sel: null, online: false, generated_at: null, backup: null, timer: null, facets: false, showAll: {}, actor: null, mail: null,
-  sends: [], sendErr: {}, stats: null };
+  sends: [], sendErr: {}, salesErr: {}, salesBusy: {}, stats: null };
 
 function el(tag, attrs = {}, ...kids) {
   const x = document.createElement(tag);
@@ -137,6 +137,29 @@ async function sendPrepared(l) {
     }
   } catch { S.sendErr[l.lead_id] = t("mail.sendFailed"); }
   if (S.sel === l.lead_id) renderDrawer();
+}
+// TF-JARVIS-024: Erstmail nur über serverseitige Vorschau + ausdrückliche Bestätigung.
+async function startSalesIntake(l) {
+  if (S.salesBusy[l.lead_id]) return;
+  S.salesBusy[l.lead_id] = true; delete S.salesErr[l.lead_id]; renderDrawer();
+  try {
+    const p = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_preview", lead_id: l.lead_id }) });
+    const pj = await p.json().catch(() => null);
+    if (!p.ok || !pj?.preview || !pj.preview_ref) throw new Error(pj?.error || t("sales.previewFailed"));
+    const v = pj.preview;
+    const details = `${t("sales.recipient")}: ${v.recipient}\n${t("sales.subject")}: ${v.subject}\n\n${t("sales.links")}\nCHF 150: ${v.links.payment150}\nCHF 480: ${v.links.payment480}\n${t("sales.vault")}: ${v.links.vault}\n\n${v.body}`;
+    if (!window.confirm(details)) return;
+    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_confirm", lead_id: l.lead_id, preview_ref: pj.preview_ref, confirmed: true }) });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j?.request) throw new Error(j?.error || t("sales.sendFailed"));
+    S.salesErr[l.lead_id] = j.duplicate ? t("sales.duplicate") : t("sales.queued");
+  } catch (e) { S.salesErr[l.lead_id] = e.message || t("sales.sendFailed"); }
+  finally { delete S.salesBusy[l.lead_id]; if (S.sel === l.lead_id) renderDrawer(); }
+}
+function salesBox(l) {
+  const busy = !!S.salesBusy[l.lead_id];
+  return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-sales-start", disabled: busy || !S.online, onclick: (e) => { e.stopPropagation(); startSalesIntake(l); } }, busy ? t("sales.loading") : t("sales.start")),
+    S.salesErr[l.lead_id] ? el("span", { class: "crm-status crm-sales-msg", "aria-live": "polite" }, S.salesErr[l.lead_id]) : "");
 }
 // TF-077B: KONTAKTFORMULAR – SOFORT BEARBEITEN (ganz oben, vor allen Karten): offene Anfragen im eigenen Bereich, älteste zuerst.
 function renderHot() {
@@ -297,6 +320,7 @@ function renderDrawer() {
   const blocked = l.do_not_contact;
   // A–F + Schnellaktionen
   const qa = el("div", { class: "crm-qa" },
+    l.market !== "VN" ? salesBox(l) : "",
     l.website ? link(l.website, t("btn.website"), "crm-btn") : "",
     l.draft_url ? link(l.draft_url, t("btn.gmail"), "crm-btn") : "",
     S.mail?.send_prepared && l.market !== "VN" ? sendBox(l) : "",

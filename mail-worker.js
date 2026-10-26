@@ -706,6 +706,32 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         cloudSet(id, "failed", "E-Mail konnte nicht gesendet werden.");
       }
     }
+    // TF-JARVIS-024: bestätigte Erstmail. Die Nachricht ist serverseitig aus der Vorschau gebunden;
+    // der Worker prüft die dokumentierte Anfrage erneut und verwendet denselben Send-Lock wie alle anderen Sends.
+    async function sendSalesIntake(id, rq, to) {
+      const m = rq.meta || {}, key = `sales-intake:${m.lead_id}:${m.preview_ref}`;
+      state.salesIntake ||= {};
+      if (!m.sales_intake || !m.lead_id || !m.preview_ref || m.market !== "CH") return cloudSet(id, "blocked", "Unzulässiger Erstmail-Auftrag.");
+      if (state.salesIntake[key]?.status === "sent") return cloudSet(id, "sent", "Bereits gesendet – keine zweite Mail.");
+      const lead = (Array.isArray(leads) ? leads : []).find((l) => l?.lead_id === m.lead_id || normEmail(l?.email) === to);
+      const permission = evaluateSwissEmailPermission(lead, { type: "SOLICITED_RESPONSE", recipient: to, scope: "Website-Analyse und Website-Reparatur" }, t);
+      if (!permission.allowed) return cloudSet(id, "blocked", "Kontaktberechtigung nicht mehr gültig.");
+      if (!EMAIL_RE.test(to) || !rq.subject || !rq.body) return cloudSet(id, "blocked", "Erstmail unvollständig.");
+      const lock = await sendGuard.acquire({ key, request_id: id, messageId: null });
+      if (!lock.ok) { if (lock.final) cloudSet(id, "blocked", "Bereits gesendet oder in Arbeit (Send-Lock)."); return; }
+      state.salesIntake[key] = { status: "sending", at: t.toISOString(), request_id: id, lead_id: m.lead_id };
+      save();
+      try {
+        const d = await gmail.createDraft({ to, subject: rq.subject, body: rq.body });
+        await gmail.sendDraft(d.draftId, { window: null });
+        state.salesIntake[key] = { ...state.salesIntake[key], status: "sent", sentAt: t.toISOString(), threadId: d.threadId || null };
+        save(); await sendGuard.done(key, "SENT");
+        cloudSet(id, "sent", "Erstmail gesendet.");
+      } catch (err) {
+        state.salesIntake[key] = { ...state.salesIntake[key], status: "failed", error: String(err.message).slice(0, 160) };
+        save(); await sendGuard.done(key, "FAILED"); cloudSet(id, "failed", "Erstmail konnte nicht gesendet werden.");
+      }
+    }
     for (const [id, e] of Object.entries(inbox)) {
       if (e.status !== "pending" || dry) continue;
       const rq = e.request || {};
@@ -714,6 +740,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       try {
         if (!rq.expires_at || Date.parse(rq.expires_at) <= +t) { cloudSet(id, "expired", "Abgelaufen, bevor der lokale Worker ihn prüfen konnte."); continue; }
         if (rq.delivery === "send_prepared") { await sendPrepared(id, rq, to); continue; }
+        if (rq.delivery === "sales_intake") { await sendSalesIntake(id, rq, to); continue; }
         if (!EMAIL_RE.test(to) || !rq.subject || !rq.body) { cloudSet(id, "blocked", "Empfänger, Betreff oder Text ungültig."); continue; }
         const manualTest = rq.manual_test === true;
         if (manualTest && !isManualTestMail(rq)) { cloudSet(id, "blocked", "MANUAL_TEST-Auftrag ist nicht exakt an den autorisierten Praxis-Kälin-Test gebunden."); continue; }
