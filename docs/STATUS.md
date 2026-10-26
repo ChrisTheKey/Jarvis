@@ -2,7 +2,7 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-027 isolierte Integration abgeschlossen; Vollcheck 1181 Tests, 1169 bestanden, 0 fehlgeschlagen, 12 übersprungen; Docker-Gates offen; kein Produktionsdeployment)
+Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-028 gestartet; Design für Abschlussmails, Quittung und CHF-330-Upgrade bestätigt; kein produktiver Versand/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
@@ -29,7 +29,7 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-027 isolierte Integration abgeschlos
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf027-integration` | TF-JARVIS-027 isolierte Integration abgeschlossen (`29b7527`); Docker-Release-Gates offen, kein Merge in den Hauptentwicklungsbranch |
+| Codex | `agent-codex/tf028` / `Jarvis-tf028` | TF-JARVIS-028: neue Abschlussmail-/Quittungslogik und CHF-330-Upgrade testgetrieben; Design bestätigt, Implementierung läuft |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -42,6 +42,7 @@ Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und ware
 - TF-JARVIS-027: Integrationscommit `29b7527` existiert nur im isolierten Branch. Docker ist als CLI vorhanden, aber der read-only Aufruf wurde vor Ausführung durch den Ausführungs-Guard blockiert; deshalb sind Docker-/Repair-Images, Compose-Isolation und die 12 übersprungenen Labs nicht verifiziert. Kein Push, kein Merge in den Hauptentwicklungsbranch und kein Produktionszugriff.
 - TF-JARVIS-027: Der Codex-Stand `b9649bc` wird in einem separaten Integrations-Worktree gegen `claude/jarvis-voice-dashboard-9phl5w` geprüft. Der Konflikt in dieser Datei wird dokumentiert aufgelöst; Hauptcheckout und Codex-Worktree bleiben unverändert.
 - Uncommittete Dateien ausserhalb dieses Auftrags bleiben geschützt: `test/crm-fixture.js` sowie `reports/TF-JARVIS-024/phase5-screenshots/`.
+- TF-JARVIS-028: Design bestätigt; Produktionsversand, Live-Zahlungen und Reparaturen an realen Websites bleiben gesperrt, bis synthetische Tests und bestehende Sicherheitsgates nachgewiesen sind.
 
 ## Historischer Baseline-Hinweis
 
