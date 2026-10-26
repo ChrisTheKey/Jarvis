@@ -117,3 +117,6 @@ Keine Produktionsdateien, Secrets, Kunden-Zugangsdaten oder externen Systeme wur
 
 Bis dahin bleibt der Status **NOT READY / keine Freigabe für manuelle Produktionsprüfung**. Die lokalen Fachtests sind kein Ersatz für den fehlenden durchgängigen Browsernachweis.
 
+## Git
+
+Es wurde kein Phase-4-Commit als abgeschlossen bestätigt, da das Erfolgskriterium wegen des blockierten vollständigen Browser-E2E-Nachweises nicht erreicht ist. Es wurden weder Push, Merge noch Deployment ausgeführt.

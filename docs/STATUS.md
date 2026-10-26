@@ -2,7 +2,7 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 Phase 4 Abnahme lokal geprüft; vollständiger Browser-E2E-Nachweis blockiert; kein Push/Deployment)
+Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 Phase 5 Browser-Abnahme versucht; vollständiger Verkaufsdialog weiterhin blockiert; kein Push/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Phase 3: Offer-Intent-Bundle, verifizierte Auswahl/Materialisierung, CHF-480-Tresoraktivierung über den bestehenden Access-Intake und bestehende Zahlungs-/Completion-Gates lokal implementiert und gezielt getestet; lokaler Commit vorhanden, nicht deployed.
@@ -23,7 +23,7 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 Phase 4 Abnahme lokal geprüft; 
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | TF-JARVIS-024 Phase 4: Browser-E2E-Abnahme und vollständige Verkaufskette offen; Fachgates 63/63 grün, externe Aktionen deaktiviert |
+| Codex | `agent-codex/main` | TF-JARVIS-024 Phase 5: nativer Verkaufsdialog und vollständige Verkaufskette weiterhin offen; Fachgates 63/63 grün, externe Aktionen deaktiviert |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
