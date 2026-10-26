@@ -35,7 +35,7 @@ export async function startServer({ n = 387, prepare = null, vnLeads = null, sel
   if (prepare) prepare({ ...dirs, repairDir });
   const sources = createSourceReader({ dataDir: dirs.data, mailDir: dirs.mail, repairDir });
   const control = "k".repeat(48), password = "pw-browser";
-  const env = (k) => ({ JARVIS_SERVER_CONTROL_TOKEN: control, JARVIS_PASSWORD: password })[k];
+  const env = (k) => ({ JARVIS_SERVER_CONTROL_TOKEN: control, JARVIS_PASSWORD: password, JARVIS_WEB_ORIGIN: "https://synthetic.jarvis.test", JARVIS_SALES_VAULT_SECRET: "synthetic-sales-vault-secret" })[k];
   const authMem = {}, salesMem = {}, userMem = {};
   const authStore = authStoreFrom((k) => (authMem[k] ||= memoryStore()));
   const getAuthStore = async () => authStore, getSalesStore = async (k) => (salesMem[k] ||= memoryStore());
@@ -46,10 +46,15 @@ export async function startServer({ n = 387, prepare = null, vnLeads = null, sel
   const cs = memoryStore(snapshot ? { snapshot } : null); // TF-066: optionaler Server-Control-Snapshot (Aufträge + Onboarding)
   const data = async () => createSalesData({ getViewStore: async () => vs, getVnViewStore: async () => vnv, getSalesStore, getControlStore: async () => cs });
   const ra = (req) => resolveActor(req, { env, getAuthStore });
+  const resolveSyntheticLead = async (actor, id) => {
+    const found = await data().then((d) => d.resolveLead(actor, id));
+    if (found?.lead?.lead_id !== "firma-021.ch") return found;
+    return { lead: { ...found.lead, errors: { ...found.lead.errors, items: [{ text: "Synthetic confirmed website repair finding", confirmed: true }] }, request: { basis: "REQUESTED_CONTACT", requestSource: "synthetic fixture request", requestDate: "2026-10-09T09:00:00Z", requestScope: "Website-Reparatur", requestEvidence: "Synthetic request for the website repair review", responseScope: "Website-Analyse und Website-Reparatur", recipientOrSubmissionChannel: "info@firma-021.ch", requestConfidence: "HIGH" } } };
+  };
   const apis = { "/api/crm": handler, "/api/sales": createSalesHandler({ env, data, getSalesStore, getAuthStore }),
     "/api/state": createStateHandler({ env, getStore: async () => memoryStore(), resolveActor: ra, getUserStore: async (u) => (userMem[u] ||= memoryStore()) }),
     "/api/calling": createCallingHandler({ env, getCallingStore: async (k) => (salesMem[`__calling_${k}`] ||= memoryStore()), getAuthStore, getViewStore: async () => vs, getVnViewStore: async () => vnv, getSalesStore, getCrmQueueStore: async () => qs, getVnQueueStore: async () => vnq }),
-    "/api/mail-requests": createMailRequestHandler({ env, getStore: async () => (salesMem.__mail ||= memoryStore()), resolveActor: ra, resolveLead: async (a, id) => (await data()).resolveLead(a, id) }) };
+    "/api/mail-requests": createMailRequestHandler({ env, getStore: async () => (salesMem.__mail ||= memoryStore()), resolveActor: ra, resolveLead: resolveSyntheticLead }) };
   const agent = createCrmAgent({ dataDir: dirs.data, sources, url: "http://local.test", token: crmAgentToken(control), fetchFn: (u, init) => handler(new Request(u, init)) });
   await agent.pollOnce();
   let stop = false;
@@ -88,7 +93,7 @@ export async function openCrm(browser, srv, ctxOpts) {
   const errors = [], external = [], posts = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|ERR_|net::/.test(m.text())) errors.push(m.text()); });
-  await page.route("**/*", (r) => { const u = r.request().url(); if (!u.startsWith(srv.url)) { external.push(u); return r.abort(); } if (r.request().method() === "POST") posts.push(new URL(u).pathname); return r.continue(); });
+  await page.route("**/*", (r) => { const u = r.request().url(); if (!u.startsWith(srv.url)) { external.push(u); return r.abort(); } if (r.request().method() === "POST") posts.push(new URL(u).pathname === "/api/mail-requests" ? JSON.parse(r.request().postData() || "{}") : new URL(u).pathname); return r.continue(); });
   await page.goto(srv.url + "/#crm");
   await page.evaluate(() => { document.getElementById("boot").hidden = true; }); // Startbildschirm (Audio-Freigabe) ist nicht Teil des CRM-Tests
   return { ctx, page, errors, external, posts };

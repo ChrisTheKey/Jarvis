@@ -23,7 +23,7 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 Phase 5 Browser-Abnahme versucht
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | TF-JARVIS-024 Phase 5: nativer Verkaufsdialog und vollständige Verkaufskette weiterhin offen; Fachgates 63/63 grün, externe Aktionen deaktiviert |
+| Codex | `agent-codex/main` | TF-JARVIS-024: Auth-/Routing- und Preview-Referenzfehler lokal behoben; Browser-Abnahme nach Overlay-Fix bis persistenter Queue-Prüfung gelaufen, kein Commit nach Testlimit |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 

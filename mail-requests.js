@@ -311,7 +311,7 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (isUser && req.method === "POST" && actor) {
       // OWNER darf ebenfalls lead_draft für VN-Leads nutzen (gleiche serverseitige Empfänger-Auflösung).
       const peek = await req.clone().json().catch(() => null);
-      if (peek?.op === "lead_draft" || peek?.op === "send_lead_draft") return sellerRequest(req, actor);
+      if (["lead_draft", "send_lead_draft", "sales_intake_preview", "sales_intake_confirm"].includes(peek?.op)) return sellerRequest(req, actor);
     }
     // Genau ein Sender: der VPS-Worker, wenn eingerichtet – sonst der lokale Worker.
     const owner = isWorker ? "vps" : isLocal && !dedicated ? "local" : null;
