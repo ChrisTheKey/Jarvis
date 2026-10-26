@@ -161,10 +161,12 @@ async function sendSalesIntake(l) {
 function salesBox(l) {
   const busy = !!S.salesBusy[l.lead_id];
   const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.sales_intake_direct === true).sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
-  const locked = ["pending", "processing", "accepted_local", "sent"].includes(queued?.status);
-  const stateText = queued?.status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : "";
-  return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-mail-send", disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l); } }, busy ? t("sales.loading") : queued?.status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send")),
-    S.salesErr[l.lead_id] || stateText ? el("span", { class: `crm-status crm-sales-msg${queued?.status === "sent" ? " ok" : ""}`, "aria-live": "polite" }, S.salesErr[l.lead_id] || stateText) : "");
+  const status = queued?.status;
+  const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
+  const stateText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : "";
+  const visibleText = stateText || S.salesErr[l.lead_id] || "";
+  return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-mail-send", disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l); } }, busy ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send")),
+    visibleText ? el("span", { class: `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`, "aria-live": "polite" }, visibleText) : "");
 }
 // TF-077B: KONTAKTFORMULAR – SOFORT BEARBEITEN (ganz oben, vor allen Karten): offene Anfragen im eigenen Bereich, älteste zuerst.
 function renderHot() {

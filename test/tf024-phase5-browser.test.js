@@ -64,6 +64,14 @@ test("TF-024 Phase 5: Mail senden queued die Erstmail auf Desktop und Mobile gen
     assert.equal(await button.isDisabled(), true, "Button muss nach dem Einreihen gesperrt sein");
     await shot(desktop.page, "tf024-direct-desktop-queued.png");
 
+    const mailStore = desktopSrv.mailStore();
+    const queuedState = await mailStore.get();
+    const sentAt = new Date().toISOString();
+    assert.equal(await mailStore.set({ ...queuedState.state, requests: queuedState.state.requests.map((request) => request.request_id === first.request_id
+      ? { ...request, status: "sent", reason: null, updated_at: sentAt } : request) }, queuedState.etag), true, "synthetischer Worker-Status konnte nicht persistiert werden");
+    await desktop.page.waitForFunction(() => /Erstmail gesendet/.test(document.querySelector(".crm-sales-msg")?.textContent || ""), null, { timeout: 35_000 });
+    assert.equal(await button.textContent(), "Erstmail gesendet", "der Button muss den Worker-Status anzeigen");
+
     await desktop.page.reload({ waitUntil: "domcontentloaded" });
     await desktop.page.evaluate(() => { document.getElementById("boot").hidden = true; });
     await waitForCrm(desktop.page);

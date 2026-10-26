@@ -2,12 +2,13 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 direkter CRM-Mailbutton lokal mit synthetischen Leads verifiziert; kein Push/Deployment)
+Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-025 Produktionsprüfung lokal abgeschlossen; Vollcheck 1192 Tests, 1180 bestanden, 0 fehlgeschlagen, 12 übersprungen; kein produktiver Versand/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
 - TF-JARVIS-024 Phase 3: Offer-Intent-Bundle, verifizierte Auswahl/Materialisierung, CHF-480-Tresoraktivierung über den bestehenden Access-Intake und bestehende Zahlungs-/Completion-Gates lokal implementiert und gezielt getestet; lokaler Commit vorhanden, nicht deployed.
 - TF-JARVIS-024 Direct-Mail: Button „Mail senden“ im Leadpanel, exakt freigegebene Erstmail mit auftragsgebundenem One-Time-Access-Link und ausschliesslichen Stripe-Sandbox-Links, serverseitige Sandbox-/Synthetic-Gates, Queue-Idempotenz und Worker-Prüfung implementiert; direkte Tests 5/5, relevante Regressionen 38/38 und isolierter Browsernachweis 1/1 (Desktop, Mobile, Reload, genau ein Auftrag) grün; kein echter Versand.
+- TF-JARVIS-025 Produktionsprüfung: tatsächlicher Worker-Status überschreibt im CRM keinen veralteten lokalen Queue-Hinweis mehr; `vn-order-064` übernimmt die `lead_id` auch beim CHF-150-Check-Auftrag. Browser-, Direkt-, Sicherheits- und E2E-Regressionsprüfungen sind mit vorhandenem Chromium grün; vier isolierte Screenshots liegen unter `reports/TF-JARVIS-025/screenshots/`. Der Produktionsversand bleibt bis zur ausdrücklichen Freigabe gesperrt.
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
 - Korrektur des LiveKit-Entfernungsauftrags: menschlicher Calling-Lesezugang für alle vier Rollen, CRM-Call-History/Rückrufe im Calling-Dashboard und CH/VN-Mitarbeiter-UI wiederhergestellt; autonome Start-/Worker-/Providerpfade bleiben fail-closed.
 - Finale Freigabeprüfung: 14 ursprüngliche Fehler klassifiziert (11 Chromium-/Umgebungsfehler mit vorhandenem Binary behoben, 3 veraltete autonome Calling-Erwartungen in Tests aktualisiert); menschliche Vertriebs-Regressionen 98/98 grün.
@@ -25,22 +26,16 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 direkter CRM-Mailbutton lokal mi
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | – (frei; TF-JARVIS-024 Direct-Mail lokal getestet und committed, kein Push/Deployment) |
+| Codex | `agent-codex/main` | TF-JARVIS-025 lokal getestet und zur Übergabe dokumentiert; Basis-Branch war mit `origin/agent-codex/main` auf `10bbf70` synchronisiert, kein Produktions-Deployment |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
-Codex-Nachtrag 2026-10-26: Der TF-JARVIS-024-Stand ist lokal committed (`3d5efde`); der Push auf `agent-codex/main` wurde von der lokalen Push-Schutzregel abgewiesen und nicht umgangen.
+Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und waren vor TF-025 mit `origin/agent-codex/main` synchronisiert. TF-025 ist lokal committed; der Hash steht im aktuellen Git-Log. Bestehende uncommittete Dateien (`test/crm-fixture.js` und `reports/TF-JARVIS-024/phase5-screenshots/`) wurden nicht verändert oder gestaged.
 
-## Bekannte Fehler (Baseline `npm test` auf Commit 692420d im Worktree, 1197 Tests: 1165 pass, 16 fail)
-Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass eigene Änderungen nichts dazu beitragen.
-- Aktueller Vollcheck 2026-10-26 mit vorhandenem Chromium: 1192 Tests, 1174 pass, 3 fail, 3 cancelled, 12 skipped. Die TF-024-Direkt-/Bundle-/Browserpfade sind gruen; die verbleibenden sechs ausgegebenen Faelle sind Browser-Audit/Browser-Validation/CRM-Browser-Timeouts, `vn-order-064`-VPS-Fixture und ein bereits behobener Repair-Image-Kopielfehler.
-- Der Repair-Image-Kopielfehler (`sales-intake-bundle.js`) ist im Codex-Worktree behoben und der gezielte Service-Separation-Test ist 9/9 gruen. Die verbleibenden Volltest-Browser- und VN-Fixture-Faelle bleiben ausserhalb von TF-024.
-1. **Chromium-Version (Umgebung, 9 Tests):** `browser-validation-045`, `full-order-046` (READINESS), u. a. – Playwright 1.60 findet seinen Chromium nicht. Umgehung: `JARVIS_CHROMIUM_PATH` auf `%LOCALAPPDATA%\ms-playwright\chromium-1248\chrome-win64\chrome.exe` (siehe unten, Ergebnis mit gesetztem Pfad).
-2. **`test/crm-browser-053.test.js` K/L:** erwartet Text «Teilprüfung», Dashboard zeigt «≥2 · veraltet» (CRM-Anzeige weicht vom Test ab; Chris' offene CRM-Änderungen im Hauptordner betreffen vermutlich dieses Gebiet).
-3. **`test/dnc-mail-053.test.js` G** und **`test/lead-crm-053.test.js` L:** Quellcode-Textprüfungen (Compose-Mount `:ro`, crm.*-Allowlist in `crm-service.js`) schlagen an – Test und Code laufen auseinander.
-4. **`test/service-separation-047.test.js` IMAGES:** «Repair-Image fehlt mail-requests.js» – Dockerfile.repair und importierte Module stimmen nicht überein. Vor dem nächsten Repair-Deploy klären.
-5. **`test/server-control.test.js`:** «valid CONTROL action (Mock)» liefert `failed` statt `done`.
-6. **Test-Falle im Hauptordner:** `npm test` im Hauptordner startet die untracked Datei `crm_manual_test.mjs` (passt auf das Node-Testmuster `*_test.mjs`), öffnet einen sichtbaren Browser zur Produktions-Loginseite und wartet auf Eingabe. Tests deshalb in den Worktrees ausführen, oder Datei umbenennen/verschieben (Entscheidung Chris).
+## Bekannte Fehler / verbleibende Blocker
+- Aktueller Vollcheck 2026-10-26 mit vorhandenem Chromium: **1192 Tests, 1180 bestanden, 0 fehlgeschlagen, 12 übersprungen; Exit 0**. Die vier untersuchten Fehlergruppen (`browser-audit-praxis002`, `browser-validation-045`, `crm-browser-053`, `vn-order-064`) sind nicht mehr rot; `service-separation-047` bleibt ebenfalls grün.
+- Der Produktionsversand ist absichtlich **BLOCKED**: Es wurde keine Live-E-Mail, keine Live-Zahlung und kein Deployment ausgeführt. Für READY fehlen daher weiterhin die ausdrückliche Produktionsfreigabe, echte Produktionskonfiguration und ein separat freigegebener kontrollierter Live-Nachweis.
+- Uncommittete Dateien ausserhalb dieses Auftrags bleiben geschützt: `test/crm-fixture.js` sowie `reports/TF-JARVIS-024/phase5-screenshots/`.
 
 ## Verifikation der Zentrale (2026-10-25)
 - Codex CLI 0.164 (`codex exec` im Worktree `Jarvis-codex`): las `AGENTS.md`, führte `dev-check` aus, committete auf `agent-codex/main` (nach Freigabe der Git-Schreibpfade in `.codex/config.toml`; erster Versuch scheiterte an der Sandbox). Hinweis: in der Sandbox legt Codex den Index über einen Umweg an – nach einem Codex-Commit `git status` prüfen, ggf. `git reset` (nur Index).
@@ -58,7 +53,7 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 - Codex-Grenze: In der Windows-Sandbox kann Codex den Worktree-Index (`.git/worktrees/Jarvis-codex`) nicht beschreiben; Commits gelingen nur über einen Plumbing-Umweg (Index danach veraltet, `git reset`) oder gar nicht. Zuverlässig: Codex ändert und testet, der Commit läuft ausserhalb der Sandbox (`git commit` im Worktree). Alternative nur mit Freigabe: Codex mit `--sandbox danger-full-access` für Commits.
 
 ## Offene Aufgaben (Backlog, Priorität nach Chris)
-- TF-JARVIS-024: Push von `3d5efde` und dem Repair-Image-Fix auf `origin/agent-codex/main` muss wegen der lokalen Regel «Push nur durch Chris» manuell durch Chris erfolgen; kein Force-Push.
+- TF-JARVIS-025: Nach Sichtung des lokalen Commits muss ein normaler Push auf `origin/agent-codex/main` nach den lokalen Push-Regeln durch Chris erfolgen; kein Force-Push. Keine produktive Versandfreigabe ohne separaten Sicherheitsentscheid.
 - Spätere Server-Bereinigung: LiveKit-Agent-Container, Calling-Worker, VPS-Dockerfile/Deploy-Skript und zugehörige Secrets nach ausdrücklicher Freigabe entfernen; diese Arbeiten wurden lokal nicht ausgeführt.
 - Fehler 1–5 oben beheben (je ein kleiner Commit mit Test).
 - Commit der uncommitteten Arbeit im Hauptordner (Chris) – danach `agent-*/main` rebasen.
