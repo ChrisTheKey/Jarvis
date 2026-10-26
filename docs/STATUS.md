@@ -2,7 +2,7 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-025 Produktionsprüfung lokal abgeschlossen; Vollcheck 1192 Tests, 1180 bestanden, 0 fehlgeschlagen, 12 übersprungen; kein produktiver Versand/Deployment)
+Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-026 Readiness-/Deployment-/Rollback-Plan erstellt; Vollcheck 1192 Tests, 1180 bestanden, 0 fehlgeschlagen, 12 übersprungen; kein produktiver Versand/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
@@ -12,6 +12,7 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-025 Produktionsprüfung lokal abgesc
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
 - Korrektur des LiveKit-Entfernungsauftrags: menschlicher Calling-Lesezugang für alle vier Rollen, CRM-Call-History/Rückrufe im Calling-Dashboard und CH/VN-Mitarbeiter-UI wiederhergestellt; autonome Start-/Worker-/Providerpfade bleiben fail-closed.
 - Finale Freigabeprüfung: 14 ursprüngliche Fehler klassifiziert (11 Chromium-/Umgebungsfehler mit vorhandenem Binary behoben, 3 veraltete autonome Calling-Erwartungen in Tests aktualisiert); menschliche Vertriebs-Regressionen 98/98 grün.
+- TF-JARVIS-026 Produktionsvorbereitung: Repository-/Branch-Integration, Hetzner-/Docker-/Netlify-/Mail-/Repair-/Stripe-/Zugangstresor-Abhängigkeiten sowie priorisierte Deployment- und Rollback-Risiken read-only aus Dokumentation und Konfiguration bewertet; drei TF-026-Berichte erstellt. Status bleibt BLOCKED, weil der Codex-Stand noch nicht integriert ist, der direkte CRM-Mailweg weiterhin absichtlich TEST-only ist und der reale VPS-/Netlify-Stand ohne SSH nicht verifiziert wurde.
 - P0-Abschlussprüfung: Gmail-, Stripe-, Discovery- und CRM-Einstiegspunkte verwenden das zentrale Capability-Gate; Dockerfile-Kopiellisten ergänzt; Chromium-Testpfad mit vorhandenem Chromium verifiziert.
 - Always-on Mail-Worker auf VPS (alleiniger Sender), Gmail-OAuth, Versandfenster/Tageslimit, DNC-Durchsetzung (TF-047…056).
 - CRM-Dienst `jarvis-crm` mit allen qualifizierten Leads (TF-053/057), Reparatur-Dienst `jarvis-repair`.
@@ -26,7 +27,7 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-025 Produktionsprüfung lokal abgesc
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | TF-JARVIS-025 lokal getestet und zur Übergabe dokumentiert; Basis-Branch war mit `origin/agent-codex/main` auf `10bbf70` synchronisiert, kein Produktions-Deployment |
+| Codex | `agent-codex/main` | TF-JARVIS-026 Readiness-/Deployment-/Rollback-Dokumentation erstellt; `9536355` synchronisiert, kein Merge, kein Push dieses Dokumentationsstands, kein Produktions-Deployment |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -35,6 +36,7 @@ Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und ware
 ## Bekannte Fehler / verbleibende Blocker
 - Aktueller Vollcheck 2026-10-26 mit vorhandenem Chromium: **1192 Tests, 1180 bestanden, 0 fehlgeschlagen, 12 übersprungen; Exit 0**. Die vier untersuchten Fehlergruppen (`browser-audit-praxis002`, `browser-validation-045`, `crm-browser-053`, `vn-order-064`) sind nicht mehr rot; `service-separation-047` bleibt ebenfalls grün.
 - Der Produktionsversand ist absichtlich **BLOCKED**: Es wurde keine Live-E-Mail, keine Live-Zahlung und kein Deployment ausgeführt. Für READY fehlen daher weiterhin die ausdrückliche Produktionsfreigabe, echte Produktionskonfiguration und ein separat freigegebener kontrollierter Live-Nachweis.
+- TF-JARVIS-026: Der aktuelle Codex-Branch ist noch nicht in `claude/jarvis-voice-dashboard-9phl5w` integriert; `docs/STATUS.md` hat einen Mergekonflikt und `scripts/run-unit-tests.mjs` enthält eine neuere Integrationsänderung. Der direkte CRM-Mailbutton bleibt wegen `JARVIS_SALES_SANDBOX_MODE`/Synthetic-Gates auf Testleads beschränkt. Der laufende VPS-/Netlify-Stand, Backup-Alter, Volumes, Gmail-OAuth und Stripe-Umgebung sind ohne SSH nicht bestätigt. Die 12 Docker-/Repair-Labs des Vollchecks wurden mangels `JARVIS_REPAIR_LAB=1` übersprungen und nicht als bestanden gezählt.
 - Uncommittete Dateien ausserhalb dieses Auftrags bleiben geschützt: `test/crm-fixture.js` sowie `reports/TF-JARVIS-024/phase5-screenshots/`.
 
 ## Verifikation der Zentrale (2026-10-25)
