@@ -5,6 +5,7 @@ Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im
 Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 direkter CRM-Mailbutton lokal mit synthetischen Leads verifiziert; kein Push/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
+- TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
 - TF-JARVIS-024 Phase 3: Offer-Intent-Bundle, verifizierte Auswahl/Materialisierung, CHF-480-Tresoraktivierung über den bestehenden Access-Intake und bestehende Zahlungs-/Completion-Gates lokal implementiert und gezielt getestet; lokaler Commit vorhanden, nicht deployed.
 - TF-JARVIS-024 Direct-Mail: Button „Mail senden“ im Leadpanel, exakt freigegebene Erstmail mit auftragsgebundenem One-Time-Access-Link und ausschliesslichen Stripe-Sandbox-Links, serverseitige Sandbox-/Synthetic-Gates, Queue-Idempotenz und Worker-Prüfung implementiert; direkte Tests 5/5, relevante Regressionen 38/38 und isolierter Browsernachweis 1/1 (Desktop, Mobile, Reload, genau ein Auftrag) grün; kein echter Versand.
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
@@ -28,8 +29,12 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 direkter CRM-Mailbutton lokal mi
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
+Codex-Nachtrag 2026-10-26: Der TF-JARVIS-024-Stand ist lokal committed (`3d5efde`); der Push auf `agent-codex/main` wurde von der lokalen Push-Schutzregel abgewiesen und nicht umgangen.
+
 ## Bekannte Fehler (Baseline `npm test` auf Commit 692420d im Worktree, 1197 Tests: 1165 pass, 16 fail)
 Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass eigene Änderungen nichts dazu beitragen.
+- Aktueller Vollcheck 2026-10-26 mit vorhandenem Chromium: 1192 Tests, 1174 pass, 3 fail, 3 cancelled, 12 skipped. Die TF-024-Direkt-/Bundle-/Browserpfade sind gruen; die verbleibenden sechs ausgegebenen Faelle sind Browser-Audit/Browser-Validation/CRM-Browser-Timeouts, `vn-order-064`-VPS-Fixture und ein bereits behobener Repair-Image-Kopielfehler.
+- Der Repair-Image-Kopielfehler (`sales-intake-bundle.js`) ist im Codex-Worktree behoben und der gezielte Service-Separation-Test ist 9/9 gruen. Die verbleibenden Volltest-Browser- und VN-Fixture-Faelle bleiben ausserhalb von TF-024.
 1. **Chromium-Version (Umgebung, 9 Tests):** `browser-validation-045`, `full-order-046` (READINESS), u. a. – Playwright 1.60 findet seinen Chromium nicht. Umgehung: `JARVIS_CHROMIUM_PATH` auf `%LOCALAPPDATA%\ms-playwright\chromium-1248\chrome-win64\chrome.exe` (siehe unten, Ergebnis mit gesetztem Pfad).
 2. **`test/crm-browser-053.test.js` K/L:** erwartet Text «Teilprüfung», Dashboard zeigt «≥2 · veraltet» (CRM-Anzeige weicht vom Test ab; Chris' offene CRM-Änderungen im Hauptordner betreffen vermutlich dieses Gebiet).
 3. **`test/dnc-mail-053.test.js` G** und **`test/lead-crm-053.test.js` L:** Quellcode-Textprüfungen (Compose-Mount `:ro`, crm.*-Allowlist in `crm-service.js`) schlagen an – Test und Code laufen auseinander.
@@ -53,6 +58,7 @@ Nicht durch die Entwicklungszentrale verursacht; vor Beginn feststellen, dass ei
 - Codex-Grenze: In der Windows-Sandbox kann Codex den Worktree-Index (`.git/worktrees/Jarvis-codex`) nicht beschreiben; Commits gelingen nur über einen Plumbing-Umweg (Index danach veraltet, `git reset`) oder gar nicht. Zuverlässig: Codex ändert und testet, der Commit läuft ausserhalb der Sandbox (`git commit` im Worktree). Alternative nur mit Freigabe: Codex mit `--sandbox danger-full-access` für Commits.
 
 ## Offene Aufgaben (Backlog, Priorität nach Chris)
+- TF-JARVIS-024: Push von `3d5efde` und dem Repair-Image-Fix auf `origin/agent-codex/main` muss wegen der lokalen Regel «Push nur durch Chris» manuell durch Chris erfolgen; kein Force-Push.
 - Spätere Server-Bereinigung: LiveKit-Agent-Container, Calling-Worker, VPS-Dockerfile/Deploy-Skript und zugehörige Secrets nach ausdrücklicher Freigabe entfernen; diese Arbeiten wurden lokal nicht ausgeführt.
 - Fehler 1–5 oben beheben (je ein kleiner Commit mit Test).
 - Commit der uncommitteten Arbeit im Hauptordner (Chris) – danach `agent-*/main` rebasen.
