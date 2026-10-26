@@ -34,6 +34,7 @@ import { senderProfileFor, VN_SIGNATURE } from "./sender-profiles.js";
 import { processContactForms, DEFAULT_CONTACT_FORM_CONFIG, CONTACT_FORM_DRAFT_MODE } from "./contact-form.js";
 import { draftRef, SERVER_SEND_USERS } from "./mail-access.js";
 import { MANUAL_TEST_MAIL, isManualTestMail } from "./manual-test-mail.js";
+import { createOfferIntentBundle, closeOfferIntentBundle, salesBundleId } from "./sales-intake-bundle.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -722,12 +723,17 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       state.salesIntake[key] = { status: "sending", at: t.toISOString(), request_id: id, lead_id: m.lead_id };
       save();
       try {
+        const bundle = createOfferIntentBundle(store, { bundle_id: m.bundle_id || salesBundleId(m.preview_ref), lead_id: m.lead_id, domain: lead.domain, email: to,
+          website: lead.website, company: lead.company, contact_name: lead.contact_name || lead.last_name, order150_id: m.order150_id, order480_id: m.order480_id,
+          vaultToken: (() => { const match = String(rq.body || "").match(/https:\/\/[^\s]+\/access\.html#t=([^\s]+)/); try { return match ? decodeURIComponent(match[1].replace(/[),.;]+$/, "")) : null; } catch { return null; } })(),
+          vaultExpiresAt: new Date(+t + 24 * 3600_000).toISOString(), now: t });
         const d = await gmail.createDraft({ to, subject: rq.subject, body: rq.body });
         await gmail.sendDraft(d.draftId, { window: null });
-        state.salesIntake[key] = { ...state.salesIntake[key], status: "sent", sentAt: t.toISOString(), threadId: d.threadId || null };
+        state.salesIntake[key] = { ...state.salesIntake[key], status: "sent", sentAt: t.toISOString(), threadId: d.threadId || null, bundle_id: bundle.bundle_id };
         save(); await sendGuard.done(key, "SENT");
         cloudSet(id, "sent", "Erstmail gesendet.");
       } catch (err) {
+        try { closeOfferIntentBundle(store, m.bundle_id || salesBundleId(m.preview_ref), { reason: "Erstmail konnte nicht zugestellt werden", now: t }); } catch {}
         state.salesIntake[key] = { ...state.salesIntake[key], status: "failed", error: String(err.message).slice(0, 160) };
         save(); await sendGuard.done(key, "FAILED"); cloudSet(id, "failed", "Erstmail konnte nicht gesendet werden.");
       }

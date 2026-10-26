@@ -11,6 +11,7 @@ import { cleanCore } from "./cloud-core.js";
 import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import { mailAccessFor, draftRefOf, DRAFT_REF_RE, SELLER_SEND_DAILY_LIMIT } from "./mail-access.js";
 import { buildSalesIntakePreview, salesOrderRefs, salesVaultLink } from "./sales-intake.js";
+import { salesBundleId } from "./sales-intake-bundle.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
   ttlHours: 24, maxTtlHours: 72, duplicateHours: 24, bodyBytes: 16_000 };
@@ -46,7 +47,7 @@ export function cleanMeta(m) {
   const locale = ["de-CH", "vi-VN"].includes(m.locale) ? m.locale : null;
   const lead_id = typeof m.lead_id === "string" && META_LEAD_RE.test(m.lead_id) ? m.lead_id : null;
   const sales = m.sales_intake === true && typeof m.preview_ref === "string" && /^[a-f0-9]{64}$/.test(m.preview_ref)
-    ? { sales_intake: true, preview_ref: m.preview_ref, order150_id: m.order150_id, order480_id: m.order480_id } : {};
+    ? { sales_intake: true, preview_ref: m.preview_ref, bundle_id: salesBundleId(m.preview_ref), order150_id: m.order150_id, order480_id: m.order480_id } : {};
   return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id, ...sales } : null;
 }
 

@@ -2,9 +2,10 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 Phase 2 lokal implementiert; sichere Integrationsgates noch offen)
+Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 Phase 3 lokal implementiert und gezielt getestet; kein Push/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
+- TF-JARVIS-024 Phase 3: Offer-Intent-Bundle, verifizierte Auswahl/Materialisierung, CHF-480-Tresoraktivierung über den bestehenden Access-Intake und bestehende Zahlungs-/Completion-Gates lokal implementiert und gezielt getestet; lokaler Commit vorhanden, nicht deployed.
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
 - Korrektur des LiveKit-Entfernungsauftrags: menschlicher Calling-Lesezugang für alle vier Rollen, CRM-Call-History/Rückrufe im Calling-Dashboard und CH/VN-Mitarbeiter-UI wiederhergestellt; autonome Start-/Worker-/Providerpfade bleiben fail-closed.
 - Finale Freigabeprüfung: 14 ursprüngliche Fehler klassifiziert (11 Chromium-/Umgebungsfehler mit vorhandenem Binary behoben, 3 veraltete autonome Calling-Erwartungen in Tests aktualisiert); menschliche Vertriebs-Regressionen 98/98 grün.
@@ -22,7 +23,7 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-024 Phase 2 lokal implementiert; sic
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/main` | TF-JARVIS-024 Phase 2: CRM-Button, Vorschau/Bestätigung und idempotente `sales_intake`-Queue lokal implementiert; Auftrags-/Tresor-Materialisierung offen, Push/Deployment verboten |
+| Codex | `agent-codex/main` | – (TF-JARVIS-024 Phase 3 erledigt; externe Aktionen bleiben deaktiviert) |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
