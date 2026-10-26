@@ -28,12 +28,13 @@ import { COLD_DRAFTS_FILE, COLD_MODE, FREEMAIL_RE, markManualSend, ensureColdDra
 import { publicLeads } from "./cloud-leads.js";
 import { loadRegistry, registryBlock, reconcileRegistry, publicRegistry, registryStatus, CRM_UNAVAILABLE } from "./lead-registry.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
-import { paymentOptions } from "./payment-links.js";
+import { paymentOptions, TEST_PAYMENT_LINK_RE } from "./payment-links.js";
 import { readOrdersExport } from "./onboarding-store.js";
 import { senderProfileFor, VN_SIGNATURE } from "./sender-profiles.js";
 import { processContactForms, DEFAULT_CONTACT_FORM_CONFIG, CONTACT_FORM_DRAFT_MODE } from "./contact-form.js";
 import { draftRef, SERVER_SEND_USERS } from "./mail-access.js";
 import { MANUAL_TEST_MAIL, isManualTestMail } from "./manual-test-mail.js";
+import { createOfferIntentBundle, closeOfferIntentBundle, salesBundleId } from "./sales-intake-bundle.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS = process.env.JARVIS_SECRETS_DIR || path.join(ROOT, ".secrets");
@@ -706,6 +707,50 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
         cloudSet(id, "failed", "E-Mail konnte nicht gesendet werden.");
       }
     }
+    // TF-JARVIS-024: bestätigte Erstmail. Die Nachricht ist serverseitig aus der Vorschau gebunden;
+    // der Worker prüft die dokumentierte Anfrage erneut und verwendet denselben Send-Lock wie alle anderen Sends.
+    async function sendSalesIntake(id, rq, to) {
+      const m = rq.meta || {}, direct = m.sales_intake_direct === true;
+      const key = direct && m.idempotency_key ? `sales-intake:${m.idempotency_key}` : `sales-intake:${m.lead_id}:${m.preview_ref}`;
+      state.salesIntake ||= {};
+      if (!m.sales_intake || !m.lead_id || !m.preview_ref || m.market !== "CH") return cloudSet(id, "blocked", "Unzulässiger Erstmail-Auftrag.");
+      if (state.salesIntake[key]?.status === "sent") return cloudSet(id, "sent", "Bereits gesendet – keine zweite Mail.");
+      const lead = (Array.isArray(leads) ? leads : []).find((l) => l?.lead_id === m.lead_id || normEmail(l?.email) === to);
+      const permission = evaluateSwissEmailPermission(lead, { type: "SOLICITED_RESPONSE", recipient: to, scope: "Website-Analyse und Website-Reparatur" }, t);
+      if (!permission.allowed) return cloudSet(id, "blocked", "Kontaktberechtigung nicht mehr gültig.");
+      if (!EMAIL_RE.test(to) || !rq.subject || !rq.body) return cloudSet(id, "blocked", "Erstmail unvollständig.");
+      let directAccessToken = null;
+      if (direct) {
+        const accessMatch = String(rq.body).match(/https:\/\/[^\s]+\/access\.html#t=([A-Za-z0-9_-]{43})/);
+        const sandboxLinks = [...String(rq.body).matchAll(/https:\/\/buy\.stripe\.com\/test_[A-Za-z0-9]{10,64}(?:\?[^\s]+)/g)].map((x) => x[0]);
+        const expiresAt = Date.parse(String(m.access_expires_at || ""));
+        if (process.env.JARVIS_SALES_SANDBOX_MODE !== "true" || m.sales_sandbox !== true || m.synthetic_test !== true || lead?.is_test !== true
+          || !accessMatch || !Number.isFinite(expiresAt) || expiresAt <= +t || sandboxLinks.length !== 2
+          || sandboxLinks.some((url) => !TEST_PAYMENT_LINK_RE.test(url.split("?")[0]))) {
+          return cloudSet(id, "blocked", "Direkter Erstmail-Auftrag ist nur mit synthetischem Lead, Sandbox-Links und gültigem Zugangstresor erlaubt.");
+        }
+        directAccessToken = accessMatch[1];
+      }
+      const lock = await sendGuard.acquire({ key, request_id: id, messageId: null });
+      if (!lock.ok) { if (lock.final) cloudSet(id, "blocked", "Bereits gesendet oder in Arbeit (Send-Lock)."); return; }
+      state.salesIntake[key] = { status: "sending", at: t.toISOString(), request_id: id, lead_id: m.lead_id };
+      save();
+      try {
+        const bundle = createOfferIntentBundle(store, { bundle_id: m.bundle_id || salesBundleId(m.preview_ref), lead_id: m.lead_id, domain: lead.domain, email: to,
+          website: lead.website, company: lead.company, contact_name: lead.contact_name || lead.last_name, order150_id: m.order150_id, order480_id: m.order480_id,
+          vaultToken: direct ? directAccessToken : (() => { const match = String(rq.body || "").match(/https:\/\/[^\s]+\/access\.html#t=([^\s]+)/); try { return match ? decodeURIComponent(match[1].replace(/[),.;]+$/, "")) : null; } catch { return null; } })(),
+          vaultExpiresAt: direct ? new Date(m.access_expires_at).toISOString() : new Date(+t + 24 * 3600_000).toISOString(), now: t });
+        const d = await gmail.createDraft({ to, subject: rq.subject, body: rq.body });
+        await gmail.sendDraft(d.draftId, { window: null });
+        state.salesIntake[key] = { ...state.salesIntake[key], status: "sent", sentAt: t.toISOString(), threadId: d.threadId || null, bundle_id: bundle.bundle_id };
+        save(); await sendGuard.done(key, "SENT");
+        cloudSet(id, "sent", "Erstmail gesendet.");
+      } catch (err) {
+        try { closeOfferIntentBundle(store, m.bundle_id || salesBundleId(m.preview_ref), { reason: "Erstmail konnte nicht zugestellt werden", now: t }); } catch {}
+        state.salesIntake[key] = { ...state.salesIntake[key], status: "failed", error: String(err.message).slice(0, 160) };
+        save(); await sendGuard.done(key, "FAILED"); cloudSet(id, "failed", "Erstmail konnte nicht gesendet werden.");
+      }
+    }
     for (const [id, e] of Object.entries(inbox)) {
       if (e.status !== "pending" || dry) continue;
       const rq = e.request || {};
@@ -714,6 +759,7 @@ export function createWorker({ dir = WORKER_DIR, gmail, compose, now = () => new
       try {
         if (!rq.expires_at || Date.parse(rq.expires_at) <= +t) { cloudSet(id, "expired", "Abgelaufen, bevor der lokale Worker ihn prüfen konnte."); continue; }
         if (rq.delivery === "send_prepared") { await sendPrepared(id, rq, to); continue; }
+        if (rq.delivery === "sales_intake") { await sendSalesIntake(id, rq, to); continue; }
         if (!EMAIL_RE.test(to) || !rq.subject || !rq.body) { cloudSet(id, "blocked", "Empfänger, Betreff oder Text ungültig."); continue; }
         const manualTest = rq.manual_test === true;
         if (manualTest && !isManualTestMail(rq)) { cloudSet(id, "blocked", "MANUAL_TEST-Auftrag ist nicht exakt an den autorisierten Praxis-Kälin-Test gebunden."); continue; }

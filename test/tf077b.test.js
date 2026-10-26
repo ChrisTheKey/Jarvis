@@ -590,12 +590,12 @@ test("Browser: «E-Mail lossenden» als einziger Mail-Knopf, Klick sendet nur le
       assert.deepEqual(await page.$$eval("#crmHot .crm-hot-item", (xs) => xs.map((x) => x.dataset.id)), ["neu-kunde.ch", "firma-020.ch"]);
       assert.deepEqual(await page.$$eval("#crmMain [data-id]", (xs) => xs.slice(0, 2).map((x) => x.dataset.id)), ["neu-kunde.ch", "firma-020.ch"]);
       assert.match(await page.locator("#crmHot").innerText(), /ANTWORT GESENDET/);
-      // Lead mit vorbereitetem Entwurf öffnen: genau EIN Mail-Knopf «E-Mail lossenden», kein Gmail/mailto im DOM.
+      // Lead mit vorbereitetem Entwurf öffnen: Verkaufsaktion plus bestehender «E-Mail lossenden»-Pfad, kein Gmail/mailto im DOM.
       const id = await page.evaluate(() => [...document.querySelectorAll("#crmMain [data-id]")].map((x) => x.dataset.id).find((x) => /^firma-0[2-3]\d\.ch$/.test(x) && x !== "firma-020.ch"));
       await page.click(`#crmMain [data-id="${id}"]`);
       await page.waitForFunction(() => !document.getElementById("crmDrawer").hidden);
       const mailButtons = await page.$$eval("#crmDrawer a, #crmDrawer button", (xs) => xs.map((x) => x.textContent.trim()).filter((s) => /mail|gmail|entwurf/i.test(s)));
-      assert.deepEqual(mailButtons, ["E-Mail lossenden"], mailButtons.join("|"));
+      assert.deepEqual(mailButtons, ["Mail senden", "E-Mail lossenden"], mailButtons.join("|"));
       assert.equal((await page.content()).includes("mail.google.com"), false, "keine Gmail-URL im DOM");
       assert.equal(await page.locator("#crmDrawer a[href^='mailto:']").count(), 0);
       assert.match(await page.locator("#crmDrawer").innerText(), /Telefonbuch\s*Nicht geprüft/);

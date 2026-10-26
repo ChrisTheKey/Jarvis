@@ -15,7 +15,7 @@ const MOBILE = matchMedia("(max-width: 860px)");
 let I = createI18n(document.documentElement.dataset.locale || "de-CH");
 const t = (...a) => I.t(...a);
 const S = { leads: [], filters: {}, sort: "priority", card: "", sel: null, online: false, generated_at: null, backup: null, timer: null, facets: false, showAll: {}, actor: null, mail: null,
-  sends: [], sendErr: {}, stats: null };
+  sends: [], salesRequests: [], sendErr: {}, salesErr: {}, salesBusy: {}, stats: null };
 
 function el(tag, attrs = {}, ...kids) {
   const x = document.createElement(tag);
@@ -120,6 +120,13 @@ async function loadSends() {
   if (!S.mail?.send_prepared) { S.sends = []; return; }
   try { const r = await fetch("/api/mail-requests", { cache: "no-store", credentials: "same-origin" }); const j = r.ok ? await r.json() : null; if (j) S.sends = Array.isArray(j.requests) ? j.requests : []; } catch {}
 }
+async function loadSalesRequests() {
+  try {
+    const r = await fetch("/api/mail-requests", { cache: "no-store", credentials: "same-origin" });
+    const j = r.ok ? await r.json() : null;
+    if (j) S.salesRequests = (Array.isArray(j.requests) ? j.requests : []).filter((x) => x.delivery === "sales_intake" && x.sales_intake_direct === true);
+  } catch {}
+}
 async function sendPrepared(l) {
   delete S.sendErr[l.lead_id];
   try {
@@ -137,6 +144,29 @@ async function sendPrepared(l) {
     }
   } catch { S.sendErr[l.lead_id] = t("mail.sendFailed"); }
   if (S.sel === l.lead_id) renderDrawer();
+}
+// TF-JARVIS-024: direkte Erstmail nur über den serverseitig gebundenen Sandbox-/Queue-Pfad.
+async function sendSalesIntake(l) {
+  if (S.salesBusy[l.lead_id]) return;
+  S.salesBusy[l.lead_id] = true; delete S.salesErr[l.lead_id]; renderDrawer();
+  try {
+    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_send", lead_id: l.lead_id }) });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j?.request) throw new Error(j?.error || t("sales.sendFailed"));
+    S.salesRequests = [...S.salesRequests.filter((x) => x.lead_id !== l.lead_id), { ...j.request, lead_id: l.lead_id, sales_intake_direct: true }];
+    S.salesErr[l.lead_id] = j.duplicate ? t("sales.duplicate") : t("sales.queued");
+  } catch (e) { S.salesErr[l.lead_id] = e.message || t("sales.sendFailed"); }
+  finally { delete S.salesBusy[l.lead_id]; if (S.sel === l.lead_id) renderDrawer(); }
+}
+function salesBox(l) {
+  const busy = !!S.salesBusy[l.lead_id];
+  const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.sales_intake_direct === true).sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
+  const status = queued?.status;
+  const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
+  const stateText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : "";
+  const visibleText = stateText || S.salesErr[l.lead_id] || "";
+  return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-mail-send", disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l); } }, busy ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send")),
+    visibleText ? el("span", { class: `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`, "aria-live": "polite" }, visibleText) : "");
 }
 // TF-077B: KONTAKTFORMULAR – SOFORT BEARBEITEN (ganz oben, vor allen Karten): offene Anfragen im eigenen Bereich, älteste zuerst.
 function renderHot() {
@@ -175,6 +205,7 @@ async function load() {
     S.leads = Array.isArray(body.leads) ? body.leads : [];
     S.online = !!body.online; S.generated_at = body.generated_at; S.backup = body.backup; S.pbProvider = body.phonebook_provider || null; S.actor = body.actor || null; S.mail = body.mail || null; S.stats = body.stats || null;
     await loadSends();
+    await loadSalesRequests();
     render();
   } catch { setMeta(t("crm.unreachable"), true); }
 }
@@ -297,6 +328,7 @@ function renderDrawer() {
   const blocked = l.do_not_contact;
   // A–F + Schnellaktionen
   const qa = el("div", { class: "crm-qa" },
+    l.market !== "VN" ? salesBox(l) : "",
     l.website ? link(l.website, t("btn.website"), "crm-btn") : "",
     l.draft_url ? link(l.draft_url, t("btn.gmail"), "crm-btn") : "",
     S.mail?.send_prepared && l.market !== "VN" ? sendBox(l) : "",

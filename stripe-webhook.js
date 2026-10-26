@@ -14,10 +14,13 @@ import { fileURLToPath } from "node:url";
 import { createStore, WORKER_DIR } from "./mail-worker.js";
 import { recordPayment, findPayableOrder, paymentGateForOrder, paymentsForOrder } from "./payments.js";
 import { fromMinor, toMinor, offerInfo } from "./pricing.js";
-import { REPAIR_ORDERS_FILE, COMPLETED_STATES, BLOCKED_STATES, REPAIR_CANCELLED, holdForPaymentReview } from "./repair-workflow.js";
+import { REPAIR_ORDERS_FILE, COMPLETED_STATES, BLOCKED_STATES, REPAIR_CANCELLED, holdForPaymentReview, createConfirmedRepairOrder } from "./repair-workflow.js";
 import { createCheckoutSession, retrieveCheckoutSession, modeConfigured, modeOfOrder, expectedDeposit, stripeStatus, PURPOSE } from "./stripe-payments.js";
 import { writePaymentLinks, readPaymentLinks } from "./onboarding-store.js";
 import { e2eConfig, isE2eDomain } from "./e2e-test.js";
+import { bundleForIntent, selectOfferIntent } from "./sales-intake-bundle.js";
+import { createCheck150Order, CHECK150_OFFER } from "./check-150-workflow.js";
+import { recordDirectSale } from "./sales.js";
 
 export const STRIPE_FILE = "stripe_checkouts.json";
 export const MAX_SESSIONS = 2;             // erste Session + höchstens EINE Ersatz-Session nach Ablauf (zurückhaltende Erinnerung)
@@ -89,10 +92,42 @@ export function bookCheckout(store, st, sess, { source = "webhook", now = new Da
 // Auftrag weder abgeschlossen/storniert/blockiert · das Zahlungs-Gate noch NICHT erfüllt (sonst DUPLICATE_PAYMENT → Prüfung, nie eine zweite Buchung).
 // Alles andere (keine/ungültige Referenz, anderer Betrag, Fremdwährung, unbekannter Auftrag) → PAYMENT_REVIEW_REQUIRED, nichts verbucht.
 // Idempotenz: Ereignis-ID (processCheckoutEvent) + Referenz stripe:<payment_intent> (payments.js). Rückerstattung/Streitfall findet die Zahlung über st.static.
+function materializeBundleOrder(store, intentId, bundle, offer, now) {
+  const args = { domain: bundle.domain, website: bundle.website, company: bundle.company, delivery_email: bundle.email, contact_name: bundle.contact_name, lead_id: bundle.lead_id, order_id: intentId, now };
+  if (offer === CHECK150_OFFER) {
+    const sales = store.read("sales.json", { records: {} });
+    const records = recordDirectSale(sales.records || {}, { domain: bundle.domain, offer: CHECK150_OFFER, delivery_email: bundle.email, company: bundle.company, contact_name: bundle.contact_name, website: bundle.website, lead: { lead_id: bundle.lead_id }, now });
+    const order = createCheck150Order(store, { ...args, offer_class: CHECK150_OFFER });
+    store.write("sales.json", { ...sales, records });
+    return order;
+  }
+  const order = createConfirmedRepairOrder(store, args);
+  if (bundle.vault?.token_hash && bundle.vault.expires_at) {
+    const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });
+    data.orders[order.order_id] = { ...data.orders[order.order_id], prebound_access: { token_hash: bundle.vault.token_hash, expires_at: bundle.vault.expires_at, source: "sales_intake_bundle" } };
+    store.write(REPAIR_ORDERS_FILE, data);
+    return data.orders[order.order_id];
+  }
+  return order;
+}
+
 function bookStaticLink(store, st, sess, { source, now, log }, review) {
   const sid = sess.session_id || sess.id, oid = sess.client_reference_id;
   if (!oid) return review("PAYMENT_LINK_NO_REFERENCE", null);
-  const order = findPayableOrder(store, oid);
+  let order = findPayableOrder(store, oid);
+  const bundle = bundleForIntent(store, oid);
+  if (!order && bundle) {
+    const intent = Object.entries(bundle.offers || {}).find(([, entry]) => entry.intent_id === oid);
+    const info = intent ? offerInfo(intent[0]) : null;
+    if (!info || info.market !== "CH" || info.currency !== "CHF" || sess.currency !== "CHF") return review("CURRENCY_MISMATCH", oid);
+    if (sess.amount_minor !== toMinor(info.price, "CHF")) return review("AMOUNT_MISMATCH", oid);
+    if (sess.payment_status !== "paid") return review("NOT_PAID", oid);
+    const selected = selectOfferIntent(store, oid, { now });
+    if (selected.result === "OFFER_CLOSED") return review("OFFER_CLOSED", oid);
+    if (!["SELECTED", "ALREADY_SELECTED"].includes(selected.result)) return review("UNKNOWN_ORDER", oid);
+    try { order = materializeBundleOrder(store, oid, bundle, intent[0], now); }
+    catch (e) { log("error", "sales_bundle_materialization_failed", { order_id: oid, error: String(e.message).slice(0, 160) }); return review("ORDER_MATERIALIZATION_FAILED", oid); }
+  }
   if (!order) return review("UNKNOWN_ORDER", null);
   if (sess.provider_mode !== modeOfOrder(order)) return review("MODE_MISMATCH", oid);
   const full = store.read(order.file, { orders: {} }).orders?.[oid] || {};

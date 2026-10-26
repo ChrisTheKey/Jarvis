@@ -61,7 +61,7 @@ import { createRequire } from "node:module";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale, recordDirectSale } from "./sales.js";
 import { paymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText, withLivePayment } from "./payments.js";
-import { offerInfo, isFixOffer, SELLER_COMMISSION_BPS } from "./pricing.js";
+import { offerInfo, isFixOffer, SELLER_COMMISSION_BPS, FIX_ORDER_ID_RE } from "./pricing.js";
 import { isVnOrder, buildVnAccessRequestMail, buildVnHostingQuestionMail, buildVnHostKeyConfirmationMail, buildVnRepairReport, buildVnRepairDeliveryMail, vnReportSubject } from "./vn-customer-texts.js";
 import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIntakeToken, openAccessCredential, destroyAccessSecret,
   markSecretDestroyed, syncAccessIntake, intakeClient } from "./access-intake.js";
@@ -193,7 +193,7 @@ export async function fullSiteAudit(website, { auditor = null, browserAuditor = 
 const DELIVERY_EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 // TF-064: offer_class VN_REPAIR_FIX → VN-Auftrag (VNFIX-…, market VN, currency VND, Preis/Schwelle aus pricing.js, vietnamesische
 // Kundentexte). Gleicher sicherer Workflow; CH-Aufträge bleiben exakt im bisherigen Format (RF480-…, price_chf, CHF).
-export function createRepairOrder(store, { domain, website = null, lead_id = null, company = null, delivery_email = null, contact_name = null, offer_class = REPAIR_OFFER, vn = null, now = new Date() } = {}) {
+export function createRepairOrder(store, { domain, website = null, lead_id = null, company = null, delivery_email = null, contact_name = null, order_id = null, offer_class = REPAIR_OFFER, vn = null, now = new Date() } = {}) {
   const d = normDomain(domain);
   if (!d) throw new Error("Domain erforderlich.");
   const info = offerInfo(offer_class);
@@ -205,12 +205,14 @@ export function createRepairOrder(store, { domain, website = null, lead_id = nul
   // Höchstens ein offener Auftrag je Domain – ein zweiter Auftrag entsteht erst, wenn der erste abgeschlossen/blockiert ist.
   const open = Object.values(data.orders || {}).find((o) => normDomain(o.domain) === d && !TERMINAL.has(o.state));
   if (open) throw new Error(`Für ${d} läuft bereits Auftrag ${open.order_id} (${open.state}).`);
-  const order_id = `${info.order_prefix}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
+  const fixedOrderId = order_id == null ? null : String(order_id);
+  if (fixedOrderId && (!FIX_ORDER_ID_RE.test(fixedOrderId) || !fixedOrderId.startsWith(`${info.order_prefix}-`))) throw new Error("Vorgegebene CHF-480-Auftrags-ID ungültig.");
+  const resolvedOrderId = fixedOrderId || `${info.order_prefix}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
   const money = info.market === "VN"
     ? { offer_class, market: "VN", currency: "VND", price_amount: info.price, locale: "vi-VN", payment: { required: info.deposit, paid: 0, currency: "VND", satisfied: false }, commission_rate_bps: SELLER_COMMISSION_BPS, ...(vn || {}) }
     : { offer_class: REPAIR_OFFER, price_chf: OFFERS[REPAIR_OFFER].price, currency: "CHF", commission_rate_bps: SELLER_COMMISSION_BPS, payment: { required_chf: OFFERS[REPAIR_OFFER].price / 2, paid_chf: 0, satisfied: false } };
   const order = {
-    order_id, ...money,
+    order_id: resolvedOrderId, ...money,
     lead_id: lead_id || d, domain: d, website: website || `https://${d}/`, company,
     delivery_email: delivery_email ? String(delivery_email).toLowerCase() : null, contact_name,
     access_request: null,
@@ -221,7 +223,7 @@ export function createRepairOrder(store, { domain, website = null, lead_id = nul
     validation: null, retest: null, deployment: null, regression: null, report: null,
     blocked_reason: null, created_at: now.toISOString(), updated_at: now.toISOString(),
   };
-  data.orders = { ...(data.orders || {}), [order_id]: order };
+  data.orders = { ...(data.orders || {}), [resolvedOrderId]: order };
   store.write(REPAIR_ORDERS_FILE, data);
   return order;
 }
@@ -230,13 +232,13 @@ export function createRepairOrder(store, { domain, website = null, lead_id = nul
 // check-150-workflow --create-confirmed). Direktverkauf (sales.js recordDirectSale, Quelle direct_customer) + Auftrag; eine
 // Anfrage allein erzeugt NIE einen Auftrag. VERKAUF != ZAHLUNG: der Auftrag wartet danach auf kumulativ CHF 240.
 // TF-079: viaCustomerMail = Bestätigung kam als ausdrückliche Kundenmail im Kontaktformular-Verlauf (Beleg statt Chris-CLI).
-export function createConfirmedRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, date = null, viaCustomerMail = false, now = new Date() } = {}) {
+export function createConfirmedRepairOrder(store, { domain, website = null, company = null, delivery_email, contact_name = null, lead_id = null, order_id = null, date = null, viaCustomerMail = false, now = new Date() } = {}) {
   if (!DELIVERY_EMAIL_RE.test(String(delivery_email || ""))) throw new Error("Verifizierte Kundenadresse (--email) des bestätigten Auftrags erforderlich.");
   const sales = store.read("sales.json", { records: {} });
   const records = recordDirectSale(sales.records || {}, { domain, offer: REPAIR_OFFER, delivery_email, company, contact_name, website, date: date || undefined, now }); // validiert, schreibt nicht
   const ds = records[normDomain(domain)]?.direct_sale;
   if (viaCustomerMail && ds) Object.assign(ds, { basis: "customer_email_confirmation", confirmed_by: "customer_contact_form" });
-  const order = createRepairOrder(store, { domain, website, company, delivery_email, contact_name, now }); // wirft bei offenem Auftrag
+  const order = createRepairOrder(store, { domain, website, lead_id, company, delivery_email, contact_name, order_id, now }); // wirft bei offenem Auftrag
   store.write("sales.json", { ...sales, records });
   const sale = records[normDomain(domain)]?.sale;
   order.confirmed = { source: "sales.json", sale_date: sale?.sale_date || null, confirmed_at: now.toISOString() };
@@ -319,6 +321,37 @@ export function holdForPaymentReview(store, orderId, { reason, now = new Date() 
 export function repairSaleVoided(store, order = {}) {
   const sale = store.read("sales.json", { records: {} }).records?.[normDomain(order.domain)]?.sale;
   return !!sale && sale.selected_offer === (order.offer_class || REPAIR_OFFER) && isVoidedSale(sale);
+}
+
+// TF-JARVIS-024: Der Link aus der Erstmail wird erst nach bestätigter Zahlung im bestehenden Access-Intake registriert.
+// Persistiert wird nur der Hash; der Token bleibt ausschliesslich im bereits versendeten URL-Fragment.
+export async function activatePreboundAccess({ store, intake, now = new Date(), log = () => {} } = {}) {
+  if (!store || !intake || typeof intake.register !== "function") return { activated: 0, deferred: true, reason: "INTAKE_UNAVAILABLE" };
+  const data = store.read(REPAIR_ORDERS_FILE, { schema: 1, orders: {} });
+  let activated = 0;
+  for (const order of Object.values(data.orders || {})) {
+    const pre = order.prebound_access;
+    if (order.offer_class !== REPAIR_OFFER || !pre || order.access_request?.sent_at) continue;
+    const gate = paymentGateForOrder(store, order);
+    if (!gate.satisfied) continue;
+    if (!pre.token_hash || !pre.expires_at || Date.parse(pre.expires_at) <= +now) {
+      order.prebound_access = { status: "EXPIRED", expired_at: now.toISOString() };
+      order.blocked_reason = "Vorab gebundener Tresorlink abgelaufen – manuelle Neuausstellung erforderlich.";
+      transition(order, "MANUAL_REVIEW_REQUIRED", order.blocked_reason, now);
+      continue;
+    }
+    try {
+      await intake.register({ order_id: order.order_id, domain: order.domain, token_hash: pre.token_hash, expires_at: pre.expires_at, public_key: accessKeys(store.dir).publicKeyPem });
+      order.access_request = { token_hash: pre.token_hash, expires_at: pre.expires_at, sent_at: order.created_at || now.toISOString(), message_class: ACCESS_REQUEST_CLASS, source: "sales_intake_bundle" };
+      order.prebound_access = { status: "ACTIVE", activated_at: now.toISOString() };
+      transition(order, "ACCESS_REQUESTED", "CHF-480-Zahlung bestätigt – gebundener Kundentresor aktiviert", now);
+      activated++;
+    } catch (e) {
+      log("warn", "prebound_access_activation_deferred", { order_id: order.order_id, error: String(e.message).slice(0, 120) });
+    }
+  }
+  if (activated) store.write(REPAIR_ORDERS_FILE, data);
+  return { activated, deferred: 0 };
 }
 
 function saveOrder(store, order) {
@@ -1705,12 +1738,13 @@ export async function runRepairOrders({ dir = WORKER_DIR, adapters = null, retes
       browserAuditor = browserAuditor || defaults.browserAuditor;
     }
     const store = createStore(dir);
+    const preboundAccess = await activatePreboundAccess({ store, intake, log });
     let access = null;
     const waiting = Object.values(store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders || {}).some((o) => (o.state === "ACCESS_REQUESTED" && o.access_request?.sent_at && o.access_intake?.status !== "RECEIVED")
       || (o.state === "HOST_KEY_CONFIRMATION_REQUIRED" && o.host_key_request?.sent_at && !o.host_key_request.received_at));
     if (intake && waiting) access = await syncAccessIntake({ store, intake, log });
     const engine = createRepairEngine({ dir, store, adapters, retester, router, preflight, browserValidator, requireBrowser, autoDeliver, auditor, alert, gmail, intake, onboardingDir, platformDetector, e2e, browserAuditor, log });
-    return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}) };
+    return { busy: false, ...(await engine.processAll()), ...(access ? { access_intake: access } : {}), ...(preboundAccess.activated ? { prebound_access: preboundAccess } : {}) };
   } finally { releaseLock(dir, process.pid, "repair.lock"); }
 }
 

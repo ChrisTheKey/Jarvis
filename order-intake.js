@@ -47,7 +47,7 @@ export function applyOrderRequest(store, r, { now = new Date() } = {}) {
     const sales = store.read("sales.json", { records: {} });
     // Zuerst den Auftrag (wirft bei offenem Auftrag derselben Domain), dann den Verkauf – nie ein Verkauf ohne Auftrag.
     order = isCheckOffer(r.offer_class)
-      ? createCheck150Order(store, { domain, website, company, delivery_email: email, offer_class: r.offer_class, vn, now })
+      ? createCheck150Order(store, { domain, website, company, lead_id: r.lead_id, delivery_email: email, offer_class: r.offer_class, vn, now })
       : createRepairOrder(store, { domain, website, company, lead_id: r.lead_id, delivery_email: email, offer_class: r.offer_class, vn, now });
     const records = recordSale(sales.records || {}, domain, { offer: r.offer_class, date: now.toISOString().slice(0, 10), now,
       extra: { source: "vn_sales_confirmed", lead_id: r.lead_id, seller_id: VN_SELLER_ID, confirmed_by: actorId, order_id: order.order_id } });

@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale } from "./sales.js";
 import { paymentGateForOrder, paymentThresholdChf, paymentSummary, gatePaid, gateText, amountText, withLivePayment } from "./payments.js";
-import { offerInfo, isCheckOffer, SELLER_COMMISSION_BPS } from "./pricing.js";
+import { offerInfo, isCheckOffer, SELLER_COMMISSION_BPS, CHECK_ORDER_ID_RE } from "./pricing.js";
 import { isVnOrder, vnFindingText, vnInstructionsFor, pageLabelVi, buildVnCheckReport, buildVnCheckDeliveryDraft } from "./vn-customer-texts.js";
 import { selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { fullSiteAudit, detectStack, normDomain, isTestOrder } from "./repair-workflow.js";
@@ -72,7 +72,7 @@ export function confirmedCheck150Sale(store, domain, offer_class = CHECK150_OFFE
 // ---------- Auftrag ----------
 // TF-064: offer_class VN_REPAIR_CHECK → VN-Auftrag (VNCHECK-…, market VN, currency VND, Preis/Schwelle aus pricing.js, Kundentexte
 // Vietnamesisch). Gleicher Workflow; CH-Aufträge bleiben exakt im bisherigen Format (CA150-…, price_chf, CHF).
-export function createCheck150Order(store, { domain, website = null, company = null, delivery_email, contact_name = null, offer_class = CHECK150_OFFER, vn = null, test = null, env = process.env, now = new Date() } = {}) {
+export function createCheck150Order(store, { domain, website = null, company = null, delivery_email, contact_name = null, lead_id = null, order_id = null, offer_class = CHECK150_OFFER, vn = null, test = null, env = process.env, now = new Date() } = {}) {
   const d = normDomain(domain);
   if (!d) throw new Error("Domain erforderlich.");
   const info = offerInfo(offer_class);
@@ -90,12 +90,15 @@ export function createCheck150Order(store, { domain, website = null, company = n
   const data = store.read(CHECK150_ORDERS_FILE, { schema: 1, orders: {} });
   const open = Object.values(data.orders || {}).find((o) => normDomain(o.domain) === d && !TERMINAL.has(o.state));
   if (open) throw new Error(`Für ${d} läuft bereits Auftrag ${open.order_id} (${open.state}).`);
-  const order_id = `${info.order_prefix}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
+  const fixedOrderId = order_id == null ? null : String(order_id);
+  if (fixedOrderId && (!CHECK_ORDER_ID_RE.test(fixedOrderId) || !fixedOrderId.startsWith(`${info.order_prefix}-`))) throw new Error("Vorgegebene CHF-150-Auftrags-ID ungültig.");
+  const resolvedOrderId = fixedOrderId || `${info.order_prefix}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${sha(d + now.getTime()).slice(0, 6)}`;
   const money = info.market === "VN"
     ? { offer_class, market: "VN", currency: "VND", price_amount: info.price, locale: "vi-VN", payment: { required: info.deposit, paid: 0, currency: "VND", satisfied: false }, commission_rate_bps: SELLER_COMMISSION_BPS, ...(vn || {}) }
     : { offer_class: CHECK150_OFFER, price_chf: OFFERS[CHECK150_OFFER].price, currency: "CHF", commission_rate_bps: SELLER_COMMISSION_BPS, payment: { required_chf: OFFERS[CHECK150_OFFER].price / 2, paid_chf: 0, satisfied: false } };
   const order = {
-    order_id, ...money,
+    order_id: resolvedOrderId, ...money,
+    lead_id: lead_id || null,
     domain: d, website: website || `https://${d}/`, company, delivery_email: delivery_email.toLowerCase(), contact_name,
     delivery: "draft", automatic_send_allowed: false, // wird erst true, wenn die Zahlungsschwelle erfüllt ist (TF-041)
     confirmed: null, state: "ORDER_RECEIVED",
@@ -110,7 +113,7 @@ export function createCheck150Order(store, { domain, website = null, company = n
       confirmed: { source: "e2e_test_confirmation", sale_date: null, confirmed_at: now.toISOString() }, state: "ORDER_CONFIRMED" });
     order.state_history.push({ at: now.toISOString(), from: "ORDER_RECEIVED", to: "ORDER_CONFIRMED", reason: `E2E-TEST ${test.run_id} – Test-Auftrag (kein Verkauf, kein Umsatz, keine Provision, keine Kundenmail); nur Stripe-TESTzahlung` });
   }
-  data.orders = { ...(data.orders || {}), [order_id]: order };
+  data.orders = { ...(data.orders || {}), [resolvedOrderId]: order };
   store.write(CHECK150_ORDERS_FILE, data);
   return order;
 }
