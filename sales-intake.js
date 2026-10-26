@@ -1,13 +1,21 @@
 // TF-JARVIS-024: sichere, serverseitig gebundene Erstmail-Vorschau.
 // Dieses Modul erzeugt keinen Versand und führt keine Reparatur aus.
 import crypto from "node:crypto";
+import { accessLink } from "./access-intake.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
-import { paymentLinkFor } from "./payment-links.js";
+import { paymentLinkFor, testPaymentLinkUrl } from "./payment-links.js";
+
+export { newIntakeToken } from "./access-intake.js";
 
 export const SALES_INTAKE_SUBJECT = "Ihre Webseite – festgestellte Probleme und mögliche Lösungen";
 export const SALES_INTAKE_SCOPE = "Website-Analyse und Website-Reparatur";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+const SALES_TEST_PAYMENT_LINKS = Object.freeze({
+  payment150: "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00",
+  payment480: "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01",
+});
 const clean = (v) => String(v ?? "").trim();
 const domainOf = (lead) => clean(lead.domain || lead.website).replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
 const findingsOf = (lead) => (Array.isArray(lead.errors?.items) ? lead.errors.items : Array.isArray(lead.websiteIssues) ? lead.websiteIssues : [])
@@ -40,6 +48,77 @@ export function salesIntakeEligibility(lead, { now = new Date() } = {}) {
   const permission = evaluateSwissEmailPermission({ ...lead, email }, { type: "SOLICITED_RESPONSE", recipient: email, scope: SALES_INTAKE_SCOPE }, now);
   if (!permission.allowed) return { ok: false, code: "NO_CONTACT_PERMISSION", reason: "Keine dokumentierte Kontaktberechtigung für diese Nachricht.", permission };
   return { ok: true, email, findings, permission, domain: domainOf(lead), surname: surnameOf(lead) };
+}
+
+// TF-JARVIS-024: Direkter, bis zur separaten Produktionsfreigabe ausschliesslich synthetischer Sandbox-Versand.
+// Der Token kommt aus dem bestehenden Access-Intake-Mechanismus. Im Bundle wird später nur sein Hash persistiert;
+// der Klartext bleibt im URL-Fragment der Mail und wird von HTTP nie übertragen.
+export function buildSalesIntakeMail({ lead, order150Id, order480Id, accessToken, accessExpiresAt, accessOrigin, sandbox = false, now = new Date() } = {}) {
+  const eligible = salesIntakeEligibility(lead, { now });
+  if (!eligible.ok) return eligible;
+  if (!sandbox) return { ok: false, code: "SANDBOX_ONLY", reason: "Der direkte Erstmail-Versand ist bis zur Produktionsfreigabe nur im Sandbox-Modus zulässig." };
+  const website = clean(lead.website);
+  if (!/^https:\/\/[^\s]+$/i.test(website)) return { ok: false, code: "MISSING_WEBSITE", reason: "Für die Erstmail ist keine gültige Website des ausgewählten Leads vorhanden." };
+  const exp = Date.parse(String(accessExpiresAt || ""));
+  if (!TOKEN_RE.test(String(accessToken || "")) || !Number.isFinite(exp)) return { ok: false, code: "ACCESS_LINK_UNAVAILABLE", reason: "Der individuelle Zugangstresor-Link konnte nicht sicher erzeugt werden." };
+  if (exp <= +now) return { ok: false, code: "ACCESS_LINK_EXPIRED", reason: "Der individuelle Zugangstresor-Link ist abgelaufen." };
+  if (!/^https:\/\/[^\s]+$/i.test(String(accessOrigin || ""))) return { ok: false, code: "ACCESS_LINK_UNAVAILABLE", reason: "Die sichere Herkunft des Zugangstresor-Links fehlt." };
+  const expiresAt = new Date(exp).toISOString();
+  const access = accessLink(accessOrigin, accessToken, "de-CH");
+  const link150 = testPaymentLinkUrl(SALES_TEST_PAYMENT_LINKS.payment150, { orderId: order150Id, email: eligible.email });
+  const link480 = testPaymentLinkUrl(SALES_TEST_PAYMENT_LINKS.payment480, { orderId: order480Id, email: eligible.email });
+  if (!link150 || !link480 || !access) return { ok: false, code: "LINKS_UNAVAILABLE", reason: "Sandbox-Zahlungs- oder Zugangstresorlink konnte nicht sicher erzeugt werden." };
+  const body = [
+    "Guten Tag",
+    "",
+    "Vielen Dank für Ihr Vertrauen.",
+    "",
+    "Um die in Auftrag gegebene Dienstleistung zu bestätigen, folgen Sie dem temporären & sicheren Link zum Zugangsdaten-Tresor und zur Zahlungsabwicklung.",
+    "",
+    `Damit ich die Reparatur Ihrer Website ${website} sauber durchführen kann, brauche ich die folgenden zwei Dinge:`,
+    "",
+    `1. Einen temporären, sicheren Zugang über Ihren persönlichen, nur für diesen Auftrag gültigen Link (gültig bis ${expiresAt}, nur einmal verwendbar):`,
+    "",
+    access,
+    "",
+    "Bitte senden Sie keine Passwörter oder Zugangsdaten per E-Mail.",
+    "",
+    "Verwenden Sie dafür ausschliesslich den sicheren Link.",
+    "",
+    "Ihre Website läuft über [Name des Anbieters]. Bitte laden Sie mich mit dieser E-Mail-Adresse zu Ihrer Webseite bei Netlify ein, damit ich darauf zugreifen kann.",
+    "",
+    "Im Formular bestätigen Sie nur noch den Namen der Seite und die vereinbarte Dienstleistung.",
+    "",
+    "Vor der ersten Änderung erstelle ich eine vollständige Sicherung Ihrer Website; zum Abschluss erhalten Sie einen ausführlichen Bericht.",
+    "",
+    "2. Unsere zwei Angebote:",
+    "",
+    "1. Webseiten-Check & Anleitung – CHF 150.–",
+    "",
+    "Technische Prüfung mit Problemübersicht und Anleitung zur Behebung.",
+    "",
+    "Stripe-Sandbox-Testlink (keine echte Zahlung):",
+    "",
+    link150,
+    "",
+    "2. Webseiten-Check & Reparatur – CHF 480.–",
+    "",
+    "Technische Prüfung und Behebung der Probleme.",
+    "",
+    "Stripe-Sandbox-Testlink (keine echte Zahlung):",
+    "",
+    link480,
+    "",
+    "Freundliche Grüsse",
+    "",
+    "Christoph Kälin",
+    "",
+    "Helvetic Webdesign",
+  ].join("\n");
+  const mail = { recipient: eligible.email, subject: SALES_INTAKE_SUBJECT, body, links: { payment150: link150, payment480: link480, access }, lead_id: lead.lead_id,
+    order150_id: order150Id, order480_id: order480Id, access_expires_at: expiresAt, legal_basis: eligible.permission.legal_basis };
+  const preview_ref = crypto.createHash("sha256").update(JSON.stringify(mail)).digest("hex");
+  return { ok: true, preview_ref, mail };
 }
 
 export function buildSalesIntakePreview({ lead, order150Id, order480Id, vaultLink, now = new Date() } = {}) {

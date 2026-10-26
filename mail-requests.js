@@ -1,4 +1,6 @@
 // Cloud-Mailaufträge: Der Cloud-Jarvis darf ausschliesslich strukturierte Mailaufträge in eine begrenzte Warteschlange
+import crypto from "node:crypto";
+
 // legen (Netlify Blobs). Gesendet wird nur vom Mail-Worker mit send_authority (VPS, sonst lokal), der jeden Auftrag nach
 // allen bestehenden Regeln prüft (Versandgrundlage, Suppression, Opt-out, Limits) und das Ergebnis zurückmeldet.
 // Dazu: Lease je Auftrag, serverseitige Send-Locks (jede Mail genau einmal) und Worker-Heartbeat (MAIL SERVICE ONLINE/OFFLINE).
@@ -10,7 +12,7 @@ export { MANUAL_TEST_MAIL, isManualTestMail };
 import { cleanCore } from "./cloud-core.js";
 import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import { mailAccessFor, draftRefOf, DRAFT_REF_RE, SELLER_SEND_DAILY_LIMIT } from "./mail-access.js";
-import { buildSalesIntakePreview, salesOrderRefs, salesVaultLink } from "./sales-intake.js";
+import { buildSalesIntakeMail, buildSalesIntakePreview, newIntakeToken, salesOrderRefs, salesVaultLink } from "./sales-intake.js";
 import { salesBundleId } from "./sales-intake-bundle.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
@@ -47,7 +49,12 @@ export function cleanMeta(m) {
   const locale = ["de-CH", "vi-VN"].includes(m.locale) ? m.locale : null;
   const lead_id = typeof m.lead_id === "string" && META_LEAD_RE.test(m.lead_id) ? m.lead_id : null;
   const sales = m.sales_intake === true && typeof m.preview_ref === "string" && /^[a-f0-9]{64}$/.test(m.preview_ref)
-    ? { sales_intake: true, preview_ref: m.preview_ref, bundle_id: salesBundleId(m.preview_ref), order150_id: m.order150_id, order480_id: m.order480_id } : {};
+    ? { sales_intake: true, preview_ref: m.preview_ref, bundle_id: salesBundleId(m.preview_ref), order150_id: m.order150_id, order480_id: m.order480_id,
+      ...(m.sales_intake_direct === true ? {
+        sales_intake_direct: true, sales_sandbox: m.sales_sandbox === true, synthetic_test: m.synthetic_test === true,
+        idempotency_key: typeof m.idempotency_key === "string" && /^[a-f0-9]{64}$/.test(m.idempotency_key) ? m.idempotency_key : null,
+        access_expires_at: typeof m.access_expires_at === "string" && Number.isFinite(Date.parse(m.access_expires_at)) ? new Date(m.access_expires_at).toISOString() : null,
+      } : {}) } : {};
   return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id, ...sales } : null;
 }
 
@@ -90,13 +97,17 @@ export function sanitizeMailRequest(input, { now = new Date(), requestedBy = "ch
   const delivery = DELIVERIES.includes(input.delivery) ? input.delivery : "send";
   const ttl = Math.min(L.maxTtlHours, Math.max(1, Number(input.ttl_hours) || L.ttlHours));
   const created = now.toISOString();
+  const safeMeta = cleanMeta(meta);
+  const directSales = safeMeta?.sales_intake_direct === true && typeof safeMeta.idempotency_key === "string";
   return {
     request: {
       request_id: input.request_id || newId(), created_at: created, expires_at: new Date(+now + ttl * 3_600_000).toISOString(),
       requested_by: requestedBy, recipient, subject, body, optional_thread_reference: ref,
       intent: INTENTS.includes(input.intent) ? input.intent : "sales", status: "pending", reason: null, updated_at: created,
-      fingerprint: prepared ? fingerprint(recipient, "send_prepared", cleanMeta(meta).lead_id, input.draft_ref) : fingerprint(recipient, subject.toLowerCase(), body, ...(delivery === "draft" ? ["draft"] : []), ...(manualTest ? ["manual_test", MANUAL_TEST_MAIL.lead_id] : [])),
-      mail_class: "manual_chris_mail", delivery, lease_owner: null, lease_expires_at: null, attempts: 0, ...(cleanMeta(meta) ? { meta: cleanMeta(meta) } : {}),
+      fingerprint: prepared ? fingerprint(recipient, "send_prepared", safeMeta.lead_id, input.draft_ref) : directSales
+        ? fingerprint("sales_intake_direct", safeMeta.idempotency_key)
+        : fingerprint(recipient, subject.toLowerCase(), body, ...(delivery === "draft" ? ["draft"] : []), ...(manualTest ? ["manual_test", MANUAL_TEST_MAIL.lead_id] : [])),
+      mail_class: "manual_chris_mail", delivery, lease_owner: null, lease_expires_at: null, attempts: 0, ...(safeMeta ? { meta: safeMeta } : {}),
       ...(manualTest ? { manual_test: true, manual_test_lead_id: MANUAL_TEST_MAIL.lead_id } : {}),
       ...(prepared ? { draft_ref: input.draft_ref } : {}),
     },
@@ -246,10 +257,12 @@ export function serviceStatus(state, now = new Date(), dedicated = false) {
 export const publicView = (r) => ({ request_id: r.request_id, created_at: r.created_at, expires_at: r.expires_at, recipient: r.recipient, subject: r.subject,
   intent: r.intent, mail_class: r.mail_class || "manual_chris_mail", delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at, optional_thread_reference: r.optional_thread_reference,
   ...(r.manual_test === true && r.manual_test_lead_id === MANUAL_TEST_MAIL.lead_id ? { manual_test: true, manual_test_lead_id: MANUAL_TEST_MAIL.lead_id } : {}),
-  ...(r.delivery === "send_prepared" ? { lead_id: r.meta?.lead_id || null, draft_ref: r.draft_ref || null } : {}) });
+  ...(r.delivery === "send_prepared" ? { lead_id: r.meta?.lead_id || null, draft_ref: r.draft_ref || null } : {}),
+  ...(r.delivery === "sales_intake" ? { lead_id: r.meta?.lead_id || null, sales_intake_direct: r.meta?.sales_intake_direct === true } : {}) });
 // TF-077B: Sicht eines Verkäufers auf seine eigenen Aufträge – ohne Empfängeradresse und Text.
 const sellerView = (r) => ({ request_id: r.request_id, created_at: r.created_at, delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at,
-  lead_id: r.meta?.lead_id || null, ...(r.delivery === "send_prepared" ? { draft_ref: r.draft_ref || null } : {}) });
+  lead_id: r.meta?.lead_id || null, ...(r.delivery === "send_prepared" ? { draft_ref: r.draft_ref || null } : {}),
+  ...(r.delivery === "sales_intake" ? { sales_intake_direct: r.meta?.sales_intake_direct === true } : {}) });
 
 // Ein Blob { requests, locks, workers } mit bedingtem Schreiben (ETag) – gleichzeitige Worker überholen sich nie.
 export function createMailQueue(store, { now = () => new Date(), dedicated = false } = {}) {
@@ -311,7 +324,7 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (isUser && req.method === "POST" && actor) {
       // OWNER darf ebenfalls lead_draft für VN-Leads nutzen (gleiche serverseitige Empfänger-Auflösung).
       const peek = await req.clone().json().catch(() => null);
-      if (["lead_draft", "send_lead_draft", "sales_intake_preview", "sales_intake_confirm"].includes(peek?.op)) return sellerRequest(req, actor);
+      if (["lead_draft", "send_lead_draft", "sales_intake_preview", "sales_intake_confirm", "sales_intake_send"].includes(peek?.op)) return sellerRequest(req, actor);
     }
     // Genau ein Sender: der VPS-Worker, wenn eingerichtet – sonst der lokale Worker.
     const owner = isWorker ? "vps" : isLocal && !dedicated ? "local" : null;
@@ -368,6 +381,7 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (body?.op === "send_lead_draft") return sendPrepared(queue, body, actor);
     if (body?.op === "sales_intake_preview") return salesPreview(body, actor);
     if (body?.op === "sales_intake_confirm") return salesConfirm(queue, body, actor);
+    if (body?.op === "sales_intake_send") return salesSend(queue, body, actor);
     if (body?.op !== "lead_draft") return reply(403, { error: "Keine Berechtigung für diese Aktion.", code: "FORBIDDEN" });
     if (Object.keys(body).some((k) => !LEAD_DRAFT_FIELDS.includes(k))) return reply(400, { error: "Nur lead_id, subject und body sind erlaubt (kein Empfänger).", code: "BAD_PARAMS" });
     // TF-077: Entwürfe entstehen im einzigen verbundenen Gmail (Chris) – Verkäufer ohne eigene verbundene Mailbox nie (kein Fallback auf Chris).
@@ -418,6 +432,30 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (!result.ok || result.preview_ref !== body.preview_ref) return reply(409, { error: "Die Vorschau ist abgelaufen oder wurde geändert. Bitte neu laden.", code: "PREVIEW_CHANGED" });
     const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id, sales_intake: true, preview_ref: result.preview_ref, order150_id: refs.order150Id, order480_id: refs.order480Id };
     const r = await queue.create({ recipient: result.preview.recipient, subject: result.preview.subject, body: result.preview.body, intent: "sales", delivery: "sales_intake" }, actor.user_id, meta);
+    if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
+    return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
+  }
+
+  async function salesSend(queue, body, actor) {
+    const mail = mailAccessFor(actor);
+    if (!mail.send_prepared && actor.role !== "OWNER") return reply(403, { error: "Keine Berechtigung für den Erstmail-Versand.", code: "FORBIDDEN" });
+    if (Object.keys(body).some((k) => !["op", "lead_id"].includes(k)) || typeof body.lead_id !== "string") return reply(400, { error: "Nur lead_id ist erlaubt.", code: "BAD_PARAMS" });
+    if (!resolveLead) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
+    const found = await resolveLead(actor, body.lead_id);
+    if (!found?.lead) return reply(found?.status || 403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: found?.code || "OUT_OF_SCOPE" });
+    const lead = found.lead;
+    if (lead.market === "VN") return reply(403, { error: "Die Erstmail ist nur für Schweizer Leads verfügbar.", code: "FORBIDDEN" });
+    // Der neue direkte Weg darf bis zur separaten Produktionsfreigabe niemals einen realen Empfänger erreichen.
+    if (env("JARVIS_SALES_SANDBOX_MODE") !== "true") return reply(403, { error: "Direkter Erstmail-Versand ist bis zur Produktionsfreigabe gesperrt.", code: "SANDBOX_ONLY" });
+    if (lead.is_test !== true) return reply(403, { error: "Direkter Erstmail-Versand ist nur für synthetische Leads zulässig.", code: "SYNTHETIC_ONLY" });
+    const t = now(), refs = salesOrderRefs(lead.lead_id, t), token = newIntakeToken({ now: t });
+    const result = buildSalesIntakeMail({ lead, ...refs, accessToken: token.token, accessExpiresAt: token.expires_at, accessOrigin: env("JARVIS_WEB_ORIGIN"), sandbox: true, now: t });
+    if (!result.ok) return reply(result.code === "NO_CONTACT_PERMISSION" ? 403 : 409, { error: result.reason, code: result.code });
+    const idempotency_key = crypto.createHash("sha256").update(`sales_intake_direct:${lead.lead_id}:${t.toISOString().slice(0, 10)}`).digest("hex");
+    const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id, sales_intake: true, sales_intake_direct: true,
+      sales_sandbox: true, synthetic_test: true, idempotency_key, preview_ref: result.preview_ref, access_expires_at: result.mail.access_expires_at,
+      order150_id: refs.order150Id, order480_id: refs.order480Id };
+    const r = await queue.create({ recipient: result.mail.recipient, subject: result.mail.subject, body: result.mail.body, intent: "sales", delivery: "sales_intake" }, actor.user_id, meta);
     if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
     return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
   }

@@ -595,7 +595,7 @@ test("Browser: «E-Mail lossenden» als einziger Mail-Knopf, Klick sendet nur le
       await page.click(`#crmMain [data-id="${id}"]`);
       await page.waitForFunction(() => !document.getElementById("crmDrawer").hidden);
       const mailButtons = await page.$$eval("#crmDrawer a, #crmDrawer button", (xs) => xs.map((x) => x.textContent.trim()).filter((s) => /mail|gmail|entwurf/i.test(s)));
-      assert.deepEqual(mailButtons, ["Erstmail senden & Auftrag starten", "E-Mail lossenden"], mailButtons.join("|"));
+      assert.deepEqual(mailButtons, ["Mail senden", "E-Mail lossenden"], mailButtons.join("|"));
       assert.equal((await page.content()).includes("mail.google.com"), false, "keine Gmail-URL im DOM");
       assert.equal(await page.locator("#crmDrawer a[href^='mailto:']").count(), 0);
       assert.match(await page.locator("#crmDrawer").innerText(), /Telefonbuch\s*Nicht geprüft/);

@@ -15,7 +15,7 @@ const MOBILE = matchMedia("(max-width: 860px)");
 let I = createI18n(document.documentElement.dataset.locale || "de-CH");
 const t = (...a) => I.t(...a);
 const S = { leads: [], filters: {}, sort: "priority", card: "", sel: null, online: false, generated_at: null, backup: null, timer: null, facets: false, showAll: {}, actor: null, mail: null,
-  sends: [], sendErr: {}, salesErr: {}, salesBusy: {}, stats: null };
+  sends: [], salesRequests: [], sendErr: {}, salesErr: {}, salesBusy: {}, stats: null };
 
 function el(tag, attrs = {}, ...kids) {
   const x = document.createElement(tag);
@@ -120,6 +120,13 @@ async function loadSends() {
   if (!S.mail?.send_prepared) { S.sends = []; return; }
   try { const r = await fetch("/api/mail-requests", { cache: "no-store", credentials: "same-origin" }); const j = r.ok ? await r.json() : null; if (j) S.sends = Array.isArray(j.requests) ? j.requests : []; } catch {}
 }
+async function loadSalesRequests() {
+  try {
+    const r = await fetch("/api/mail-requests", { cache: "no-store", credentials: "same-origin" });
+    const j = r.ok ? await r.json() : null;
+    if (j) S.salesRequests = (Array.isArray(j.requests) ? j.requests : []).filter((x) => x.delivery === "sales_intake" && x.sales_intake_direct === true);
+  } catch {}
+}
 async function sendPrepared(l) {
   delete S.sendErr[l.lead_id];
   try {
@@ -138,28 +145,26 @@ async function sendPrepared(l) {
   } catch { S.sendErr[l.lead_id] = t("mail.sendFailed"); }
   if (S.sel === l.lead_id) renderDrawer();
 }
-// TF-JARVIS-024: Erstmail nur über serverseitige Vorschau + ausdrückliche Bestätigung.
-async function startSalesIntake(l) {
+// TF-JARVIS-024: direkte Erstmail nur über den serverseitig gebundenen Sandbox-/Queue-Pfad.
+async function sendSalesIntake(l) {
   if (S.salesBusy[l.lead_id]) return;
   S.salesBusy[l.lead_id] = true; delete S.salesErr[l.lead_id]; renderDrawer();
   try {
-    const p = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_preview", lead_id: l.lead_id }) });
-    const pj = await p.json().catch(() => null);
-    if (!p.ok || !pj?.preview || !pj.preview_ref) throw new Error(pj?.error || t("sales.previewFailed"));
-    const v = pj.preview;
-    const details = `${t("sales.recipient")}: ${v.recipient}\n${t("sales.subject")}: ${v.subject}\n\n${t("sales.links")}\nCHF 150: ${v.links.payment150}\nCHF 480: ${v.links.payment480}\n${t("sales.vault")}: ${v.links.vault}\n\n${v.body}`;
-    if (!window.confirm(details)) return;
-    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_confirm", lead_id: l.lead_id, preview_ref: pj.preview_ref, confirmed: true }) });
+    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_send", lead_id: l.lead_id }) });
     const j = await r.json().catch(() => null);
     if (!r.ok || !j?.request) throw new Error(j?.error || t("sales.sendFailed"));
+    S.salesRequests = [...S.salesRequests.filter((x) => x.lead_id !== l.lead_id), { ...j.request, lead_id: l.lead_id, sales_intake_direct: true }];
     S.salesErr[l.lead_id] = j.duplicate ? t("sales.duplicate") : t("sales.queued");
   } catch (e) { S.salesErr[l.lead_id] = e.message || t("sales.sendFailed"); }
   finally { delete S.salesBusy[l.lead_id]; if (S.sel === l.lead_id) renderDrawer(); }
 }
 function salesBox(l) {
   const busy = !!S.salesBusy[l.lead_id];
-  return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-sales-start", disabled: busy || !S.online, onclick: (e) => { e.stopPropagation(); startSalesIntake(l); } }, busy ? t("sales.loading") : t("sales.start")),
-    S.salesErr[l.lead_id] ? el("span", { class: "crm-status crm-sales-msg", "aria-live": "polite" }, S.salesErr[l.lead_id]) : "");
+  const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.sales_intake_direct === true).sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
+  const locked = ["pending", "processing", "accepted_local", "sent"].includes(queued?.status);
+  const stateText = queued?.status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : "";
+  return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-mail-send", disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l); } }, busy ? t("sales.loading") : queued?.status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send")),
+    S.salesErr[l.lead_id] || stateText ? el("span", { class: `crm-status crm-sales-msg${queued?.status === "sent" ? " ok" : ""}`, "aria-live": "polite" }, S.salesErr[l.lead_id] || stateText) : "");
 }
 // TF-077B: KONTAKTFORMULAR – SOFORT BEARBEITEN (ganz oben, vor allen Karten): offene Anfragen im eigenen Bereich, älteste zuerst.
 function renderHot() {
@@ -198,6 +203,7 @@ async function load() {
     S.leads = Array.isArray(body.leads) ? body.leads : [];
     S.online = !!body.online; S.generated_at = body.generated_at; S.backup = body.backup; S.pbProvider = body.phonebook_provider || null; S.actor = body.actor || null; S.mail = body.mail || null; S.stats = body.stats || null;
     await loadSends();
+    await loadSalesRequests();
     render();
   } catch { setMeta(t("crm.unreachable"), true); }
 }

@@ -35,7 +35,7 @@ export async function startServer({ n = 387, prepare = null, vnLeads = null, sel
   if (prepare) prepare({ ...dirs, repairDir });
   const sources = createSourceReader({ dataDir: dirs.data, mailDir: dirs.mail, repairDir });
   const control = "k".repeat(48), password = "pw-browser";
-  const env = (k) => ({ JARVIS_SERVER_CONTROL_TOKEN: control, JARVIS_PASSWORD: password, JARVIS_WEB_ORIGIN: "https://synthetic.jarvis.test", JARVIS_SALES_VAULT_SECRET: "synthetic-sales-vault-secret" })[k];
+  const env = (k) => ({ JARVIS_SERVER_CONTROL_TOKEN: control, JARVIS_PASSWORD: password, JARVIS_WEB_ORIGIN: "https://synthetic.jarvis.test", JARVIS_SALES_VAULT_SECRET: "synthetic-sales-vault-secret", JARVIS_SALES_SANDBOX_MODE: "true" })[k];
   const authMem = {}, salesMem = {}, userMem = {};
   const authStore = authStoreFrom((k) => (authMem[k] ||= memoryStore()));
   const getAuthStore = async () => authStore, getSalesStore = async (k) => (salesMem[k] ||= memoryStore());
@@ -49,7 +49,7 @@ export async function startServer({ n = 387, prepare = null, vnLeads = null, sel
   const resolveSyntheticLead = async (actor, id) => {
     const found = await data().then((d) => d.resolveLead(actor, id));
     if (found?.lead?.lead_id !== "firma-021.ch") return found;
-    return { lead: { ...found.lead, errors: { ...found.lead.errors, items: [{ text: "Synthetic confirmed website repair finding", confirmed: true }] }, request: { basis: "REQUESTED_CONTACT", requestSource: "synthetic fixture request", requestDate: "2026-10-09T09:00:00Z", requestScope: "Website-Reparatur", requestEvidence: "Synthetic request for the website repair review", responseScope: "Website-Analyse und Website-Reparatur", recipientOrSubmissionChannel: "info@firma-021.ch", requestConfidence: "HIGH" } } };
+    return { lead: { ...found.lead, is_test: true, errors: { ...found.lead.errors, items: [{ text: "Synthetic confirmed website repair finding", confirmed: true }] }, request: { basis: "REQUESTED_CONTACT", requestSource: "synthetic fixture request", requestDate: "2026-10-09T09:00:00Z", requestScope: "Website-Reparatur", requestEvidence: "Synthetic request for the website repair review", responseScope: "Website-Analyse und Website-Reparatur", recipientOrSubmissionChannel: "info@firma-021.ch", requestConfidence: "HIGH" } } };
   };
   const apis = { "/api/crm": handler, "/api/sales": createSalesHandler({ env, data, getSalesStore, getAuthStore }),
     "/api/state": createStateHandler({ env, getStore: async () => memoryStore(), resolveActor: ra, getUserStore: async (u) => (userMem[u] ||= memoryStore()) }),
@@ -80,7 +80,7 @@ export async function startServer({ n = 387, prepare = null, vnLeads = null, sel
     const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
     for (const [user_id, pw] of Object.entries(sellers)) await auth(new Request(url + "/api/auth/admin/password", { method: "POST", headers: { origin: url, cookie, "content-type": "application/json" }, body: JSON.stringify({ user_id, password: pw }) }));
   }
-  return { url, dirs, password, close: () => { stop = true; server.close(); } };
+  return { url, dirs, password, mailStore: () => salesMem.__mail || null, close: () => { stop = true; server.close(); } };
 }
 export async function loginAs(ctx, srv, username = "chris", password = srv.password) {
   const r = await ctx.request.post(srv.url + "/api/auth/login", { headers: { origin: srv.url }, data: { username, password } });
