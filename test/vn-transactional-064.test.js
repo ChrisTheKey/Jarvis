@@ -46,7 +46,7 @@ test("TF-064 VN Access Request + Host-Key: vollständig Vietnamesisch, Link mit 
   assert.ok(c.body.startsWith("Hallo Muster AG") && c.body.includes("Freundliche Grüsse\nChris\nHelvetic Webdesign"));
 });
 
-test("TF-064 VN Repair Completion + Manual Items: Bericht/Liefermail Vietnamesisch, Bericht ohne URL/IDs (reportUnsafe ok)", () => {
+test("TF-064 VN Repair Completion + Manual Items: Bericht/Liefermail Vietnamesisch, Bericht ohne URL/IDs (reportUnsafe ok)", async () => {
   const o = vnFix();
   Object.assign(o, {
     issues: { I1: { issue_id: "I1", type: "broken_link", page: HOME, label: "Thực đơn", url: "https://nha-hang.vn/menu-cu", severity: "medium", repair_status: "repaired", customer_text: "Auf der Startseite führt …" },
@@ -62,7 +62,7 @@ test("TF-064 VN Repair Completion + Manual Items: Bericht/Liefermail Vietnamesis
   assertVn(rep.body, "Abschlussbericht");
   assert.equal(reportUnsafe(rep.body, o), null, "keine URL/Interna im Bericht");
   o.report = rep;
-  const m = buildRepairDeliveryMail(o);
+  const m = await buildRepairDeliveryMail(o);
   assert.equal(m.message_class, "CUSTOMER_ORDER_FULFILLMENT");
   assert.ok(m.body.includes("Một số mục khác cần được kiểm tra thủ công – chi tiết trong báo cáo hoàn tất:"), "manuelle Punkte klar benannt");
   assert.ok(m.body.endsWith("Trân trọng,\nLap\nHỗ trợ khách hàng Việt Nam\nHelvetic Webdesign\nhttps://lapvietnamese.netlify.app/"));

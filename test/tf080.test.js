@@ -192,6 +192,7 @@ const tokenOf = (link) => decodeURIComponent(link.split("#t=")[1].split("&")[0])
 function world({ e2e = E2E_ON, keys = KEYS, stripeOn = true } = {}) {
   const state = tmp(), ob = tmp(), mail = tmp();
   const store = createStore(state), mstore = createStore(mail);
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   let clock = +T0;
   const now = () => new Date(clock);
   const g = threadGmail(() => clock), ic = intakeCloud(), sb = sandbox(), stripe = fakeStripe(), pc = paymentsCloud({ clock: () => clock }), notes = [], logs = [], wf = new Set();
@@ -295,6 +296,10 @@ test("TF-080 §39 Volle E2E-Fixture: Test-Formular → CRM TEST → Antwort → 
   assert.deepEqual([pays[0].provider_mode, pays[0].is_test, pays[0].amount, pays[0].currency, pays[0].source], ["TEST", true, 240, "CHF", "stripe_test_checkout"]);
   assert.equal(paymentGateForOrder(W.store, W.order(id)).satisfied, true);
   assert.equal(paymentSummary(W.store, W.order(id)).payment_status, "DEPOSIT_MET", "CHF 240 ≠ CHF 480 – Rest CHF 240 bleibt offen");
+  // Die Zugangsfreigabe beginnt ab CHF 240; die CHF-480-Abschlussmail mit
+  // Quittung darf erst nach bestätigtem Restbetrag versandbereit werden.
+  recordPayment(W.store, { order_id: id, amount_chf: 240, provider_mode: "TEST", source: "stripe_test_fixture", reference: `TF80-${id}-balance`, now: W.now() });
+  assert.equal(paymentSummary(W.store, W.order(id)).payment_status, "PAID_FULL");
   // 7. sicherer Zugangslink automatisch, im Kontaktformular-Verlauf.
   const acc = W.accessMails(TESTBOX);
   assert.equal(acc.length, 1);
@@ -315,7 +320,7 @@ test("TF-080 §39 Volle E2E-Fixture: Test-Formular → CRM TEST → Antwort → 
   assert.deepEqual([lead.contact_form.workflow_status, lead.contact_form.payment_mode, lead.contact_form.payment_state, lead.is_test], ["COMPLETED", "TEST", "PAID", true]);
   // 10. Isolation: 0 echtes Geld/Umsatz/Provision/Anrufe/Outreach, nur die Sandbox berührt.
   const ps = paymentsStatus(W.state);
-  assert.deepEqual([ps.received, ps.received_chf, ps.test_payments], [0, 0, 1], "0 echte Zahlungen, 0 Umsatz");
+  assert.deepEqual([ps.received, ps.received_chf, ps.test_payments], [0, 0, 2], "0 echte Zahlungen, 0 Umsatz");
   const snap = { repair: publicRepairOrders(W.state) };
   assert.equal(snap.repair.orders[0].test_order, true);
   assert.deepEqual(ordersFromSnapshot(snap), [], "0 Provision");

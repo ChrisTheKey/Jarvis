@@ -2,6 +2,7 @@
 // Dieses Modul erzeugt keine Zahlungs- oder Versandfreigabe aus UI-Daten. Es liest
 // ausschließlich den persistenten Auftrag, das lokale Provider-Profil und den Ledger.
 import crypto from "node:crypto";
+import PDFDocument from "pdfkit";
 import { offerInfo } from "./pricing.js";
 import { paymentAmount, paymentCurrency, paymentSummary, paymentsForOrder, isTestPayment } from "./payments.js";
 
@@ -11,6 +12,8 @@ export const PARTIAL_PAYMENT = "PARTIAL_PAYMENT";
 export const PAYMENT_REQUIRED = "PAYMENT_REQUIRED";
 
 const RECEIPT_OFFER = "REPAIR_CHECK_150";
+const REPAIR_RECEIPT_OFFER = "REPAIR_FIX_500";
+const REPAIR_RECEIPT_AMOUNT = 480;
 const sha = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
 const clean = (value, max = 160) => String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
 const iso = (value) => (value && !Number.isNaN(Date.parse(value)) ? new Date(value).toISOString() : null);
@@ -35,6 +38,12 @@ function orderOf(store, orderOrId) {
   if (orderOrId && typeof orderOrId === "object") return orderOrId;
   const id = String(orderOrId || "");
   return store?.read?.("check150_orders.json", { orders: {} })?.orders?.[id] || null;
+}
+
+function repairOrderOf(store, orderOrId) {
+  if (orderOrId && typeof orderOrId === "object") return orderOrId;
+  const id = String(orderOrId || "");
+  return store?.read?.("repair_orders.json", { orders: {} })?.orders?.[id] || null;
 }
 
 function paymentFacts(store, order) {
@@ -125,6 +134,108 @@ export function buildCheck150Receipt(store, orderId, { now = new Date(), provide
   if (!order || !ready.address) return { ...base, receipt_number: null };
   const facts = { ...ready, issued_at: issuedAt, receipt_number: receiptNumber(order, { ...ready, now: issuedAt }) };
   return { ...base, receipt_number: facts.receipt_number, text: receiptText(order, facts) };
+}
+
+function repairPaymentFacts(store, order) {
+  const info = offerInfo(order?.offer_class);
+  const summary = paymentSummary(store, order || {});
+  const mode = order?.test_order === true ? "TEST" : "LIVE";
+  const payments = paymentsForOrder(store, order?.order_id).filter((p) => p.status === "RECEIVED");
+  const modePayments = payments.filter((p) => (isTestPayment(p) ? "TEST" : "LIVE") === mode);
+  const currencies = modePayments.map(paymentCurrency);
+  const currencyOk = !!info && info.currency === "CHF" && currencies.length > 0 && currencies.every((c) => c === "CHF");
+  const paid = currencyOk ? Number(summary.paid_amount || 0) : 0;
+  const paymentDate = modePayments.map((p) => iso(p.received_at)).filter(Boolean).sort().at(-1) || null;
+  return { info, summary, mode, modePayments, paid, paymentDate, currencyOk };
+}
+
+function repairReceiptReadiness(store, order, { now = new Date(), providerProfile = null } = {}) {
+  const profile = configuredProviderProfile(store, providerProfile);
+  const address = addressOf(profile);
+  const { info, summary, modePayments, paid, paymentDate, currencyOk } = repairPaymentFacts(store, order);
+  const reasons = [];
+  if (!order || order.offer_class !== REPAIR_RECEIPT_OFFER || !order.order_id) reasons.push("CHF-480-Auftrag fehlt oder ist ungültig.");
+  if (!clean(order?.company) && !clean(order?.contact_name)) reasons.push("Kundenname fehlt.");
+  if (!address) reasons.push("Gültige Geschäftsadresse von Helvetic Webdesign fehlt.");
+  if (!info || info.currency !== "CHF" || info.price !== REPAIR_RECEIPT_AMOUNT) reasons.push("Quittung ist nur für das CHF-480-Angebot zulässig.");
+  if (!currencyOk) reasons.push("Zahlungswährung oder Zahlungsmodus stimmt nicht mit dem Auftrag überein.");
+  if (!paymentDate) reasons.push("Verifiziertes Zahlungsdatum fehlt.");
+  if (!modePayments.length) reasons.push("Keine verifizierte Zahlung im passenden Modus vorhanden.");
+  if (!reasons.length && paid > REPAIR_RECEIPT_AMOUNT) reasons.push("Verifizierter Zahlungsbetrag weicht vom CHF-480-Auftrag ab.");
+  const status = reasons.length ? MANUAL_REVIEW_REQUIRED
+    : paid === REPAIR_RECEIPT_AMOUNT ? RECEIPT_READY
+      : paid > 0 ? PARTIAL_PAYMENT : PAYMENT_REQUIRED;
+  return {
+    status, reasons, profile, address, now: new Date(now).toISOString(), paid_amount_chf: paid,
+    open_amount_chf: Math.max(0, REPAIR_RECEIPT_AMOUNT - paid), payment_date: paymentDate,
+    payment_ids: modePayments.map((p) => p.payment_id), payment_status: summary.payment_status,
+    fully_paid: status === RECEIPT_READY && paid === REPAIR_RECEIPT_AMOUNT,
+  };
+}
+
+function repairReceiptNumber(order, facts) {
+  return `QR480-${new Date(facts.payment_date || facts.now).toISOString().slice(0, 10).replace(/-/g, "")}-${sha(`${order.order_id}|${facts.payment_ids.join(",")}|${facts.paid_amount_chf}`).slice(0, 10).toUpperCase()}`;
+}
+
+function repairReceiptText(order, facts) {
+  const customer = clean(order.company) || clean(order.contact_name);
+  return [
+    "ZAHLUNGSQUITTUNG",
+    "",
+    "Leistungserbringer: Helvetic Webdesign",
+    "Inhaber: Christoph Kälin",
+    `Geschäftsadresse: ${facts.address.street}, ${facts.address.postal_code} ${facts.address.city}, ${facts.address.country}`,
+    "",
+    `Kunde: ${customer}`,
+    `Quittungsnummer: ${facts.receipt_number}`,
+    `Ausstellungsdatum: ${facts.issued_at.slice(0, 10)}`,
+    `Zahlungsdatum: ${facts.payment_date.slice(0, 10)}`,
+    "",
+    "Leistung: Webseiten-Check & Reparatur",
+    "",
+    "Gesamtbetrag: CHF 480.00",
+    "Mehrwertsteuer: Nicht erhoben – Helvetic Webdesign ist nicht mehrwertsteuerpflichtig.",
+    "Hinweis: Nicht mehrwertsteuerpflichtig – keine MWST erhoben.",
+    `Bezahlter Betrag: CHF ${facts.paid_amount_chf.toFixed(2)}`,
+    "Offener Betrag: CHF 0.00",
+    "Zahlungsstatus: Vollständig bezahlt",
+    "",
+    "Vielen Dank für Ihren Auftrag.",
+    "",
+    "Helvetic Webdesign",
+    "Christoph Kälin",
+  ].join("\n");
+}
+
+function renderReceiptPdf(text) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: "A4", margin: 50, info: { Title: "Zahlungsquittung – Webseiten-Check & Reparatur", Author: "Helvetic Webdesign" } });
+    const chunks = [];
+    doc.on("data", (chunk) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+    doc.font("Helvetica").fontSize(11).text(text, { width: 495, lineGap: 4 });
+    doc.end();
+  });
+}
+
+export async function buildRepairReceipt(store, orderId, { now = new Date(), providerProfile = null } = {}) {
+  const order = repairOrderOf(store, orderId);
+  const ready = repairReceiptReadiness(store, order, { now, providerProfile });
+  const base = {
+    type: "repair480_receipt", offer_class: REPAIR_RECEIPT_OFFER, status: ready.status, reasons: ready.reasons,
+    order_id: order?.order_id || String(orderId || ""), title: "ZAHLUNGSQUITTUNG", issued_at: ready.now,
+    payment_date: ready.payment_date, paid_amount_chf: ready.paid_amount_chf, open_amount_chf: ready.open_amount_chf,
+    fully_paid: ready.fully_paid, receipt_number: null, text: "", pdf: null, attachment: null,
+  };
+  if (ready.status !== RECEIPT_READY || !order || !ready.address) return base;
+  const facts = { ...ready, issued_at: ready.now, receipt_number: repairReceiptNumber(order, ready) };
+  const text = repairReceiptText(order, facts);
+  const pdf = await renderReceiptPdf(text);
+  return {
+    ...base, receipt_number: facts.receipt_number, text, pdf,
+    attachment: { filename: `quittung-${facts.receipt_number}.pdf`, mimeType: "application/pdf", content: pdf },
+  };
 }
 
 const findingText = (value) => clean(value, 1200) || "Nicht dokumentiert";
@@ -248,11 +359,40 @@ export function buildCheck150CompletionMail(store, order, { now = new Date(), re
 }
 
 const REPAIR_READY_STATES = new Set(["READY_FOR_DELIVERY", "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"]);
+const REPAIR_WORK_STATES = new Set(["BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST"]);
 
-export function buildRepairCompletionMail(order = {}) {
+const durationValue = (value, fallback) => clean(value, 120) || fallback;
+
+export function buildProcessingDurationEstimate(order = {}, { estimates = {} } = {}) {
+  const complete = REPAIR_READY_STATES.has(order.state) || order.completion?.kind === "FULL";
+  const accessReceived = order.offer_class === REPAIR_RECEIPT_OFFER
+    ? order.access_intake?.status === "RECEIVED" || order.access?.status === "RECEIVED" || order.access?.ok === true
+    : true;
+  const configured = { ...(order.processing_estimate || {}), ...(estimates || {}) };
+  const phases = {
+    customer_access: complete || accessReceived ? "abgeschlossen – notwendiger Zugang liegt vor." : order.offer_class === RECEIPT_OFFER
+      ? "entfällt – für den Webseiten-Check ist kein Kundenzugang erforderlich."
+      : "offen – abhängig vom Eingang und der Prüfung des sicheren Kundenzugangs.",
+    technical_work: complete ? "abgeschlossen." : REPAIR_WORK_STATES.has(order.state)
+      ? "läuft – Abschluss nach erfolgreicher technischer Prüfung."
+      : `voraussichtlich ${durationValue(configured.technical_work, "1–3 Werktage")} nach erfülltem Zugang/Start (unverbindlich).`,
+    quality_control: complete ? "abgeschlossen – technische Verifikation und Qualitätskontrolle liegen vor." : `anschliessend ${durationValue(configured.quality_control, "0–1 Werktag")} (unverbindlich).`,
+    completion_delivery: complete || order.delivery?.sent_at || order.delivery_sent_at ? "abgeschlossen – Abschluss und Zustellung erfolgt." : `danach ${durationValue(configured.completion_delivery, "innerhalb 1 Werktags")} (unverbindlich).`,
+  };
+  return { phases, text: ["Voraussichtliche Bearbeitungsdauer (unverbindlich):", `- Wartezeit auf notwendige Kundenzugänge: ${phases.customer_access}`, `- Technische Bearbeitung: ${phases.technical_work}`, `- Qualitätskontrolle: ${phases.quality_control}`, `- Abschluss und Zustellung: ${phases.completion_delivery}`].join("\n") };
+}
+
+export function buildRepairCompletionMail(order = {}, { receipt = null, allowInternalTestWithoutReceipt = false } = {}) {
   const issues = Object.values(order.issues || {}).filter((issue) => issue && typeof issue === "object");
   const plan = new Map((order.plan || []).filter((item) => item?.issue_id).map((item) => [item.issue_id, item]));
   const reasons = [];
+  const internalTest = allowInternalTestWithoutReceipt === true
+    && order?.test_kind === "INTERNAL_ADMIN_TEST"
+    && order?.payment_waiver?.reason === "INTERNAL_ADMIN_TEST";
+  if (!internalTest && (!receipt || receipt.status !== RECEIPT_READY || receipt.fully_paid !== true || receipt.paid_amount_chf !== REPAIR_RECEIPT_AMOUNT
+    || !receipt.pdf || !receipt.attachment || receipt.attachment.mimeType !== "application/pdf" || receipt.attachment.content !== receipt.pdf
+    || receipt.order_id !== order.order_id || receipt.offer_class !== REPAIR_RECEIPT_OFFER))
+    reasons.push("Verifizierte CHF-480-PDF-Quittung fehlt.");
   if (!REPAIR_READY_STATES.has(order.state) && order.completion?.kind !== "FULL") reasons.push("Reparatur ist noch nicht im verifizierten Abschlusszustand.");
   if (order.completion?.kind === "WITH_MANUAL_ITEMS" || issues.some((issue) => issue.repair_status !== "repaired")) reasons.push("Mindestens ein dokumentiertes Problem ist nicht vollständig repariert und verifiziert.");
   const rows = issues.map((issue, index) => {
@@ -292,5 +432,6 @@ export function buildRepairCompletionMail(order = {}) {
     "Helvetic Webdesign",
   ].join("\n");
   return { status: RECEIPT_READY, reasons: [], subject: `Ihre Website-Reparatur ${order.domain} – Abschlussbericht`, body,
-    inline: body.length <= 5800, problem_count: rows.length, problems: rows.map((row) => row.problem), solutions: rows.map((row) => row.solution) };
+    inline: body.length <= 5800, problem_count: rows.length, problems: rows.map((row) => row.problem), solutions: rows.map((row) => row.solution), receipt,
+    attachments: receipt?.attachment ? [receipt.attachment] : [] };
 }

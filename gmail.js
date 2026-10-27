@@ -309,17 +309,55 @@ export async function assertOwnedDraft(draftId, reg = loadRegistry()) {
 // ---------- Nachrichten ----------
 
 const encodeHeader = (s) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s).toString("base64")}?=`);
-export function rawMessage({ to, subject = "", body = "", inReplyTo = "", references = "", from = null }) {
+const MIME_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+const MIME_ATTACHMENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.pdf$/i;
+const base64Lines = (value) => String(value).replace(/.{76}/g, "$&\r\n");
+
+function normalizeMimeAttachments(attachments) {
+  if (attachments == null) return [];
+  if (!Array.isArray(attachments) || attachments.length > 3) throw new Error("Zu viele oder ungültige Anlagen.");
+  return attachments.map((attachment) => {
+    const filename = String(attachment?.filename || "");
+    const mimeType = String(attachment?.mimeType || attachment?.mime_type || "").toLowerCase();
+    const content = Buffer.isBuffer(attachment?.content) ? attachment.content
+      : attachment?.content instanceof Uint8Array ? Buffer.from(attachment.content) : null;
+    if (!MIME_ATTACHMENT_NAME_RE.test(filename) || mimeType !== "application/pdf" || !content || content.length === 0 || content.length > MIME_ATTACHMENT_MAX_BYTES)
+      throw new Error("Anlage muss eine gültige PDF-Datei sein.");
+    return { filename, mimeType, content };
+  });
+}
+
+export function rawMessage({ to, subject = "", body = "", inReplyTo = "", references = "", from = null, attachments = [] }) {
   if (!to) throw new Error("Empfänger (--to) fehlt.");
   if (/[\r\n]/.test(to + subject + inReplyTo + references)) throw new Error("Zeilenumbrüche in Empfänger oder Betreff sind nicht erlaubt.");
-  const mime = [
+  const headers = [
     ...(from ? [`From: ${from.name ? `${encodeHeader(from.name)} <${from.address}>` : from.address}`, `Reply-To: ${from.address}`] : []),
     `To: ${to}`, `Subject: ${encodeHeader(subject)}`,
     ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${references || inReplyTo}`] : []),
     "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "",
-    Buffer.from(body).toString("base64").replace(/.{76}/g, "$&\r\n"),
-  ].join("\r\n");
+  ];
+  const normalizedAttachments = normalizeMimeAttachments(attachments);
+  const mime = normalizedAttachments.length === 0
+    ? [...headers, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", base64Lines(Buffer.from(body).toString("base64"))].join("\r\n")
+    : (() => {
+      const boundary = `=_Jarvis_${crypto.randomBytes(12).toString("hex")}`;
+      const parts = [
+        ...headers,
+        `Content-Type: multipart/mixed; boundary="${boundary}"`, "",
+        `--${boundary}`,
+        "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "",
+        base64Lines(Buffer.from(body).toString("base64")),
+        ...normalizedAttachments.flatMap((attachment) => [
+          `--${boundary}`,
+          `Content-Type: ${attachment.mimeType}; name="${attachment.filename}"`,
+          `Content-Disposition: attachment; filename="${attachment.filename}"`,
+          "Content-Transfer-Encoding: base64", "",
+          base64Lines(attachment.content.toString("base64")),
+        ]),
+        `--${boundary}--`, "",
+      ];
+      return parts.join("\r\n");
+    })();
   return Buffer.from(mime).toString("base64url");
 }
 
@@ -593,14 +631,14 @@ export async function replyToThread(threadId, { body, mode } = {}) {
 // TF-066: Antwort-Entwurf einer Service-Klasse im EIGENEN Auftrags-Thread. Anders als replyToThread wird der Empfänger NICHT aus
 // dem Thread abgeleitet, sondern ist fest vorgegeben (bestätigte Kundenadresse des Auftrags). Thread-Besitz wird wie bei readThread
 // geprüft (Register + Gmail); landet der Entwurf nicht im Thread, wird er verworfen. Gesendet wird nur über sendDraft.
-export async function replyDraftInThread(threadId, { to, body, messageClass, orderId = null } = {}) {
+export async function replyDraftInThread(threadId, { to, body, messageClass, orderId = null, attachments = [] } = {}) {
   if (!SERVICE_MESSAGE_CLASSES.includes(messageClass)) throw new Error("Nur Service-Nachrichten im Auftrags-Thread.");
   if (!to || !body) throw new Error("Empfänger oder Text fehlt.");
   const { own, messages } = await fetchOwnedThread(threadId, loadRegistry());
   const mails = messages.filter((m) => !m.draft);
   const last = mails.at(-1);
   const subject = own[0]?.subject || last?.subject || "";
-  return createDraft({ to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId, messageClass, orderId,
+  return createDraft({ to, subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, body, threadId, messageClass, orderId, attachments,
     inReplyTo: last?.rfcMessageId || "", references: [last?.references, last?.rfcMessageId].filter(Boolean).join(" ") });
 }
 

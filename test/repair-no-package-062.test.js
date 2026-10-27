@@ -61,9 +61,11 @@ function world({ html = "<html></html>", regress = false, unclear = false, mobil
 }
 function setup() {
   const dir = tmp(), store = createStore(dir);
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   const o = createRepairOrder(store, { domain: "muster.ch", website: "https://muster.ch/", company: "Muster AG", delivery_email: "kunde@muster.ch", now: T0 });
   authorizeRepair(store, o.order_id, { authorized_domain: "muster.ch", source: "customer_reply_email", now: T0 });
   recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "TF062-Test-Ledger", now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "TF062-Test-Ledger-2", now: T0 });
   return { dir, store, id: o.order_id };
 }
 const gmail = (drafts = []) => ({ createDraft: async (d) => { drafts.push(d); return { draftId: "d1" }; }, sendDraft: async () => ({}) });
@@ -86,7 +88,9 @@ test("A/F/G/I: statische Reparatur → COMPLETED wie bisher, Backup VOR der Änd
   assert.ok(o.report?.body?.length > 50, "Abschlussbericht erzeugt");
   assert.ok(!NO_PKG.test(o.report.body), "Bericht ohne Paket-/ZIP-Hinweis");
   assert.equal(drafts.length, 1, "genau eine Lieferung");
-  assert.ok(!drafts[0].attachments && !NO_PKG.test(drafts[0].body), "kein Anhang, kein ZIP");
+  assert.equal(drafts[0].attachments?.length, 1, "PDF-Quittung als einziger Anhang");
+  assert.equal(drafts[0].attachments[0].mimeType, "application/pdf");
+  assert.ok(!NO_PKG.test(drafts[0].body), "kein ZIP");
   assert.ok(!fs.readdirSync(dir, { recursive: true }).some((f) => /\.zip$|artifact\.json$|repair_artifacts/.test(String(f))), "keine Paketdateien");
 });
 

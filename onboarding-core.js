@@ -14,6 +14,7 @@
 import { offerInfo, formatMoney } from "./pricing.js";
 import { VN_SIGNATURE } from "./sender-profiles.js";
 import { parsePlatformAnswer, cleanStated, cleanPlatform, HOSTING_QUESTION_DE, HOSTING_QUESTION_VI, HOSTING_NO_PW_DE, HOSTING_NO_PW_VI } from "./hosting-detect.js";
+import { buildProcessingDurationEstimate } from "./completion-artifacts.js";
 
 export const ONBOARDING_CLASS = "CUSTOMER_ONBOARDING_DIALOGUE";
 export const ONBOARDING_STATES = Object.freeze(["WAITING_FOR_PAYMENT", "READY_FOR_ONBOARDING", "WAITING_FOR_ACCESS", "WAITING_FOR_CUSTOMER_INFO",
@@ -500,11 +501,12 @@ export function buildCheckIntroMail(order) {
     "Dịch vụ này không cần quyền truy cập – chúng tôi không thay đổi website của anh/chị.", "",
     "Nếu anh/chị muốn chúng tôi chú ý thêm đến một khu vực cụ thể của website, chỉ cần trả lời email này.",
     "Nếu không, anh/chị không cần làm gì – báo cáo sẽ được gửi tới anh/chị sau khi hoàn tất.", "", VN_SIGNATURE].join("\n") };
+  const duration = buildProcessingDurationEstimate({ ...order, offer_class: order.offer_class || "REPAIR_CHECK_150" }).text;
   return { subject: `Ihr Website-Check ${order.domain} – Zahlung erhalten`, body: [greetDe(order), "",
     `vielen Dank – die Zahlungsschwelle für Ihren Auftrag ist erreicht. Der Check Ihrer Website ${order.domain} hat begonnen.`, "",
     "Für diesen Auftrag brauche ich keinen Zugang – ich verändere an Ihrer Website nichts.", "",
     "Gibt es einen bestimmten Bereich, den ich zusätzlich berücksichtigen soll? Dann antworten Sie einfach auf diese E-Mail.",
-    "Sonst müssen Sie nichts tun – Sie erhalten den Bericht, sobald der Check abgeschlossen ist.", "", SIG_DE].join("\n") };
+    "Sonst müssen Sie nichts tun – Sie erhalten den Bericht, sobald der Check abgeschlossen ist.", "", duration, "", SIG_DE].join("\n") };
 }
 
 // Neuer sicherer Link (abgelaufener Link, §6/§29) – wird vom Repair-Service mit dem frischen One-Time-Link gebaut.

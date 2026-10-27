@@ -39,7 +39,7 @@ function fakeGmail() {
   const calls = [];
   let failNext = null;
   return { calls, failNextSend: (msg) => { failNext = msg; },
-    createDraft: async (x) => { calls.push({ op: "create", to: x.to, subject: x.subject, body: x.body, messageClass: x.messageClass }); return { draftId: "dr" + calls.length }; },
+    createDraft: async (x) => { calls.push({ op: "create", to: x.to, subject: x.subject, body: x.body, messageClass: x.messageClass, attachments: x.attachments || [] }); return { draftId: "dr" + calls.length }; },
     sendDraft: async (id) => { if (failNext) { const m = failNext; failNext = null; throw new Error(m); } calls.push({ op: "SEND", id }); return { messageId: "m-" + id }; },
     sent: (cls) => calls.filter((c) => c.op === "SEND").map((s) => calls.find((c) => c.op === "create" && "dr" + (calls.indexOf(c) + 1) === s.id)).filter((c) => !cls || c?.messageClass === cls) };
 }
@@ -222,10 +222,12 @@ test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240
 // Lieferung: genau einmal, restart-safe, fail safe
 // =====================================================================================================================
 // untilReady: nach dem Zugang einmal ohne Lieferung laufen lassen → READY_FOR_DELIVERY (für gezielte Liefer-Szenarien).
-async function readyOrder({ w = world({ includeProtected: false }), gmail = fakeGmail(), extra = {}, untilReady = false } = {}) {
+async function readyOrder({ w = world({ includeProtected: false }), gmail = fakeGmail(), extra = {}, untilReady = false, fullPayment = true } = {}) {
   const dir = tmp(), store = createStore(dir), c = cloud();
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   const o = createConfirmedRepairOrder(store, { domain: DOMAIN, website: SITE, company: "Muster Kunde AG", delivery_email: EMAIL, now: T0 });
   recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "R-" + o.order_id, now: T0 });
+  if (fullPayment) recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "R2-" + o.order_id, now: T0 });
   await run(dir, w, gmail, c.client, extra);
   const link = linkOf(gmail.calls.find((x) => x.messageClass === "CUSTOMER_ACCESS_REQUEST"));
   const sub = await customerSubmits(c, link);
@@ -271,11 +273,11 @@ test("LIEFERUNG vor Delivery unterbrochen (Gmail 503) → kein Versand, Neustart
 
 test("LIEFERUNG fail safe: gesperrte Abschlussmail oder Interna → kein Versand; langer freigegebener Bericht → ATTACHMENT_REQUIRED", async () => {
   const mk = () => ({ order_id: "RF480-20261013-abcdef", domain: DOMAIN, contact_name: "Frau Muster", report: { subject: "S", body: "x".repeat(6000) } });
-  assert.equal(buildRepairDeliveryMail(mk()).status, "MANUAL_REVIEW_REQUIRED");
-  assert.equal(buildRepairDeliveryMail(mk()).inline, false);
-  const readyMail = buildRepairDeliveryMail({ ...mk(), website: SITE, issues: { one: { customer_text: "Kontaktlink war nicht erreichbar.", repair_status: "repaired", solution_summary: "Kontaktlink korrigiert." } }, completion: { kind: "FULL" }, validation: { build_ok: true }, retest: { http_ok: true }, browser_gate: { required: false } });
-  assert.equal(readyMail.status, "READY");
-  assert.equal(readyMail.inline, true);
+  assert.equal((await buildRepairDeliveryMail(mk())).status, "MANUAL_REVIEW_REQUIRED");
+  assert.equal((await buildRepairDeliveryMail(mk())).inline, false);
+  const readyMail = await buildRepairDeliveryMail({ ...mk(), website: SITE, issues: { one: { customer_text: "Kontaktlink war nicht erreichbar.", repair_status: "repaired", solution_summary: "Kontaktlink korrigiert." } }, completion: { kind: "FULL" }, validation: { build_ok: true }, retest: { http_ok: true }, browser_gate: { required: false } });
+  assert.equal(readyMail.status, "MANUAL_REVIEW_REQUIRED");
+  assert.equal(readyMail.inline, false);
   for (const [bad, why] of [["Server 10.0.0.12", "ip"], ["Datei /home/kunde/public_html/index.html", "pfad"], ["https://muster-kunde.test/team", "url"], ["Sicherung B0123456789ab", "backup_id"],
     ["Commit 0123456789abcdef0123456789abcdef01234567", "git"], ["Auftrag RF480-20261013-abcdef", "auftrags_id"], ["passwort: geheim", "secret"], ["TypeError stack trace", "debug"]])
     assert.equal(reportUnsafe(bad), why, bad);
@@ -342,7 +344,7 @@ test("ROLLBACK FAILURE: Regression + Rollback scheitert → MANUAL_REVIEW_REQUIR
 test("PAYMENT REVERSAL: vor dem Write Refund unter 240 → PAYMENT_REQUIRED, 0 Writes; nach dem Write → PAYMENT_REVIEW_REQUIRED, kein automatischer Rollback, keine Lieferung", async () => {
   // Vor dem Write: Zugang erhalten, dann Rückerstattung → nichts wird verändert.
   const gmail = fakeGmail(), w = world();
-  const x = await readyOrder({ gmail, w });
+  const x = await readyOrder({ gmail, w, fullPayment: false });
   const pay = paymentsForOrder(x.store, x.id)[0];
   refundPayment(x.store, pay.payment_id, { reason: "Test-Rückerstattung" });
   await run(x.dir, w, gmail, x.c.client);
@@ -352,7 +354,7 @@ test("PAYMENT REVERSAL: vor dem Write Refund unter 240 → PAYMENT_REQUIRED, 0 W
 
   // Nach dem Write: Zahlung fällt nach REPAIRING unter die Schwelle.
   const gmail2 = fakeGmail(), w2 = world();
-  const y = await readyOrder({ gmail: gmail2, w: w2 });
+  const y = await readyOrder({ gmail: gmail2, w: w2, fullPayment: false });
   const engine = createRepairEngine({ store: y.store, adapters: { static: w2.adapter }, auditor: w2.auditor, browserValidator: w2.browserValidator, requireBrowser: true, autoDeliver: true, gmail: gmail2 });
   const { syncAccessIntake } = await import("../access-intake.js");
   await syncAccessIntake({ store: y.store, intake: y.c.client });

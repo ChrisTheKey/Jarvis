@@ -24,7 +24,7 @@ Die Spezifikation dokumentiert Ledger-Prüfung, PDF-Rendering, bestehende Outbox
 
 Im neuen Worktree auf `db36d2c` wurden Abhängigkeiten isoliert installiert; die vorhandenen TF-028-Artefakte und `pdfkit` wurden gelesen. Vor Änderungen laufen die betroffenen TF-028-/Gmail-Tests.
 
-- [ ] **Step 3: Spezifikations-Commit**
+- [x] **Step 3: Spezifikations-Commit**
 
 ```powershell
 git add docs/superpowers/specs/2026-10-27-tf032-pdf-receipt-duration-design.md docs/superpowers/plans/2026-10-27-tf032-pdf-receipt-duration.md
@@ -37,11 +37,11 @@ git commit -m "docs(tf032): design receipt and processing duration"
 - Modify: `test/tf028-completion-upgrade.test.js`
 - Create: `test/tf032-pdf-receipt-duration.test.js`
 
-- [ ] **Step 1: Synthetische Fixture definieren**
+- [x] **Step 1: Synthetische Fixture definieren**
 
 Die Fixture verwendet einen Temp-Store, einen synthetischen `REPAIR_FIX_500`-Auftrag, eine vollständige Schweizer Geschäftsadresse und ausschließlich `TEST`-Ledger-Einträge. Es werden keine echten Empfänger, URLs oder Provider aufgerufen.
 
-- [ ] **Step 2: Rote Quittungs-/PDF-Tests schreiben**
+- [x] **Step 2: Rote Quittungs-/PDF-Tests schreiben**
 
 Die Tests müssen vor der Implementierung prüfen:
 
@@ -57,7 +57,7 @@ assert.equal(buildRepairReceipt(store, order.order_id, { now: NOW }).receipt_num
 
 Zusätzliche rote Fälle erwarten `MANUAL_REVIEW_REQUIRED` ohne PDF bei fehlender Adresse, falscher Währung, falschem Betrag, fehlendem Zahlungsdatum oder nicht passendem TEST-/LIVE-Modus.
 
-- [ ] **Step 3: Rote Tests ausführen**
+- [x] **Step 3: Rote Tests ausführen**
 
 ```powershell
 node --test --test-concurrency=1 test/tf032-pdf-receipt-duration.test.js
@@ -71,19 +71,19 @@ Erwartung: gezieltes Fehlschlagen wegen der noch fehlenden CHF-480-Receipt-/PDF-
 - Modify: `completion-artifacts.js`
 - Test: `test/tf032-pdf-receipt-duration.test.js`
 
-- [ ] **Step 1: Verifizierte CHF-480-Readiness implementieren**
+- [x] **Step 1: Verifizierte CHF-480-Readiness implementieren**
 
 Die Readiness verwendet `offerInfo(order.offer_class)`, `paymentSummary`, `paymentsForOrder`, `paymentCurrency`, `isTestPayment` und `config.business_profile.address`. Der bereinigte Betrag muss im passenden Modus exakt CHF 480 betragen; ohne vollständige Pflichtdaten gibt es nur `MANUAL_REVIEW_REQUIRED`.
 
-- [ ] **Step 2: Deterministische Quittungsnummer implementieren**
+- [x] **Step 2: Deterministische Quittungsnummer implementieren**
 
 Die Nummer wird aus Zahlungsdatum, `order_id`, sortierten Ledger-Payment-IDs und dem bestätigten Betrag gehasht. Sie enthält keine E-Mail-, Karten-, Stripe- oder internen Referenzwerte im Kundentext.
 
-- [ ] **Step 3: PDF im Speicher rendern**
+- [x] **Step 3: PDF im Speicher rendern**
 
 `PDFDocument` erzeugt eine kleine A4-PDF mit Anbieter, Inhaber, verifizierter Adresse, Kundenangabe, Nummer, Ausstellungs-/Zahlungsdatum, Leistung, CHF 480.00, tatsächlicher Zahlung und dem nicht mehrwertsteuerpflichtigen Hinweis. Das Ergebnis wird als `Buffer` und Base64-Anlage mit `application/pdf` zurückgegeben.
 
-- [ ] **Step 4: Quittungstests grün ausführen**
+- [x] **Step 4: Quittungstests grün ausführen**
 
 ```powershell
 node --test --test-concurrency=1 test/tf032-pdf-receipt-duration.test.js
@@ -101,23 +101,23 @@ node --test --test-concurrency=1 test/tf032-pdf-receipt-duration.test.js
 - Modify: `test/gmail.test.js`
 - Modify: `test/service-separation-047.test.js`
 
-- [ ] **Step 1: Rote Mail-/Anlagentests schreiben**
+- [x] **Step 1: Rote Mail-/Anlagentests schreiben**
 
 Ein verifizierter CHF-480-Abschluss liefert `attachments.length === 1`, Dateiname `quittung-<nummer>.pdf`, MIME `application/pdf`, und die PDF enthält die Quittungsdaten. Ohne Receipt bleibt `MANUAL_REVIEW_REQUIRED`. Ein bestehender Test prüft weiterhin, dass eine nicht verifizierte Reparatur keine Abschlussmail erzeugt.
 
-- [ ] **Step 2: Anlage durch die Outbox reichen**
+- [x] **Step 2: Anlage durch die Outbox reichen**
 
 `createOutboxMailer.createDraft` validiert Dateiname, MIME, Größe und Base64-Inhalt und speichert die PDF als geschützten serialisierten Attachment-Wert. `processRepairOutbox` reicht ausschließlich diese Anlage an `gmail.createDraft` weiter. Claim-, Ergebnis- und Cleanup-Logik bleiben unverändert.
 
-- [ ] **Step 3: Gmail-MIME für PDF ergänzen**
+- [x] **Step 3: Gmail-MIME für PDF ergänzen**
 
 `rawMessage` erzeugt bei Anlagen `multipart/mixed` mit einem UTF-8-Textteil und einer Base64-kodierten PDF-Part. Ohne Anlagen bleibt die bisherige `text/plain`-Nachricht bytekompatibel. Headerwerte und Dateinamen werden ohne Zeilenumbrüche übernommen.
 
-- [ ] **Step 4: Repair-Workflow binden**
+- [x] **Step 4: Repair-Workflow binden**
 
 `buildRepairDeliveryMail(order, { store })` erzeugt die Receipt aus dem Ledger und übergibt sie an `buildRepairCompletionMail`. `deliver` übergibt `mail.attachments` bei der Draft-Erstellung, speichert einen Hash von Text und Anlage und blockiert bei fehlender Receipt. Die vorhandenen Versand- und Statusgates bleiben bestehen.
 
-- [ ] **Step 5: Betroffene Tests grün ausführen**
+- [x] **Step 5: Betroffene Tests grün ausführen**
 
 ```powershell
 node --test --test-concurrency=1 test/tf032-pdf-receipt-duration.test.js test/tf028-completion-upgrade.test.js test/gmail.test.js test/service-separation-047.test.js test/full-order-046.test.js
@@ -131,7 +131,7 @@ node --test --test-concurrency=1 test/tf032-pdf-receipt-duration.test.js test/tf
 - Modify: `repair-workflow.js`
 - Test: `test/tf032-pdf-receipt-duration.test.js`
 
-- [ ] **Step 1: Rote Zeitangaben-Tests schreiben**
+- [x] **Step 1: Rote Zeitangaben-Tests schreiben**
 
 Die Tests prüfen vier Phasen und statusabhängige Änderungen:
 
@@ -143,15 +143,15 @@ assert.match(buildCheckIntroMail({ domain: "synthetic.example", state: "ORDER_RE
 assert.doesNotMatch(buildRepairCompletionMail(completeOrder, { receipt: readyReceipt }).body, /voraussichtliche Bearbeitungsdauer/i);
 ```
 
-- [ ] **Step 2: Statusfunktion minimal implementieren**
+- [x] **Step 2: Statusfunktion minimal implementieren**
 
 Die Funktion markiert erledigte Phasen als abgeschlossen, Zugangswarten als `entfällt`/`offen`, und nutzt ansonsten eine klar unverbindliche konfigurierbare Spanne. Keine feste Liefergarantie wird behauptet.
 
-- [ ] **Step 3: Bestätigungs-/Onboarding-Mails ergänzen**
+- [x] **Step 3: Bestätigungs-/Onboarding-Mails ergänzen**
 
 Die Zeitangabe wird in `buildCheckIntroMail` und die CHF-480-Zugangs-/Auftragsbestätigung eingesetzt. Die Abschlussmail bleibt eine reine Abschlussbestätigung.
 
-- [ ] **Step 4: Zeitangaben regressionssicher testen**
+- [x] **Step 4: Zeitangaben regressionssicher testen**
 
 ```powershell
 node --test --test-concurrency=1 test/tf032-pdf-receipt-duration.test.js test/tf028-completion-upgrade.test.js test/onboarding-066.test.js
@@ -163,15 +163,15 @@ node --test --test-concurrency=1 test/tf032-pdf-receipt-duration.test.js test/tf
 - Modify: `docs/STATUS.md`
 - Create: `reports/TF-JARVIS-032/ABSCHLUSSBERICHT.md`
 
-- [ ] **Step 1: Ausführbare Suite ausführen**
+- [x] **Step 1: Ausführbare Suite ausführen**
 
 Mit vorhandenem lokalem Chromium laufen zunächst die betroffenen Tests und anschließend `node scripts/dev-check.mjs --full`. Docker-Labs werden nur nach erfolgreicher read-only Engine-/Ressourcenprüfung gestartet; bei Guard-Blockade bleiben sie `BLOCKED / NOT RUN`.
 
-- [ ] **Step 2: Sicherheits- und Idempotenznachweis dokumentieren**
+- [x] **Step 2: Sicherheits- und Idempotenznachweis dokumentieren**
 
 Der Bericht nennt Quittungsstatus, PDF-Nachweis, falsche Beträge/Währungen, fehlende Adresse, doppelte Entwürfe, Outbox-Claim/Worker-Verhalten, Zeitangabe, Secret-Scan, Testzahlen und Docker-Status. Keine echten Aktionen werden als erfolgt dargestellt.
 
-- [ ] **Step 3: Finalen TF-032-Commit erstellen**
+- [x] **Step 3: Finalen TF-032-Commit erstellen**
 
 ```powershell
 node scripts/dev-check.mjs

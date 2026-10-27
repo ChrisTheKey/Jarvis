@@ -76,7 +76,7 @@ import { readBrief, listReissueRequests } from "./onboarding-store.js";
 import { e2eConfig, isE2eDomain, isE2eMailbox, E2E_SUBJECT_PREFIX } from "./e2e-test.js";
 import { combineAuditors } from "./browser-site-audit.js";
 import { cleanPlatform, cleanStated, resolvePlatform, connectorOf, nameOf, accessGuide, hostingQuestionLines } from "./hosting-detect.js";
-import { buildRepairCompletionMail } from "./completion-artifacts.js";
+import { buildRepairCompletionMail, buildRepairReceipt, buildProcessingDurationEstimate } from "./completion-artifacts.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 // Gate-Vergleich für Zustandsgründe: CH exakt wie bisher «CHF 240 ≥ 240», VN «1.950.000 ₫ ≥ 1.950.000 ₫».
@@ -771,7 +771,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     if (!gate.ok || !order.report?.body) return handOver(order, "failed", `Lieferung gestoppt: Abschluss-Gate/Bericht unvollständig (${gate.missing.join(", ") || "Bericht"}).`, t);
     const unsafe = reportUnsafe(order.report.body, order);
     if (unsafe) { await informChris(order, "report_unsafe", unsafe); return handOver(order, "report_unsafe", `Bericht enthält unzulässige Angaben (${unsafe}) – kein automatischer Versand, Chris prüft.`, t); }
-    const mail = buildRepairDeliveryMail(order);
+    const mail = await buildRepairDeliveryMail(order, { store, now: t });
     const mailUnsafe = reportUnsafe(mail.body, order);
     if (mailUnsafe) { await informChris(order, "completion_mail_unsafe", mailUnsafe); return handOver(order, "report_unsafe", `Abschlussmail enthält unzulässige Angaben (${mailUnsafe}) – kein automatischer Versand, Chris prüft.`, t); }
     if (mail.status && mail.status !== "READY") return handOver(order, "failed", `Lieferung gestoppt: Abschlussmail nicht freigegeben (${(mail.reasons || []).join(" ")}).`, t);
@@ -780,9 +780,10 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     try {
       if (!order.delivery?.draft_id) {
         // Interner Testauftrag: [E2E-TEST]-Betreff + test_run_id – der Mail-Worker sendet nur an ein freigegebenes Test-Postfach (TF-088-Prüfung).
-        const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: FULFILLMENT_CLASS, ...(isInternalTestOrder(order) ? { e2eRunId: order.test_run_id } : {}) });
+        const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: FULFILLMENT_CLASS,
+          ...(mail.attachments?.length ? { attachments: mail.attachments } : {}), ...(isInternalTestOrder(order) ? { e2eRunId: order.test_run_id } : {}) });
         order.delivery = { ...(order.delivery || {}), status: "draft_ready", draft_id: d.draftId, to: order.delivery_email, message_class: FULFILLMENT_CLASS,
-          report_hash: sha(mail.body), created_at: t.toISOString() };
+          report_hash: sha(`${mail.body}\n${mail.attachment_hash || ""}`), created_at: t.toISOString() };
         saveOrder(store, order); // Draft-ID sofort persistieren – ein Neustart erzeugt nie ein Duplikat
       }
       order.delivery = { ...order.delivery, send_attempted_at: t.toISOString() };
@@ -1356,6 +1357,7 @@ export function buildAccessRequestMail(order, { link = null, expires_at = null, 
   const until = expires_at ? new Intl.DateTimeFormat("de-CH", { dateStyle: "long", timeStyle: "short", timeZone: "Europe/Zurich" }).format(new Date(expires_at)) : null;
   // TF-071: Anleitung passend zum erkannten/angegebenen Zugangsweg (WordPress-Admin, SFTP, Shopify-Mitarbeiter …).
   const guide = access_kind ? accessGuide(access_kind, "de-CH") : null;
+  const duration = buildProcessingDurationEstimate(order).text;
   if (onboarding && !askContent) {
     // TF-071: Plattform-Frage + Inhaltsfrage gingen bereits in diesem Thread – jetzt nur noch der passende sichere Link.
     const body = [
@@ -1371,6 +1373,8 @@ export function buildAccessRequestMail(order, { link = null, expires_at = null, 
       "Im Formular bestätigen Sie ausserdem die vereinbarte Reparatur.",
       "",
       "Vor der ersten Änderung erstelle ich eine vollständige Sicherung Ihrer Website; zum Abschluss erhalten Sie einen verständlichen Bericht.",
+      "",
+      duration,
       "",
       "Freundliche Grüsse",
       "Chris",
@@ -1400,6 +1404,8 @@ export function buildAccessRequestMail(order, { link = null, expires_at = null, 
       "",
       "Vor der ersten Änderung erstelle ich eine vollständige Sicherung Ihrer Website; zum Abschluss erhalten Sie einen verständlichen Bericht.",
       "",
+      duration,
+      "",
       "Freundliche Grüsse",
       "Chris",
       "Helvetic Webdesign",
@@ -1427,6 +1433,8 @@ export function buildAccessRequestMail(order, { link = null, expires_at = null, 
     "",
     "Danach erstelle ich zuerst eine vollständige Sicherung Ihrer Website und beginne mit der Reparatur. Zum Abschluss",
     "erhalten Sie einen verständlichen Bericht; den temporären Zugang können Sie danach wieder entfernen.",
+    "",
+    duration,
     "",
     "Freundliche Grüsse",
     "Chris",
@@ -1540,18 +1548,24 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
 
 // ---------- Liefermail CUSTOMER_ORDER_FULFILLMENT (TF-046): Abschlussbericht für den bestätigten, bezahlten Kunden ----------
 // Keine Werbung, keine internen IDs/Pfade/Referenzen; der Bericht selbst ist bereits kundentauglich (buildCustomerReport).
-export function buildRepairDeliveryMail(order) {
+export async function buildRepairDeliveryMail(order, { store = null, now = new Date(), providerProfile = null } = {}) {
   if (isVnOrder(order)) { const m = buildVnRepairDeliveryMail(order, { manualOpen: manualItems(order).length }); return { ...m, inline: m.body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS }; }
-  const completed = buildRepairCompletionMail(order);
+  const receipt = store ? await buildRepairReceipt(store, order?.order_id, { now, providerProfile }) : null;
+  // Interne Admin-E2E-Aufträge sind ausdrücklich zahlungsfrei und werden nur an das
+  // freigegebene Testpostfach geliefert. Sie dürfen deshalb keine finanzielle
+  // Quittung vortäuschen; echte Kunden-Abschlussmails bleiben receipt-pflichtig.
+  const completed = buildRepairCompletionMail(order, { receipt, allowInternalTestWithoutReceipt: isInternalTestOrder(order) });
   if (completed.status === "READY") {
     const test = isInternalTestOrder(order);
     const body = test
       ? `TESTAUFTRAG (intern) – keine Zahlung, keine Rechnung. Diese Nachricht ging nur an das Test-Postfach.\n\n${completed.body}`
       : completed.body;
     return { ...completed, subject: test ? `${E2E_SUBJECT_PREFIX}${completed.subject}` : completed.subject,
-      body, inline: body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS };
+      body, inline: body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS,
+      receipt, attachment_hash: receipt?.pdf ? sha(receipt.pdf.toString("base64")) : null };
   }
-  return { status: completed.status, reasons: completed.reasons, subject: null, body: "", inline: false, message_class: FULFILLMENT_CLASS };
+  return { status: completed.status, reasons: completed.reasons, subject: null, body: "", inline: false, message_class: FULFILLMENT_CLASS,
+    receipt, attachments: [] };
 }
 // Letzte Sperre vor dem Versand: der Bericht darf nie Zugangsdaten, Tokens, Hosts/IPs, Serverpfade, Backup-IDs, Commit-/Git-
 // Referenzen, Auftrags-IDs oder Debugdaten enthalten. Rückgabe: Grund (String) oder null.

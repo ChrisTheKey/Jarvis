@@ -2,7 +2,7 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-27 (TF-JARVIS-031: CRM-Refresh-Race behoben, Vollcheck 0 Fehler; Docker-Labs bleiben BLOCKED; kein produktiver Versand/Deployment)
+Zuletzt aktualisiert: 2026-10-27 (TF-JARVIS-032: PDF-Quittung für CHF-480-Abschlussmail und unverbindliche Bearbeitungsdauer lokal verifiziert; kein produktiver Versand/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
@@ -32,7 +32,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf031` / `Jarvis-tf031` | TF-JARVIS-031: CRM-Browser-Race behoben, Docker-Labs wegen Ausführungs-Guard BLOCKED |
+| Codex | `agent-codex/tf032` / `Jarvis-tf032` | TF-JARVIS-032 abgeschlossen; lokaler Commit, kein Push, Merge oder Deployment |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -140,3 +140,22 @@ Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderung
 ### In Arbeit
 
 - Keine weiteren TF-031-Änderungen; Commit nur im isolierten Branch, kein Push, Merge oder Deployment.
+
+## TF-JARVIS-032 (2026-10-27)
+
+### Erledigt
+
+- CHF-480-Abschlussmails erhalten ausschliesslich nach erfolgreicher, verifizierter Reparatur eine im Speicher erzeugte PDF-Quittung. Sie basiert auf dem persistenten Ledger, verlangt exakt CHF 480 im passenden TEST-/LIVE-Modus, Kundenangabe und vollständige konfigurierte Geschäftsadresse und enthält keine MWST.
+- Die PDF bleibt über den bestehenden Draft-, Outbox-, gebundenen Thread- und Gmail-MIME-Pfad erhalten. Fehlende Adresse, Teil-/Überzahlung, falsche Währung oder Modus blockieren die Kundenmail fail closed.
+- Die Auftrags-/Zugangsbestätigungen enthalten nun vier klar unverbindliche, statusabhängige Phasen zur Bearbeitungsdauer. Die Abschlussmail nennt keine offene Lieferprognose.
+- Der interne, strikt allowlist-gebundene Admin-E2E-Auftrag bleibt absichtlich zahlungs- und rechnungslos; er kann keine finanzielle Quittung vortäuschen und geht nur an das freigegebene Testpostfach.
+- Finaler Full-Check mit lokalem Chromium: 1206 Tests, 1194 bestanden, 0 fehlgeschlagen, 12 übersprungen, Exit 0. Secret-Scan: 404 Dateien, 0 Treffer. Bericht: `reports/TF-JARVIS-032/ABSCHLUSSBERICHT.md`.
+
+### Offen / Blockiert
+
+- Die zwölf Docker-/Repair-Labs bleiben BLOCKED/NOT RUN. Docker Desktop lief lokal, aber der read-only CLI-Aufruf wurde vor Ausführung durch den Ausführungs-Guard (`Keine Container ohne Freigabe`) blockiert; `JARVIS_REPAIR_LAB=1` wurde deshalb nicht gesetzt. Keine Container, Volumes oder Netzwerke wurden verändert.
+- TF-032 ist für ein Produktionsdeployment weiterhin BLOCKED: Es fehlen der Docker-Lab-Nachweis sowie separat freizugebende Live-Konfiguration, reale Zustellungs- und Zahlungsnachweise. Kein Produktionsversand, keine Live-Zahlung und kein Deployment wurden ausgeführt.
+
+### In Arbeit
+
+- Keine weiteren TF-032-Änderungen; lokaler Commit nur im isolierten Branch, kein Push, Merge oder Deployment.

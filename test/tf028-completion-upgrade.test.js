@@ -301,13 +301,11 @@ test("TF-028: CHF-480-Abschlussmail ist erst nach verifizierter Reparatur bereit
     }, completion: { kind: "FULL" }, validation: { build_ok: true }, retest: { http_ok: true }, browser_gate: { required: false },
   };
   const mail = buildRepairCompletionMail(order);
-  assert.equal(mail.status, "READY");
-  assert.match(mail.body, /Guten Tag Frau Test/);
-  assert.match(mail.body, /Dabei habe ich 2 relevante Punkte gefunden/);
-  assert.match(mail.body, /Folgende Probleme konnten eruiert werden:/);
-  assert.match(mail.body, /So haben wir die zuvor präsenten Probleme gelöst:/);
-  assert.match(mail.body, /Der Kontaktlink wurde auf die vorhandene Kontaktseite korrigiert/);
-  assert.match(mail.body, /Freundliche Grüsse\n\nChristoph Kälin\nHelvetic Webdesign/);
+  assert.equal(mail.status, MANUAL_REVIEW_REQUIRED);
+  assert.match(mail.reasons.join(" "), /PDF-Quittung/);
+  assert.equal(mail.body, "");
+  assert.equal(mail.attachments?.length || 0, 0);
+  assert.equal(mail.reasons.length > 0, true);
   const blocked = buildRepairCompletionMail({ ...order, issues: { ...order.issues, two: { ...order.issues.two, repair_status: "still_broken" } } });
   assert.equal(blocked.status, MANUAL_REVIEW_REQUIRED);
 });

@@ -54,7 +54,9 @@ const SOURCE_RE = /^[a-z0-9_-]{2,40}$/;
 const normRef = (r) => String(r || "").replace(/\s+/g, " ").trim().toLowerCase();
 const roundTo = (n, currency) => fromMinor(toMinor(n, currency), currency);
 // Gespeicherte Zahlung lesen – beide Formate (Legacy CHF: amount_chf ohne currency).
-export const paymentCurrency = (p) => (p?.currency === "VND" ? "VND" : "CHF");
+// Legacy-Einträge ohne currency sind CHF. Ein ausdrücklich gespeicherter, unbekannter
+// Währungscode bleibt dagegen erhalten und darf nie stillschweigend als CHF gelten.
+export const paymentCurrency = (p) => String(p?.currency || "CHF").toUpperCase();
 export const paymentAmount = (p) => (Number.isFinite(p?.amount) ? p.amount : Number.isFinite(p?.amount_chf) ? p.amount_chf : 0);
 // Betrag kurz für Texte: CHF wie bisher «CHF 75», VND «495.000 ₫».
 export const amountText = (v, currency = "CHF") => (currency === "VND" ? formatMoney(v, "VND") : `CHF ${v}`);

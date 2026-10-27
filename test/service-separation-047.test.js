@@ -160,6 +160,7 @@ async function customerSubmits(c, link) {
 
 test("FULL ORDER über den Repair-Service: Mail-Worker offline → Zugangs-Anfrage/Lieferung NIE «gesendet»; online → genau 1 CUSTOMER_ACCESS_REQUEST + genau 1 CUSTOMER_ORDER_FULFILLMENT, COMPLETED; Neustarts senden nichts doppelt", async () => {
   const state = tmp(), ob = tmp(), store = createStore(state), mailGmail = fakeGmail(), c = cloud(), w = world();
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   // Repair-Service: ein Durchlauf = repairServiceIteration mit Outbox (wie im Container), Engine-Deps als Attrappen.
   const runRepair = (opts) => runRepairOrders({ ...opts, adapters: { static: w.adapter }, router: w.router, preflight: w.preflight, browserValidator: w.browserValidator, auditor: w.auditor });
   const repairTick = () => repairServiceIteration({ dir: state, outboxDir: ob, intake: c.client, runRepair, runCheck150: async () => ({ busy: false }) });
@@ -167,6 +168,7 @@ test("FULL ORDER über den Repair-Service: Mail-Worker offline → Zugangs-Anfra
   const o0 = createConfirmedRepairOrder(store, { domain: DOMAIN, website: SITE, company: "Separation Kunde AG", delivery_email: EMAIL, contact_name: "Frau Kunde", now: T0 });
   const id = o0.order_id;
   recordPayment(store, { order_id: id, amount_chf: 240, reference: "SEP47-BANK-1", now: T0 });
+  recordPayment(store, { order_id: id, amount_chf: 240, reference: "SEP47-BANK-2", now: T0 });
 
   // Mail-Worker OFFLINE: der Repair-Service übergibt die Zugangs-Anfrage, markiert sie aber nie als gesendet.
   for (let i = 0; i < 3; i++) await repairTick();

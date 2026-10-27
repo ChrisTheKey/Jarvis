@@ -211,9 +211,11 @@ function world({ extract = fakeExtract(), domain = DOMAIN, site = SITE } = {}) {
   };
   return W;
 }
-async function paidFix(W, { amount = 240 } = {}) {
+async function paidFix(W, { amount = 240, fullPayment = false, address = false } = {}) {
+  if (address) W.store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   const o = createConfirmedRepairOrder(W.store, { domain: DOMAIN, website: SITE, company: "Kunde AG", delivery_email: EMAIL, contact_name: "Frau Muster", now: T0 });
   if (amount) recordPayment(W.store, { order_id: o.order_id, amount_chf: amount, reference: `ONB66-${o.order_id}`, now: T0 });
+  if (fullPayment) recordPayment(W.store, { order_id: o.order_id, amount_chf: 240, reference: `ONB66-FULL-${o.order_id}`, now: T0 });
   await W.tick();
   return o.order_id;
 }
@@ -397,7 +399,7 @@ test("§53 KEINE INHALTSÄNDERUNGEN: «Nein, sonst nichts ändern.» → NO_CONT
 // =====================================================================================================================
 test("§52 + §58 FIX-E2E: Auftrag → Zahlung → Startmail → Inhaltswünsche → Zugang → Zusammenfassung → kein Write vor Bestätigung → «Ja, genau so.» → CONFIRMED → Backup → Reparatur + Inhaltsänderungen → Validierung → Browser → Regression → Retest → Bericht → COMPLETED; kein ZIP", async () => {
   const W = world();
-  const id = await paidFix(W);
+  const id = await paidFix(W, { fullPayment: true, address: true });
   W.reply(id, "Guten Tag\nNeue Telefonnummer 031 111 11 11 und im Team muss Muller als Müller geschrieben werden.\nGruss");
   await W.mailTick();
   let s = W.lastSend();

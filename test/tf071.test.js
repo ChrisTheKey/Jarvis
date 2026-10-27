@@ -268,8 +268,10 @@ function world({ detect = "unknown", site = SITE } = {}) {
   return W;
 }
 async function paidFix(W) {
+  W.store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   const o = createConfirmedRepairOrder(W.store, { domain: DOMAIN, website: SITE, company: "Kunde AG", delivery_email: EMAIL, contact_name: "Frau Muster", now: T0 });
-  recordPayment(W.store, { order_id: o.order_id, amount_chf: 240, reference: `TF71-${o.order_id}`, now: T0 });
+  recordPayment(W.store, { order_id: o.order_id, amount_chf: 240, reference: `TF71-${o.order_id}-deposit`, now: T0 });
+  recordPayment(W.store, { order_id: o.order_id, amount_chf: 240, reference: `TF71-${o.order_id}-balance`, now: T0 });
   await W.tick();
   return o.order_id;
 }

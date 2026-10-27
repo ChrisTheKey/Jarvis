@@ -33,6 +33,8 @@ const ID_RE = /^ob-[0-9a-f]{24}$/;
 const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/i;
 const TRANSIENT_RE = /\b(429|5\d\d)\b|rate|quota|fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i;
 const MAX_SUBJECT = 300, MAX_BODY = 20_000;
+const MAX_ATTACHMENTS = 3, MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ATTACHMENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.pdf$/i;
 const KEEP_RESULTS_MS = 30 * 86_400_000;
 
 const file = (dir, id, ext) => path.join(dir, `${id}.${ext}`);
@@ -45,6 +47,41 @@ function writeAtomic(f, data) {
 const rm = (f) => { try { fs.rmSync(f, { force: true }); } catch {} };
 const pendingError = () => Object.assign(new Error(`${OUTBOX_PENDING}: Mail-Worker hat den Versand noch nicht bestätigt – nächster Lauf.`), { code: OUTBOX_PENDING });
 
+function attachmentContent(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  return null;
+}
+
+function normalizeAttachments(attachments) {
+  if (attachments == null) return [];
+  if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS) throw new Error("Outbox: Anlagen ungültig oder zu viele Anlagen.");
+  return attachments.map((attachment) => {
+    const filename = String(attachment?.filename || "");
+    const mimeType = String(attachment?.mimeType || attachment?.mime_type || "").toLowerCase();
+    const content = attachmentContent(attachment?.content);
+    if (!ATTACHMENT_NAME_RE.test(filename) || mimeType !== "application/pdf" || !content || content.length === 0 || content.length > MAX_ATTACHMENT_BYTES)
+      throw new Error("Outbox: Anlage muss eine gültige PDF-Datei sein.");
+    return { filename, mimeType, content_base64: content.toString("base64") };
+  });
+}
+
+function decodeAttachments(attachments) {
+  if (attachments == null) return [];
+  if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS) return null;
+  const decoded = [];
+  for (const attachment of attachments) {
+    const filename = String(attachment?.filename || "");
+    const mimeType = String(attachment?.mimeType || attachment?.mime_type || "").toLowerCase();
+    const encoded = String(attachment?.content_base64 || "");
+    if (!ATTACHMENT_NAME_RE.test(filename) || mimeType !== "application/pdf" || !encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return null;
+    const content = Buffer.from(encoded, "base64");
+    if (content.length === 0 || content.length > MAX_ATTACHMENT_BYTES || content.toString("base64") !== encoded) return null;
+    decoded.push({ filename, mimeType, content });
+  }
+  return decoded;
+}
+
 // ---------- Repair-Service-Seite (Erzeuger) ----------
 // Gleiche Aufrufform wie gmail.js für die Engines (createDraft / updateDraft / sendDraft) – die Engines bleiben unverändert.
 export function createOutboxMailer({ dir, now = () => new Date() } = {}) {
@@ -53,7 +90,7 @@ export function createOutboxMailer({ dir, now = () => new Date() } = {}) {
   const check = (id) => { if (!ID_RE.test(String(id || ""))) throw new Error("Outbox: unbekannte Auftrags-ID."); };
   return {
     outbox: dir,
-    async createDraft({ to, subject, body, messageClass, orderId = null, purpose = null, seq = null, e2eRunId = null } = {}) {
+    async createDraft({ to, subject, body, messageClass, orderId = null, purpose = null, seq = null, e2eRunId = null, attachments = [] } = {}) {
       if (!OUTBOX_CLASSES.includes(messageClass)) throw new Error("Outbox: nur Service-Mails (CUSTOMER_ACCESS_REQUEST / CUSTOMER_ORDER_FULFILLMENT / CUSTOMER_ONBOARDING_DIALOGUE).");
       if (orderId != null && !ORDER_ID_RE.test(String(orderId))) throw new Error("Outbox: Auftrags-ID ungültig.");
       if (messageClass === ONBOARDING_CLASS && !orderId) throw new Error("Outbox: Onboarding-Nachricht nur zu einem Auftrag.");
@@ -62,9 +99,11 @@ export function createOutboxMailer({ dir, now = () => new Date() } = {}) {
       // TF-088: E2E-Testmail – nur Erfüllungsklasse, gültige test_run_id und gekennzeichneter Betreff; der Mail-Worker prüft zusätzlich die Allowlist.
       if (e2eRunId != null && (!TEST_RUN_ID_RE.test(String(e2eRunId)) || messageClass !== "CUSTOMER_ORDER_FULFILLMENT" || !String(subject || "").startsWith(E2E_SUBJECT_PREFIX))) throw new Error("Outbox: E2E-Testmail ungültig.");
       if (!subject || !body || String(subject).length > MAX_SUBJECT || String(body).length > MAX_BODY) throw new Error("Outbox: Betreff/Text fehlt oder zu lang.");
+      const normalizedAttachments = normalizeAttachments(attachments);
       ensure();
       const id = "ob-" + crypto.randomBytes(12).toString("hex");
       writeAtomic(file(dir, id, "draft.json"), { v: 1, id, message_class: messageClass, to: String(to), subject: String(subject), body: String(body),
+        ...(normalizedAttachments.length ? { attachments: normalizedAttachments } : {}),
         ...(orderId ? { order_id: String(orderId), purpose: purpose || null, ...(Number.isInteger(seq) ? { seq } : {}) } : {}), ...(e2eRunId ? { e2e_run_id: String(e2eRunId) } : {}), created_at: now().toISOString() });
       return { draftId: id, threadId: null };
     },
@@ -162,8 +201,10 @@ export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = 
         && cfg.fulfilmentReady && isE2eMailbox(cfg, rq.to);
       if (!e2eOk) { result(id, "rejected", { message_class: OUTBOX_CLASSES.includes(rq.message_class) ? rq.message_class : null, reason: "e2e_blocked" }); continue; }
     }
+    const attachments = decodeAttachments(rq?.attachments);
     const valid = rq && rq.id === id && OUTBOX_CLASSES.includes(rq.message_class) && EMAIL_RE.test(String(rq.to || ""))
       && rq.subject && rq.body && String(rq.subject).length <= MAX_SUBJECT && String(rq.body).length <= MAX_BODY
+      && attachments !== null
       && (rq.order_id == null || ORDER_ID_RE.test(String(rq.order_id))) && (rq.message_class !== ONBOARDING_CLASS || (!!rq.order_id && !!onboarding));
     if (!valid) { result(id, "rejected", { message_class: OUTBOX_CLASSES.includes(rq?.message_class) ? rq.message_class : null }); continue; }
     if (!gmail || typeof gmail.createDraft !== "function" || typeof gmail.sendDraft !== "function") { out.deferred++; continue; }
@@ -177,10 +218,11 @@ export async function processRepairOutbox({ dir, gmail, gmailAuth = null, log = 
     try { fs.writeFileSync(claimFile, JSON.stringify({ at: now().toISOString(), message_class: rq.message_class }), { flag: "wx", mode: 0o600 }); }
     catch (e) { if (e.code === "EEXIST") continue; throw e; }
     let d;
-    const fresh = () => gmail.createDraft({ to: rq.to, subject: rq.subject, body: rq.body, messageClass: rq.message_class, ...(rq.order_id && onboarding ? { orderId: rq.order_id } : {}) });
+    const fresh = () => gmail.createDraft({ to: rq.to, subject: rq.subject, body: rq.body, messageClass: rq.message_class,
+      ...(attachments.length ? { attachments } : {}), ...(rq.order_id && onboarding ? { orderId: rq.order_id } : {}) });
     try {
       d = route?.threadId
-        ? await gmail.replyDraftInThread(route.threadId, { to: rq.to, body: rq.body, messageClass: rq.message_class, orderId: rq.order_id })
+        ? await gmail.replyDraftInThread(route.threadId, { to: rq.to, body: rq.body, messageClass: rq.message_class, orderId: rq.order_id, ...(attachments.length ? { attachments } : {}) })
           .catch((e) => { if (!route.fallbackNewThread || TRANSIENT_RE.test(String(e.message))) throw e; route = { newThread: true }; return fresh(); }) // TF-079: Kontaktformular-Thread nicht nutzbar → eigener Auftrags-Thread
         : await fresh();
     }

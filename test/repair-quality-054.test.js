@@ -65,9 +65,11 @@ function fakeGmail() {
 }
 function setup() {
   const dir = tmp(), store = createStore(dir);
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   const o = createRepairOrder(store, { domain: "muster.ch", website: "https://muster.ch/", company: "Muster AG", delivery_email: "kunde@muster.ch", now: T0 });
   authorizeRepair(store, o.order_id, { authorized_domain: "muster.ch", source: "customer_reply_email", now: T0 });
-  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "TF054-Test-Ledger", now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "TF054-Test-Ledger-deposit", now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "TF054-Test-Ledger-balance", now: T0 });
   return { dir, store, id: o.order_id };
 }
 const run = (store, w, gmail) => createRepairEngine({ store, adapters: { static: w.adapter }, auditor: w.auditor, browserValidator: w.browserValidator,
