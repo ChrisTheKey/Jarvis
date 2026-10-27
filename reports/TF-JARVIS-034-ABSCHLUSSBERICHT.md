@@ -1,6 +1,6 @@
 # JARVIS TF-034 – Final Production Readiness
 
-Stand: 2026-10-27  
+Stand: 2026-10-28
 Branch: `agent-codex/tf034`  
 Basis: TF-033 `fda4094`  
 Deployment: nicht ausgeführt; kein Push und kein Merge.
@@ -9,7 +9,7 @@ Deployment: nicht ausgeführt; kein Push und kein Merge.
 
 **Status: BLOCKED**
 
-Die lokale Zahlungs- und Reparaturlogik ist für die verpflichtenden synthetischen Prüfungen grün. Produktionsbereitschaft kann nicht als freigegeben gelten, weil die zwölf Docker-Labs nicht ausgeführt werden durften und kein Playwright-MCP in der aktuellen Sitzung exponiert war.
+Die lokale Zahlungs- und Reparaturlogik sowie die lokalen Browserprüfungen sind grün. Produktionsbereitschaft bleibt BLOCKED, weil die zwölf Docker-Labs nicht ausgeführt werden durften. Ein Playwright-MCP war nicht exponiert; die vorhandenen lokalen Playwright-Core-Tests liefen mit Chromium vollständig grün.
 
 ## Änderungen
 
@@ -22,18 +22,20 @@ Die lokale Zahlungs- und Reparaturlogik ist für die verpflichtenden synthetisch
 ## Tests
 
 - Ausgangsstand TF-033 verifiziert: 1'213 Tests, 1'201 bestanden, 0 fehlgeschlagen, 12 übersprungen; Commit `fda4094`.
-- TF-034 nach Änderung: **1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen**.
-- `node scripts/dev-check.mjs` und Secret-Scan: bestanden.
+- TF-034 nach Änderung: **1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen**, Exit 0 / `CHECK OK`.
+- `node scripts/dev-check.mjs --full` am 2026-10-28: bestanden; Secret-Scan ohne Treffer.
+- Gezielte Browser-/Onboarding-/Zugangssuite mit Chromium: **31/31 bestanden**, 0 fehlgeschlagen, 0 übersprungen.
+- Der erste gezielte Browserlauf ohne gesetzten Chromium-Pfad hatte 7 Umgebungsfehler; mit dem vorhandenen `chromium-1248`-Binary wurde derselbe Lauf vollständig grün wiederholt. Kein Produktionscode wurde dafür geändert.
 - Lokales Chromium für Browser-Fixtures vorhanden und mit `JARVIS_CHROMIUM_PATH`/`CHROME_PATH` verwendet.
 - Synthetische E2E-Nachweise: CHF 150, CHF 480, CHF 330-Upgrade, CHF 479 blockiert, CHF 480 freigeschaltet, Refund/Chargeback-relevante Gates, sicherer Zugang, WordPress, GitHub/Netlify, SFTP/SSH, Backup, Rollback, Geheimnisschutz und idempotente Verarbeitung.
 
 ## Docker-Labs
 
-Die statische Prüfung bestätigt eigene Lab-Labels, eigene Netzwerke und Volumes, loopback-gebundene Ports, synthetische Laufzeitdaten, keine Produktions-Mounts sowie label-beschränkte Cleanup-Routinen.
+Die statische Prüfung bestätigt eigene Lab-Labels, eigene Netzwerke und Volumes, loopback-gebundene Ports, synthetische Laufzeitdaten, keine Produktions-Mounts sowie label-beschränkte Cleanup-Routinen. Die zwölf Docker-Tests wurden anhand ihrer fünf Integrationsdateien und sieben TF-047-Separation-Tests identifiziert.
 
 Der read-only-Aufruf `docker context show` / `docker version --format '{{.Server.Version}}'` wurde vor Ausführung vom Sicherheits-Guard abgewiesen: `Rejected: Keine Container ohne Freigabe.` Es wurden keine Container, Netzwerke oder Volumes verändert. Die zwölf Labs sind daher **BLOCKED / NOT RUN**, nicht bestanden.
 
-Erforderlich für einen separaten kontrollierten Lauf: freigegebener read-only Docker-Daemon sowie ausdrückliche Ausführungsfreigabe für die isolierte lokalen Lab-Suite; Produktions-Contexts, Produktions-Mounts und produktive Secrets bleiben ausgeschlossen.
+Erforderlich für einen separaten kontrollierten Lauf: freigegebener read-only Docker-Daemon sowie ausdrückliche Ausführungsfreigabe für die isolierte lokale Lab-Suite. Der aktuelle Guard verweigert den Aufruf vor Ausführung (`Rejected: Keine Container ohne Freigabe.`); er wurde nicht umgangen. Produktions-Contexts, Produktions-Mounts und produktive Secrets bleiben ausgeschlossen. Keine Testressourcen wurden gestartet oder bereinigt.
 
 ## Anbieterstatus
 
@@ -52,9 +54,9 @@ Erforderlich für einen separaten kontrollierten Lauf: freigegebener read-only D
 - Keine Reparatur ohne vollständige bestätigte Zahlung, Kundenautorisierung, gültigen Zugang, Backup und Rollback.
 - Stripe-Zuordnung bleibt an die bestehende verifizierte Order-/Webhook-Zuordnung gebunden; Browser-Rückleitungen oder freie Parameter schalten nichts frei.
 - Keine Secrets in Logs, Berichten oder öffentlichen Snapshots; keine echten Kundenwebsites, Zahlungen oder E-Mails verwendet.
-- Playwright-MCP war in dieser Sitzung nicht verfügbar. Die lokalen `playwright-core`-Fixtures sind kein Ersatz für einen kontrollierten externen MCP-Nachweis.
+- Playwright-MCP war in dieser Sitzung nicht verfügbar. Die lokalen `playwright-core`-Fixtures liefen mit vorhandenem Chromium und deckten Formularschutz, Token-Ablauf/Einmalverwendung, Kundenautorisierung und Fehlerbehandlung ab; sie sind kein kontrollierter externer MCP-Nachweis.
 - Kein produktives Deployment und keine Produktionsfreigabe erteilt.
 
 ## Commit
 
-Der finale Commit wird nach `node scripts/dev-check.mjs` erstellt. Der resultierende Hash ist im Übergabebericht zu ergänzen.
+Commit: wird nach dem Quick-Check im lokalen Branch `agent-codex/tf034` ergänzt; kein Push, Merge oder Deployment.

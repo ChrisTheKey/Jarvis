@@ -47,12 +47,12 @@ Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), w
 - Bericht: `reports/TF-JARVIS-034-ABSCHLUSSBERICHT.md`.
 
 ### Offen / Blockiert
-- 12 Docker-Labs bleiben NOT RUN/BLOCKED, weil der read-only Docker-Aufruf vom Sicherheits-Guard mit `Rejected: Keine Container ohne Freigabe.` abgewiesen wurde.
-- Ein Playwright-MCP war in der aktuellen Sitzung nicht exponiert; lokale `playwright-core`-Fixtures wurden mit vorhandenem Chromium ausgeführt.
+- 12 Docker-Labs bleiben NOT RUN/BLOCKED, weil der read-only Docker-Aufruf vom Sicherheits-Guard mit `Rejected: Keine Container ohne Freigabe.` abgewiesen wurde; der Guard wurde nicht umgangen.
+- Ein Playwright-MCP war in der aktuellen Sitzung nicht exponiert; die lokalen `playwright-core`-Fixtures liefen mit vorhandenem Chromium vollständig grün (31/31 gezielte Tests).
 - Produktionsfreigabe bleibt BLOCKED; kein Push, Merge oder Deployment.
 
 ### Testergebnis
-- TF-034: 1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen.
+- TF-034: 1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen; Full-Check 2026-10-28 Exit 0 / `CHECK OK`.
 
 Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und waren vor TF-025 mit `origin/agent-codex/main` synchronisiert. TF-025 ist lokal committed; der Hash steht im aktuellen Git-Log. Bestehende uncommittete Dateien (`test/crm-fixture.js` und `reports/TF-JARVIS-024/phase5-screenshots/`) wurden nicht verändert oder gestaged.
 
