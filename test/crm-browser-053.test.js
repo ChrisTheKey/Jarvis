@@ -95,6 +95,119 @@ test("N: Desktop-Rendering (1440×900) – Tabelle, Karten, Drawer A–F, Links,
   } finally { srv.close(); await browser.close(); }
 });
 
+test("N2: Geöffnete Anrufmaske bleibt bei abgeschlossenem CRM-Refresh erhalten", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 300_000 }, async () => {
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.launch({ executablePath: exe, headless: true });
+  const srv = await startServer();
+  let page = null;
+  let gateRoute = null;
+  try {
+    ({ page } = await openCrm(browser, srv, { viewport: { width: 1440, height: 900 } }));
+    await page.waitForFunction(() => document.querySelectorAll("#crmMain tbody tr").length === 387, null, { timeout: 90_000 });
+    await page.click('#crmMain tr[data-id="firma-021.ch"]');
+    await page.click('#crmDrawer button:has-text("ANRUF DOKUMENTIEREN")');
+    await page.selectOption("#crmCallForm select", "CALLBACK_REQUESTED");
+    await page.fill("#crmCallForm textarea", "Bitte Donnerstag anrufen");
+
+    let release;
+    const releaseGate = new Promise((resolve) => { release = resolve; });
+    let watchHitResolve;
+    const watchHit = new Promise((resolve) => { watchHitResolve = resolve; });
+    let held = false;
+    gateRoute = async (route) => {
+      const u = new URL(route.request().url());
+      if (!held && u.searchParams.get("watch") === "1") {
+        held = true;
+        watchHitResolve();
+        await releaseGate;
+      }
+      await route.fallback();
+    };
+    await page.route("**/api/crm*", gateRoute);
+    await page.evaluate(() => {
+      const drawer = document.getElementById("crmDrawer");
+      const form = document.getElementById("crmCallForm");
+      window.__tf031RefreshResult = null;
+      const observer = new MutationObserver(() => {
+        if (document.getElementById("crmCallForm") !== form) {
+          observer.disconnect();
+          window.__tf031RefreshResult = "replaced";
+        }
+      });
+      observer.observe(drawer, { childList: true, subtree: true });
+      window.setTimeout(() => {
+        observer.disconnect();
+        if (window.__tf031RefreshResult === null) window.__tf031RefreshResult = "stable";
+      }, 5_000);
+    });
+    await page.evaluate(() => window.JarvisCrm.open());
+    await watchHit;
+    release();
+    await page.waitForFunction(() => window.__tf031RefreshResult !== null, null, { timeout: 10_000 });
+    assert.equal(await page.evaluate(() => window.__tf031RefreshResult), "stable", "ein laufender Refresh darf die geöffnete Anrufmaske nicht ersetzen");
+  } finally {
+    if (page && gateRoute) await page.unroute("**/api/crm*", gateRoute).catch(() => {});
+    srv.close();
+    await browser.close();
+  }
+});
+
+test("N3: Sichtbarer CRM-Drawer bleibt bei abgeschlossenem Refresh unter dem Aktionsknopf erhalten", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 300_000 }, async () => {
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.launch({ executablePath: exe, headless: true });
+  const srv = await startServer();
+  let page = null;
+  let gateRoute = null;
+  try {
+    ({ page } = await openCrm(browser, srv, { viewport: { width: 1440, height: 900 } }));
+    await page.waitForFunction(() => document.querySelectorAll("#crmMain tbody tr").length === 387, null, { timeout: 90_000 });
+    await page.click('#crmMain tr[data-id="firma-021.ch"]');
+    const button = page.locator('#crmDrawer button:has-text("DO NOT CONTACT SETZEN")');
+    await button.waitFor();
+
+    let release;
+    const releaseGate = new Promise((resolve) => { release = resolve; });
+    let watchHitResolve;
+    const watchHit = new Promise((resolve) => { watchHitResolve = resolve; });
+    let held = false;
+    gateRoute = async (route) => {
+      const u = new URL(route.request().url());
+      if (!held && u.searchParams.get("watch") === "1") {
+        held = true;
+        watchHitResolve();
+        await releaseGate;
+      }
+      await route.fallback();
+    };
+    await page.route("**/api/crm*", gateRoute);
+    await page.evaluate(() => {
+      const drawer = document.getElementById("crmDrawer");
+      const action = drawer.querySelector('button.crm-btn.danger');
+      window.__tf031ActionRefreshResult = null;
+      const observer = new MutationObserver(() => {
+        if (drawer.querySelector('button.crm-btn.danger') !== action) {
+          observer.disconnect();
+          window.__tf031ActionRefreshResult = "replaced";
+        }
+      });
+      observer.observe(drawer, { childList: true, subtree: true });
+      window.setTimeout(() => {
+        observer.disconnect();
+        if (window.__tf031ActionRefreshResult === null) window.__tf031ActionRefreshResult = "stable";
+      }, 5_000);
+    });
+    await page.evaluate(() => window.JarvisCrm.open());
+    await watchHit;
+    release();
+    await page.waitForFunction(() => window.__tf031ActionRefreshResult !== null, null, { timeout: 10_000 });
+    assert.equal(await page.evaluate(() => window.__tf031ActionRefreshResult), "stable", "ein laufender Refresh darf den sichtbaren Aktionsknopf nicht ersetzen");
+  } finally {
+    if (page && gateRoute) await page.unroute("**/api/crm*", gateRoute).catch(() => {});
+    srv.close();
+    await browser.close();
+  }
+});
+
 test("M: Mobile-Rendering (390×844) – Karten, grosse ANRUFEN/WEBSITE/ENTWURF-Knöpfe, kein Querscrollen, Drawer bildschirmbreit", { skip: !exe && "kein Chrome/Edge/Chromium gefunden", timeout: 300_000 }, async () => {
   const { chromium } = await import("playwright-core");
   const browser = await chromium.launch({ executablePath: exe, headless: true });

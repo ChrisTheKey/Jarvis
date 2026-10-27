@@ -2,12 +2,13 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-27 (TF-JARVIS-028 implementiert und synthetisch gezielt geprüft; Vollcheck und Release bleiben BLOCKED; kein produktiver Versand/Deployment)
+Zuletzt aktualisiert: 2026-10-27 (TF-JARVIS-031: CRM-Refresh-Race behoben, Vollcheck 0 Fehler; Docker-Labs bleiben BLOCKED; kein produktiver Versand/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
 - TF-JARVIS-024 Phase 3: Offer-Intent-Bundle, verifizierte Auswahl/Materialisierung, CHF-480-Tresoraktivierung über den bestehenden Access-Intake und bestehende Zahlungs-/Completion-Gates lokal implementiert und gezielt getestet; lokaler Commit vorhanden, nicht deployed.
 - TF-JARVIS-024 Direct-Mail: Button „Mail senden“ im Leadpanel, exakt freigegebene Erstmail mit auftragsgebundenem One-Time-Access-Link und ausschliesslichen Stripe-Sandbox-Links, serverseitige Sandbox-/Synthetic-Gates, Queue-Idempotenz und Worker-Prüfung implementiert; direkte Tests 5/5, relevante Regressionen 38/38 und isolierter Browsernachweis 1/1 (Desktop, Mobile, Reload, genau ein Auftrag) grün; kein echter Versand.
+- TF-JARVIS-031: CRM-Refresh-/Pointer-DOM-Race in `public/crm.js` minimal behoben; synthetische Regressionstests N2/N3 ergänzt; N/N2/N3 sowie der vollständige `crm-browser-053`-Lauf und TF-024 Phase 5 grün; abschließender Full-Check 1199/1187/0/12 mit Exit 0. Docker-Labs bleiben wegen des blockierten read-only Docker-Aufrufs offen.
 - TF-JARVIS-025 Produktionsprüfung: tatsächlicher Worker-Status überschreibt im CRM keinen veralteten lokalen Queue-Hinweis mehr; `vn-order-064` übernimmt die `lead_id` auch beim CHF-150-Check-Auftrag. Browser-, Direkt-, Sicherheits- und E2E-Regressionsprüfungen sind mit vorhandenem Chromium grün; vier isolierte Screenshots liegen unter `reports/TF-JARVIS-025/screenshots/`. Der Produktionsversand bleibt bis zur ausdrücklichen Freigabe gesperrt.
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
 - Korrektur des LiveKit-Entfernungsauftrags: menschlicher Calling-Lesezugang für alle vier Rollen, CRM-Call-History/Rückrufe im Calling-Dashboard und CH/VN-Mitarbeiter-UI wiederhergestellt; autonome Start-/Worker-/Providerpfade bleiben fail-closed.
@@ -31,7 +32,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf030` / `Jarvis-tf030` | TF-JARVIS-030: Docker-Readiness und zwölf Repair-Labs geprüft; Release BLOCKED |
+| Codex | `agent-codex/tf031` / `Jarvis-tf031` | TF-JARVIS-031: CRM-Browser-Race behoben, Docker-Labs wegen Ausführungs-Guard BLOCKED |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -45,6 +46,7 @@ Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und ware
 - TF-JARVIS-027: Der Codex-Stand `b9649bc` wird in einem separaten Integrations-Worktree gegen `claude/jarvis-voice-dashboard-9phl5w` geprüft. Der Konflikt in dieser Datei wird dokumentiert aufgelöst; Hauptcheckout und Codex-Worktree bleiben unverändert.
 - Uncommittete Dateien ausserhalb dieses Auftrags bleiben geschützt: `test/crm-fixture.js` sowie `reports/TF-JARVIS-024/phase5-screenshots/`.
 - TF-JARVIS-028: Implementierung und gezielte synthetische Tests bestanden; der Vollcheck hat 13 historische Vertragsfehler und 12 übersprungene Docker-/Repair-Labs. Produktionsversand, Live-Zahlungen und Reparaturen an realen Websites bleiben gesperrt.
+- TF-JARVIS-031: Engine-/Container-/Netzwerk-/Volume-Inventar konnte wegen `Rejected: Keine Container ohne Freigabe.` nicht read-only ausgeführt werden. Alle zwölf Docker-/Repair-Labs sind deshalb BLOCKED/NOT RUN. Der CRM-Test N besteht im abschließenden Full-Check; es bleibt kein weiterer nachgewiesener CRM-Fehler offen.
 
 ## Historischer Baseline-Hinweis
 
@@ -114,3 +116,27 @@ Die folgenden früheren Baseline-Befunde aus dem Integrationsbranch wurden durch
 - Keine weiteren TF-030-Änderungen in diesem Worktree; kein Push, Merge oder Deployment.
 
 Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderungen der Regeln gepflegt).
+
+## TF-JARVIS-031 (2026-10-27)
+
+### Erledigt
+
+- Isolierter Worktree `Jarvis-tf031` auf Basis von `34a073a` erstellt; der Codex-Worktree und der Hauptcheckout blieben getrennt.
+- Docker Desktop nach lokaler Freigabe regulär gestartet; Prozessstatus und der Kontext `desktop-linux` festgestellt. Engine-Version sowie Container-/Netzwerk-/Volume-Inventar wurden vom Ausführungs-Guard vor der Ausführung blockiert.
+- CRM-Test N systematisch untersucht: Hintergrund-Refresh ersetzte DOM-Knoten während Pointer-Klicks. `public/crm.js` schützt jetzt mit einem Interaktions-Epoch; ein offener Drawer bleibt stabil und der Erstmailstatus wird in-place aktualisiert.
+- N2 reproduzierte den roten Race vor dem Fix; N2/N3, N und der vollständige `crm-browser-053`-Lauf bestehen nach dem Fix. TF-024 Phase 5 besteht mit Desktop, Mobile, Reload und genau einem synthetischen Queue-Auftrag.
+- Abschließender Full-Check: 1199 Tests, 1187 bestanden, 0 fehlgeschlagen, 12 übersprungen, Exit 0 / `CHECK OK`. Secret-Scan: 400 Dateien, 0 Treffer.
+- Abschlussbericht: `reports/TF-JARVIS-031/ABSCHLUSSBERICHT.md`.
+
+### Bekannte Fehler
+
+- Kein verbleibender nachgewiesener CRM-Browserfehler.
+
+### Offen / Blockiert
+
+- Die zwölf Docker-/Repair-Labs wurden nicht gestartet. Ohne wirksame read-only Docker-Berechtigung und nachweisbare Laufzeitisolation dürfen sie nicht als bestanden gelten.
+- TF-031 bleibt deshalb BLOCKED; kein Container, Volume oder Netzwerk wurde durch TF-031 verändert.
+
+### In Arbeit
+
+- Keine weiteren TF-031-Änderungen; Commit nur im isolierten Branch, kein Push, Merge oder Deployment.

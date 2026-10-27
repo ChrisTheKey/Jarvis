@@ -15,7 +15,7 @@ const MOBILE = matchMedia("(max-width: 860px)");
 let I = createI18n(document.documentElement.dataset.locale || "de-CH");
 const t = (...a) => I.t(...a);
 const S = { leads: [], filters: {}, sort: "priority", card: "", sel: null, online: false, generated_at: null, backup: null, timer: null, facets: false, showAll: {}, actor: null, mail: null,
-  sends: [], salesRequests: [], sendErr: {}, salesErr: {}, salesBusy: {}, stats: null };
+  sends: [], salesRequests: [], sendErr: {}, salesErr: {}, salesBusy: {}, stats: null, interactionEpoch: 0 };
 
 function el(tag, attrs = {}, ...kids) {
   const x = document.createElement(tag);
@@ -210,6 +210,7 @@ async function api(query = "", opts = {}) {
 }
 async function load() {
   setMeta(t("crm.loading"));
+  const refreshEpoch = S.interactionEpoch;
   try {
     const { status, body } = await api("?watch=1");
     if (status === 401) return setMeta(t("crm.e401"), true);
@@ -219,7 +220,16 @@ async function load() {
     S.online = !!body.online; S.generated_at = body.generated_at; S.backup = body.backup; S.pbProvider = body.phonebook_provider || null; S.actor = body.actor || null; S.mail = body.mail || null; S.stats = body.stats || null;
     await loadSends();
     await loadSalesRequests();
-    render();
+    // Ein bereits begonnener Benutzerklick hat Vorrang vor einem veralteten
+    // Komplett-Render. Die Daten bleiben aktuell; der nächste Refresh rendert
+    // sie, ohne den aktuellen DOM-Knoten unter dem Klick auszutauschen.
+    if (refreshEpoch !== S.interactionEpoch) return;
+    // Ein sichtbarer Drawer darf durch den Hintergrund-Refresh nicht unter dem
+    // Mauszeiger ausgetauscht werden. Das betrifft auch reine Aktionsknöpfe,
+    // bei denen kein Formularwert als «editing» erkennbar ist.
+    const preserveDrawer = drawerOpen() || drawerEditing();
+    render({ preserveDrawer });
+    if (preserveDrawer) syncSalesBox();
   } catch { setMeta(t("crm.unreachable"), true); }
 }
 function setMeta(text, bad = false) { const m = $("crmMeta"); if (!m) return; m.textContent = text; m.style.color = bad ? "var(--red)" : ""; }
@@ -234,7 +244,42 @@ function readFilters() {
   S.filters = f; S.sort = $("crmSort").value || "priority";
 }
 function visible() { readFilters(); return sortLeads(filterLeads(S.leads, S.filters), S.sort); }
-function render() {
+function drawerEditing() {
+  const d = $("crmDrawer");
+  if (!d || d.hidden) return false;
+  const active = document.activeElement;
+  if (active && d.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return true;
+  return [...d.querySelectorAll("input, textarea, select")].some((x) => {
+    if (x.disabled) return false;
+    if (x.type === "checkbox" || x.type === "radio") return x.checked !== x.defaultChecked;
+    const initial = x.tagName === "SELECT" ? ([...x.options].find((o) => o.defaultSelected)?.value || "") : x.defaultValue;
+    return x.value !== initial;
+  });
+}
+function drawerOpen() {
+  const d = $("crmDrawer");
+  return Boolean(d && !d.hidden && S.sel && S.leads.some((l) => l.lead_id === S.sel));
+}
+function syncSalesBox() {
+  const l = S.leads.find((x) => x.lead_id === S.sel), box = $("crmDrawer")?.querySelector(".crm-salesbox");
+  if (!l || !box) return;
+  const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.sales_intake_direct === true)
+    .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
+  const status = queued?.status;
+  const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
+  const visibleText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : S.salesErr[l.lead_id] || "";
+  const button = box.querySelector("button.crm-mail-send");
+  if (button) {
+    button.disabled = !!S.salesBusy[l.lead_id] || locked || !S.online;
+    button.textContent = S.salesBusy[l.lead_id] ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send");
+  }
+  let msg = box.querySelector(".crm-sales-msg");
+  if (!visibleText) { msg?.remove(); return; }
+  if (!msg) { msg = el("span", { class: "crm-status crm-sales-msg", "aria-live": "polite" }); box.append(" ", msg); }
+  msg.textContent = visibleText;
+  msg.className = `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`;
+}
+function render({ preserveDrawer = false } = {}) {
   const now = new Date(), st = crmStats(S.leads, now);
   setMeta(t("crm.meta", S.leads.length, fmt(S.generated_at), S.online) + (S.backup?.last_at ? t("crm.metaBackup", fmt(S.backup.last_at), S.backup.offsite_ok) : "")
     + (S.actor?.role === "OWNER" && S.pbProvider ? ` · ${t("pb.status", S.pbProvider)}` : ""), !S.online);
@@ -256,7 +301,7 @@ function render() {
   $("crmNext").replaceChildren(...(nb ? [t("crm.nextBest"), el("button", { type: "button", class: "crm-btn", onclick: () => openLead(nb.lead_id) }, `${nb.company || nb.domain} · ${level(nb)} (${nb.priority.score})`),
     el("span", {}, nb.priority.reasons.map(I.reason).join(" · "))] : [t("crm.noNext")]));
   renderList();
-  if (S.sel) renderDrawer();
+  if (S.sel && !preserveDrawer) renderDrawer();
 }
 function renderCardsPressed() {
   [...$("crmCards").children].forEach((b, i) => { const k = Object.keys(CARDS)[i]; b.setAttribute("aria-pressed", String(S.card === k || (k === "all" && !S.card))); });
@@ -686,6 +731,7 @@ function close() { clearInterval(S.timer); closeDrawer(); $("crm").hidden = true
 // Sprache wechseln (sales-app.js nach /api/auth/me): Gerüst neu aufbauen.
 function setLocale(locale) { I = createI18n(locale); document.documentElement.lang = I.vi ? "vi" : "de"; $("crm").replaceChildren(); S.facets = false; }
 document.addEventListener("keydown", (e) => { if (e.key !== "Escape" || $("crm").hidden) return; if (!$("crmDrawer").hidden) closeDrawer(); else close(); });
+document.addEventListener("pointerdown", () => { S.interactionEpoch++; }, true);
 $("crmBtn")?.addEventListener("click", open);
 if (location.hash === "#crm" && !document.documentElement.dataset.deferCrm) open();
 window.JarvisCrm = { open, close, openLead, setLocale, state: S, get i18n() { return I; } };
