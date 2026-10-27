@@ -31,7 +31,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf028` / `Jarvis-tf028` | – (TF-JARVIS-028 implementiert; Abschlussbericht erstellt, Release wegen offener Nachweise BLOCKED) |
+| Codex | `agent-codex/tf030` / `Jarvis-tf030` | TF-JARVIS-030: Docker-Readiness und zwölf Repair-Labs geprüft; Release BLOCKED |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -93,5 +93,24 @@ Die folgenden früheren Baseline-Befunde aus dem Integrationsbranch wurden durch
 
 ### In Arbeit
 - Keine weiteren TF-029-Änderungen im Hauptcheckout. Der isolierte Branch `agent-codex/tf029` bleibt für Prüfung erhalten; kein Push, Merge oder Deployment.
+
+## TF-JARVIS-030 (2026-10-27)
+
+### Erledigt
+- Isolierter Worktree `Jarvis-tf030` auf Basis von `8540aca` erstellt; bestehende Worktrees und uncommittete Fremdänderungen wurden nicht verändert.
+- Docker-Lab-Vertrag statisch geprüft: Run-IDs, `jarvis.lab`-Labels, eigene Netzwerke/Volumes, loopback-gebundene Testports und synthetische Laufzeitdaten.
+- Read-only-Dockerprüfung angesetzt. Der Ausführungs-Guard blockierte `docker context show`/`docker version` vor der Ausführung; es wurden keine Ressourcen gestartet, verändert oder gelöscht.
+- Full-Check ausgeführt: 1197 Tests, 1184 bestanden, 1 fehlgeschlagen, 12 übersprungen, Exit 1. Secret-Scan ohne Treffer.
+- Abschlussbericht unter `reports/TF-JARVIS-030/ABSCHLUSSBERICHT.md` erstellt.
+
+### Bekannte Fehler
+- `test/crm-browser-053.test.js` Test N scheiterte im aktuellen Full-Check beim Klick auf `ANRUF SPEICHERN`, weil das Formular-Element während des Klicks aus dem DOM entfernt bzw. unsichtbar wurde. Der Befund ist nicht als behoben klassifiziert.
+
+### Offen / Blockiert
+- Alle zwölf Docker-/Repair-Labs sind BLOCKED/NOT RUN. Engine, Docker-Kontext sowie bestehende Container, Netzwerke und Volumes konnten wegen des Ausführungs-Guards und fehlender Docker-Desktop-/Dienstnachweise nicht verifiziert werden.
+- TF-030 ist daher nicht releasebereit. Ein sicherer read-only Docker-Nachweis und die anschließende isolierte Lab-Suite sowie eine gezielte Klärung des CRM-Browserfehlers N sind erforderlich.
+
+### In Arbeit
+- Keine weiteren TF-030-Änderungen in diesem Worktree; kein Push, Merge oder Deployment.
 
 Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderungen der Regeln gepflegt).
