@@ -35,6 +35,7 @@
 - Docker-Lab-Vertrag statisch geprüft: eigene Lab-Labels, eigene Netze/Volumes, loopback-Ports, synthetische Laufzeitgeheimnisse, keine Produktions-Mounts.
 - Docker-Labs: **12 BLOCKED/NOT RUN**. `docker context show`/`docker version` wurde durch den Ausführungs-Guard vor Ausführung mit `Rejected: Keine Container ohne Freigabe.` blockiert. Keine Container, Volumes, Netzwerke oder produktiven Dienste wurden verändert.
 - Vollständiger `node scripts/dev-check.mjs --full`: **1’213 Tests, 1’201 bestanden, 0 fehlgeschlagen, 12 übersprungen; Exit 0 / `CHECK OK`**. Der Lauf enthält die 2 neuen TF-033-Tests und bestätigt die bestehende CHF-/Access-/Backup-/Rollback-/Secret-Regression.
+- Bekannte Zahlungsabweichung: Der Universal-/Onboarding-Pfad verlangt CHF 480 vollständig; der ältere Engine-Pfad ohne `onboardingDir` verwendet weiterhin das bestehende CHF-240-Anzahlungsgate. Die Legacy-Fixtures belegen diesen Vertrag. In TF-033 nicht global umgestellt, um keinen unbeabsichtigten Vertragsbruch im CHF-150-/Legacy-Bestand zu erzeugen; separate Migration und neue Regression sind vor einer pauschalen Produktionsfreigabe erforderlich.
 
 ## Produktionsbereitschaft
 

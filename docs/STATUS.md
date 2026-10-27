@@ -175,7 +175,8 @@ Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderung
 
 - Die zwölf Docker-/Repair-Labs bleiben `BLOCKED/NOT RUN`: statische Isolation ist nachgewiesen, der read-only Docker-Aufruf wurde jedoch vor Ausführung durch den Guard (`Rejected: Keine Container ohne Freigabe.`) blockiert. Keine Docker-Ressource wurde verändert.
 - Shopify, Webflow und Wix bleiben `VAULT_ONLY`; unbekannte Anbieter bleiben `BLOCKED`/manuell. Kein Adapter darf ohne eigenen synthetischen E2E-Nachweis `AUTO_REPAIR_VERIFIED` werden.
-- Vollständiger `node scripts/dev-check.mjs --full`: **1'213 Tests, 1'201 bestanden, 0 fehlgeschlagen, 12 Docker-Labs übersprungen; Exit 0 / CHECK OK**. Der lokale Commit folgt; Produktionsbereitschaft bleibt wegen der Docker-Labs und der fehlenden separaten Produktionsfreigabe `BLOCKED`.
+- Zahlungsabweichung offen: Universal-/Onboarding-CHF-480 verlangt Vollzahlung; der ältere Engine-Vertrag ohne `onboardingDir` akzeptiert weiterhin CHF 240 Anzahlung. Keine globale Umstellung in TF-033 ohne separaten Migrations-/Regressionentscheid.
+- Vollständiger `node scripts/dev-check.mjs --full`: **1'213 Tests, 1'201 bestanden, 0 fehlgeschlagen, 12 Docker-Labs übersprungen; Exit 0 / CHECK OK**. Implementierung `5c0c226`, Statusdokumentation `f2f736b`; Produktionsbereitschaft bleibt wegen der Docker-Labs, der Legacy-Zahlungsabweichung und der fehlenden separaten Produktionsfreigabe `BLOCKED`.
 
 ### In Arbeit
 
