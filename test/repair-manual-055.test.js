@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { createStore } from "../mail-worker.js";
 import { recordPayment } from "../payments.js";
-import { createRepairOrder, authorizeRepair, createRepairEngine, completeOrder, cancelRepairOrder, completionGate, manualItems, completionState,
+import { createRepairOrder, authorizeRepair, createRepairEngine, completeOrder, completionGate, manualItems, completionState,
   buildCustomerReport, buildRepairDeliveryMail, repairFindingsExport, writeRepairFindingsExport, publicRepairOrders, repairPhase,
   REPAIR_ORDERS_FILE, FULFILLMENT_CLASS, COMPLETED_WITH_MANUAL_ITEMS, ORDER_STATES } from "../repair-workflow.js";
 import { gateDecision } from "../repair-browser-validator.js";
@@ -86,7 +86,7 @@ test("Test 2: 1 reparierbar + 1 geschützt → reparierbarer behoben, geschützt
   const w = world({ keys: ["contact", "protected"] }), gmail = fakeGmail();
   await run(store, w, gmail);
   const o = readOrder(store, id);
-  assert.equal(o.state, COMPLETED_WITH_MANUAL_ITEMS, o.blocked_reason);
+  assert.equal(o.state, "READY_FOR_DELIVERY", o.blocked_reason);
   assert.notEqual(o.state, "COMPLETED");
   assert.deepEqual(completionGate(o), { ok: true, missing: [] }, "technischer Abschluss bestanden");
   const st = Object.values(o.issues).map((i) => [i.type, i.repair_status, i.protected]).sort();
@@ -94,13 +94,11 @@ test("Test 2: 1 reparierbar + 1 geschützt → reparierbarer behoben, geschützt
   assert.equal(w.st.writes, 1, "geschützter Befund nie angefasst");
   assert.equal(o.completion.kind, "WITH_MANUAL_ITEMS");
   assert.match(o.report.body, /Die automatisch reparierbaren Probleme wurden behoben\. Weitere Punkte erfordern eine manuelle Prüfung\./);
-  const sent = gmail.calls.find((c) => c.op === "create" && c.messageClass === FULFILLMENT_CLASS);
-  assert.ok(sent, "Bericht geht an den Kunden – mit ehrlicher Formulierung");
-  assert.match(sent.body, /Weitere Punkte erfordern eine manuelle Prüfung/);
-  for (const t of [o.report.body, sent.body, sent.subject]) assert.doesNotMatch(t, FORBIDDEN_CLAIMS);
-  assert.match(o.state_history.at(-1).reason, /1 Punkt\(e\) erfordern eine manuelle Prüfung/);
-  // Terminal: kein Storno, kein zweiter Abschluss; Dashboard zeigt den eigenen Zustand.
-  assert.throws(() => cancelRepairOrder(store, id, { reason: "x" }), /bereits COMPLETED_WITH_MANUAL_ITEMS/);
+  assert.equal(gmail.calls.filter((c) => c.op === "create" && c.messageClass === FULFILLMENT_CLASS).length, 0, "keine irreführende Abschlussmail");
+  assert.doesNotMatch(o.report.body, FORBIDDEN_CLAIMS);
+  assert.match(o.state_history.at(-1).reason, /Abschlussmail nicht freigegeben/);
+  // Der technische Zustand bleibt bis zur expliziten Chris-Entscheidung offen.
+  assert.equal(completeOrder(store, id).state, COMPLETED_WITH_MANUAL_ITEMS);
   const pub = publicRepairOrders(store.dir).orders[0];
   assert.equal(pub.state, COMPLETED_WITH_MANUAL_ITEMS); assert.equal(pub.phase, COMPLETED_WITH_MANUAL_ITEMS); assert.equal(pub.manual_items_open, 1);
   const clean = cleanRepair(publicRepairOrders(store.dir));
@@ -155,7 +153,8 @@ test("manualItems: low-Hinweise zählen nicht, geschützt/needs_review/≥medium
   assert.match(body, /Es gab keine automatisch reparierbaren Probleme\. Die gefundenen Punkte erfordern eine manuelle Prüfung\./);
   assert.doesNotMatch(body, FORBIDDEN_CLAIMS);
   const mail = buildRepairDeliveryMail({ domain: "muster.ch", report: { body }, issues: { P: { severity: "medium", repair_status: "open", protected: true } } });
-  assert.match(mail.body, /Weitere Punkte erfordern eine manuelle Prüfung/);
+  assert.equal(mail.status, "MANUAL_REVIEW_REQUIRED");
+  assert.equal(mail.body, "");
 });
 
 test("I + J: Repair→CRM – vorher 3 Fehler (vollständig), Reparatur behebt 2 → CRM zählt 1, geschützter Punkt bleibt sichtbar", async () => {
@@ -174,7 +173,7 @@ test("I + J: Repair→CRM – vorher 3 Fehler (vollständig), Reparatur behebt 2
   assert.deepEqual(writeRepairFindingsExport({ dir: store.dir, exportDir, now: new Date(+now + 60_000) }), { written: false, domains: 1 }, "unverändert → kein erneutes Schreiben");
   const exp = JSON.parse(fs.readFileSync(path.join(exportDir, REPAIR_FINDINGS_FILE), "utf8"));
   const e = exp.orders["muster.ch"];
-  assert.equal(e.state, COMPLETED_WITH_MANUAL_ITEMS);
+  assert.equal(e.state, "READY_FOR_DELIVERY");
   assert.deepEqual(e.findings.map((f) => [f.type, f.status, f.manual]).sort(), [["broken_image", "OPEN", true], ["broken_image", "RESOLVED", false], ["contact_page_broken", "RESOLVED", false]]);
   const raw = JSON.stringify(exp);
   for (const bad of ["kunde@muster.ch", "RF480-", "r1", "b1", "live:lab", "HTTP 404", "lab:"]) assert.ok(!raw.includes(bad), `kein ${bad} im Export`);
@@ -182,7 +181,7 @@ test("I + J: Repair→CRM – vorher 3 Fehler (vollständig), Reparatur behebt 2
   assert.equal(h.audit, "FULL"); assert.equal(h.count, 1, "3 → 1"); assert.equal(h.exact, true);
   assert.equal(h.items[0].manual, true, "geschützter Punkt bleibt als manueller Punkt sichtbar");
   assert.match(h.items[0].text, /Datenschutz/);
-  assert.deepEqual({ repaired: h.repair.repaired, manual_open: h.repair.manual_open, state: h.repair.state }, { repaired: 2, manual_open: 1, state: COMPLETED_WITH_MANUAL_ITEMS });
+  assert.deepEqual({ repaired: h.repair.repaired, manual_open: h.repair.manual_open, state: h.repair.state }, { repaired: 2, manual_open: 1, state: "READY_FOR_DELIVERY" });
   // Ein neuerer passiver Voll-Audit ersetzt den Repair-Stand (gleiche Website, später geprüft).
   const later = fullAuditEntry({ reachable: true, coverage: before && { links_found: 0, links_checked: 0, images_found: 0, images_checked: 0, deadline_hit: false }, issues: [] }, { domain: "muster.ch", audited_at: "2026-10-14T10:00:00.000Z" });
   assert.equal(siteHealth({ full: later, repair: e, now: new Date("2026-10-14T11:00:00Z") }).count, 0);

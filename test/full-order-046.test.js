@@ -61,7 +61,7 @@ function vp({ fixed = false, px = 0, pageErrors = 0 } = {}) {
     network: { failed_same_site: 0, failed_cross_site: 0, entries: [] }, fingerprints: { header: "a", nav: "b", main: "c", footer: "d" },
     findings: [{ type: "broken_link", ok: fixed, present: !fixed, code: fixed ? null : "finding_unresolved" }] };
 }
-function world({ regress = false, rollbackOk = true } = {}) {
+function world({ regress = false, rollbackOk = true, includeProtected = true } = {}) {
   const st = { fixed: false, regressed: false, writes: 0, rollbacks: 0, connects: 0, backups: 0, browser: [], preflights: [] };
   const BROKEN = { type: "broken_link", url: `${SITE}team-alt`, page: SITE, label: "Unser Team", evidence: "HTTP 404", severity: "medium", detectedAt: T0.toISOString(), reproducible: true };
   const PROTECTED = { type: "broken_link", url: `${SITE}agb-alt`, page: `${SITE}impressum`, label: "AGB", evidence: "HTTP 404", severity: "medium", detectedAt: T0.toISOString(), reproducible: true };
@@ -76,7 +76,7 @@ function world({ regress = false, rollbackOk = true } = {}) {
     rollback: async () => { st.rollbacks++; if (!rollbackOk) return { ok: false }; st.fixed = false; st.regressed = false; return { ok: true }; },
   };
   const auditor = { audit: async (u) => ({ website: u, reachable: true, finalUrl: u, title: "Muster Kunde AG", requests: 3, pages: { home: "<html><body>Muster</body></html>" },
-    issues: [...(st.fixed ? [] : [BROKEN]), PROTECTED] }) };
+    issues: [...(st.fixed ? [] : [BROKEN]), ...(includeProtected ? [PROTECTED] : [])] }) };
   const browserValidator = { validate: async ({ url, phase, before_snapshot }) => {
     st.browser.push(phase);
     const v = () => vp({ fixed: phase !== "baseline" && st.fixed, ...(st.regressed ? { px: 510 } : {}) });
@@ -172,10 +172,10 @@ test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240
   assert.deepEqual(r.access_intake, { accepted: 1, rejected: 0 });
   assert.equal(c.blobs.dump(), "[]", "Einreichung quittiert – Cloud leer");
   const o = readOrder(store, id);
-  // TF-055: der geschützte AGB-Link (Impressum) bleibt offen → nie «COMPLETED», sondern abgeschlossen MIT manuellem Punkt.
-  assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS", `${o.blocked_reason} ${JSON.stringify(o.delivery)}`);
+  // TF-028/055: ein geschützter Restpunkt darf keine neue Abschlussmail als vollständig repariert ausgeben.
+  assert.equal(o.state, "READY_FOR_DELIVERY", `${o.blocked_reason} ${JSON.stringify(o.delivery)}`);
   const pathOf = o.state_history.map((h) => h.to);
-  for (const s of ["ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED_WITH_MANUAL_ITEMS"]) assert.ok(pathOf.includes(s), s);
+  for (const s of ["ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY"]) assert.ok(pathOf.includes(s), s);
   assert.deepEqual([o.authorization.source, o.authorization.authorized_domain, o.customer_authorized_repair], ["secure_order_access_form", DOMAIN, true]);
   assert.equal(o.access_profile?.profile_status, "PROFILE_READY", `Profil: ${JSON.stringify(o.access_profile)}`);
   assert.ok(pathOf.indexOf("ACCESS_PROFILE_PREFLIGHT") < pathOf.indexOf("BACKUP"), "Profil vor Backup");
@@ -188,34 +188,29 @@ test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240
   assert.deepEqual([o.validation.build_ok, o.retest.http_ok, o.browser_gate.desktop, o.browser_gate.mobile, o.browser_gate.regression], [true, true, "JA", "JA", "KEINE"]);
   assert.deepEqual(w.st.browser, ["baseline", "after"]);
 
-  // Bericht + Lieferung: genau 1 CUSTOMER_ORDER_FULFILLMENT an den Kunden, Bericht ohne Interna.
+  // Bericht vorhanden, aber die neue Abschlussmail bleibt wegen des geschützten Restpunkts gesperrt.
   const deliveries = gmail.calls.filter((x) => x.op === "create" && x.messageClass === FULFILLMENT_CLASS);
-  assert.equal(deliveries.length, 1);
-  assert.equal(deliveries[0].to, EMAIL);
-  assert.deepEqual([o.delivery.status, o.delivery.message_class, !!o.delivery.sent_at], ["sent", FULFILLMENT_CLASS, true]);
-  const body = deliveries[0].body;
-  for (const must of ["Gefundene relevante Punkte: 2", "Behoben wurden:", "Nicht automatisch repariert", "Desktop geprüft: Ja", "Mobile geprüft: Ja", "Retest", "erfolgreich", "temporären Zugang"]) assert.ok(body.includes(must), `Bericht: ${must}`);
-  assert.equal(reportUnsafe(body, o), null);
-  for (const bad of [TEST_SECRET, id, o.backup.backup_ref, "p1", "lab:1", "live:lab", "/home/", "127.0.0.1", "Bearer"]) assert.ok(!body.includes(bad), `Bericht enthält ${bad}`);
+  assert.equal(deliveries.length, 0);
+  assert.equal(o.delivery.status, "failed");
+  assert.match(o.delivery.handover_reason, /Abschlussmail nicht freigegeben/);
 
-  // Credential Cleanup: Tresor weg, nur Metadaten.
-  assert.equal(fs.existsSync(path.join(dir, ACCESS_VAULT_DIR, `${id}.json`)), false);
-  assert.deepEqual(Object.keys(o.access_intake).sort(), ["access_domain", "connector_type", "destroyed_at", "received_at", "revoked_required", "status"]);
-  assert.deepEqual([o.access_intake.status, o.access_intake.revoked_required], ["DESTROYED", true]);
+  // Der Tresor bleibt bis zur expliziten manuellen Abschlussentscheidung erhalten.
+  assert.equal(fs.existsSync(path.join(dir, ACCESS_VAULT_DIR, `${id}.json`)), true);
+  assert.equal(o.access_intake.status, "RECEIVED");
   assert.ok(!JSON.stringify(o).includes(TEST_SECRET));
 
   // Neustart nach der Lieferung: nichts passiert mehr (kein Doppelversand, kein Write).
   await run(dir, w, gmail, c.client);
-  assert.deepEqual([gmail.calls.filter((x) => x.op === "SEND").length, w.st.writes, paymentsForOrder(store, id).length], [2, 1, 2]);
+  assert.deepEqual([gmail.calls.filter((x) => x.op === "SEND").length, w.st.writes, paymentsForOrder(store, id).length], [1, 1, 2]);
 
   // Dashboard: alle Phasen in fester Wortform, keine Secrets.
   p = snap(id);
   assert.deepEqual([p.phase, p.payment_ok, p.access_received, p.authorized, p.backup_ok, p.repaired, p.browser_desktop, p.browser_mobile, p.browser_regression, p.delivery_status],
-    ["COMPLETED_WITH_MANUAL_ITEMS", true, true, true, true, 1, "JA", "JA", "KEINE", "sent"]);
-  assert.ok(["WAITING_FOR_DEPOSIT", "ACCESS_REQUEST_SENT", "COMPLETED_WITH_MANUAL_ITEMS"].every((x) => phases.includes(x)), phases.join());
+    ["READY_FOR_DELIVERY", true, true, true, true, 1, "JA", "JA", "KEINE", "failed"]);
+  assert.ok(["WAITING_FOR_DEPOSIT", "ACCESS_REQUEST_SENT", "READY_FOR_DELIVERY"].every((x) => phases.includes(x)), phases.join());
   assert.deepEqual(Object.keys(p).sort(), [...PUBLIC_REPAIR_FIELDS].sort());
   const cl = cleanRepair(publicRepairOrders(dir)).orders[0];
-  assert.deepEqual([cl.authorized, cl.delivery_status], [true, "sent"]);
+  assert.deepEqual([cl.authorized, cl.delivery_status], [true, "failed"]);
   for (const f of fs.readdirSync(dir, { recursive: true }).map(String)) {
     const full = path.join(dir, f);
     if (fs.statSync(full).isFile() && !f.endsWith(".pem")) assert.ok(!fs.readFileSync(full, "utf8").includes(TEST_SECRET), `${f} enthält Test-Zugangsdaten`);
@@ -227,7 +222,7 @@ test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240
 // Lieferung: genau einmal, restart-safe, fail safe
 // =====================================================================================================================
 // untilReady: nach dem Zugang einmal ohne Lieferung laufen lassen → READY_FOR_DELIVERY (für gezielte Liefer-Szenarien).
-async function readyOrder({ w = world(), gmail = fakeGmail(), extra = {}, untilReady = false } = {}) {
+async function readyOrder({ w = world({ includeProtected: false }), gmail = fakeGmail(), extra = {}, untilReady = false } = {}) {
   const dir = tmp(), store = createStore(dir), c = cloud();
   const o = createConfirmedRepairOrder(store, { domain: DOMAIN, website: SITE, company: "Muster Kunde AG", delivery_email: EMAIL, now: T0 });
   recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "R-" + o.order_id, now: T0 });
@@ -252,7 +247,7 @@ test("LIEFERUNG vor Delivery unterbrochen (Gmail 503) → kein Versand, Neustart
   await run(x.dir, x.w, gmail, x.c.client);
   await run(x.dir, x.w, gmail, x.c.client);
   o = readOrder(x.store, x.id);
-  assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS"); // TF-055: geschützter AGB-Link bleibt manuell
+  assert.equal(o.state, "COMPLETED");
   assert.equal(gmail.calls.filter((c) => c.op === "create" && c.messageClass === FULFILLMENT_CLASS).length, 1, "ein Entwurf (Draft-ID persistiert)");
   assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 2, "1 Access-Mail + 1 Lieferung");
 
@@ -271,13 +266,16 @@ test("LIEFERUNG vor Delivery unterbrochen (Gmail 503) → kein Versand, Neustart
   assert.ok(alerts.includes("delivery_unclear"));
   assert.equal(phaseOf(y.dir, y.id).delivery_status, "unclear");
   completeOrder(y.store, y.id); // Chris hat im Gesendet-Ordner geprüft und schliesst ab
-  assert.deepEqual([readOrder(y.store, y.id).state, fs.existsSync(path.join(y.dir, ACCESS_VAULT_DIR, `${y.id}.json`))], ["COMPLETED_WITH_MANUAL_ITEMS", false]);
+  assert.deepEqual([readOrder(y.store, y.id).state, fs.existsSync(path.join(y.dir, ACCESS_VAULT_DIR, `${y.id}.json`))], ["COMPLETED", false]);
 });
 
-test("LIEFERUNG fail safe: zu langer Bericht → ATTACHMENT_REQUIRED (kein Versand); Bericht mit Interna → BERICHT PRÜFEN (kein Versand); ohne Gmail → wartet auf Chris", async () => {
+test("LIEFERUNG fail safe: gesperrte Abschlussmail oder Interna → kein Versand; langer freigegebener Bericht → ATTACHMENT_REQUIRED", async () => {
   const mk = () => ({ order_id: "RF480-20261013-abcdef", domain: DOMAIN, contact_name: "Frau Muster", report: { subject: "S", body: "x".repeat(6000) } });
+  assert.equal(buildRepairDeliveryMail(mk()).status, "MANUAL_REVIEW_REQUIRED");
   assert.equal(buildRepairDeliveryMail(mk()).inline, false);
-  assert.equal(buildRepairDeliveryMail({ ...mk(), report: { subject: "S", body: "kurz" } }).inline, true);
+  const readyMail = buildRepairDeliveryMail({ ...mk(), website: SITE, issues: { one: { customer_text: "Kontaktlink war nicht erreichbar.", repair_status: "repaired", solution_summary: "Kontaktlink korrigiert." } }, completion: { kind: "FULL" }, validation: { build_ok: true }, retest: { http_ok: true }, browser_gate: { required: false } });
+  assert.equal(readyMail.status, "READY");
+  assert.equal(readyMail.inline, true);
   for (const [bad, why] of [["Server 10.0.0.12", "ip"], ["Datei /home/kunde/public_html/index.html", "pfad"], ["https://muster-kunde.test/team", "url"], ["Sicherung B0123456789ab", "backup_id"],
     ["Commit 0123456789abcdef0123456789abcdef01234567", "git"], ["Auftrag RF480-20261013-abcdef", "auftrags_id"], ["passwort: geheim", "secret"], ["TypeError stack trace", "debug"]])
     assert.equal(reportUnsafe(bad), why, bad);
@@ -286,11 +284,14 @@ test("LIEFERUNG fail safe: zu langer Bericht → ATTACHMENT_REQUIRED (kein Versa
   const gmail = fakeGmail();
   const x = await readyOrder({ gmail, untilReady: true });
   const data = x.store.read(REPAIR_ORDERS_FILE, { orders: {} });
-  data.orders[x.id].report = { ...data.orders[x.id].report, body: data.orders[x.id].report.body + "\n" + "Hinweis zur Seite. ".repeat(320) };
+  const repaired = Object.values(data.orders[x.id].issues)[0];
+  data.orders[x.id].issues = Object.fromEntries(Array.from({ length: 80 }, (_, i) => [`I${i + 1}`, { ...repaired, finding_id: `I${i + 1}`, customer_text: `Problem ${i + 1} ist dokumentiert.`, solution_summary: `Problem ${i + 1} wurde mit der dokumentierten Änderung behoben.` }]));
+  const plan = data.orders[x.id].plan[0];
+  data.orders[x.id].plan = Array.from({ length: 80 }, (_, i) => ({ ...plan, issue_id: `I${i + 1}` }));
   x.store.write(REPAIR_ORDERS_FILE, data);
   await run(x.dir, x.w, gmail, x.c.client);
   let o = readOrder(x.store, x.id);
-  assert.deepEqual([o.state, o.delivery.status, o.delivery_attachment_required], ["READY_FOR_DELIVERY", "attachment_required", true]);
+  assert.deepEqual([o.state, o.delivery.status, o.delivery_attachment_required], ["READY_FOR_DELIVERY", "attachment_required", true], o.delivery.handover_reason);
   assert.equal(gmail.calls.filter((c) => c.messageClass === FULFILLMENT_CLASS).length, 0);
 
   // Bericht mit internem Pfad → nie versenden.
@@ -411,7 +412,7 @@ test("VOID SALE: offene Aufträge blockieren das Void (TF-040); nach Storno → 
 // =====================================================================================================================
 // CHF 150 FULL FLOW
 // =====================================================================================================================
-test("CHF150 FULL FLOW: bestätigt → CHF 74 nichts → CHF 75 Audit → Anleitung → Bericht → genau 1 CUSTOMER_ORDER_FULFILLMENT; Neustart kein Doppelversand; langer Bericht → ATTACHMENT_REQUIRED", async () => {
+test("CHF150 FULL FLOW: bestätigt → CHF 74 nichts → CHF 75 Audit → Bericht; fehlende TF-028-Versandvoraussetzungen blockieren die Abschlussmail", async () => {
   const dir = tmp(), store = createStore(dir), gmail = fakeGmail();
   let audits = 0;
   const auditor = (issues) => ({ audit: async (u) => { audits++; return { website: u, reachable: true, finalUrl: u, title: "Muster", requests: 2, pages: { home: "<html><head><meta name=viewport content=x></head><body>x</body></html>" }, issues }; } });
@@ -424,12 +425,12 @@ test("CHF150 FULL FLOW: bestätigt → CHF 74 nichts → CHF 75 Audit → Anleit
   assert.deepEqual([r150().state, audits, gmail.calls.length], ["BLOCKED_PAYMENT_NOT_RECEIVED", 0, 0], "CHF 74 → nichts");
   recordPayment(store, { order_id: o.order_id, amount_chf: 1, reference: "C150-75", now: T0 });
   await runCheck150Orders({ dir, gmail, auditor: auditor([issue(1), issue(2)]), log: () => {} });
-  assert.equal(r150().state, "COMPLETED");
-  assert.deepEqual([audits, r150().report_findings_count, r150().delivery_message_class], [1, 2, "CUSTOMER_ORDER_FULFILLMENT"]);
-  assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 1);
-  assert.equal(gmail.calls.find((c) => c.op === "create").messageClass, "CUSTOMER_ORDER_FULFILLMENT");
+  assert.equal(r150().state, "MANUAL_REVIEW_REQUIRED");
+  assert.deepEqual([audits, r150().report_findings_count, r150().receipt_status], [1, 2, "MANUAL_REVIEW_REQUIRED"]);
+  assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 0);
+  assert.equal(gmail.calls.filter((c) => c.op === "create").length, 0);
   await runCheck150Orders({ dir, gmail, auditor: auditor([]), log: () => {} });
-  assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 1, "Neustart: kein Doppelversand");
+  assert.equal(gmail.calls.filter((c) => c.op === "SEND").length, 0, "Neustart: keine Abschlussmail");
 
   // Langer Bericht (viele echte Befunde): kein falscher Auto-Send.
   const dir2 = tmp(), store2 = createStore(dir2), gmail2 = fakeGmail();
@@ -438,8 +439,8 @@ test("CHF150 FULL FLOW: bestätigt → CHF 74 nichts → CHF 75 Audit → Anleit
   recordPayment(store2, { order_id: o2.order_id, amount_chf: 75, reference: "C150-LONG", now: T0 });
   await runCheck150Orders({ dir: dir2, gmail: gmail2, auditor: auditor(Array.from({ length: 14 }, (_, i) => issue(i + 1))), log: () => {} });
   const l = store2.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o2.order_id];
-  assert.deepEqual([l.state, l.delivery_attachment_required, gmail2.calls.filter((c) => c.op === "SEND").length], ["READY_FOR_DELIVERY", true, 0]);
-  assert.match(l.state_history.at(-1).reason, /ATTACHMENT_REQUIRED/);
+  assert.deepEqual([l.state, l.receipt_status, gmail2.calls.filter((c) => c.op === "SEND").length], ["MANUAL_REVIEW_REQUIRED", "MANUAL_REVIEW_REQUIRED", 0]);
+  assert.match(l.state_history.at(-1).reason, /Geschäftsadresse/);
   for (const d of [dir, dir2]) fs.rmSync(d, { recursive: true, force: true });
 });
 

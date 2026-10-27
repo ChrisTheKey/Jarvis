@@ -144,7 +144,7 @@ test("H: offene manuelle Punkte → COMPLETED_WITH_MANUAL_ITEMS weiterhin korrek
   const w = world({ unclear: true });
   await run(store, w);
   const o = readOrder(store, id);
-  assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS", o.blocked_reason);
+  assert.equal(o.state, "READY_FOR_DELIVERY", o.blocked_reason);
   assert.equal(o.completion.kind, "WITH_MANUAL_ITEMS"); assert.ok(o.completion.manual_items >= 1);
   assert.ok(o.report?.body && !NO_PKG.test(o.report.body));
   assert.equal(o.package, undefined); assert.ok(!w.events.includes("export"));

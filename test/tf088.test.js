@@ -12,7 +12,7 @@ import { createStore } from "../mail-worker.js";
 import { recordPayment, paymentsForOrder, PAYMENTS_FILE } from "../payments.js";
 import { recordSale } from "../sales.js";
 import {
-  createCheck150Order, createCheck150Engine, approveE2eFulfilment, e2eFulfilmentCheck, check150Status, publicCheck150Orders, runCheck150Orders, CHECK150_ORDERS_FILE,
+  createCheck150Order, createCheck150Engine, approveE2eFulfilment, e2eFulfilmentCheck, check150Status, publicCheck150Orders, runCheck150Orders as runCheck150OrdersImpl, CHECK150_ORDERS_FILE,
 } from "../check-150-workflow.js";
 import { createOutboxMailer, processRepairOutbox, outboxStatus } from "../repair-outbox.js";
 import { e2eFulfilmentConfig, e2eFulfilmentStatus } from "../e2e-test.js";
@@ -25,13 +25,31 @@ const RUN = "e2e-0123456789ab";
 const BASE = { JARVIS_E2E_TEST_ENABLED: "true", JARVIS_E2E_TEST_DOMAINS: "jarvis-sandbox.ch", JARVIS_E2E_TEST_MAILBOXES: "e2e@helvetic-test.ch" };
 const ON = { ...BASE, JARVIS_E2E_FULFILMENT_ENABLED: "true" };
 
+// TF-029: runCheck150Orders verlangt seit TF-028 eine gebundene CHF-330-Checkout-Session.
+// Dieser Adapter antwortet nur synthetisch; er führt keinen Netzwerkaufruf aus und enthält keine Live-Geheimnisse.
+const syntheticStripeFetch = async (_url, options = {}) => {
+  const form = new URLSearchParams(options.body || "");
+  const metadata = Object.fromEntries([...form].filter(([key]) => key.startsWith("metadata["))
+    .map(([key, value]) => [key.slice(9, -1), value]));
+  const live = metadata.environment === "LIVE";
+  const id = live ? "cs_live_tf088synthetic01" : "cs_test_tf088synthetic01";
+  return { ok: true, json: async () => ({ id, livemode: live, status: "open", payment_status: "unpaid", amount_total: 33000,
+    currency: "chf", expires_at: 1793000000, url: `https://checkout.stripe.com/c/pay/${id}`, ui_mode: "hosted", metadata }) };
+};
+const syntheticStripeEnv = (env = {}) => ({ ...env, STRIPE_TEST_SECRET_KEY: env.STRIPE_TEST_SECRET_KEY || "sk_test_tf08812345678",
+  STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY || "sk_live_tf08812345678" });
+const runCheck150Orders = ({ env = ON, ...options } = {}) => runCheck150OrdersImpl({ ...options, env: syntheticStripeEnv(env),
+  origin: "https://jarvis-sandbox.ch", fetchFn: syntheticStripeFetch });
+
 function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-tf088-")), dir = path.join(root, "mail_worker"), obox = path.join(root, "outbox");
   fs.mkdirSync(dir, { recursive: true });
-  return { root, dir, obox, store: createStore(dir), mailer: createOutboxMailer({ dir: obox, now: () => T0 }) };
+  const store = createStore(dir);
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
+  return { root, dir, obox, store, mailer: createOutboxMailer({ dir: obox, now: () => T0 }) };
 }
 const testOrder = (s, env = ON) => {
-  const o = createCheck150Order(s.store, { domain: "jarvis-sandbox.ch", delivery_email: "e2e@helvetic-test.ch", test: { run_id: RUN }, env, now: T0 });
+  const o = createCheck150Order(s.store, { domain: "jarvis-sandbox.ch", lead_id: "lead-tf088-sandbox", company: "Synthetic Sandbox AG", contact_name: "Frau Test", delivery_email: "e2e@helvetic-test.ch", test: { run_id: RUN }, env, now: T0 });
   recordPayment(s.store, { order_id: o.order_id, amount: 150, currency: "CHF", source: "stripe_test_payment_link", reference: "stripe:pi_tf088", provider_mode: "TEST", now: T0 }); // die vorhandene Stripe-TESTzahlung
   return o;
 };
@@ -92,7 +110,7 @@ test("E2E Ende-zu-Ende: Audit der Sandbox-Domain → Bericht → Outbox → ECHT
   await runCheck150Orders({ dir: s.dir, gmail: s.mailer, auditor: a, env: ON, log: () => {} });
   let r = rd(s, o.order_id);
   assert.deepEqual(a.calls, ["https://jarvis-sandbox.ch/"], "genau ein Audit, nur die Sandbox-Domain");
-  assert.equal(r.state, "DELIVERY_SENDING"); assert.equal(r.report_findings_count, 2); assert.ok(r.report?.findings.length === 2); assert.equal(r.delivery_draft.inline, true);
+  assert.equal(r.state, "DELIVERY_SENDING", r.blocked_reason || JSON.stringify(r)); assert.equal(r.report_findings_count, 2); assert.ok(r.report?.findings.length === 2); assert.equal(r.delivery_draft.inline, true);
   assert.equal(files(s, ".request.json").length, 1, "genau EIN verbindlicher Versandauftrag in der Outbox"); assert.equal(g.calls.length, 0, "noch nichts gesendet – der Mail-Worker ist die Sender Authority");
   const req = JSON.parse(fs.readFileSync(path.join(s.obox, files(s, ".request.json")[0]), "utf8"));
   assert.equal(req.to, "e2e@helvetic-test.ch"); assert.equal(req.e2e_run_id, RUN); assert.equal(req.message_class, "CUSTOMER_ORDER_FULFILLMENT");
@@ -176,14 +194,14 @@ test("Laufzeit-Prüfung vor jedem Schritt: Allowlist entfällt oder kein Outbox-
 test("Produktion unverändert: echte CHF-150-Aufträge laufen wie zuvor (ohne E2E-Kennung, ohne Betrugsmarke); ein nicht freigegebener Testauftrag daneben bleibt unberührt", async () => {
   const s = setup(), t = testOrder(s), a = auditor(2), g = fakeGmail();
   s.store.write("sales.json", { records: recordSale({}, "kunde.ch", { offer: "REPAIR_CHECK_150", date: "2026-10-19", now: T0 }) });
-  const live = createCheck150Order(s.store, { domain: "kunde.ch", website: "https://kunde.ch/", company: "Kunde AG", delivery_email: "info@kunde.ch", now: T0 });
+  const live = createCheck150Order(s.store, { domain: "kunde.ch", website: "https://kunde.ch/", company: "Kunde AG", contact_name: "Frau Kunde", lead_id: "lead-tf088-live", delivery_email: "info@kunde.ch", now: T0 });
   recordPayment(s.store, { order_id: live.order_id, amount: 150, currency: "CHF", source: "stripe_payment_link", reference: "stripe:pi_live1", provider_mode: "LIVE", now: T0 });
   // Mail-Worker OHNE jede E2E-Konfiguration (Produktionsfall)
-  await runCheck150Orders({ dir: s.dir, gmail: s.mailer, auditor: a, env: {}, log: () => {} });
+  await runCheck150Orders({ dir: s.dir, gmail: s.mailer, auditor: a, env: { STRIPE_SECRET_KEY: "sk_live_tf08812345678" }, log: () => {} });
   const req = JSON.parse(fs.readFileSync(path.join(s.obox, files(s, ".request.json")[0]), "utf8"));
   assert.equal(req.e2e_run_id, undefined); assert.ok(!req.subject.startsWith("[E2E-TEST]")); assert.equal(req.to, "info@kunde.ch");
   assert.equal((await consume(s, g, {})).sent, 1, "normale Kundenmail geht auch ohne E2E-Konfiguration raus");
-  await runCheck150Orders({ dir: s.dir, gmail: s.mailer, auditor: a, env: {}, log: () => {} });
+  await runCheck150Orders({ dir: s.dir, gmail: s.mailer, auditor: a, env: { STRIPE_SECRET_KEY: "sk_live_tf08812345678" }, log: () => {} });
   assert.equal(rd(s, live.order_id).state, "COMPLETED"); assert.equal(rd(s, live.order_id).e2e_fulfilment, undefined);
   assert.equal(rd(s, t.order_id).state, "ORDER_CONFIRMED", "nicht freigegebener Testauftrag blieb liegen"); assert.deepEqual(a.calls, ["https://kunde.ch/"]);
   assert.equal(g.calls.filter((x) => x.op === "SEND").length, 1);

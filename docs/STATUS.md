@@ -76,4 +76,22 @@ Die folgenden früheren Baseline-Befunde aus dem Integrationsbranch wurden durch
 - Offene Punkte je Ticket: `PROJECT_STATE.md`, Suche nach «Offen».
 
 ## Letzte Verifikation der Zentrale
+## TF-JARVIS-029 (2026-10-27)
+
+### Erledigt
+- TF-028-Folgefehler in `full-order-046`, `onboarding-066`, `repair-manual-055`, `repair-no-package-062` und `tf088` klassifiziert und die veralteten synthetischen Testverträge testseitig angepasst.
+- Zieltests: 56/56 bestanden; TF-028-Regressionen: 16/16 bestanden.
+- `node scripts/dev-check.mjs` und Secret-Scan bestanden; kein Produktivcode geändert.
+- Abschlussbericht: `reports/TF-JARVIS-029/ABSCHLUSSBERICHT.md`.
+
+### Bekannte Fehler
+- Vollsuite / Full-Check: 1197 Tests, 1185 bestanden, 0 fehlgeschlagen, 12 übersprungen, Exit 0 / `CHECK OK`. Ein separater gezielter Lauf hatte zuvor einmal einen Timeout in `crm-browser-053`; der Test bestand im abschließenden Full-Check und bleibt als intermittierender Baseline-Befund zu beobachten.
+
+### Offen / Blockiert
+- Die 12 Docker-/Repair-Labs bleiben BLOCKED, weil `JARVIS_REPAIR_LAB=1` und eine nachweisbar isolierte Docker-Laborumgebung fehlen; der lokale Container-Aufruf wurde vom Ausführungs-Guard abgewiesen. Keine Container oder Volumes wurden verändert.
+- TF-029 bleibt wegen der 12 nicht ausgeführten Docker-/Repair-Labs BLOCKED. Der Browser-Baseline-Befund ist nach dem Full-Check kein aktueller roter Test, sollte aber separat stabilisiert werden.
+
+### In Arbeit
+- Keine weiteren TF-029-Änderungen im Hauptcheckout. Der isolierte Branch `agent-codex/tf029` bleibt für Prüfung erhalten; kein Push, Merge oder Deployment.
+
 Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderungen der Regeln gepflegt).

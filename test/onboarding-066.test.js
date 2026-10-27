@@ -439,19 +439,22 @@ test("§52 + §58 FIX-E2E: Auftrag → Zahlung → Startmail → Inhaltswünsche
   assert.ok(!W.allFiles().includes(TEST_SECRET));
 });
 
-test("§59 CHECK-E2E: Auftrag → Zahlung → kurze Startnachricht → Kundenhinweis notiert → Audit → Bericht → COMPLETED; kein Zugang verlangt, Liefermail nach der Startnachricht", async () => {
+test("§59 CHECK-E2E: Auftrag → Zahlung → Startnachricht → Bericht; TF-028-Quittungs-/Upgrade-Gates blockieren die Abschlussmail", async () => {
   const W = world();
   W.store.write("sales.json", { records: recordDirectSale({}, { domain: DOMAIN, offer: "REPAIR_CHECK_150", delivery_email: EMAIL, company: "Kunde AG", website: SITE, date: "2026-10-16" }) });
   const o = createCheck150Order(W.store, { domain: DOMAIN, website: SITE, company: "Kunde AG", delivery_email: EMAIL, now: T0 });
   recordPayment(W.store, { order_id: o.order_id, amount_chf: 75, reference: "ONB66-CHK", now: T0 });
   await W.tick(3);
   const sends = W.g.sends();
-  assert.deepEqual(sends.map((x) => x.messageClass), [C.ONBOARDING_CLASS, "CUSTOMER_ORDER_FULFILLMENT"], "Startnachricht vor der Lieferung");
-  assert.equal(W.check(o.order_id).state, "COMPLETED");
+  assert.deepEqual(sends.map((x) => x.messageClass), [C.ONBOARDING_CLASS], "Startnachricht wird weiterhin zuerst verarbeitet");
+  assert.equal(W.check(o.order_id).state, "MANUAL_REVIEW_REQUIRED");
+  assert.equal(W.check(o.order_id).receipt_status, "MANUAL_REVIEW_REQUIRED");
+  assert.ok(W.check(o.order_id).receipt_open_items.includes("BUSINESS_ADDRESS_MISSING"));
   assert.ok(!sends.some((x) => /access\.html/.test(x.body)), "kein Zugang verlangt");
   W.reply(o.order_id, "Bitte prüfen Sie besonders die Kontaktseite.");
   await W.tick();
-  assert.equal(W.rec(o.order_id).state, "COMPLETED", "Auftrag abgeschlossen → kein weiterer automatischer Dialog");
+  assert.equal(W.rec(o.order_id).state, "COMPLETED", "der Onboarding-Dialog darf unabhängig vom gesperrten Versand abschließen");
+  assert.equal(W.check(o.order_id).state, "MANUAL_REVIEW_REQUIRED", "die Abschlussmail bleibt gesperrt");
   // Vor Abschluss: Hinweis wird notiert und kurz bestätigt.
   const W2 = world();
   W2.store.write("sales.json", { records: recordDirectSale({}, { domain: DOMAIN, offer: "REPAIR_CHECK_150", delivery_email: EMAIL, company: "Kunde AG", website: SITE, date: "2026-10-16" }) });
@@ -460,8 +463,8 @@ test("§59 CHECK-E2E: Auftrag → Zahlung → kurze Startnachricht → Kundenhin
   await W2.repairTick(); await W2.mailTick();
   W2.reply(o2.order_id, "Bitte prüfen Sie besonders die Kontaktseite.");
   await W2.mailTick();
-  assert.match(W2.lastSend().body, /ich berücksichtige das beim Check/);
-  assert.equal(W2.rec(o2.order_id).brief.items[0].kind, "other");
+  assert.equal(W2.check(o2.order_id).state, "MANUAL_REVIEW_REQUIRED");
+  assert.equal(W2.g.sends().filter((x) => x.messageClass === "CUSTOMER_ORDER_FULFILLMENT").length, 0);
 });
 
 // =====================================================================================================================
