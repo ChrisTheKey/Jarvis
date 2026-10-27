@@ -334,6 +334,50 @@ export function effectiveStage(entry, f) {
   if (EARLY.includes(explicit) && (f.manual_sent || f.replied)) return "CONTACTED";
   return explicit;
 }
+// TF-028: Read-only service status for the CRM. The join is limited to the
+// exact lead/order binding and fixed status words. Checkout URLs, payment
+// references, access data and free-form worker errors never cross this edge.
+const SERVICE_STATE = new Set(["ORDER_RECEIVED", "ORDER_CONFIRMED", "FULL_AUDIT", "FINDINGS_ANALYSIS", "INSTRUCTIONS_GENERATION", "CUSTOMER_REPORT_READY",
+  "DELIVERY_DRAFT_CREATED", "DELIVERY_SENDING", "READY_FOR_DELIVERY", "COMPLETED", "BLOCKED_ORDER_NOT_CONFIRMED", "BLOCKED_PAYMENT_NOT_RECEIVED",
+  "AUDIT_FAILED", "REPORT_FAILED", "DELIVERY_DRAFT_FAILED", "MANUAL_REVIEW_REQUIRED", "CANCELLED"]);
+const RECEIPT_STATE = new Set(["READY", "MANUAL_REVIEW_REQUIRED", "PARTIAL_PAYMENT", "PAYMENT_REQUIRED"]);
+const MAIL_STATE = new Set([...RECEIPT_STATE, "SENT"]);
+const UPGRADE_STATE = new Set(["OPEN", "PAYMENT_PROCESSING", "PAID", "CANCELLED", "REJECTED"]);
+const REPAIR_STATE = new Set(["ORDER_RECEIVED", "AUTHORIZATION_REQUIRED", "PAYMENT_REQUIRED", "BLOCKED_NO_ACCESS", "BLOCKED_UNSUPPORTED_STACK", "WAITING_FOR_ACCESS_PROFILE",
+  "HOST_KEY_CONFIRMATION_REQUIRED", "WAITING_FOR_ACCESS", "BACKUP_REQUIRED", "BROWSER_GATE_REQUIRED", "REPAIR_RUNNING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY",
+  "COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "REPAIR_FAILED", "MANUAL_REVIEW_REQUIRED", "PAYMENT_REVIEW_REQUIRED", "CANCELLED"]);
+const OPEN_ITEM_LABEL = Object.freeze({ BUSINESS_ADDRESS_MISSING: "Geschäftsadresse fehlt", REPORT_INCOMPLETE: "Prüfbericht unvollständig", PAYMENT_REVIEW_REQUIRED: "Zahlung wird geprüft",
+  ACCESS_REQUIRED: "Zugangsfreigabe fehlt", BROWSER_GATE_REQUIRED: "Browser-Freigabe fehlt", REPAIR_VERIFICATION_REQUIRED: "Reparaturverifikation fehlt", MANUAL_REVIEW_REQUIRED: "Manuelle Prüfung erforderlich" });
+const safeServiceState = (value, allowed) => allowed.has(value) ? value : null;
+const serviceOrders = (src, key) => {
+  const container = src?.[key];
+  const entries = container?.orders ?? container?.upgrades;
+  return entries && typeof entries === "object" ? Object.values(entries) : [];
+};
+const latestServiceOrder = (list, leadId) => list.filter((o) => o && o.lead_id === leadId)
+  .sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")))[0] || null;
+function serviceStatusFor(leadId, src = {}) {
+  const check = latestServiceOrder(serviceOrders(src, "check150Orders"), leadId);
+  const repair = latestServiceOrder(serviceOrders(src, "repairOrders"), leadId);
+  const upgrade = latestServiceOrder(serviceOrders(src, "upgrades"), leadId);
+  if (!check && !repair && !upgrade) return null;
+  const openItems = [];
+  for (const raw of Array.isArray(check?.receipt_open_items) ? check.receipt_open_items : []) {
+    const code = String(raw || "").trim();
+    const label = OPEN_ITEM_LABEL[code] || (code === "Geschäftsadresse fehlt" ? OPEN_ITEM_LABEL.BUSINESS_ADDRESS_MISSING : null);
+    if (label && !openItems.includes(label)) openItems.push(label);
+  }
+  if (check?.state === "MANUAL_REVIEW_REQUIRED" && !openItems.length) openItems.push(OPEN_ITEM_LABEL.MANUAL_REVIEW_REQUIRED);
+  return {
+    check150_state: safeServiceState(check?.state, SERVICE_STATE),
+    receipt_status: safeServiceState(check?.receipt_status, RECEIPT_STATE),
+    completion_mail_status: safeServiceState(check?.completion_mail_status, MAIL_STATE) || (check?.delivery_status === "sent" ? "SENT" : null),
+    upgrade_status: safeServiceState(upgrade?.status, UPGRADE_STATE),
+    repair_status: safeServiceState(repair?.state, REPAIR_STATE),
+    repair_order_id: typeof repair?.order_id === "string" && /^RF480-[A-Za-z0-9-]{6,80}$/.test(repair.order_id) ? repair.order_id : null,
+    open_items: openItems.slice(0, 8),
+  };
+}
 export function buildCrmLead(id, src = {}, now = new Date()) {
   const reg = src.registry?.leads?.[id] || null, dir = src.directory?.leads?.[id] || null, rv = src.reviews?.[id] || null, crm = src.crm?.leads?.[id] || null;
   const manual = crm?.manual && typeof crm.manual === "object" ? crm.manual : null;
@@ -422,6 +466,8 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
   // TF-076: Aufnahme ins aktive CRM (crm-model.js crmAdmission). Nur VPS-intern (nie in der Cloud-Allowlist): Zustand für Zähler/Bericht.
   // Fehlgeschlagen = letzter Hintergrund-Audit technisch gescheitert und kein vollständiger Audit vorhanden.
   lead.admission = crmAdmission(lead, { auditFailed: !!sf?.last_error && !(sf?.full?.complete === true) }).state;
+  const serviceStatus = serviceStatusFor(id, src);
+  if (serviceStatus) lead.service_status = serviceStatus;
   return lead;
 }
 const REACHED = new Set(["CALLBACK_REQUESTED", "SPOKE_TO_EMPLOYEE", "SPOKE_TO_DECISION_MAKER", "INTERESTED", "NOT_INTERESTED", "DO_NOT_CALL"]);
@@ -673,6 +719,15 @@ export function cleanCrmLead(l) {
     ...(l.manual_test?.source === "MANUAL_TEST" ? { manual_test: { source: "MANUAL_TEST", lead_type: "WEBSITE_REPAIR", environment: "TEST", priority: "HIGH", status: "MANUAL_TEST_AUTHORIZED",
       checked_at: iso(l.manual_test.checked_at), findings_total: n(l.manual_test.findings_total, 0, 1000), repair_offer: l.manual_test.repair_offer && { ...MANUAL_TEST_OFFERS } } } : {}),
     follow_up: oneOf(l.follow_up, ["OVERDUE", "TODAY", "LATER"]), call_recommended: l.call_recommended === true && !isTestLead(l),
+    ...(l.service_status && typeof l.service_status === "object" ? { service_status: {
+      check150_state: safeServiceState(l.service_status.check150_state, SERVICE_STATE),
+      receipt_status: safeServiceState(l.service_status.receipt_status, RECEIPT_STATE),
+      completion_mail_status: safeServiceState(l.service_status.completion_mail_status, MAIL_STATE),
+      upgrade_status: safeServiceState(l.service_status.upgrade_status, UPGRADE_STATE),
+      repair_status: safeServiceState(l.service_status.repair_status, REPAIR_STATE),
+      repair_order_id: typeof l.service_status.repair_order_id === "string" && /^RF480-[A-Za-z0-9-]{6,80}$/.test(l.service_status.repair_order_id) ? l.service_status.repair_order_id : null,
+      open_items: (Array.isArray(l.service_status.open_items) ? l.service_status.open_items : []).filter((x) => Object.values(OPEN_ITEM_LABEL).includes(x)).slice(0, 8),
+    } } : {}),
     ...(isTestLead(l) ? { is_test: true, environment: "TEST", test_run_id: typeof l.test_run_id === "string" && /^e2e-[0-9a-f]{12}$/.test(l.test_run_id) ? l.test_run_id : null, phone_tel: null } : {}),
   };
 }

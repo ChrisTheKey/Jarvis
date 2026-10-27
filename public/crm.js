@@ -168,6 +168,19 @@ function salesBox(l) {
   return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-mail-send", disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l); } }, busy ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send")),
     visibleText ? el("span", { class: `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`, "aria-live": "polite" }, visibleText) : "");
 }
+// TF-028: read-only completion/upgrade status. This component never starts a
+// mail, payment or repair action; it only renders the server-side allowlist.
+const serviceStatusText = (value) => value ? t(`service.status.${value}`) : "–";
+function serviceStatusBox(l) {
+  const s = l.service_status;
+  if (!s) return "";
+  const rows = [[t("service.check"), serviceStatusText(s.check150_state)], [t("service.receipt"), serviceStatusText(s.receipt_status)],
+    [t("service.upgrade"), serviceStatusText(s.upgrade_status)], [t("service.repair"), serviceStatusText(s.repair_status)],
+    [t("service.mail"), serviceStatusText(s.completion_mail_status)]];
+  const open = Array.isArray(s.open_items) ? s.open_items : [];
+  return el("section", { class: "crm-service-status" }, el("h4", {}, t("service.heading")), kv(rows),
+    open.length ? el("div", { class: "crm-note", "aria-live": "polite" }, el("b", {}, t("service.open")), el("ul", {}, open.map((item) => el("li", {}, item)))) : "");
+}
 // TF-077B: KONTAKTFORMULAR – SOFORT BEARBEITEN (ganz oben, vor allen Karten): offene Anfragen im eigenen Bereich, älteste zuerst.
 function renderHot() {
   const box = $("crmHot");
@@ -376,7 +389,7 @@ function renderDrawer() {
     el("div", {}, link(l.website, l.domain || l.website || "–"), " ", stageBadge(l), " ", badge(l.priority?.level || "LOW", t("priority", level(l), l.priority?.score ?? 0)), " ", testBadge(l), " ", histBadge(l), " ", cfBadge(l)),
     l.history_badge ? el("p", { class: "crm-note" }, t("histNote")) : "",
     blocked ? el("div", { class: "crm-dnc-banner" }, `${t("dncBanner")}${l.dnc_source && l.dnc_source !== "crm" ? t("dncSource", src) : ""}`) : "",
-    qa, status, cfBox,
+    qa, status, cfBox, serviceStatusBox(l),
     // TF-076: verifizierte Fehler ganz oben – der Anrufer muss nicht suchen.
     el("section", { class: "crm-errtop" }, el("h4", {}, t("sec.verifiedErrors", currentIssues(l).length)), issueCards(l)),
     el("small", {}, (l.priority?.reasons || []).map(I.reason).join(" · ") || t("noReasons")),

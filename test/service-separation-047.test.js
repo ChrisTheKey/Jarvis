@@ -210,11 +210,23 @@ test("FULL ORDER über den Repair-Service: Mail-Worker offline → Zugangs-Anfra
 
 test("CHF 150 über den Repair-Service: Lieferung nur über die Outbox, genau einmal, offline nie «gesendet»", async () => {
   const state = tmp(), ob = tmp(), store = createStore(state), g = fakeGmail();
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   store.write("sales.json", { records: recordDirectSale({}, { domain: DOMAIN, offer: "REPAIR_CHECK_150", delivery_email: EMAIL, company: "Separation Kunde AG", website: SITE, date: "2026-10-13" }) });
-  const o0 = createCheck150Order(store, { domain: DOMAIN, website: SITE, company: "Separation Kunde AG", delivery_email: EMAIL, now: T0 });
-  recordPayment(store, { order_id: o0.order_id, amount_chf: 75, reference: "SEP47-150", now: T0 });
+  const o0 = createCheck150Order(store, { domain: DOMAIN, website: SITE, company: "Separation Kunde AG", delivery_email: EMAIL,
+    lead_id: "synthetic-sep47-lead", customer_id: "synthetic-sep47-customer", now: T0 });
+  // TF-028: Eine vollstÃ¤ndige Abschlussmail inklusive Quittung darf erst nach
+  // dem verifizierten Eingang des gesamten CHF-150-Betrags versandbereit werden.
+  recordPayment(store, { order_id: o0.order_id, amount_chf: 150, reference: "SEP47-150", now: T0 });
   const auditor = { audit: async (u) => ({ website: u, reachable: true, finalUrl: u, title: "Kunde", requests: 2, pages: { home: "<html><body>Kunde</body></html>" }, issues: [] }) };
-  const tick = () => repairServiceIteration({ dir: state, outboxDir: ob, runRepair: async () => ({ busy: false }), runCheck150: (opts) => runCheck150Orders({ ...opts, auditor }) });
+  const env = { STRIPE_SECRET_KEY: ["sk", "live", "synthetic047"].join("_"), JARVIS_WEB_ORIGIN: "https://synthetic.example" };
+  const fetchFn = async (_url, options) => {
+    const metadata = Object.fromEntries([...new URLSearchParams(options.body)].filter(([key]) => key.startsWith("metadata["))
+      .map(([key, value]) => [key.slice(9, -1), value]));
+    return { ok: true, json: async () => ({ id: "cs_live_sep47upgrade", livemode: true, status: "open", payment_status: "unpaid", amount_total: 33000,
+      currency: "chf", ui_mode: "hosted", url: "https://checkout.stripe.com/c/pay/cs_live_sep47upgrade", metadata }) };
+  };
+  const tick = () => repairServiceIteration({ dir: state, outboxDir: ob, runRepair: async () => ({ busy: false }),
+    runCheck150: (opts) => runCheck150Orders({ ...opts, auditor, env, origin: env.JARVIS_WEB_ORIGIN, fetchFn }) });
   for (let i = 0; i < 3; i++) await tick();
   let o = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o0.order_id];
   assert.notEqual(o.delivery_status, "sent");
@@ -222,7 +234,7 @@ test("CHF 150 über den Repair-Service: Lieferung nur über die Outbox, genau ei
   await processRepairOutbox({ dir: ob, gmail: g });
   await tick();
   o = store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o0.order_id];
-  assert.deepEqual([o.state, o.delivery_status, g.sends(), g.created(FULFILLMENT_CLASS).length], ["COMPLETED", "sent", 1, 1]);
+  assert.deepEqual([o.state, o.delivery_status, g.sends(), g.created(FULFILLMENT_CLASS).length], ["COMPLETED", "sent", 1, 1], `${o.state} ${o.blocked_reason || ""}`);
   await tick(); await processRepairOutbox({ dir: ob, gmail: g });
   assert.equal(g.sends(), 1);
 });

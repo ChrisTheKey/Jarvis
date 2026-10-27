@@ -18,6 +18,10 @@ import { assertExternalCapability } from "./security-capabilities.js";
 export const MODES = Object.freeze(["LIVE", "TEST"]);
 export const PURPOSE = "REPAIR_DEPOSIT";
 export const DEPOSIT_OFFER = "REPAIR_FIX_500";
+export const UPGRADE_PURPOSE = "REPAIR_UPGRADE";
+export const UPGRADE_AMOUNT_CHF = 330;
+export const UPGRADE_OFFER = "REPAIR_FIX_500";
+export const SOURCE_CHECK_OFFER = "REPAIR_CHECK_150";
 export const API = "https://api.stripe.com/v1";
 export const SESSION_TTL_S = 23 * 3600; // Stripe erlaubt 30 min – 24 h
 const KEY_ENV = Object.freeze({ LIVE: "STRIPE_SECRET_KEY", TEST: "STRIPE_TEST_SECRET_KEY" });
@@ -87,8 +91,14 @@ export function safeSession(s, mode) {
     payment_link: typeof s.payment_link === "string" && /^plink_[A-Za-z0-9]{6,100}$/.test(s.payment_link) ? s.payment_link : null,
     url: typeof s.url === "string" && /^https:\/\/checkout\.stripe\.com\/[^\s<>"']{4,600}$/.test(s.url) ? s.url : null, metadata: meta };
 }
-const META_KEYS = ["order_id", "offer_class", "market", "purpose", "environment"];
-const cleanMeta = (m) => Object.fromEntries(META_KEYS.map((k) => [k, typeof m?.[k] === "string" && /^[A-Za-z0-9_-]{1,60}$/.test(m[k]) ? m[k] : null]));
+const META_KEYS = ["order_id", "offer_class", "market", "purpose", "environment", "source_order_id", "lead_id", "customer_id", "domain", "source_offer", "upgrade_offer", "upgrade_amount_chf"];
+const META_RE = Object.freeze({
+  order_id: /^[A-Za-z0-9_-]{1,80}$/, offer_class: /^[A-Za-z0-9_-]{1,60}$/, market: /^[A-Za-z0-9_-]{1,20}$/,
+  purpose: /^[A-Za-z0-9_-]{1,60}$/, environment: /^(LIVE|TEST)$/, source_order_id: /^[A-Za-z0-9_-]{1,80}$/,
+  lead_id: /^[A-Za-z0-9_.-]{1,100}$/, customer_id: /^[A-Za-z0-9_.-]{1,100}$/, domain: /^[a-z0-9.-]{1,253}$/i,
+  source_offer: /^[A-Za-z0-9_-]{1,60}$/, upgrade_offer: /^[A-Za-z0-9_-]{1,60}$/, upgrade_amount_chf: /^330$/,
+});
+const cleanMeta = (m) => Object.fromEntries(META_KEYS.map((k) => [k, typeof m?.[k] === "string" && META_RE[k]?.test(m[k]) ? m[k] : null]));
 
 // Checkout-Session serverseitig erzeugen. Idempotenz-Schlüssel aus stabilen Jarvis-Daten: ein Neustart/zweiter Durchlauf liefert dieselbe Session.
 export async function createCheckoutSession({ env, order, mode = modeOfOrder(order), seq = 1, origin, now = new Date(), fetchFn = globalThis.fetch }) {
@@ -110,6 +120,48 @@ export async function createCheckoutSession({ env, order, mode = modeOfOrder(ord
   // Antwort prüfen (nie blind übernehmen): gehostete Seite, Modus, Betrag, Währung, Bindung an den Auftrag.
   if (!safe || !HOSTED_UI.includes(s.ui_mode) || safe.livemode !== (mode === "LIVE") || safe.amount_minor !== exp.amount_minor || safe.currency !== "CHF" || safe.metadata.order_id !== order.order_id || !safe.url)
     throw Object.assign(new Error("Unerwartete Checkout-Antwort."), { code: "BAD_RESPONSE" });
+  return safe;
+}
+
+export const upgradeIdempotencyKey = (orderId, mode) => `jarvis:${String(orderId)}:upgrade:v1:${String(mode).toLowerCase()}`;
+
+function safeOrigin(origin) {
+  return /^https:\/\/[a-z0-9.-]+(:\d+)?$/.test(String(origin || "")) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(origin || ""));
+}
+
+// CHF-330-Upgrade: Betrag, Lead- und Quellauftragsbindung kommen ausschließlich aus dem Server-Auftrag.
+// Der bestehende statische Payment-Link ist absichtlich kein Fallback, weil er keine eindeutige Order-Bindung trägt.
+export async function createUpgradeCheckoutSession({ env, sourceCheck, lead = null, mode = modeOfOrder(sourceCheck), origin, now = new Date(), fetchFn = globalThis.fetch }) {
+  if (!sourceCheck?.order_id || sourceCheck.offer_class !== SOURCE_CHECK_OFFER || !ORDER_ID_RE.test(String(sourceCheck.order_id)))
+    throw Object.assign(new Error("Ursprünglicher CHF-150-Auftrag fehlt."), { code: "SOURCE_ORDER_REQUIRED" });
+  if (!sourceCheck.lead_id || !/^[A-Za-z0-9_.-]{1,100}$/.test(String(sourceCheck.lead_id)))
+    throw Object.assign(new Error("Lead-Bindung des CHF-150-Auftrags fehlt."), { code: "LEAD_REQUIRED" });
+  if (lead?.lead_id != null && String(lead.lead_id) !== String(sourceCheck.lead_id))
+    throw Object.assign(new Error("Lead passt nicht zum ursprünglichen Auftrag."), { code: "LEAD_MISMATCH" });
+  if (mode !== modeOfOrder(sourceCheck)) throw Object.assign(new Error("Modus passt nicht zum ursprünglichen Auftrag."), { code: "MODE_MISMATCH" });
+  if (!safeOrigin(origin)) throw Object.assign(new Error("Keine sichere Rückkehr-Adresse."), { code: "NO_ORIGIN" });
+  const domain = String(sourceCheck.domain || "").trim().toLowerCase();
+  if (!/^[a-z0-9.-]{1,253}$/.test(domain)) throw Object.assign(new Error("Domain des ursprünglichen Auftrags fehlt."), { code: "DOMAIN_REQUIRED" });
+  const meta = {
+    source_order_id: sourceCheck.order_id, lead_id: sourceCheck.lead_id, customer_id: lead?.customer_id || sourceCheck.customer_id || null,
+    domain, source_offer: SOURCE_CHECK_OFFER, upgrade_offer: UPGRADE_OFFER, upgrade_amount_chf: String(UPGRADE_AMOUNT_CHF),
+    purpose: UPGRADE_PURPOSE, environment: mode,
+  };
+  if (!meta.customer_id) delete meta.customer_id;
+  const back = (state) => `${origin}/zahlung.html?s=${state}${mode === "TEST" ? "&m=test" : ""}`;
+  const raw = await call(env, mode, { method: "POST", path: "/checkout/sessions", idem: upgradeIdempotencyKey(sourceCheck.order_id, mode), fetchFn, body: {
+    mode: "payment", ...CHECKOUT_STUDIO, client_reference_id: sourceCheck.order_id, locale: "de", success_url: back("ok"), cancel_url: back("abbruch"),
+    expires_at: Math.floor(+now / 1000) + SESSION_TTL_S,
+    ...(sourceCheck.delivery_email ? { customer_email: sourceCheck.delivery_email } : {}),
+    line_items: { 0: { quantity: 1, price_data: { currency: "chf", unit_amount: toMinor(UPGRADE_AMOUNT_CHF, "CHF"),
+      product_data: { name: `${mode === "TEST" ? "TESTZAHLUNG – " : ""}Upgrade Check & Reparatur – CHF ${UPGRADE_AMOUNT_CHF} – Auftrag ${sourceCheck.order_id}` } } } },
+    metadata: meta, payment_intent_data: { metadata: meta, description: `Upgrade CHF ${UPGRADE_AMOUNT_CHF} ${sourceCheck.order_id}` },
+  } });
+  const safe = safeSession(raw, mode);
+  if (!safe || !HOSTED_UI.includes(raw.ui_mode) || safe.livemode !== (mode === "LIVE") || safe.amount_minor !== toMinor(UPGRADE_AMOUNT_CHF, "CHF")
+    || safe.currency !== "CHF" || safe.metadata.purpose !== UPGRADE_PURPOSE || safe.metadata.source_order_id !== sourceCheck.order_id
+    || safe.metadata.lead_id !== sourceCheck.lead_id || safe.metadata.domain !== domain || safe.metadata.upgrade_amount_chf !== String(UPGRADE_AMOUNT_CHF) || !safe.url)
+    throw Object.assign(new Error("Unerwartete Upgrade-Checkout-Antwort."), { code: "BAD_RESPONSE" });
   return safe;
 }
 export async function retrieveCheckoutSession({ env, mode, id, fetchFn = globalThis.fetch }) {

@@ -2,7 +2,7 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-028 gestartet; Design für Abschlussmails, Quittung und CHF-330-Upgrade bestätigt; kein produktiver Versand/Deployment)
+Zuletzt aktualisiert: 2026-10-27 (TF-JARVIS-028 implementiert und synthetisch gezielt geprüft; Vollcheck und Release bleiben BLOCKED; kein produktiver Versand/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
@@ -24,12 +24,14 @@ Zuletzt aktualisiert: 2026-10-26 (TF-JARVIS-028 gestartet; Design für Abschluss
 - Development Control Center: `AGENTS.md`, `CLAUDE.md`, Worktrees `agent-claude/main` + `agent-codex/main`, `scripts/dev-check.mjs`, Codex-/Claude-Schutzregeln.
 - Regulärer Node-Testlauf entdeckt nur versionierte Dateien aus `test/`; der manuelle CRM-Browser-Test bleibt als expliziter Direktaufruf erhalten.
 
+TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittungsgates, CHF-330-Upgrade-Zuordnung, Webhook-Idempotenz und CRM-Statusanzeige sind im isolierten Branch implementiert. Gezielte Tests und alle TF-028-Fälle im Vollcheck sind grün; der Vollcheck endete mit 1.197 Tests, 1.172 bestanden, 13 Fehlern in historischen Vertragsfällen und 12 übersprungenen Docker-/Repair-Labs. Siehe `reports/TF-JARVIS-028/ABSCHLUSSBERICHT.md`.
+
 ## In Arbeit
 | Wer | Branch/Worktree | Aufgabe |
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf028` / `Jarvis-tf028` | TF-JARVIS-028: neue Abschlussmail-/Quittungslogik und CHF-330-Upgrade testgetrieben; Design bestätigt, Implementierung läuft |
+| Codex | `agent-codex/tf028` / `Jarvis-tf028` | – (TF-JARVIS-028 implementiert; Abschlussbericht erstellt, Release wegen offener Nachweise BLOCKED) |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -42,7 +44,7 @@ Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und ware
 - TF-JARVIS-027: Integrationscommit `29b7527` existiert nur im isolierten Branch. Docker ist als CLI vorhanden, aber der read-only Aufruf wurde vor Ausführung durch den Ausführungs-Guard blockiert; deshalb sind Docker-/Repair-Images, Compose-Isolation und die 12 übersprungenen Labs nicht verifiziert. Kein Push, kein Merge in den Hauptentwicklungsbranch und kein Produktionszugriff.
 - TF-JARVIS-027: Der Codex-Stand `b9649bc` wird in einem separaten Integrations-Worktree gegen `claude/jarvis-voice-dashboard-9phl5w` geprüft. Der Konflikt in dieser Datei wird dokumentiert aufgelöst; Hauptcheckout und Codex-Worktree bleiben unverändert.
 - Uncommittete Dateien ausserhalb dieses Auftrags bleiben geschützt: `test/crm-fixture.js` sowie `reports/TF-JARVIS-024/phase5-screenshots/`.
-- TF-JARVIS-028: Design bestätigt; Produktionsversand, Live-Zahlungen und Reparaturen an realen Websites bleiben gesperrt, bis synthetische Tests und bestehende Sicherheitsgates nachgewiesen sind.
+- TF-JARVIS-028: Implementierung und gezielte synthetische Tests bestanden; der Vollcheck hat 13 historische Vertragsfehler und 12 übersprungene Docker-/Repair-Labs. Produktionsversand, Live-Zahlungen und Reparaturen an realen Websites bleiben gesperrt.
 
 ## Historischer Baseline-Hinweis
 

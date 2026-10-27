@@ -150,13 +150,29 @@ export function paidAmount(store, orderId, currency = "CHF", { test = false } = 
 }
 export const paidChf = (store, orderId) => paidAmount(store, orderId, "CHF");
 
+// TF-028: Ein Upgrade-Auftrag erhält die CHF-150-Gutschrift nur live aus dem
+// verifizierten Quellauftrag. Es wird kein künstlicher Ledger-Eintrag erzeugt.
+function sourceCredit(store, order, currency, test) {
+  const sourceId = String(order?.source_check_order_id || "");
+  if (!sourceId || currency !== "CHF") return 0;
+  const source = store.read("check150_orders.json", { orders: {} }).orders?.[sourceId];
+  const sourceInfo = offerInfo(source?.offer_class);
+  if (!source || sourceInfo?.offer_class !== "REPAIR_CHECK_150" || sourceInfo.currency !== "CHF" || (source.test_order === true) !== (test === true)) return 0;
+  const sourcePaid = paidAmount(store, sourceId, "CHF", { test });
+  return sourcePaid >= sourceInfo.price ? sourceInfo.price : 0;
+}
+
+export function paidAmountForOrder(store, order = {}, currency = "CHF", { test = order?.test_order === true } = {}) {
+  return paidAmount(store, order.order_id, currency, { test }) + sourceCredit(store, order, currency, test);
+}
+
 // Zahlungs-Gate eines Auftrags: erfüllt erst, wenn kumulativ mindestens die erste Hälfte des Festpreises in der
 // Auftragswährung eingegangen ist. Unbekanntes Angebot/fehlende VN-Währung → nie erfüllt (fail closed).
 export function paymentGateForOrder(store, order = {}) {
   const m = orderMoney(order);
   const currency = m?.currency || null;
   const required = m ? m.deposit : null;
-  const paid = order.order_id && currency ? paidAmount(store, order.order_id, currency, { test: order.test_order === true }) : 0;
+  const paid = order.order_id && currency ? paidAmountForOrder(store, order, currency, { test: order.test_order === true }) : 0;
   // CH: exakt das bisherige Format (required_chf/paid_chf). VN: currency + required/paid in VND (nie *_chf).
   if (currency === "VND") return { order_id: order.order_id || null, offer_class: order.offer_class || null, currency, required, paid, satisfied: required != null && paid >= required };
   return { order_id: order.order_id || null, offer_class: order.offer_class || null, required_chf: required, paid_chf: paid, satisfied: required != null && paid >= required };
@@ -173,7 +189,7 @@ export function paymentSummary(store, order = {}) {
   const currency = m?.currency || null;
   const price = m ? m.price : null, deposit = m ? m.deposit : null;
   const list = order.order_id ? paymentsForOrder(store, order.order_id).filter((p) => isTestPayment(p) === (order.test_order === true)) : [];
-  const paid = order.order_id && currency ? paidAmount(store, order.order_id, currency, { test: order.test_order === true }) : 0;
+  const paid = order.order_id && currency ? paidAmountForOrder(store, order, currency, { test: order.test_order === true }) : 0;
   let status = "UNPAID";
   if (order.state === "PAYMENT_REVIEW_REQUIRED") status = "PAYMENT_REVIEW_REQUIRED";
   else if (price != null && paid >= price) status = "PAID_FULL";

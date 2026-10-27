@@ -137,6 +137,12 @@ export function createSourceReader({ dataDir, mailDir, repairDir = null, env = p
     // TF-078: Telefonbuch-Ergebnisse je Nummer (nur phone_hash + Status, Schreiber: --phonebook-backfill) + Anbieter-Zustand ohne Schlüssel.
     phonebookCache: read(path.join(dataDir, PHONEBOOK_CACHE_FILE), null),
     phonebookProvider: { configured: multisourceConfig(env).configured },
+    // TF-028: service status is read-only and joined later by exact lead/order IDs.
+    // These files are on the existing worker volume; no checkout URL, payment
+    // reference or access secret is exposed by the CRM allowlist.
+    check150Orders: read(path.join(mailDir, "mail_worker", "check150_orders.json"), { orders: {} }),
+    repairOrders: read(path.join(mailDir, "mail_worker", "repair_orders.json"), { orders: {} }),
+    upgrades: read(path.join(mailDir, "mail_worker", "repair_upgrades.json"), { upgrades: {} }),
   });
 }
 

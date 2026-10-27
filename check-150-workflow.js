@@ -35,6 +35,9 @@ import { selectCustomerVisibleFindings } from "./swiss-repair.js";
 import { fullSiteAudit, detectStack, normDomain, isTestOrder } from "./repair-workflow.js";
 import { TEST_RUN_ID_RE, e2eConfig, e2eFulfilmentConfig, isE2eDomain, isE2eMailbox, E2E_SUBJECT_PREFIX } from "./e2e-test.js";
 import { ONBOARDING_CLASS, buildCheckIntroMail } from "./onboarding-core.js";
+import { RECEIPT_READY, MANUAL_REVIEW_REQUIRED, buildCheck150Receipt, buildCheck150CompletionReport, buildCheck150CompletionMail } from "./completion-artifacts.js";
+import { modeOfOrder } from "./stripe-payments.js";
+import { getOrCreateUpgradeCheckout } from "./upgrade-workflow.js";
 
 export const CHECK150_ORDERS_FILE = "check150_orders.json";
 export const CHECK150_OFFER = "REPAIR_CHECK_150"; // Kundenbezeichnung «Check & Anleitung», Preis aus OFFERS (CHF 150)
@@ -48,7 +51,7 @@ export const CHECK150_BLOCKED = Object.freeze(["BLOCKED_ORDER_NOT_CONFIRMED", "B
 export const CHECK150_CANCELLED = "CANCELLED";
 // BLOCKED_ORDER_NOT_CONFIRMED und BLOCKED_PAYMENT_NOT_RECEIVED sind NICHT terminal – sie werden je Lauf neu geprüft
 // (verbucht Chris den Verkauf bzw. die Zahlung später, läuft der Auftrag automatisch weiter).
-const RECHECKED = new Set(["BLOCKED_ORDER_NOT_CONFIRMED", "BLOCKED_PAYMENT_NOT_RECEIVED"]);
+const RECHECKED = new Set(["BLOCKED_ORDER_NOT_CONFIRMED", "BLOCKED_PAYMENT_NOT_RECEIVED", MANUAL_REVIEW_REQUIRED]);
 const TERMINAL = new Set(["COMPLETED", CHECK150_CANCELLED, ...CHECK150_BLOCKED.filter((s) => !RECHECKED.has(s))]);
 const WAITING = new Set(["READY_FOR_DELIVERY"]);
 // Nachrichtenklasse der Liefermail: Erfüllung eines bezahlten Kundenauftrags – NIE Cold-Outreach/Marketing (TF-041).
@@ -384,8 +387,19 @@ export function approveE2eFulfilment(store, orderId, { env = process.env, now = 
 }
 
 export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir), gmail = null, auditor = null,
-  onboarding = false, now = () => new Date(), log = () => {}, env = process.env } = {}) {
+  onboarding = false, now = () => new Date(), log = () => {}, env = process.env, upgradeCheckout = null } = {}) {
   const block = (order, state, reason) => { order.blocked_reason = reason; transition(order, state, reason, now()); return saveOrder(store, order); };
+  const receiptOpenItems = (receipt) => (receipt?.reasons || []).map((reason) => {
+    if (/Geschäftsadresse/i.test(reason)) return "BUSINESS_ADDRESS_MISSING";
+    if (/Prüfbericht/i.test(reason)) return "REPORT_INCOMPLETE";
+    if (/Zahlung|Quittung/i.test(reason)) return "PAYMENT_REVIEW_REQUIRED";
+    return "MANUAL_REVIEW_REQUIRED";
+  }).filter((value, index, all) => all.indexOf(value) === index);
+  const recordReceiptStatus = (order, receipt, mailStatus = null) => {
+    order.receipt_status = receipt?.status || MANUAL_REVIEW_REQUIRED;
+    order.receipt_open_items = receiptOpenItems(receipt);
+    if (mailStatus) order.completion_mail_status = mailStatus;
+  };
   // TF-066: Onboarding-Start für CHECK – GENAU EINE kurze Nachricht (CUSTOMER_ONBOARDING_DIALOGUE) nach erfüllter Zahlungsschwelle:
   // Zahlung erhalten, kein Zugang nötig, optional ein Bereich, der zusätzlich berücksichtigt werden soll. Blockiert den Check nie;
   // nur die Liefermail wartet, bis diese Nachricht zugestellt (oder endgültig gescheitert) ist – Reihenfolge im Kunden-Thread.
@@ -427,6 +441,18 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
     }
     const saleOk = () => (e2e ? true : !!confirmedCheck150Sale(store, order.domain, order.offer_class || CHECK150_OFFER)); // Testauftrag: E2E-Bestätigung (kein Verkauf)
     const t = now();
+
+    // TF-028: MANUAL_REVIEW_REQUIRED ist für Quittung/Upgrade eine wiederaufnehmbare
+    // Sperre. Nach Ergänzung der Geschäftsadresse oder vollständiger Zahlung wird
+    // der vorhandene Bericht erneut geprüft; Audit und Anleitung werden nicht doppelt erzeugt.
+    if (order.state === MANUAL_REVIEW_REQUIRED) {
+      if (typeof upgradeCheckout !== "function" || !order.report) return false;
+      const receipt = buildCheck150Receipt(store, order.order_id, { now: t });
+      recordReceiptStatus(order, receipt, receipt.status === RECEIPT_READY ? null : MANUAL_REVIEW_REQUIRED);
+      if (receipt.status !== RECEIPT_READY) { saveOrder(store, order); return false; }
+      transition(order, "DELIVERY_DRAFT_CREATED", "Quittung und Bericht sind wieder vollständig – Versandfreigabe wird erneut geprüft", t);
+      saveOrder(store, order); return true;
+    }
 
     if (order.state === "ORDER_RECEIVED" || order.state === "BLOCKED_ORDER_NOT_CONFIRMED") {
       const sale = confirmedCheck150Sale(store, order.domain, order.offer_class || CHECK150_OFFER);
@@ -483,8 +509,9 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
     }
 
     if (order.state === "CUSTOMER_REPORT_READY") {
-      const built = buildCheck150Report(order, { now: t });
+      const built = typeof upgradeCheckout === "function" ? buildCheck150CompletionReport(order, { now: t }) : buildCheck150Report(order, { now: t });
       order.report = built.report;
+      if (typeof upgradeCheckout === "function") order.completion_template = "TF-028";
       order.report_generated_at = t.toISOString();
       // Menschenlesbare Version als Datei im Worker-Verzeichnis (liegt im verschlüsselten Backup; kein externer Dienst).
       try {
@@ -506,7 +533,29 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
         transition(order, "DELIVERY_SENDING", "Lieferentwurf bereits vorhanden (gleiche Berichtsversion)", t); saveOrder(store, order); return true;
       }
       const text = order.report_text_file && fs.existsSync(order.report_text_file) ? fs.readFileSync(order.report_text_file, "utf8") : buildCheck150Report(order, { now: t }).text;
-      let { subject, body, inline } = buildDeliveryDraft(order, text);
+      let subject, body, inline;
+      if (typeof upgradeCheckout === "function" || order.completion_template === "TF-028") {
+        if (typeof upgradeCheckout !== "function") { block(order, MANUAL_REVIEW_REQUIRED, "CHF-330-Upgrade-Link kann ohne sicheren Checkout-Adapter nicht erzeugt werden."); return false; }
+        const receipt = buildCheck150Receipt(store, order.order_id, { now: t });
+        recordReceiptStatus(order, receipt, receipt.status === RECEIPT_READY ? null : MANUAL_REVIEW_REQUIRED);
+        if (receipt.status !== RECEIPT_READY) { block(order, MANUAL_REVIEW_REQUIRED, receipt.reasons.join(" ")); return false; }
+        if (!order.upgrade_checkout?.url) {
+          try {
+            const checkout = await upgradeCheckout({ store, sourceCheck: order, lead: { lead_id: order.lead_id, customer_id: order.customer_id || null },
+              mode: modeOfOrder(order), env, origin: env.JARVIS_WEB_ORIGIN || null, now: t });
+            const url = checkout?.checkout_url || checkout?.url;
+            if (!/^https:\/\/checkout\.stripe\.com\//.test(String(url || ""))) throw new Error("Sicherer Upgrade-Checkout-Link fehlt.");
+            order.upgrade_checkout = { status: checkout.status || "OPEN", checkout_session_id: checkout.checkout_session_id || checkout.id || null, url: String(url) };
+            saveOrder(store, order);
+          } catch (e) { block(order, MANUAL_REVIEW_REQUIRED, `CHF-330-Checkout nicht bereit: ${String(e.message).slice(0, 160)}`); return false; }
+        }
+        const mail = buildCheck150CompletionMail(store, order, { now: t, receipt, upgradeLink: order.upgrade_checkout.url });
+        if (mail.status !== RECEIPT_READY) { block(order, MANUAL_REVIEW_REQUIRED, mail.reasons.join(" ")); return false; }
+        recordReceiptStatus(order, receipt, "READY");
+        subject = mail.subject; body = mail.body; inline = body.length <= 5200; order.completion_mail_hash = sha(body);
+      } else {
+        ({ subject, body, inline } = buildDeliveryDraft(order, text));
+      }
       if (e2e) { subject = E2E_SUBJECT_PREFIX + subject; body = `*** E2E-TESTLAUF (Sandbox-Domain, Stripe-Testzahlung) – keine echte Kundenmail ***\n\n${body}`; }
       try {
         if (order.delivery_draft?.draft_id && typeof gmail.updateDraft === "function") {
@@ -534,6 +583,15 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
       const gate = paymentGateForOrder(store, order);
       order.payment = gate;
       if (!gate.satisfied) { order.delivery_status = "draft_ready"; block(order, "BLOCKED_PAYMENT_NOT_RECEIVED", `Zahlungsschwelle nicht mehr erfüllt (${gateText(gate)}) – kein Versand.`); return false; }
+      if (order.completion_template === "TF-028") {
+        const receipt = buildCheck150Receipt(store, order.order_id, { now: t });
+        recordReceiptStatus(order, receipt, receipt.status === RECEIPT_READY ? null : MANUAL_REVIEW_REQUIRED);
+        if (receipt.status !== RECEIPT_READY) { block(order, MANUAL_REVIEW_REQUIRED, receipt.reasons.join(" ")); return false; }
+        const mail = buildCheck150CompletionMail(store, order, { now: t, receipt, upgradeLink: order.upgrade_checkout?.url });
+        if (mail.status !== RECEIPT_READY) { block(order, MANUAL_REVIEW_REQUIRED, mail.reasons.join(" ")); return false; }
+        recordReceiptStatus(order, receipt, "READY");
+        if (order.completion_mail_hash && order.completion_mail_hash !== sha(mail.body)) { order.delivery_status = "draft_ready"; block(order, MANUAL_REVIEW_REQUIRED, "Abschlussmail hat sich seit der Quittungs-/Auftragsprüfung verändert."); return false; }
+      }
       // Weitere Pflichtbedingungen (fail closed) – jede fehlende Bedingung übergibt den Entwurf an Chris statt zu senden:
       const handOver = (reason) => { order.delivery_status = "draft_ready"; transition(order, "READY_FOR_DELIVERY", reason, t); saveOrder(store, order); return false; };
       if (order.delivery_sent_at) return handOver("Service-Mail wurde bereits gesendet – nie ein zweiter Versand");
@@ -569,6 +627,7 @@ export function createCheck150Engine({ dir = WORKER_DIR, store = createStore(dir
         saveOrder(store, order); return false;
       }
       order.delivery_status = "sent";
+      order.completion_mail_status = "SENT";
       order.delivery_sent_at = t.toISOString();
       order.delivery_message_class = FULFILLMENT_CLASS; // Service-Mail eines bezahlten Auftrags – nie Cold-Outreach
       if (e2e) order.e2e_fulfilment = { ...order.e2e_fulfilment, delivered_at: t.toISOString() };
@@ -652,11 +711,16 @@ export function publicCheck150Orders(dir = WORKER_DIR, { max = 50 } = {}) {
 
 // ---------- Worker-Hook (eigenes Lock, No-op ohne offene Aufträge; blockiert weder Mail noch Discovery noch CHF-480) ----------
 // auditor nur für isolierte Tests (Lab-Auditor, TF-046); im Produktivbetrieb null = Standard-Auditor.
-export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, auditor = null, onboarding = false, log = createLogger(dir), env = process.env } = {}) {
+export async function runCheck150Orders({ dir = WORKER_DIR, gmail = null, auditor = null, onboarding = false, log = createLogger(dir), env = process.env,
+  fetchFn = globalThis.fetch, origin = env.JARVIS_WEB_ORIGIN || null } = {}) {
   const status = check150Status(dir);
   if (!status.open && !status.e2e_runnable) return { busy: false, processed: 0, advanced: 0, states: status.states };
   if (!acquireLock(dir, { name: "check150.lock" })) return { busy: true };
-  try { return { busy: false, ...(await createCheck150Engine({ dir, gmail, auditor, onboarding, log, env }).processAll()) }; }
+  try {
+    const store = createStore(dir);
+    const upgradeCheckout = ({ sourceCheck, lead, now }) => getOrCreateUpgradeCheckout({ store, sourceCheck, lead, env, origin, fetchFn, now });
+    return { busy: false, ...(await createCheck150Engine({ dir, gmail, auditor, onboarding, log, env, upgradeCheckout }).processAll()) };
+  }
   finally { releaseLock(dir, process.pid, "check150.lock"); }
 }
 

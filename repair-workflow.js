@@ -76,6 +76,7 @@ import { readBrief, listReissueRequests } from "./onboarding-store.js";
 import { e2eConfig, isE2eDomain, isE2eMailbox, E2E_SUBJECT_PREFIX } from "./e2e-test.js";
 import { combineAuditors } from "./browser-site-audit.js";
 import { cleanPlatform, cleanStated, resolvePlatform, connectorOf, nameOf, accessGuide, hostingQuestionLines } from "./hosting-detect.js";
+import { buildRepairCompletionMail } from "./completion-artifacts.js";
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 // Gate-Vergleich für Zustandsgründe: CH exakt wie bisher «CHF 240 ≥ 240», VN «1.950.000 ₫ ≥ 1.950.000 ₫».
@@ -771,6 +772,9 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     const unsafe = reportUnsafe(order.report.body, order);
     if (unsafe) { await informChris(order, "report_unsafe", unsafe); return handOver(order, "report_unsafe", `Bericht enthält unzulässige Angaben (${unsafe}) – kein automatischer Versand, Chris prüft.`, t); }
     const mail = buildRepairDeliveryMail(order);
+    const mailUnsafe = reportUnsafe(mail.body, order);
+    if (mailUnsafe) { await informChris(order, "completion_mail_unsafe", mailUnsafe); return handOver(order, "report_unsafe", `Abschlussmail enthält unzulässige Angaben (${mailUnsafe}) – kein automatischer Versand, Chris prüft.`, t); }
+    if (mail.status && mail.status !== "READY") return handOver(order, "failed", `Lieferung gestoppt: Abschlussmail nicht freigegeben (${(mail.reasons || []).join(" ")}).`, t);
     if (!mail.inline) { order.delivery_attachment_required = true; return handOver(order, "attachment_required", "ATTACHMENT_REQUIRED: Bericht zu lang für die Mail – Chris hängt die Berichtsdatei an und sendet selbst.", t); }
     if (order.delivery?.send_attempted_at) { await informChris(order, "delivery_unclear", "Versandstatus unklar"); return handOver(order, "unclear", "Versandstatus unklar (früherer Versuch ohne Bestätigung) – kein erneuter Versand, Chris prüft «Gesendet».", t); }
     try {
@@ -778,7 +782,7 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         // Interner Testauftrag: [E2E-TEST]-Betreff + test_run_id – der Mail-Worker sendet nur an ein freigegebenes Test-Postfach (TF-088-Prüfung).
         const d = await gmail.createDraft({ to: order.delivery_email, subject: mail.subject, body: mail.body, messageClass: FULFILLMENT_CLASS, ...(isInternalTestOrder(order) ? { e2eRunId: order.test_run_id } : {}) });
         order.delivery = { ...(order.delivery || {}), status: "draft_ready", draft_id: d.draftId, to: order.delivery_email, message_class: FULFILLMENT_CLASS,
-          report_hash: sha(order.report.body), created_at: t.toISOString() };
+          report_hash: sha(mail.body), created_at: t.toISOString() };
         saveOrder(store, order); // Draft-ID sofort persistieren – ein Neustart erzeugt nie ein Duplikat
       }
       order.delivery = { ...order.delivery, send_attempted_at: t.toISOString() };
@@ -1159,7 +1163,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
           if (changedWebsite(order)) { await rollbackThen(order, adapter, "Weiterleitung/Domain stimmt vor dem Schreiben nicht – STOP"); return false; }
           manual(order, "Weiterleitung/Domain stimmt vor dem Schreiben nicht – STOP, nichts verändert."); return false; }
         order.issues[item.issue_id].repair_status = r?.ok === true ? "repaired" : "repair_failed";
-        if (r?.ok === true) { okCount++; if (r.change_ref) order.issues[item.issue_id].change_ref = String(r.change_ref);
+        if (r?.ok === true) { okCount++; order.issues[item.issue_id].solution_summary = String(r.solution_summary || item.planned_change || "").replace(/\s+/g, " ").trim().slice(0, 1200);
+          order.issues[item.issue_id].solution_verified_at = t.toISOString(); if (r.change_ref) order.issues[item.issue_id].change_ref = String(r.change_ref);
           if (r.before_hash) order.issues[item.issue_id].before_hash = String(r.before_hash); if (r.after_hash) order.issues[item.issue_id].after_hash = String(r.after_hash); }
         saveOrder(store, order); // jeder Fix einzeln persistiert – Neustart verliert nichts
       }
@@ -1537,24 +1542,16 @@ export function buildCustomerReport(order, { now = new Date() } = {}) {
 // Keine Werbung, keine internen IDs/Pfade/Referenzen; der Bericht selbst ist bereits kundentauglich (buildCustomerReport).
 export function buildRepairDeliveryMail(order) {
   if (isVnOrder(order)) { const m = buildVnRepairDeliveryMail(order, { manualOpen: manualItems(order).length }); return { ...m, inline: m.body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS }; }
-  const report = order.report?.body || "";
-  const test = isInternalTestOrder(order);
-  const body = [
-    ...(test ? ["TESTAUFTRAG (intern) – keine Zahlung, keine Rechnung. Diese Nachricht ging nur an das Test-Postfach.", ""] : []),
-    `Hallo ${order.contact_name || order.company || ""}`.trim(),
-    "",
-    manualItems(order).length
-      ? `Ihr Auftrag «Check & Reparatur» für ${order.domain} ist abgeschlossen. Die automatisch reparierbaren Probleme wurden behoben. Weitere Punkte erfordern eine manuelle Prüfung – Details im Abschlussbericht:`
-      : `Ihr Auftrag «Check & Reparatur» für ${order.domain} ist abgeschlossen. Hier ist Ihr Abschlussbericht:`,
-    "",
-    report,
-    "",
-    "Freundliche Grüsse",
-    "Chris",
-    "Helvetic Webdesign",
-  ].join("\n");
-  const subject = order.report?.subject || `Webseiten-Check ${order.domain} – Abschlussbericht`;
-  return { subject: test ? `${E2E_SUBJECT_PREFIX}${subject}` : subject, body, inline: body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS };
+  const completed = buildRepairCompletionMail(order);
+  if (completed.status === "READY") {
+    const test = isInternalTestOrder(order);
+    const body = test
+      ? `TESTAUFTRAG (intern) – keine Zahlung, keine Rechnung. Diese Nachricht ging nur an das Test-Postfach.\n\n${completed.body}`
+      : completed.body;
+    return { ...completed, subject: test ? `${E2E_SUBJECT_PREFIX}${completed.subject}` : completed.subject,
+      body, inline: body.length <= MAX_INLINE_DELIVERY, message_class: FULFILLMENT_CLASS };
+  }
+  return { status: completed.status, reasons: completed.reasons, subject: null, body: "", inline: false, message_class: FULFILLMENT_CLASS };
 }
 // Letzte Sperre vor dem Versand: der Bericht darf nie Zugangsdaten, Tokens, Hosts/IPs, Serverpfade, Backup-IDs, Commit-/Git-
 // Referenzen, Auftrags-IDs oder Debugdaten enthalten. Rückgabe: Grund (String) oder null.

@@ -12,10 +12,12 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createStore, WORKER_DIR } from "./mail-worker.js";
-import { recordPayment, findPayableOrder, paymentGateForOrder, paymentsForOrder } from "./payments.js";
+import { recordPayment, findPayableOrder, paymentGateForOrder, paymentsForOrder, paymentSummary } from "./payments.js";
 import { fromMinor, toMinor, offerInfo } from "./pricing.js";
 import { REPAIR_ORDERS_FILE, COMPLETED_STATES, BLOCKED_STATES, REPAIR_CANCELLED, holdForPaymentReview, createConfirmedRepairOrder } from "./repair-workflow.js";
-import { createCheckoutSession, retrieveCheckoutSession, modeConfigured, modeOfOrder, expectedDeposit, stripeStatus, PURPOSE } from "./stripe-payments.js";
+import { createCheckoutSession, retrieveCheckoutSession, modeConfigured, modeOfOrder, expectedDeposit, stripeStatus, PURPOSE,
+  UPGRADE_PURPOSE, UPGRADE_AMOUNT_CHF, SOURCE_CHECK_OFFER, UPGRADE_OFFER } from "./stripe-payments.js";
+import { upgradeForSession, updateUpgrade, materializeUpgradeRepairOrder } from "./upgrade-workflow.js";
 import { writePaymentLinks, readPaymentLinks } from "./onboarding-store.js";
 import { e2eConfig, isE2eDomain } from "./e2e-test.js";
 import { bundleForIntent, selectOfferIntent } from "./sales-intake-bundle.js";
@@ -46,10 +48,51 @@ export function paymentsInboxClient({ config, fetchFn = globalThis.fetch } = {})
 const payableOrder = (o) => !!o?.order_id && !!o.contact_form?.key && !!expectedDeposit(o) && !!o.confirmed && !COMPLETED_STATES.includes(o.state)
   && o.state !== REPAIR_CANCELLED && !BLOCKED_STATES.includes(o.state);
 
+function bookUpgradeCheckout(store, sess, { source = "webhook", now = new Date(), log = () => {}, review } = {}) {
+  const sid = sess.session_id || sess.id;
+  const upgrade = upgradeForSession(store, sid);
+  if (!upgrade) return review("UNKNOWN_UPGRADE_SESSION", null);
+  const sourceCheck = store.read("check150_orders.json", { orders: {} }).orders?.[upgrade.source_check_order_id];
+  const m = sess.metadata || {};
+  if (!sourceCheck || sourceCheck.offer_class !== SOURCE_CHECK_OFFER) return review("UNKNOWN_SOURCE_ORDER", upgrade.source_check_order_id);
+  if (sess.provider_mode !== upgrade.provider_mode || modeOfOrder(sourceCheck) !== upgrade.provider_mode) return review("MODE_MISMATCH", upgrade.source_check_order_id);
+  if (m.purpose !== UPGRADE_PURPOSE || m.source_order_id !== sourceCheck.order_id || m.lead_id !== sourceCheck.lead_id || m.domain !== sourceCheck.domain
+    || m.source_offer !== SOURCE_CHECK_OFFER || m.upgrade_offer !== UPGRADE_OFFER || m.upgrade_amount_chf !== String(UPGRADE_AMOUNT_CHF)
+    || m.environment !== upgrade.provider_mode) return review("METADATA_MISMATCH", sourceCheck.order_id);
+  const sourcePayment = paymentSummary(store, sourceCheck);
+  if (sourcePayment.payment_status !== "PAID_FULL") return review("SOURCE_NOT_PAID_FULL", sourceCheck.order_id);
+  if (sess.currency !== "CHF") return review("CURRENCY_MISMATCH", sourceCheck.order_id);
+  if (sess.amount_minor !== UPGRADE_AMOUNT_CHF * 100) return review("AMOUNT_MISMATCH", sourceCheck.order_id);
+  if (sess.payment_status !== "paid") return review("NOT_PAID", sourceCheck.order_id);
+  const existingRepair = upgrade.repair_order_id ? store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders?.[upgrade.repair_order_id] : null;
+  const repair = existingRepair || materializeUpgradeRepairOrder(store, upgrade.upgrade_id, { now });
+  const reference = `stripe:${sess.payment_intent || sid}`;
+  const already = paymentsForOrder(store, repair.order_id).find((p) => String(p.reference || "").toLowerCase() === reference.toLowerCase());
+  if (already || upgrade.status === "PAID") return { result: "ALREADY_RECORDED", order_id: repair.order_id, payment_id: already?.payment_id || upgrade.payment_id };
+  let payment_id;
+  try {
+    payment_id = recordPayment(store, { order_id: repair.order_id, amount: UPGRADE_AMOUNT_CHF, currency: "CHF",
+      source: upgrade.provider_mode === "TEST" ? "stripe_test_upgrade" : "stripe_upgrade", reference,
+      received_at: isoOr(sess.created_at, now.toISOString()), provider_mode: upgrade.provider_mode, now }).payment_id;
+  } catch (e) {
+    if (!/Doppelte Zahlungsreferenz/.test(e.message)) return review("BOOKING_FAILED", sourceCheck.order_id);
+    payment_id = paymentsForOrder(store, repair.order_id).find((p) => String(p.reference || "").toLowerCase() === reference.toLowerCase())?.payment_id || null;
+  }
+  updateUpgrade(store, upgrade.upgrade_id, { status: "PAID", payment_id, payment_intent_id: sess.payment_intent || null, repair_order_id: repair.order_id }, { now });
+  log("info", "stripe_upgrade_booked", { source_order_id: sourceCheck.order_id, repair_order_id: repair.order_id, provider_mode: upgrade.provider_mode, source });
+  return { result: payment_id ? "BOOKED" : "PAYMENT_REVIEW_REQUIRED", order_id: repair.order_id, payment_id };
+}
+
 // ---------- Prüfung + Verbuchung ----------
 // sess: sichere Session-Felder (Webhook-Ereignis oder Abgleich): session_id/id, provider_mode, amount_minor, currency, payment_status, payment_intent, metadata.
 export function bookCheckout(store, st, sess, { source = "webhook", now = new Date(), log = () => {} } = {}) {
   const sid = sess.session_id || sess.id;
+  const upgradeReview = (code, order_id = null) => {
+    st.reviews = [...(st.reviews || []), { at: now.toISOString(), code, order_id, session_id: sid || null, event_id: sess.event_id || null, provider_mode: sess.provider_mode || null, status: "OPEN" }].slice(-500);
+    log("warn", "stripe_payment_review", { code, order_id, event_id: sess.event_id || null });
+    return { result: "PAYMENT_REVIEW_REQUIRED", code, order_id };
+  };
+  if ((sess.metadata || {}).purpose === UPGRADE_PURPOSE) return bookUpgradeCheckout(store, sess, { source, now, log, review: upgradeReview });
   const orderId = st.sessions[sid];
   const a = orderId ? st.attempts[orderId] : null;
   const review = (code, order_id = orderId || null) => {
