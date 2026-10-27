@@ -32,7 +32,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf032` / `Jarvis-tf032` | TF-JARVIS-032 abgeschlossen; lokaler Commit, kein Push, Merge oder Deployment |
+| Codex | `agent-codex/tf032-universal` / `Jarvis-tf032-universal` | TF-032 Erweiterung: universeller Zugangsdaten-Tresor in Arbeit; kein Push, Merge oder Deployment |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
