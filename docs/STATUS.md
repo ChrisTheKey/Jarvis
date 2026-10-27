@@ -32,7 +32,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf032-universal` / `Jarvis-tf032-universal` | TF-032 universeller Zugangsdaten-Tresor: Implementierung vorhanden, Regression BLOCKED; kein Push, Merge oder Deployment |
+| Codex | `agent-codex/tf033` / `Jarvis-tf033` | TF-033 gemeinsamer Adaptervertrag und fail-closed Provider-Erkennung; Docker-Labs und Full-Check offen; kein Push, Merge oder Deployment |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -160,3 +160,22 @@ Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderung
 ### In Arbeit
 
 - Keine weiteren TF-032-Änderungen; lokaler Commit nur im isolierten Branch, kein Push, Merge oder Deployment.
+
+## TF-JARVIS-033 (2026-10-27)
+
+### Erledigt
+
+- Gemeinsame Adapter-Brücke um `createBackup`, `planRepair`, `applyRepair` und `validateRepair` ergänzt, ohne den bestehenden Adaptervertrag zu brechen.
+- Fail-closed Provider-Erkennung ergänzt: genau ein HIGH-Signal darf vorschlagen; widersprüchliche oder schwache Signale werden `CUSTOM`/`PROVIDER_VERIFICATION_REQUIRED`.
+- TF-033-Test 2/2, Adapter-/Vault-/Payment-/Access-/Backup-/Rollback-Regressionsläufe 51/51 und 69/69 bestanden.
+- Abschlussbericht: `reports/TF-JARVIS-033-ABSCHLUSSBERICHT.md`.
+
+### Offen / Blockiert
+
+- Die zwölf Docker-/Repair-Labs bleiben `BLOCKED/NOT RUN`: statische Isolation ist nachgewiesen, der read-only Docker-Aufruf wurde jedoch vor Ausführung durch den Guard (`Rejected: Keine Container ohne Freigabe.`) blockiert. Keine Docker-Ressource wurde verändert.
+- Shopify, Webflow und Wix bleiben `VAULT_ONLY`; unbekannte Anbieter bleiben `BLOCKED`/manuell. Kein Adapter darf ohne eigenen synthetischen E2E-Nachweis `AUTO_REPAIR_VERIFIED` werden.
+- Vollständiger `node scripts/dev-check.mjs --full`: **1'213 Tests, 1'201 bestanden, 0 fehlgeschlagen, 12 Docker-Labs übersprungen; Exit 0 / CHECK OK**. Der lokale Commit folgt; Produktionsbereitschaft bleibt wegen der Docker-Labs und der fehlenden separaten Produktionsfreigabe `BLOCKED`.
+
+### In Arbeit
+
+- Lokaler TF-033-Commit nach dem finalen Precheck.

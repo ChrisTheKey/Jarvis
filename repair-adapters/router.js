@@ -157,25 +157,30 @@ export function bridgeAdapter(key, contract, { profileFor = () => null } = {}) {
     finally { cred?.wipe(); secrets.length = 0; }
   };
   const issueOf = (order, item) => ({ ...(order.issues?.[item.issue_id] || {}), location: item.fix });
+  const checkAccess = (order, ctx) => call(order, ctx, (c) => (c ? contract.checkAccess(order, c) : { ok: false, reason: "no_credentials" }));
+  const backup = (order, _opts, ctx) => call(order, ctx, (c) => contract.backup(order, c));
+  const locate = async (issue, order, ctx) => {
+    const loc = await call(order, ctx, (c) => contract.locate(issue, order, c), { raw: true });
+    if (!loc) return null;
+    return { target: loc.target, cause: loc.cause, planned_change: loc.planned_change, risk: loc.risk || "niedrig",
+      required_capabilities: onlyCapabilities(loc.required_capabilities), before_hash: (loc.objects || loc.files || [])[0]?.before_hash || null, fix: loc };
+  };
+  const planRepair = async (issue, order, ctx) => {
+    const planned = await locate(issue, order, ctx);
+    return planned ? { ...planned, fix: planned.fix?.fix || planned.fix } : null;
+  };
+  const applyFix = (item, order, ctx) => call(order, ctx, (c) => contract.applyFix(order.issues?.[item.issue_id] || { type: null }, item.fix, order, c));
+  const validate = async (order, ctx) => {
+    for (const item of order.plan || []) {
+      if (order.issues?.[item.issue_id]?.repair_status !== "repaired") continue;
+      const v = await call(order, ctx, (c) => contract.validate(issueOf(order, item), order, c));
+      if (v?.build_ok !== true) return { build_ok: false };
+    }
+    return { build_ok: true };
+  };
   return {
-    stack: key, contract: true, direct_live: true, capabilities: contract.detectCapabilities?.() || [],
-    checkAccess: (order, ctx) => call(order, ctx, (c) => (c ? contract.checkAccess(order, c) : { ok: false, reason: "no_credentials" })),
-    backup: (order, _opts, ctx) => call(order, ctx, (c) => contract.backup(order, c)),
-    async locate(issue, order, ctx) {
-      const loc = await call(order, ctx, (c) => contract.locate(issue, order, c), { raw: true });
-      if (!loc) return null;
-      return { target: loc.target, cause: loc.cause, planned_change: loc.planned_change, risk: loc.risk || "niedrig",
-        required_capabilities: onlyCapabilities(loc.required_capabilities), before_hash: (loc.objects || loc.files || [])[0]?.before_hash || null, fix: loc };
-    },
-    applyFix: (item, order, ctx) => call(order, ctx, (c) => contract.applyFix(order.issues?.[item.issue_id] || { type: null }, item.fix, order, c)),
-    async validate(order, ctx) {
-      for (const item of order.plan || []) {
-        if (order.issues?.[item.issue_id]?.repair_status !== "repaired") continue;
-        const v = await call(order, ctx, (c) => contract.validate(issueOf(order, item), order, c));
-        if (v?.build_ok !== true) return { build_ok: false };
-      }
-      return { build_ok: true };
-    },
+    stack: key, contract: true, direct_live: true, capabilities: contract.detectCapabilities?.() || [], detectCapabilities: () => [...(contract.detectCapabilities?.() || [])],
+    checkAccess, backup, createBackup: backup, locate, planRepair, applyFix, applyRepair: applyFix, validate, validateRepair: validate,
     deployProduction: (order, ctx) => call(order, ctx, (c) => contract.deployProduction(order, c)),
     rollback: (order, ctx) => call(order, ctx, (c) => contract.rollback(order, order.backup, c)),
     cleanup: (order, ctx) => call(order, ctx, (c) => contract.cleanup(order, c)),

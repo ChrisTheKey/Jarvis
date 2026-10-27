@@ -77,7 +77,7 @@ import { e2eConfig, isE2eDomain, isE2eMailbox, E2E_SUBJECT_PREFIX } from "./e2e-
 import { combineAuditors } from "./browser-site-audit.js";
 import { cleanPlatform, cleanStated, resolvePlatform, connectorOf, nameOf, accessGuide, hostingQuestionLines } from "./hosting-detect.js";
 import { buildRepairCompletionMail, buildRepairReceipt, buildProcessingDurationEstimate } from "./completion-artifacts.js";
-import { profileCanAutoRepair, profileCanUseAdapter, providerProfileForDetection, PROVIDER_REGISTRY } from "./access-provider-registry.js";
+import { profileCanAutoRepair, profileCanUseAdapter, providerProfileForDetection, detectProviderSuggestion, PROVIDER_REGISTRY } from "./access-provider-registry.js";
 
 // Neue universelle Tresor-Einreichungen tragen nur eine Registry-ID, nie den Anbieterfreitext oder ein Secret.
 // Bestehende Aufträge ohne diese Metadaten behalten ihren bisherigen, bereits geprüften Ablauf.
@@ -610,9 +610,11 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         hosting_provider: d?.hosting_confidence === "HIGH" ? p.hosting_provider : null,
         dns_provider: d?.dns_confidence === "HIGH" ? p.dns_provider : null,
       };
+      const suggestion = detectProviderSuggestion(d || {});
       const suggestedProfile = providerProfileForDetection(confirmed);
-      const profileId = suggestedProfile.id === "CUSTOM" ? "CUSTOM" : suggestedProfile.id;
+      const profileId = suggestion.status === "DETECTED" && suggestedProfile.id !== "CUSTOM" ? suggestion.provider_id : "CUSTOM";
       order.platform = { ...p, access_type: "UNIVERSAL_ACCESS", connector_type: null, provider_profile_id: profileId, detection_source: "automatic", confidence: p.confidence,
+        provider_detection_status: suggestion.status,
         cms_confidence: d?.cms_confidence || "UNKNOWN", deployment_confidence: d?.deployment_confidence || "UNKNOWN", panel_confidence: d?.panel_confidence || "UNKNOWN",
         hosting_confidence: d?.hosting_confidence || "UNKNOWN", dns_confidence: d?.dns_confidence || "UNKNOWN",
         evidence: Array.isArray(d?.evidence) ? d.evidence.filter((e) => /^[a-z0-9_]{2,40}$/.test(e)).slice(0, 12) : [],

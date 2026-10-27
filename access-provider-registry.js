@@ -67,6 +67,23 @@ export const providerProfileForDetection = (d = {}) => {
   return PROVIDER_REGISTRY.CUSTOM;
 };
 
+// TF-033: Erkennung bleibt ein Vorschlag. Nur ein einzelnes HIGH-Signal darf
+// automatisch vorselektieren; widersprüchliche oder schwache Signale verlangen
+// eine Bestätigung des Kunden und werden nie als Reparaturfreigabe verwendet.
+export const detectProviderSuggestion = (d = {}) => {
+  const fields = [
+    ["cms_platform", d.cms_platform, d.cms_confidence],
+    ["deployment_platform", d.deployment_platform, d.deployment_confidence],
+    ["hosting_provider", d.hosting_provider, d.hosting_confidence],
+  ];
+  const high = fields.map(([evidence, value, confidence]) => ({ evidence, id: profileId(value), confidence }))
+    .filter((x) => x.confidence === "HIGH" && x.id !== "CUSTOM");
+  const present = fields.filter(([, value]) => value != null && String(value).trim()).map(([evidence]) => evidence);
+  const ids = [...new Set(high.map((x) => x.id))];
+  if (ids.length === 1) return { provider_id: ids[0], status: "DETECTED", confidence: "HIGH", evidence: [high[0].evidence] };
+  return { provider_id: "CUSTOM", status: "PROVIDER_VERIFICATION_REQUIRED", confidence: "UNKNOWN", evidence: present.slice(0, 4) };
+};
+
 export const cleanProviderName = (value) => {
   const name = String(value || "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   return name.length >= 2 && name.length <= 120 ? name : null;
