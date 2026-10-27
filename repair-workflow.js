@@ -60,7 +60,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale, recordDirectSale } from "./sales.js";
-import { paymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText, withLivePayment } from "./payments.js";
+import { fullPaymentGateForOrder, paymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText, withLivePayment } from "./payments.js";
 import { offerInfo, isFixOffer, SELLER_COMMISSION_BPS, FIX_ORDER_ID_RE } from "./pricing.js";
 import { isVnOrder, buildVnAccessRequestMail, buildVnHostingQuestionMail, buildVnHostKeyConfirmationMail, buildVnRepairReport, buildVnRepairDeliveryMail, vnReportSubject } from "./vn-customer-texts.js";
 import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIntakeToken, openAccessCredential, destroyAccessSecret,
@@ -77,6 +77,16 @@ import { e2eConfig, isE2eDomain, isE2eMailbox, E2E_SUBJECT_PREFIX } from "./e2e-
 import { combineAuditors } from "./browser-site-audit.js";
 import { cleanPlatform, cleanStated, resolvePlatform, connectorOf, nameOf, accessGuide, hostingQuestionLines } from "./hosting-detect.js";
 import { buildRepairCompletionMail, buildRepairReceipt, buildProcessingDurationEstimate } from "./completion-artifacts.js";
+import { profileCanAutoRepair, profileCanUseAdapter, providerProfileForDetection, PROVIDER_REGISTRY } from "./access-provider-registry.js";
+
+// Neue universelle Tresor-Einreichungen tragen nur eine Registry-ID, nie den Anbieterfreitext oder ein Secret.
+// Bestehende Aufträge ohne diese Metadaten behalten ihren bisherigen, bereits geprüften Ablauf.
+export function providerRepairGate(order = {}, adapters = {}, adapterKey = null) {
+  const provider = order.access_intake?.provider;
+  if (!provider) return { ok: true };
+  const ok = adapterKey ? profileCanUseAdapter(provider, adapterKey, adapters) : profileCanAutoRepair(provider, adapters);
+  return ok ? { ok: true } : { ok: false, reason: "provider_manual_review" };
+}
 
 export const REPAIR_ORDERS_FILE = "repair_orders.json";
 // Gate-Vergleich für Zustandsgründe: CH exakt wie bisher «CHF 240 ≥ 240», VN «1.950.000 ₫ ≥ 1.950.000 ₫».
@@ -333,7 +343,7 @@ export async function activatePreboundAccess({ store, intake, now = new Date(), 
   for (const order of Object.values(data.orders || {})) {
     const pre = order.prebound_access;
     if (order.offer_class !== REPAIR_OFFER || !pre || order.access_request?.sent_at) continue;
-    const gate = paymentGateForOrder(store, order);
+    const gate = fullPaymentGateForOrder(store, order);
     if (!gate.satisfied) continue;
     if (!pre.token_hash || !pre.expires_at || Date.parse(pre.expires_at) <= +now) {
       order.prebound_access = { status: "EXPIRED", expired_at: now.toISOString() };
@@ -515,7 +525,13 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
   onboardingDir = null, platformDetector = null, e2e = e2eConfig(), browserAuditor = null, now = () => new Date(), log = () => {} } = {}) {
   // TF-JARVIS-PRAXIS-002: browserAuditor = Browser-Audit (Sprungmarken, abgeschnittene Bereiche, Laufzeitfehler) zusätzlich zum HTTP-Audit.
   // Zahlungs-Gate: bei internen Admin-Testaufträgen gilt der protokollierte Erlass (internalTestWaiverOk) – LIVE-Aufträge unverändert.
-  const gateFor = (order) => { const g = paymentGateForOrder(store, order); return !g.satisfied && internalTestWaiverOk(order, e2e) ? { ...g, satisfied: true, waived: INTERNAL_TEST_KIND } : g; };
+  // Der neue Universal-Onboarding-Pfad (eigene Onboarding-Outbox) beginnt erst
+  // nach vollständiger CHF-480-Zahlung. Legacy-Reparaturpfade behalten ihr
+  // bestehendes Anzahlungs-Gate; TF-032 darf diese Verträge nicht global ändern.
+  const gateFor = (order) => {
+    const g = onboardingDir ? fullPaymentGateForOrder(store, order) : paymentGateForOrder(store, order);
+    return !g.satisfied && internalTestWaiverOk(order, e2e) ? { ...g, satisfied: true, waived: INTERNAL_TEST_KIND } : g;
+  };
   // TF-080: e2e (e2e-test.js) – Test-Aufträge laufen nur mit aktivem E2E-Modus UND Domain aus JARVIS_E2E_TEST_DOMAINS (vor jedem Schritt geprüft).
   // TF-071: platformDetector(order) → Befund aus öffentlichen Signalen (hosting-probe.js). Fehlt er oder ist der Befund unsicher,
   // fragt Jarvis den Kunden (WAITING_FOR_HOSTING_INFO) – nie wird ein Anbieter erraten.
@@ -576,10 +592,8 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
     log("info", events.sent, { order_id: order.order_id, message_class: messageClass });
     return "sent";
   };
-  // ---------- TF-071: Plattform-/Hosting-Erkennung VOR der ersten Zugangs-Anfrage (nur FIX mit Onboarding-Dialog) ----------
-  // 1. Öffentliche Signale auswerten (platformDetector). HIGH für den entscheidenden Bereich → Zugangsweg steht fest → sicherer Link.
-  // 2. Sonst HOSTING_UNKNOWN → GENAU EINE kurze Frage im Auftrags-Thread (nie nach Passwörtern) → WAITING_FOR_HOSTING_INFO.
-  // Rückgabe: "ready" (Zugangsweg bekannt) | "waiting" (Frage gesendet/aufgeschoben) | false (blockiert).
+  // TF-032: öffentliche Erkennung ist nur eine unverbindliche Formularvorauswahl. Unbekannt/unsicher bleibt CUSTOM;
+  // der universelle Tresor akzeptiert trotzdem jeden Anbieter und Zugangsweg.
   const platformStep = async (order, t) => {
     order.platform_required = true;
     order.onboarding_required = true; // Brief-Gate + Dialog gelten ab der ersten Auftrags-Mail (auch wenn das die Plattform-Frage ist)
@@ -590,27 +604,28 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
       const p = cleanPlatform(d) || cleanPlatform({});
       // Automatisch nur mit HIGH für den entscheidenden Bereich (hosting-detect accessRequirement min HIGH) – sonst nie raten.
       const auto = d?.access_type && d.confidence === "HIGH" ? d.access_type : null;
-      order.platform = { ...p, access_type: auto, connector_type: auto ? connectorOf(auto) : null, detection_source: "automatic", confidence: p.confidence,
+      const confirmed = {
+        cms_platform: d?.cms_confidence === "HIGH" ? p.cms_platform : null,
+        deployment_platform: d?.deployment_confidence === "HIGH" ? p.deployment_platform : null,
+        hosting_provider: d?.hosting_confidence === "HIGH" ? p.hosting_provider : null,
+        dns_provider: d?.dns_confidence === "HIGH" ? p.dns_provider : null,
+      };
+      const suggestedProfile = providerProfileForDetection(confirmed);
+      const profileId = suggestedProfile.id === "CUSTOM" ? "CUSTOM" : suggestedProfile.id;
+      order.platform = { ...p, access_type: "UNIVERSAL_ACCESS", connector_type: null, provider_profile_id: profileId, detection_source: "automatic", confidence: p.confidence,
         cms_confidence: d?.cms_confidence || "UNKNOWN", deployment_confidence: d?.deployment_confidence || "UNKNOWN", panel_confidence: d?.panel_confidence || "UNKNOWN",
         hosting_confidence: d?.hosting_confidence || "UNKNOWN", dns_confidence: d?.dns_confidence || "UNKNOWN",
         evidence: Array.isArray(d?.evidence) ? d.evidence.filter((e) => /^[a-z0-9_]{2,40}$/.test(e)).slice(0, 12) : [],
         status: auto ? "IDENTIFIED" : "HOSTING_UNKNOWN", detected_at: t.toISOString(), updated_at: t.toISOString() };
       order.state_history.push({ at: t.toISOString(), from: order.state, to: order.state, reason: auto
         ? `Plattform erkannt (${[nameOf(p.cms_platform), nameOf(p.deployment_platform), nameOf(p.hosting_provider)].filter(Boolean).join(", ") || "?"}, ${p.confidence}) – Zugangsweg ${auto}`
-        : `HOSTING_UNKNOWN – Plattform/Hosting öffentlich nicht sicher erkennbar (${p.confidence}); Kunde wird gefragt, noch kein Link` });
+        : `HOSTING_UNKNOWN – keine verlässliche Anbietererkennung (${p.confidence}); universeller Tresor mit freier Auswahl` });
       saveOrder(store, order);
       log("info", "repair_platform_detected", { order_id: order.order_id, cms: p.cms_platform, deployment: p.deployment_platform, hosting: p.hosting_provider, confidence: p.confidence, access_type: auto });
     }
-    if (order.platform.access_type) return "ready";
-    const r = await sendLinkMail(order, "hosting_question", { withLink: false, messageClass: ONBOARDING_CLASS, meta: { purpose: "hosting_question" },
-      build: () => buildHostingQuestionMail(order),
-      events: { unclear: "repair_hosting_question_unclear", deferred: "repair_hosting_question_deferred", sent: "repair_hosting_question_sent" } });
-    if (r === "deferred" || r === "unclear") return "waiting";
-    if (r?.error) { await informChris(order, "hosting_question_failed", r.error); block(order, "BLOCKED_NO_ACCESS", `Plattform-Frage an den Kunden fehlgeschlagen: ${r.error}`); return false; }
-    order.platform = { ...order.platform, status: "WAITING_FOR_HOSTING_INFO", updated_at: t.toISOString() };
-    transition(order, "WAITING_FOR_HOSTING_INFO", "Plattform-Frage im Auftrags-Thread gesendet – wartet auf die Angabe des Kunden (keine Zugangsdaten per E-Mail)", t);
-    saveOrder(store, order);
-    return "waiting";
+    if (!order.platform.access_type) order.platform = { ...order.platform, access_type: "UNIVERSAL_ACCESS", connector_type: null,
+      provider_profile_id: order.platform.provider_profile_id && PROVIDER_REGISTRY[order.platform.provider_profile_id] ? order.platform.provider_profile_id : "CUSTOM" };
+    return "ready";
   };
   // TF-071 §10: übermittelter Zugang liess sich nicht prüfen → ACCESS_VALIDATION_FAILED. Zugangsdaten sofort zerstört (nie erneut
   // versucht), nur Metadaten bleiben; der Kunde erhält im Auftrags-Thread einen neuen sicheren Link. Nach MAX_VALIDATION_FAILURES → Chris.
@@ -882,6 +897,10 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
         transition(order, "PAYMENT_REQUIRED", `Zahlung ausstehend: ${gateText(gate)} eingegangen (payments.js record ${order.order_id}).`, t);
         saveOrder(store, order); return false;
       }
+      if (intakeReceived(order) && order.access_intake.provider) {
+        const providerGate = providerRepairGate(order, adapters);
+        if (!providerGate.ok || !router) { manual(order, "Anbieter oder zugehöriger Reparaturadapter nicht automatisch unterstützt – sichere manuelle Prüfung erforderlich."); return false; }
+      }
       if (!order.stack) {
         const probe = order.audit_preview || await audit(order.website);
         if (!order.audit_preview) { order.audit_preview = probe; }
@@ -901,6 +920,9 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
           const has_mapping = typeof gh?.claims === "function" ? await gh.claims(order).catch(() => false) : false;
           const r = await Promise.resolve(router.route({ order, access_type: order.access_intake.connector_type, detected_stack: order.stack.type, accessCtx: accessCtx(order), has_mapping }))
             .catch(() => ({ adapter: null, state: "BLOCKED_UNSUPPORTED_STACK", reason: "Routing nicht möglich." }));
+          if (order.access_intake.provider && !providerRepairGate(order, adapters, r.adapter).ok) {
+            manual(order, "Der ermittelte Reparaturadapter passt nicht zum ausgewählten Anbieter – sichere manuelle Prüfung erforderlich."); return false;
+          }
           order.route = { adapter: r.adapter || null, label: r.label || null, access_type: order.access_intake.connector_type, detected_stack: order.stack.type, reason: String(r.reason || "").slice(0, 200), routed_at: t.toISOString() };
           saveOrder(store, order);
           if (r.state) { block(order, r.state, r.reason || "Kein unterstützter Reparaturweg."); return false; }
@@ -960,9 +982,11 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
           const ps = await platformStep(order, t);
           if (ps !== "ready") return false;
         }
-        const kind = order.platform_required ? order.platform?.access_type || null : null;
+        const kind = re ? (order.access_request?.access_kind || null) : null;
+        const detectedProfile = order.platform?.provider_profile_id && PROVIDER_REGISTRY[order.platform.provider_profile_id]
+          ? order.platform.provider_profile_id : "CUSTOM";
         const r = await sendLinkMail(order, "access_request", {
-          register: kind ? { access_kind: kind } : {}, // Formular zeigt nur die Felder dieses Zugangswegs
+          register: re ? (kind ? { access_kind: kind } : {}) : { provider_profile_id: detectedProfile },
           build: (x) => (re ? buildReissueMail(order, { ...x, reason: re.reason }) : (onboardingDir && (order.onboarding_required = true),
             buildAccessRequestMail(order, { ...x, onboarding: !!onboardingDir, access_kind: kind, askContent: !order.hosting_question?.sent_at }))),
           meta: re ? (re.seq ? { purpose: "reissue", seq: re.seq } : { purpose: "revalidate" }) : { purpose: "first" },
@@ -1388,7 +1412,7 @@ export function buildAccessRequestMail(order, { link = null, expires_at = null, 
     const body = [
       order.contact_name ? `Guten Tag ${order.contact_name}` : "Guten Tag",
       "",
-      "vielen Dank – die erste Teilzahlung für Ihren Auftrag «Check & Reparatur» ist eingegangen, die Zahlungsschwelle ist damit erreicht.",
+      "vielen Dank – die vollständige Zahlung von CHF 480 für Ihren Auftrag «Check & Reparatur» ist eingegangen.",
       "",
       `Damit ich die Reparatur Ihrer Website ${order.domain} sauber durchführen kann, brauche ich noch zwei Dinge:`,
       "",
@@ -1415,7 +1439,7 @@ export function buildAccessRequestMail(order, { link = null, expires_at = null, 
   const body = [
     `Hallo ${order.contact_name || order.company || ""}`.trim(),
     "",
-    "vielen Dank – die erste Teilzahlung für Ihren Auftrag «Check & Reparatur» ist bei uns eingegangen.",
+    "vielen Dank – die vollständige Zahlung von CHF 480 für Ihren Auftrag «Check & Reparatur» ist bei uns eingegangen.",
     "",
     `Für die vereinbarte Reparatur Ihrer Website ${order.domain} benötige ich einen temporären, sicheren Zugang.`,
     "",

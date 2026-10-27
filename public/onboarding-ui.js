@@ -21,7 +21,7 @@ const T = {
     // TF-071
     hosting: "Hosting", cms: "CMS", accessType: "Zugangsart", confidence: "Erkennung", accessStatus: "Zugangsstatus", src: { automatic: "automatisch", customer: "Kundenangabe" },
     conf: { HIGH: "sicher", MEDIUM: "wahrscheinlich", LOW: "unsicher", UNKNOWN: "unbekannt" },
-    kindName: { WORDPRESS_ADMIN: "Temporärer WordPress-Admin", CMS_ADMIN: "Temporärer CMS-Admin", CPANEL: "cPanel", PLESK: "Plesk", SFTP: "SFTP (temporärer Benutzer)", SHOPIFY_STAFF: "Shopify-Mitarbeiter",
+    kindName: { UNIVERSAL_ACCESS: "Universeller Zugangsweg", WORDPRESS_ADMIN: "Temporärer WordPress-Admin", CMS_ADMIN: "Temporärer CMS-Admin", CPANEL: "cPanel", PLESK: "Plesk", SFTP: "SFTP (temporärer Benutzer)", SHOPIFY_STAFF: "Shopify-Mitarbeiter",
       WIX_COLLABORATOR: "Wix-Mitarbeiter", WEBFLOW_COLLABORATOR: "Webflow-Collaborator", SQUARESPACE_CONTRIBUTOR: "Squarespace-Mitwirkender", NETLIFY_TEAM: "Netlify-Team", VERCEL_TEAM: "Vercel-Team", GITHUB_COLLABORATOR: "GitHub-Collaborator" },
     flow: { DETECTING_PLATFORM: "Plattform wird erkannt", HOSTING_UNKNOWN: "Hosting unbekannt", WAITING_FOR_HOSTING_INFO: "Wartet auf Hosting-Angabe", WAITING_FOR_SECURE_ACCESS: "Wartet auf sicheren Zugang",
       ACCESS_RECEIVED: "Zugang erhalten", ACCESS_VALIDATED: "Zugang geprüft", ACCESS_VALIDATION_FAILED: "Zugang ungültig – neuer Link", READY_FOR_REPAIR: "Bereit für Reparatur" },
@@ -44,7 +44,7 @@ const T = {
     secretNote: "Thông tin đăng nhập không bao giờ được hiển thị – chỉ qua đường liên kết bảo mật, được mã hóa.",
     hosting: "Hosting", cms: "CMS", accessType: "Cách truy cập", confidence: "Mức chắc chắn", accessStatus: "Trạng thái truy cập", src: { automatic: "tự động", customer: "khách cung cấp" },
     conf: { HIGH: "chắc chắn", MEDIUM: "có khả năng", LOW: "không chắc", UNKNOWN: "chưa rõ" },
-    kindName: { WORDPRESS_ADMIN: "Quản trị WordPress tạm thời", CMS_ADMIN: "Quản trị CMS tạm thời", CPANEL: "cPanel", PLESK: "Plesk", SFTP: "SFTP (tài khoản tạm thời)", SHOPIFY_STAFF: "Nhân viên Shopify",
+    kindName: { UNIVERSAL_ACCESS: "Phương thức truy cập phổ quát", WORDPRESS_ADMIN: "Quản trị WordPress tạm thời", CMS_ADMIN: "Quản trị CMS tạm thời", CPANEL: "cPanel", PLESK: "Plesk", SFTP: "SFTP (tài khoản tạm thời)", SHOPIFY_STAFF: "Nhân viên Shopify",
       WIX_COLLABORATOR: "Cộng tác viên Wix", WEBFLOW_COLLABORATOR: "Cộng tác viên Webflow", SQUARESPACE_CONTRIBUTOR: "Cộng tác viên Squarespace", NETLIFY_TEAM: "Team Netlify", VERCEL_TEAM: "Team Vercel", GITHUB_COLLABORATOR: "Cộng tác viên GitHub" },
     flow: { DETECTING_PLATFORM: "Đang xác định nền tảng", HOSTING_UNKNOWN: "Chưa rõ hosting", WAITING_FOR_HOSTING_INFO: "Chờ thông tin hosting", WAITING_FOR_SECURE_ACCESS: "Chờ quyền truy cập an toàn",
       ACCESS_RECEIVED: "Đã nhận quyền truy cập", ACCESS_VALIDATED: "Đã kiểm tra quyền truy cập", ACCESS_VALIDATION_FAILED: "Quyền truy cập không hợp lệ – đã gửi liên kết mới", READY_FOR_REPAIR: "Sẵn sàng sửa lỗi" },

@@ -179,6 +179,17 @@ export function paymentGateForOrder(store, order = {}) {
   if (currency === "VND") return { order_id: order.order_id || null, offer_class: order.offer_class || null, currency, required, paid, satisfied: required != null && paid >= required };
   return { order_id: order.order_id || null, offer_class: order.offer_class || null, required_chf: required, paid_chf: paid, satisfied: required != null && paid >= required };
 }
+// TF-032 universeller Zugangs- und Reparaturstart: erst nach vollständig bestätigtem Festpreis.
+// Das allgemeine Zahlungsgate bleibt für Anzahlungen/Dashboard erhalten; dieser Gate gilt nur für Erfüllung.
+export function fullPaymentGateForOrder(store, order = {}) {
+  const m = orderMoney(order);
+  const currency = m?.currency || null;
+  if (currency === "VND") return paymentGateForOrder(store, order);
+  const required = m ? m.price : null;
+  const paid = order.order_id && currency ? paidAmountForOrder(store, order, currency, { test: order.test_order === true }) : 0;
+  if (currency === "VND") return { order_id: order.order_id || null, offer_class: order.offer_class || null, currency, required, paid, satisfied: required != null && paid >= required };
+  return { order_id: order.order_id || null, offer_class: order.offer_class || null, required_chf: required, paid_chf: paid, satisfied: required != null && paid >= required };
+}
 // Gate-Stand lesen (CH: paid_chf/required_chf, VN: paid/required + currency).
 export const gatePaid = (g) => (Number.isFinite(g?.paid) ? g.paid : Number.isFinite(g?.paid_chf) ? g.paid_chf : null);
 export const gateRequired = (g) => (Number.isFinite(g?.required) ? g.required : Number.isFinite(g?.required_chf) ? g.required_chf : null);

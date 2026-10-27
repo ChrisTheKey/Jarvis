@@ -20,10 +20,11 @@ import crypto from "node:crypto";
 import { safeEqual } from "./shared-state.js";
 import { vnConsentText, vnHostKeyConfirmText, VN_REPAIR_SCOPE } from "./vn-customer-texts.js";
 import { ACCESS_KINDS, ACCESS_FORMS } from "./hosting-detect.js";
+import { ACCESS_METHODS, ACCESS_METHOD_FORMS, PROVIDER_REGISTRY, publicProviderProfile, resolveProviderSelection } from "./access-provider-registry.js";
 // TF-071: optional access_kind bei register – das Formular zeigt dann nur die Felder dieses Zugangswegs (ACCESS_FORMS), die Zugangsart
 // ist fest (connector) und submit lehnt jede andere Zugangsart ab. Ohne access_kind: Verhalten wie bisher (freie Auswahl).
 
-export const ACCESS_TYPES = Object.freeze(["github_netlify", "wordpress_cms", "sftp", "ssh", "hosting", "other"]);
+export const ACCESS_TYPES = ACCESS_METHODS;
 export const INTAKE_PURPOSES = Object.freeze(["access", "host_key_confirmation"]);
 export const HOST_KEY_RE = /^SHA256:[A-Za-z0-9+/]{43}$/;
 export const ACCESS_ENVELOPE_ALG = "RSA-OAEP-256+A256GCM";
@@ -43,6 +44,12 @@ export const consentText = (domain, locale = "de-CH") => locale === "vi-VN" ? vn
 export const hostKeyConfirmText = (domain, locale = "de-CH") => locale === "vi-VN" ? vnHostKeyConfirmText(domain) : `Ich habe den angezeigten Fingerprint mit der Angabe meines Hosting-Anbieters für ${domain} verglichen – er stimmt exakt überein.`;
 export const REPAIR_SCOPE = "Vereinbarte Reparaturen im Rahmen des Auftrags «Check & Reparatur» (CHF 480) – keine Erweiterung des Umfangs.";
 export const repairScope = (locale = "de-CH") => (locale === "vi-VN" ? VN_REPAIR_SCOPE : REPAIR_SCOPE);
+
+const profileForAccessKind = (kind) => ({
+  WORDPRESS_ADMIN: "WORDPRESS", SHOPIFY_STAFF: "SHOPIFY", WIX_COLLABORATOR: "WIX", WEBFLOW_COLLABORATOR: "WEBFLOW",
+  SQUARESPACE_CONTRIBUTOR: "SQUARESPACE", NETLIFY_TEAM: "NETLIFY", VERCEL_TEAM: "VERCEL", GITHUB_COLLABORATOR: "GITHUB",
+}[kind] || "CUSTOM");
+const profileList = () => Object.values(PROVIDER_REGISTRY).map(publicProviderProfile).filter(Boolean);
 
 // Chiffrat-Format prüfen (Inhalt ist absichtlich nicht lesbar). Nur exakt diese Felder, nur Base64, begrenzte Grösse.
 export function validEnvelope(e) {
@@ -88,7 +95,8 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
         if (!ORDER_ID_RE.test(b.order_id || "") || !DOMAIN_RE.test(b.domain || "") || !HASH_RE.test(b.token_hash || "")
           || !Number.isFinite(exp) || exp <= +t || exp - +t > MAX_TTL_MS || !validPublicKey(b.public_key) || !INTAKE_PURPOSES.includes(purpose)
           || (purpose === "host_key_confirmation" && !HOST_KEY_RE.test(b.host_key_candidate || "")) || !INTAKE_LOCALES.includes(locale)
-          || (String(b.order_id).startsWith("VNFIX-") !== (locale === "vi-VN")) || (b.access_kind != null && (purpose !== "access" || !ACCESS_KINDS.includes(b.access_kind))))
+          || (String(b.order_id).startsWith("VNFIX-") !== (locale === "vi-VN")) || (b.access_kind != null && (purpose !== "access" || !ACCESS_KINDS.includes(b.access_kind)))
+          || (b.provider_profile_id != null && !PROVIDER_REGISTRY[b.provider_profile_id]))
           return reply(400, { error: "Ungültige Registrierung." });
         // Ein Auftrag hat höchstens EINEN gültigen Link: ältere, unbenutzte Registrierungen desselben Auftrags verfallen sofort.
         for (const k of await store.list("t/")) {
@@ -99,7 +107,8 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
         }
         await store.set(key(b.token_hash), { order_id: b.order_id, domain: b.domain, token_hash: b.token_hash, expires_at: new Date(exp).toISOString(),
           public_key: b.public_key, registered_at: t.toISOString(), purpose, locale, ...(purpose === "host_key_confirmation" ? { host_key_candidate: b.host_key_candidate } : {}),
-          ...(b.access_kind ? { access_kind: b.access_kind } : {}) });
+          ...(b.access_kind ? { access_kind: b.access_kind } : {}),
+          provider_profile_id: b.provider_profile_id || profileForAccessKind(b.access_kind) });
         return reply(200, { ok: true });
       }
       if (b.op === "pull") {
@@ -127,8 +136,12 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
       if (b.op === "info") {
         if (purpose === "host_key_confirmation") return reply(200, { purpose, domain: e.domain, expires_at: e.expires_at, host_key_candidate: e.host_key_candidate, confirm_text: hostKeyConfirmText(e.domain, loc), ...(loc === "vi-VN" ? { locale: loc } : {}) });
         const form = e.access_kind ? ACCESS_FORMS[e.access_kind] : null;
+        const fixedForm = form?.connector ? form : null;
+        const profile = PROVIDER_REGISTRY[e.provider_profile_id] || PROVIDER_REGISTRY.CUSTOM;
         return reply(200, { purpose, domain: e.domain, expires_at: e.expires_at, public_key: e.public_key,
-          access_types: form ? [form.connector] : ACCESS_TYPES, ...(form ? { access_kind: e.access_kind, fields: form.fields } : {}),
+          access_types: fixedForm ? [fixedForm.connector] : ACCESS_TYPES, ...(form ? { access_kind: e.access_kind, fields: form.fields } : {}),
+          access_method_fields: ACCESS_METHOD_FORMS,
+          provider_profile: publicProviderProfile(profile), provider_profiles: profileList(),
           consent_text: consentText(e.domain, loc), scope: repairScope(loc), ...(loc === "vi-VN" ? { locale: loc } : {}) });
       }
       if ((b.purpose ?? "access") !== purpose) return reply(400, { error: "Falsches Formular für diesen Link." });
@@ -143,12 +156,23 @@ export function createAccessIntakeHandler({ getStore, env, now = () => new Date(
         return reply(200, { ok: true });
       }
       if (!ACCESS_TYPES.includes(b.access_type)) return reply(400, { error: "Unbekannte Zugangsart." });
-      if (e.access_kind && ACCESS_FORMS[e.access_kind]?.connector !== b.access_type) return reply(400, { error: "Falsche Zugangsart für diesen Link." });
+      if (e.access_kind && ACCESS_FORMS[e.access_kind]?.connector && ACCESS_FORMS[e.access_kind].connector !== b.access_type) return reply(400, { error: "Falsche Zugangsart für diesen Link." });
+      const profile = PROVIDER_REGISTRY[e.provider_profile_id] || PROVIDER_REGISTRY.CUSTOM;
+      const selection = b.provider && typeof b.provider === "object"
+        ? resolveProviderSelection({ ...b.provider, access_type: b.access_type })
+        : (profile.access_types.includes(b.access_type) ? { provider_id: profile.id, access_type: b.access_type, automation: profile.automation } : null);
+      if (!selection) return reply(400, { error: "Anbieter oder Zugangsart ungültig." });
       if (normDomain(b.access_domain) !== e.domain) return reply(400, { error: "Die angegebene Domain stimmt nicht mit dem Auftrag überein." });
       if (b.consent !== true) return reply(400, { error: "Die Reparaturfreigabe ist Pflicht." });
       if (!validEnvelope(b.envelope)) return reply(400, { error: "Zugangsdaten müssen verschlüsselt übermittelt werden." });
       const next = { ...e, used_at: t.toISOString(), submission: { submitted_at: t.toISOString(), access_type: b.access_type, access_domain: e.domain,
         consent: true, consent_text: consentText(e.domain, loc), envelope: b.envelope, ...(e.access_kind ? { access_kind: e.access_kind } : {}) } };
+      if (b.provider && typeof b.provider === "object") next.submission.provider = {
+        provider_id: selection.provider_id,
+        ...(selection.provider_id === "CUSTOM" ? { provider_name: selection.provider_name } : {}),
+        access_type: selection.access_type,
+        automation: selection.automation,
+      };
       // Atomar: nur wenn sich der Eintrag seit dem Lesen nicht verändert hat – eine zweite (parallele) Einreichung scheitert.
       if (!(await store.set(key(e.token_hash), next, { etag: cur.etag }))) return reply(404, { error: GONE });
       return reply(200, { ok: true });

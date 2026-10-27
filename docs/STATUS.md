@@ -32,7 +32,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf032-universal` / `Jarvis-tf032-universal` | TF-032 Erweiterung: universeller Zugangsdaten-Tresor in Arbeit; kein Push, Merge oder Deployment |
+| Codex | `agent-codex/tf032-universal` / `Jarvis-tf032-universal` | TF-032 universeller Zugangsdaten-Tresor: Implementierung vorhanden, Regression BLOCKED; kein Push, Merge oder Deployment |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -47,6 +47,7 @@ Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und ware
 - Uncommittete Dateien ausserhalb dieses Auftrags bleiben geschützt: `test/crm-fixture.js` sowie `reports/TF-JARVIS-024/phase5-screenshots/`.
 - TF-JARVIS-028: Implementierung und gezielte synthetische Tests bestanden; der Vollcheck hat 13 historische Vertragsfehler und 12 übersprungene Docker-/Repair-Labs. Produktionsversand, Live-Zahlungen und Reparaturen an realen Websites bleiben gesperrt.
 - TF-JARVIS-031: Engine-/Container-/Netzwerk-/Volume-Inventar konnte wegen `Rejected: Keine Container ohne Freigabe.` nicht read-only ausgeführt werden. Alle zwölf Docker-/Repair-Labs sind deshalb BLOCKED/NOT RUN. Der CRM-Test N besteht im abschließenden Full-Check; es bleibt kein weiterer nachgewiesener CRM-Fehler offen.
+- TF-JARVIS-032 Universal Access Vault: Registry, dynamische Tresorformulare und fail-closed Adapterfreigabe implementiert. Gezielte Regressionen 107/107 grün; finaler Vollcheck 1'211 Tests, 1'199 bestanden, 0 fehlgeschlagen, 12 Docker-Labs übersprungen, Exit 0. Docker-Isolation/Labs und separate Produktionsfreigabe offen. Siehe `reports/TF-JARVIS-032/UNIVERSAL_ACCESS_VAULT_ABSCHLUSSBERICHT.md`; kein Push/Merge/Deployment.
 
 ## Historischer Baseline-Hinweis
 

@@ -32,8 +32,8 @@ export const PROVIDER_NAMES = Object.freeze({ HOSTPOINT: "Hostpoint", INFOMANIAK
 export const nameOf = (w) => PROVIDER_NAMES[w] || null;
 
 // Minimal nötiger Zugangsweg je Plattform (§6). connector = bestehende Zugangsart des sicheren Formulars (access-intake-api ACCESS_TYPES).
-export const ACCESS_KINDS = Object.freeze(["WORDPRESS_ADMIN", "CMS_ADMIN", "CPANEL", "PLESK", "SFTP", "SHOPIFY_STAFF", "WIX_COLLABORATOR", "WEBFLOW_COLLABORATOR",
-  "SQUARESPACE_CONTRIBUTOR", "NETLIFY_TEAM", "VERCEL_TEAM", "GITHUB_COLLABORATOR"]);
+export const ACCESS_KINDS = Object.freeze(["UNIVERSAL_ACCESS", "WORDPRESS_ADMIN", "CMS_ADMIN", "CPANEL", "PLESK", "SFTP", "SHOPIFY_STAFF", "WIX_COLLABORATOR", "WEBFLOW_COLLABORATOR",
+  "SQUARESPACE_CONTRIBUTOR", "NETLIFY_TEAM", "VERCEL_TEAM", "GITHUB_COLLABORATOR", "UNIVERSAL_ACCESS"]);
 // fields: welche Felder das Formular zeigt (nur diese landen im verschlüsselten Payload). Delegierte Zugänge haben KEIN Passwortfeld.
 export const ACCESS_FORMS = Object.freeze({
   WORDPRESS_ADMIN: { connector: "wordpress_cms", fields: ["host", "user", "secret", "notes"] },
@@ -48,6 +48,7 @@ export const ACCESS_FORMS = Object.freeze({
   NETLIFY_TEAM: { connector: "github_netlify", fields: ["host", "notes"] },
   VERCEL_TEAM: { connector: "github_netlify", fields: ["host", "notes"] },
   GITHUB_COLLABORATOR: { connector: "github_netlify", fields: ["host", "notes"] },
+  UNIVERSAL_ACCESS: { connector: null, fields: ["host", "user", "secret", "port", "root", "hostKey", "passphrase", "provider", "notes"] },
 });
 export const connectorOf = (kind) => ACCESS_FORMS[kind]?.connector || null;
 export const PLATFORM_SOURCES = Object.freeze(["automatic", "customer"]);

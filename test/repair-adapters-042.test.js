@@ -39,7 +39,7 @@ const res = (status, body, { url, headers = {} } = {}) => ({ status, url, header
   json: async () => { if (typeof body === "string") throw new Error("kein JSON"); return body; }, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
 
 // ---------- Auftrag mit sicher übermitteltem Zugang (echter Tresor, echte Prüfung von access-intake.js) ----------
-function orderWithAccess(store, dir, { access_type, payload, domain = "muster.ch", payChf = 240 }) {
+function orderWithAccess(store, dir, { access_type, payload, domain = "muster.ch", payChf = 480 }) {
   const o = createRepairOrder(store, { domain, website: `https://${domain}/`, company: "Muster AG", delivery_email: "kunde@muster.ch", now: T0 });
   recordPayment(store, { order_id: o.order_id, amount_chf: payChf, reference: `Test-${o.order_id}`, now: T0 });
   const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });
@@ -613,7 +613,7 @@ const gateEngine = (store, spy, auditor = wpWorld().auditor) => createRepairEngi
   adapters: { wordpress: bridgeAdapter("wordpress", spy.adapter), sftp: bridgeAdapter("sftp", spy.adapter) },
   router: { route: () => ({ adapter: "sftp", label: "SFTP", state: null, reason: "test" }), capabilitiesOf: () => [] } });
 
-test("Payment/Auth: CHF 239 → 0 Adapter-Aufrufe; 240 ohne Zugang → 0 Repair; Freigabe ohne Zugang → 0 Repair", async () => {
+test("Payment/Auth: CHF 239 → 0 Adapter-Aufrufe; Anzahlung ohne Zugang → 0 Repair; Freigabe ohne Zugang → 0 Repair", async () => {
   const dir = tmp(), store = createStore(dir), spy = spyContract();
   const o = createRepairOrder(store, { domain: "muster.ch", website: "https://muster.ch/", now: T0 });
   authorizeRepair(store, o.order_id, { authorized_domain: "muster.ch", source: "customer_reply_email", reference: "Mail", now: T0 });
@@ -622,7 +622,7 @@ test("Payment/Auth: CHF 239 → 0 Adapter-Aufrufe; 240 ohne Zugang → 0 Repair;
   await eng.processAll();
   assert.equal(readOrder(store, o.order_id).state, "PAYMENT_REQUIRED");
   assert.deepEqual(spy.calls, []);
-  recordPayment(store, { order_id: o.order_id, amount_chf: 1, reference: "R2", now: T0 }); // 240, Freigabe ja, aber kein sicherer Zugang
+  recordPayment(store, { order_id: o.order_id, amount_chf: 1, reference: "R2", now: T0 }); // CHF 240, Freigabe ja, aber kein sicherer Zugang
   await eng.processAll();
   assert.equal(readOrder(store, o.order_id).state, "BLOCKED_NO_ACCESS");
   assert.deepEqual(spy.calls, [], "ohne Zugang: kein Login, keine Reparatur");

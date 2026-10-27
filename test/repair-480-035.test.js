@@ -56,7 +56,7 @@ function fakeAdapter(over = {}) {
 const newOrder = (store) => createRepairOrder(store, { domain: "muster.ch", website: HOME, company: "Muster AG", now: T0 });
 const authorize = (store, id) => authorizeRepair(store, id, { authorized_domain: "muster.ch", source: "customer_reply_email", reference: "Antwort vom 2026-10-11", now: T0 });
 // Zahlungsschwelle CHF 240 (TF-041) erfüllen – die Gate-Fälle selbst testet payments-041.test.js.
-const pay = (store, id) => recordPayment(store, { order_id: id, amount_chf: 240, now: T0 });
+const pay = (store, id) => recordPayment(store, { order_id: id, amount_chf: 480, now: T0 });
 const readOrder = (store, id) => store.read(REPAIR_ORDERS_FILE, { orders: {} }).orders[id];
 
 test("Zustandsmodell entspricht der Vorgabe", () => {

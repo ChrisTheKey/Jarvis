@@ -36,6 +36,11 @@
       verschlüsselt, bevor sie gesendet werden.</span>
     </div>
 
+    <label for="providerProfile">Website-System / Anbieter</label>
+    <select id="providerProfile" required></select>
+    <label for="providerName" id="providerNameLabel" hidden>Name des Anbieters</label>
+    <input id="providerName" type="text" maxlength="120" hidden spellcheck="false" autocapitalize="off" placeholder="Name des unbekannten Anbieters">
+
     <label for="type" data-t="lblType">Zugangsart</label>
     <select id="type" required>
       <option value="github_netlify" data-t="optGh">GitHub / Netlify (Einladung als Collaborator)</option>

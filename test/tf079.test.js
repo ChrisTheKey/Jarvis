@@ -158,7 +158,7 @@ function world({ regress = false } = {}) {
     exp: (id) => readOrdersExport(onbDir).orders[id],
     rec: (id) => loadOnboarding(mail).records[id],
     say: (b) => { W.advance(MIN); return g.customer(W.item().sent_thread_id, { body: b }); },
-    pay: (id, amount = 240, suffix = "deposit") => recordPayment(store, { order_id: id, amount_chf: amount, reference: `TF79-${id}-${amount}-${suffix}`, now: now() }),
+    pay: (id, amount = 480, suffix = "full") => recordPayment(store, { order_id: id, amount_chf: amount, reference: `TF79-${id}-${amount}-${suffix}`, now: now() }),
     accessMails: () => g.sends().filter((s) => s.messageClass === "CUSTOMER_ACCESS_REQUEST"),
     submit: async (link, { secret = GOOD, domain = DOMAIN, access_type = "wordpress_cms" } = {}) => {
       const info = await c.call({ op: "info", token: tokenOf(link) });
@@ -257,9 +257,7 @@ test("TF-079 §29 Happy Path: Formular → sofortige Antwort → P0 → ausdrüc
   assert.deepEqual([o.customer_authorized_repair, o.authorization.authorized_domain, o.authorization.source], [true, DOMAIN, "secure_order_access_form"]);
   assert.ok(W.w.st.preflights.includes(GOOD) && W.w.st.checks.includes(GOOD), "Preflight + Zugangsprüfung mit dem Tresor-Zugang");
   // Brief-Gate (Onboarding): «Nein» = keine Inhaltsänderungen.
-  // Die Zugangsschwelle ist CHF 240; die Abschlussmail mit CHF-480-Quittung
-  // darf erst nach dem verifizierten Restbetrag vorbereitet werden.
-  W.pay(id, 240, "balance");
+  // Erst nach vollständiger CHF-480-Zahlung wird der Universalzugang freigegeben.
   W.say("Nein, sonst nichts.");
   await W.tick(3);
   o = W.order(id);

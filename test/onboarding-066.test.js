@@ -211,11 +211,11 @@ function world({ extract = fakeExtract(), domain = DOMAIN, site = SITE } = {}) {
   };
   return W;
 }
-async function paidFix(W, { amount = 240, fullPayment = false, address = false } = {}) {
+async function paidFix(W, { amount = 480, fullPayment = false, address = false } = {}) {
   if (address) W.store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   const o = createConfirmedRepairOrder(W.store, { domain: DOMAIN, website: SITE, company: "Kunde AG", delivery_email: EMAIL, contact_name: "Frau Muster", now: T0 });
   if (amount) recordPayment(W.store, { order_id: o.order_id, amount_chf: amount, reference: `ONB66-${o.order_id}`, now: T0 });
-  if (fullPayment) recordPayment(W.store, { order_id: o.order_id, amount_chf: 240, reference: `ONB66-FULL-${o.order_id}`, now: T0 });
+  if (fullPayment && amount < 480) recordPayment(W.store, { order_id: o.order_id, amount_chf: 480 - amount, reference: `ONB66-FULL-${o.order_id}`, now: T0 });
   await W.tick();
   return o.order_id;
 }
@@ -237,10 +237,10 @@ test("§48 A–D START: bestätigt ohne Zahlung → kein Onboarding; unter Schwe
   assert.equal(W.g.sends().length, 0, "A: Kaufzusage ohne Zahlung → nichts");
   assert.equal(W.rec(id), undefined);
   assert.equal(readOrdersExport(W.onbDir).orders[id].payment_gate_met, false);
-  recordPayment(W.store, { order_id: id, amount_chf: 100, reference: "ONB66-TEIL", now: T0 });
+  recordPayment(W.store, { order_id: id, amount_chf: 479, reference: "ONB66-TEIL", now: T0 });
   await W.tick(2);
-  assert.equal(W.g.sends().length, 0, "B: Teilzahlung unter CHF 240 → nichts");
-  recordPayment(W.store, { order_id: id, amount_chf: 140, reference: "ONB66-REST", now: T0 });
+  assert.equal(W.g.sends().length, 0, "B: Teilzahlung unter CHF 480 → nichts");
+  recordPayment(W.store, { order_id: id, amount_chf: 1, reference: "ONB66-REST", now: T0 });
   await W.tick();
   const first = W.g.sends();
   assert.equal(first.length, 1, "C: genau eine Startnachricht");
@@ -477,7 +477,7 @@ test("§54 THREAD-SICHERHEIT: fremder Thread nie gelesen; andere Absenderadresse
   const a = await paidFix(W);
   // Zweiter Auftrag (andere Firma/Adresse) – eigener Thread.
   const ob = createConfirmedRepairOrder(W.store, { domain: "zweite-firma.test", website: "https://zweite-firma.test/", company: "Zweite AG", delivery_email: "b@zweite-firma.test", now: T0 });
-  recordPayment(W.store, { order_id: ob.order_id, amount_chf: 240, reference: "ONB66-B", now: T0 });
+  recordPayment(W.store, { order_id: ob.order_id, amount_chf: 480, reference: "ONB66-B", now: T0 });
   await W.tick();
   const ra = W.rec(a), rb = W.rec(ob.order_id);
   assert.notEqual(ra.thread_id, rb.thread_id);

@@ -83,6 +83,7 @@ const KIND_VI = {
 };
 const ALL_FIELDS = ["host", "user", "secret", "port", "root", "hostKey", "passphrase", "provider", "stack", "notes"];
 let kindFields = null; // null = freie Auswahl wie bisher
+let methodFields = null;
 function toggleField(id, on, label = null) {
   const input = $(id), lab = document.querySelector(`label[for="${id}"]`);
   input.hidden = !on; if (lab) { lab.hidden = !on; if (label) lab.textContent = label; }
@@ -119,6 +120,41 @@ const api = async (body) => {
 };
 
 let info = null;
+let providerProfiles = new Map();
+const ACCESS_LABELS = { github_netlify: "GitHub / Netlify", wordpress_cms: "WordPress / CMS", sftp: "SFTP", ssh: "SSH", hosting: "Hosting-Konto", other: "Andere",
+  cms_admin: "CMS-Administrator", hosting_panel: "Hosting-Control-Panel", git_repository: "Git-Repository", api_access: "API-Zugang", oauth_connection: "OAuth-Verbindung", team_invitation: "Mitarbeiter-/Partner-Einladung", cloud_iam: "Cloud-Hosting-Berechtigung" };
+function applyProviderProfile() {
+  const profile = providerProfiles.get($("providerProfile").value) || info?.provider_profile;
+  if (!profile) return;
+  const custom = profile.id === "CUSTOM";
+  $("providerName").hidden = !custom; $("providerNameLabel").hidden = !custom; $("providerName").required = custom;
+  const keep = $("type").value;
+  $("type").replaceChildren();
+  for (const type of profile.access_types || []) {
+    const option = document.createElement("option"); option.value = type; option.textContent = ACCESS_LABELS[type] || type;
+    $("type").append(option);
+  }
+  if ([...(profile.access_types || [])].includes(keep)) $("type").value = keep;
+  $("type").dispatchEvent(new Event("change"));
+}
+function applyAccessMethod() {
+  if (!info || kindFields) return;
+  methodFields = (info.access_method_fields?.[$("type").value] || []).filter((f) => ALL_FIELDS.includes(f));
+  for (const field of ALL_FIELDS) toggleField(field, methodFields.includes(field));
+  $("serverFields").hidden = !["port", "root", "hostKey", "passphrase", "provider", "stack"].some((field) => methodFields.includes(field));
+}
+function configureProviderProfiles() {
+  providerProfiles = new Map((info.provider_profiles || []).map((profile) => [profile.id, profile]));
+  const suggested = info.provider_profile?.id || "CUSTOM";
+  $("providerProfile").replaceChildren();
+  for (const profile of providerProfiles.values()) {
+    const option = document.createElement("option"); option.value = profile.id; option.textContent = profile.name;
+    $("providerProfile").append(option);
+  }
+  $("providerProfile").value = providerProfiles.has(suggested) ? suggested : "CUSTOM";
+  $("providerProfile").addEventListener("change", applyProviderProfile);
+  applyProviderProfile();
+}
 async function start() {
   applyVi();
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return show("invalid");
@@ -131,9 +167,13 @@ async function start() {
   $("expires").textContent = dateText(info.expires_at);
   $("dom").value = info.domain;
   $("consentText").textContent = info.consent_text;
-  if (info.access_kind && Array.isArray(info.fields) && info.access_types?.length === 1) applyKind(info.access_kind, info.fields, info.access_types[0]);
+  if (info.access_kind && Array.isArray(info.fields) && info.access_types?.length === 1) {
+    $("providerProfile").hidden = true; document.querySelector('label[for="providerProfile"]').hidden = true;
+    applyKind(info.access_kind, info.fields, info.access_types[0]);
+  }
   else {
-    const hint = () => { $("typeHint").textContent = (VI ? VI_HINTS : HINTS)[$("type").value] || ""; $("serverFields").hidden = !SERVER_TYPES.has($("type").value); };
+    configureProviderProfiles();
+    const hint = () => { $("typeHint").textContent = (VI ? VI_HINTS : HINTS)[$("type").value] || ""; applyAccessMethod(); };
     $("type").addEventListener("change", hint); hint();
   }
   show("form");
@@ -147,21 +187,23 @@ $("form").addEventListener("submit", async (ev) => {
   const dom = normDom($("dom").value);
   if (dom !== info.domain) return err(tr(`Die Domain muss genau ${info.domain} lauten.`, "domain", info.domain));
   // TF-071: mit festem Zugangsweg nur dessen Felder; sonst wie bisher (Server-Felder nur bei SFTP/SSH/Hosting).
-  const has = (id) => (kindFields ? kindFields.includes(id) : !["port", "root", "hostKey", "passphrase", "provider", "stack"].includes(id) || SERVER_TYPES.has($("type").value));
+  const has = (id) => (kindFields ? kindFields.includes(id) : methodFields ? methodFields.includes(id) : true);
   const port = $("port").value.trim(), hostKey = $("hostKey").value.trim();
   if (has("port") && port && !/^\d{1,5}$/.test(port)) return err(tr("Der Port besteht nur aus Ziffern (z. B. 22).", "port"));
   if (has("hostKey") && hostKey && !/^(SHA256:)?[A-Za-z0-9+/]{43}=?$/i.test(hostKey)) return err(tr("Der Fingerprint hat die Form SHA256:… (43 Zeichen). Wenn unsicher: leer lassen.", "fp"));
   $("send").disabled = true;
   try {
     const val = (id) => (has(id) ? $(id).value.trim() || null : null);
+    const registryProviderName = $("providerName").hidden ? null : $("providerName").value.trim() || null;
     const payload = { access_type: $("type").value, host: val("host"), username: val("user"),
       secret: has("secret") ? $("secret").value || null : null, notes: val("notes"),
       port: val("port"), remote_root: val("root"), ssh_host_key_sha256: val("hostKey"), passphrase: has("passphrase") ? $("passphrase").value || null : null,
       website_stack_hint: has("stack") ? $("stack").value : null, provider_name: val("provider") };
     const envelope = await sealForVps(info.public_key, payload);
-    const r = await api({ op: "submit", token, access_type: payload.access_type, access_domain: dom, consent: true, envelope });
+    const r = await api({ op: "submit", token, access_type: payload.access_type, access_domain: dom, consent: true,
+      provider: { provider_id: $("providerProfile").value, provider_name: registryProviderName }, envelope });
     if (!r.ok) { $("send").disabled = false; return err(VI ? VI_ERR.send : r.body?.error || "Übermittlung fehlgeschlagen. Bitte erneut versuchen."); }
-    for (const id of ["host", "user", "secret", "notes", ...SERVER_FIELDS]) $(id).value = ""; // Klartext aus dem Formular entfernen
+    for (const id of ["host", "user", "secret", "notes", "providerName", ...SERVER_FIELDS]) $(id).value = ""; // Klartext aus dem Formular entfernen
     show("done");
   } catch { $("send").disabled = false; err(tr("Verschlüsselung oder Übermittlung fehlgeschlagen. Bitte erneut versuchen.", "crypto")); }
 });

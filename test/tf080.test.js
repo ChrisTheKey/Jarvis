@@ -296,10 +296,10 @@ test("TF-080 §39 Volle E2E-Fixture: Test-Formular → CRM TEST → Antwort → 
   assert.deepEqual([pays[0].provider_mode, pays[0].is_test, pays[0].amount, pays[0].currency, pays[0].source], ["TEST", true, 240, "CHF", "stripe_test_checkout"]);
   assert.equal(paymentGateForOrder(W.store, W.order(id)).satisfied, true);
   assert.equal(paymentSummary(W.store, W.order(id)).payment_status, "DEPOSIT_MET", "CHF 240 ≠ CHF 480 – Rest CHF 240 bleibt offen");
-  // Die Zugangsfreigabe beginnt ab CHF 240; die CHF-480-Abschlussmail mit
-  // Quittung darf erst nach bestätigtem Restbetrag versandbereit werden.
+  // Der Universalzugang bleibt bis zur vollständig bestätigten CHF-480-Zahlung gesperrt.
   recordPayment(W.store, { order_id: id, amount_chf: 240, provider_mode: "TEST", source: "stripe_test_fixture", reference: `TF80-${id}-balance`, now: W.now() });
   assert.equal(paymentSummary(W.store, W.order(id)).payment_status, "PAID_FULL");
+  await W.tick(2);
   // 7. sicherer Zugangslink automatisch, im Kontaktformular-Verlauf.
   const acc = W.accessMails(TESTBOX);
   assert.equal(acc.length, 1);
@@ -363,13 +363,15 @@ test("TF-080 §1/§11 Echter Kunde (LIVE): Live-Checkout CHF 240, Mail mit Link 
   await W.tick(2);
   const pays = paymentsForOrder(W.store, o.order_id);
   assert.deepEqual([pays.length, pays[0].provider_mode, pays[0].is_test, pays[0].source], [1, "LIVE", undefined, "stripe_checkout"]);
+  recordPayment(W.store, { order_id: o.order_id, amount_chf: 240, provider_mode: "LIVE", source: "stripe_checkout_fixture", reference: `TF80-${o.order_id}-balance`, now: W.now() });
+  await W.tick(2);
   assert.equal(W.accessMails(REALMAIL).length, 1, "sicherer Link automatisch – kein Chris-Schritt");
-  assert.equal(paymentsStatus(W.state).received_chf, 240);
+  assert.equal(paymentsStatus(W.state).received_chf, 480);
   // Später eintreffender Webhook derselben Zahlung → kein zweiter Eintrag.
   await W.pc.post(W.stripe.event("checkout.session.completed", s.id), { secret: WH.STRIPE_WEBHOOK_SECRET });
   await W.tick();
-  assert.equal(paymentsForOrder(W.store, o.order_id).length, 1);
-  assert.equal(paymentSummary(W.store, W.order(o.order_id)).payment_status, "DEPOSIT_MET", "nie PAID_FULL mit CHF 240");
+  assert.equal(paymentsForOrder(W.store, o.order_id).length, 2, "die zweite synthetische Teilzahlung ergänzt den bestätigten Vollbetrag");
+  assert.equal(paymentSummary(W.store, W.order(o.order_id)).payment_status, "PAID_FULL");
 });
 
 test("TF-080 §36 Ohne Stripe-Schlüssel: NOT_CONFIGURED, keine API-Aufrufe, nichts vorgetäuscht – Bestätigung wie TF-079 + Hinweis an Chris; Webhook 503", async () => {
@@ -475,6 +477,7 @@ test("TF-080 §14 Rückerstattung/Streitfall nach Reparaturstart → PAYMENT_REV
   const [o] = W.orders();
   const s = W.stripe.pay(W.stripe.last().id);
   await W.pc.post(W.stripe.event("checkout.session.completed", s.id));
+  recordPayment(W.store, { order_id: o.order_id, amount_chf: 240, provider_mode: "TEST", source: "stripe_test_fixture", reference: `TF80-${o.order_id}-balance`, now: W.now() });
   await W.tick(2);
   assert.equal((await W.submit(linkOf(W.accessMails(TESTBOX)[0].body), { domain: SANDBOX })).status, 200);
   await W.tick();

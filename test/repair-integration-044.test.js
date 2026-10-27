@@ -318,7 +318,7 @@ test("Pre-Write-Check: Sitzung mit abweichendem Fingerprint/Algorithmus → STOP
 function orderWithAccess(store, dir, payload) {
   const T0 = new Date();
   const o = createRepairOrder(store, { domain: "muster.ch", website: "https://muster.ch/", company: "Muster AG", delivery_email: "kunde@muster.ch", now: T0 });
-  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: `Test-${o.order_id}`, now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 480, reference: `Test-${o.order_id}`, now: T0 });
   const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });
   const token = "t".repeat(43);
   Object.assign(data.orders[o.order_id], { state: "ACCESS_REQUESTED", access_request: { token_hash: tokenHash(token), expires_at: new Date(+T0 + 72 * 3600e3).toISOString(), sent_at: T0.toISOString(), draft_id: "d1" } });

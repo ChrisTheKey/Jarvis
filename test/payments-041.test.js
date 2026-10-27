@@ -233,23 +233,23 @@ test("CHF-150: storniert (CANCELLED) oder voided Verkauf → auch mit CHF 75 kei
 
 // ---------- CHF-480-Gate + sichere Zugangs-Anfrage ----------
 
-test("CHF-480: mit Freigabe aber ohne CHF 240 → PAYMENT_REQUIRED – kein Adapter-Aufruf, keine Zugangs-Anfrage, keine Änderung", async () => {
+test("CHF-480: mit Freigabe aber ohne CHF 480 → PAYMENT_REQUIRED – kein Adapter-Aufruf, keine Zugangs-Anfrage, keine Änderung", async () => {
   const o = rfOrder();
   authorize(o.order_id);
   const adapter = fakeAdapter();
   const gmail = fakeGmail();
-  const eng = createRepairEngine({ store, adapters: { static: adapter }, auditor: fakeAuditor(), gmail, now: () => T0 });
+  const eng = createRepairEngine({ store, adapters: { static: adapter }, auditor: fakeAuditor(), gmail, onboardingDir: dir, now: () => T0 });
   await eng.processAll();
   assert.equal(readRF(o.order_id).state, "PAYMENT_REQUIRED");
-  assert.deepEqual(readRF(o.order_id).payment, { order_id: o.order_id, offer_class: "REPAIR_FIX_500", required_chf: 240, paid_chf: 0, satisfied: false });
+  assert.deepEqual(readRF(o.order_id).payment, { order_id: o.order_id, offer_class: "REPAIR_FIX_500", required_chf: 480, paid_chf: 0, satisfied: false });
   assert.deepEqual([adapter.calls.checkAccess, adapter.calls.backup, adapter.calls.applyFix, gmail.calls.length], [0, 0, 0, 0],
-    "vor CHF 240: kein Zugang, kein Login, keine Anfrage, keine Reparatur");
-  // Teilzahlung genügt nicht; erst kumulativ 240 geht es weiter – danach normaler Bestandsworkflow.
+    "vor CHF 480: kein Zugang, kein Login, keine Anfrage, keine Reparatur");
+  // Eine Anzahlung genügt nicht; erst kumulativ CHF 480 startet den Erfüllungsworkflow.
   recordPayment(store, { order_id: o.order_id, amount_chf: 200, now: T0 });
   await eng.processAll();
   assert.equal(readRF(o.order_id).state, "PAYMENT_REQUIRED");
   assert.equal(repairOrdersStatus(dir).waiting_payment, 1);
-  recordPayment(store, { order_id: o.order_id, amount_chf: 40, now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 280, now: T0 });
   await eng.processAll();
   const saved = readRF(o.order_id);
   assert.ok(!["PAYMENT_REQUIRED", "ORDER_RECEIVED", "AUTHORIZATION_REQUIRED"].includes(saved.state), "nach der Schwelle läuft der Bestandsworkflow");
@@ -257,10 +257,10 @@ test("CHF-480: mit Freigabe aber ohne CHF 240 → PAYMENT_REQUIRED – kein Adap
   assert.ok(saved.state_history.some((h) => h.to === "ACCESS_CHECK" && /Zahlungsschwelle erfüllt/.test(h.reason)));
 });
 
-test("CHF-480: nach CHF 240 ohne konfigurierten Zugang → genau EINE automatische Bitte um SICHEREN Zugang; Zugang konfiguriert → läuft weiter", async () => {
+test("CHF-480: nach Vollzahlung ohne konfigurierten Zugang → genau EINE automatische Bitte um SICHEREN Zugang; Zugang konfiguriert → läuft weiter", async () => {
   const o = rfOrder();
   authorize(o.order_id);
-  recordPayment(store, { order_id: o.order_id, amount_chf: 240, now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 480, now: T0 });
   const gmail = fakeGmail();
   // Zugangsweg vorhanden, aber Zugangsprüfung schlägt fehl (ok:false) – entspricht «noch kein sicherer Zugang erhalten».
   const { client, blobs } = cloudIntake();
@@ -295,7 +295,7 @@ test("CHF-480: nach CHF 240 ohne konfigurierten Zugang → genau EINE automatisc
   // Ohne Kundenadresse (oder ohne gmail) bleibt das Bestandsverhalten: fail closed BLOCKED_NO_ACCESS.
   const o2 = createRepairOrder(store, { domain: "andere.ch", website: "https://andere.ch/", now: T0 });
   authorizeRepair(store, o2.order_id, { authorized_domain: "andere.ch", source: "customer_order_form", now: T0 });
-  recordPayment(store, { order_id: o2.order_id, amount_chf: 240, now: T0 });
+  recordPayment(store, { order_id: o2.order_id, amount_chf: 480, now: T0 });
   await createRepairEngine({ store, adapters: {}, auditor: fakeAuditor(), gmail: null, now: () => T0 }).processAll();
   assert.equal(readRF(o2.order_id).state, "BLOCKED_NO_ACCESS");
 });
@@ -309,7 +309,7 @@ test("CHF-480: buildAccessRequestMail ohne interne IDs/Secrets; Dashboard zeigt 
   for (const verboten of [o.order_id, "Token", "Adapter", "github", "Passwort senden", "Angebot", "Rabatt", "jetzt bestellen"]) assert.ok(!mail.body.includes(verboten), `Zugangs-Anfrage enthält "${verboten}"`);
   // Pflichtinhalte: erste Teilzahlung eingegangen, temporärer sicherer Zugang, keine Passwörter per Mail, orderspezifischer Link,
   // temporärer Benutzer mit minimalen Rechten.
-  for (const pflicht of ["erste Teilzahlung", "temporären, sicheren Zugang", "KEINE Passwörter per E-Mail", link, "nur einmal verwendbar", "temporären Benutzer mit nur den nötigen Rechten"])
+  for (const pflicht of ["vollständige Zahlung von CHF 480", "temporären, sicheren Zugang", "KEINE Passwörter per E-Mail", link, "nur einmal verwendbar", "temporären Benutzer mit nur den nötigen Rechten"])
     assert.ok(mail.body.includes(pflicht), `Zugangs-Anfrage ohne "${pflicht}"`);
   authorize(o.order_id);
   recordPayment(store, { order_id: o.order_id, amount_chf: 100, reference: "Bank Teilzahlung", now: T0 });

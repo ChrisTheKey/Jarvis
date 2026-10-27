@@ -27,6 +27,7 @@ import { paymentGateForOrder } from "./payments.js";
 import { safeEqual } from "./shared-state.js";
 import { ACCESS_TYPES, ACCESS_ENVELOPE_ALG, INTAKE_TTL_MS, ORDER_ID_RE, repairScope, INTAKE_PURPOSES, normDomain, tokenHash, consentText,
   hostKeyConfirmText, validEnvelope } from "./access-intake-api.js";
+import { PROVIDER_REGISTRY, providerProfileForDetection } from "./access-provider-registry.js";
 
 export { ACCESS_TYPES, INTAKE_TTL_MS, INTAKE_PURPOSES, tokenHash, consentText, hostKeyConfirmText };
 export const ACCESS_KEY_FILE = "access_intake_private.pem";
@@ -159,6 +160,13 @@ export function applyAccessSubmission(store, s, { workerDir = store.dir, now = n
   const loc = order.market === "VN" ? "vi-VN" : "de-CH"; // TF-064: Freigabetext in der Sprache des Auftrags
   if (sub.consent !== true || sub.consent_text !== consentText(order.domain, loc)) return deny("Reparaturfreigabe fehlt");
   if (!ACCESS_TYPES.includes(sub.access_type)) return deny("Zugangsart unbekannt");
+  const submittedProvider = sub.provider || null;
+  // Bereits vor TF-032 übermittelte, gültige Einreichungen enthalten noch kein Profil. Sie bleiben kompatibel;
+  // neue Cloud-Einreichungen müssen das serverseitig validierte Profil mitliefern.
+  const profile = submittedProvider ? PROVIDER_REGISTRY[submittedProvider.provider_id] : providerProfileForDetection(order.platform || {});
+  const provider = submittedProvider || { provider_id: profile.id, access_type: sub.access_type, automation: profile.automation };
+  if (!profile || provider.access_type !== sub.access_type || provider.automation !== profile.automation || !profile.access_types.includes(sub.access_type))
+    return deny("Anbieterprofil oder Zugangsart ungültig");
   // TF-071: Link für einen bestimmten Zugangsweg → nur dessen Zugangsart (wie in der Cloud geprüft, hier erneut).
   if (order.platform?.connector_type && order.platform.access_type && sub.access_type !== order.platform.connector_type) return deny("Zugangsart passt nicht zum Auftrag");
   if (!paymentGateForOrder(store, order).satisfied) return deny("Zahlungsschwelle nicht erfüllt");
@@ -166,7 +174,9 @@ export function applyAccessSubmission(store, s, { workerDir = store.dir, now = n
   catch { return deny("Zugangsdaten nicht entschlüsselbar"); }
   storeAccessSecret(workerDir, order.order_id, sub.envelope, now);
   const at = now.toISOString();
-  order.access_intake = { status: "RECEIVED", connector_type: sub.access_type, access_domain: order.domain, received_at: at, destroyed_at: null, revoked_required: true };
+  order.access_intake = { status: "RECEIVED", connector_type: sub.access_type,
+    ...(submittedProvider ? { provider: { provider_id: profile.id, ...(submittedProvider.provider_name ? { provider_name: submittedProvider.provider_name } : {}), access_type: sub.access_type, automation: profile.automation } } : {}),
+    access_domain: order.domain, received_at: at, destroyed_at: null, revoked_required: true };
   // Reparaturfreigabe aus dem Formular – getrennt von der Zahlung, nur mit ausdrücklicher Zustimmung. Keine Zugangsdaten hier.
   order.customer_authorized_repair = true;
   order.authorization = { authorized_domain: order.domain, source: ACCESS_AUTH_SOURCE, reference: `Sicheres Auftragsformular ${sub.submitted_at.slice(0, 10)}`, granted_at: sub.submitted_at, scope: repairScope(loc) };

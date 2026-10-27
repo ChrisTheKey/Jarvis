@@ -257,9 +257,9 @@ function world({ detect = "unknown", site = SITE } = {}) {
     exp: (id) => readOrdersExport(onbDir).orders[id],
     reply: (id, body) => g.customer(W.rec(id).thread_id, { from: `Kunde <${W.rec(id).customer_email}>`, body }),
     lastSend: () => g.sends().at(-1),
-    submit: async (link, { access_type, secret = GOOD, domain = DOMAIN }) => {
+    submit: async (link, { access_type, secret = GOOD, domain = DOMAIN, provider = null }) => {
       const info = await c.call({ op: "info", token: tokenOf(link) });
-      return c.call({ op: "submit", token: tokenOf(link), access_type, access_domain: domain, consent: true,
+      return c.call({ op: "submit", token: tokenOf(link), access_type, access_domain: domain, consent: true, ...(provider ? { provider } : {}),
         envelope: sealEnvelope({ access_type, host: `${SITE}wp-admin`, username: "jarvis-temp", secret }, info.body.public_key) });
     },
     allFiles: () => [state, ob, mail].flatMap((d) => fs.readdirSync(d, { recursive: true }).map(String).map((f) => path.join(d, f)))
@@ -283,19 +283,20 @@ test("TF-071 §13 FIX + erkennbares WordPress: Plattform erkannt → direkt sich
   assert.equal(s.length, 1, "genau eine Startnachricht, keine Plattform-Frage");
   assert.equal(s[0].messageClass, "CUSTOMER_ACCESS_REQUEST");
   assert.ok(!s[0].body.includes(HOSTING_QUESTION_DE), "keine Hosting-Frage, wenn sicher erkannt");
-  assert.match(s[0].body, /Ihre Website läuft mit WordPress\. .*temporären Benutzer mit der Rolle «Administrator»/);
+  assert.ok(/access\.html#t=/.test(s[0].body), "die erste Service-Mail enthält den universellen, auftragsgebundenen Tresorlink");
   assert.ok(s[0].body.includes(C.NO_PASSWORD_DE));
   assert.doesNotMatch(s[0].body, ASKS_PASSWORD_BY_MAIL);
   assert.match(s[0].body, /Gibt es neben den von uns gefundenen technischen Fehlern noch Inhalte/, "TF-066 Inhaltsfrage bleibt");
   const o = W.order(id);
-  assert.deepEqual([o.platform.cms_platform, o.platform.access_type, o.platform.connector_type, o.platform.confidence, o.platform.detection_source], ["WORDPRESS", "WORDPRESS_ADMIN", "wordpress_cms", "HIGH", "automatic"]);
-  assert.deepEqual(W.exp(id).platform, { hosting_provider: "HOSTPOINT", cms_platform: "WORDPRESS", dns_provider: "HOSTPOINT", deployment_platform: null, panel: null, access_type: "WORDPRESS_ADMIN",
+  assert.deepEqual([o.platform.cms_platform, o.platform.access_type, o.platform.connector_type, o.platform.confidence, o.platform.detection_source], ["WORDPRESS", "UNIVERSAL_ACCESS", null, "HIGH", "automatic"]);
+  assert.deepEqual(W.exp(id).platform, { hosting_provider: "HOSTPOINT", cms_platform: "WORDPRESS", dns_provider: "HOSTPOINT", deployment_platform: null, panel: null, access_type: "UNIVERSAL_ACCESS",
     confidence: "HIGH", detection_source: "automatic", access_flow: "WAITING_FOR_SECURE_ACCESS" });
   // Adaptives Formular: feste Zugangsart, nur WordPress-Felder; andere Zugangsart → abgelehnt.
   const link = linkOf(s[0].body);
   const info = await W.c.call({ op: "info", token: tokenOf(link) });
-  assert.deepEqual([info.body.access_kind, info.body.access_types, info.body.fields], ["WORDPRESS_ADMIN", ["wordpress_cms"], ["host", "user", "secret", "notes"]]);
-  assert.equal((await W.submit(link, { access_type: "sftp" })).status, 400, "falsche Zugangsart für den Link");
+  assert.equal(info.body.provider_profile.id, "WORDPRESS", "hohe Erkennung ist nur eine Vorauswahl");
+  assert.ok(info.body.access_types.includes("sftp"), "Kunde kann trotz Vorschlag den passenden Zugangsweg wählen");
+  assert.deepEqual(info.body.access_method_fields.wordpress_cms, ["host", "user", "secret", "notes"]);
   assert.equal((await W.submit(link, { access_type: "wordpress_cms" })).status, 200);
   await W.tick();
   assert.equal(W.order(id).access_intake?.connector_type ?? (W.order(id).access?.ok && "wordpress_cms"), "wordpress_cms");
@@ -303,54 +304,27 @@ test("TF-071 §13 FIX + erkennbares WordPress: Plattform erkannt → direkt sich
   assert.ok(!W.allFiles().includes(GOOD), "Zugangsdaten nie im Klartext ausserhalb des Tresors");
 });
 
-test("TF-071 §13 FIX + unbekannte Plattform: zuerst Hosting-Frage (kein Link, keine Registrierung) → «WordPress bei Hostpoint» → Plattform gespeichert → passender sicherer Link im selben Thread → E2E bis Abschluss", async () => {
+test("TF-071/032 unbekannte Plattform: CHF-480-Vollzahlung → universeller Link ohne Anbieterfrage; unbekannter Anbieter bleibt manuell", async () => {
   const W = world({ detect: "unknown" });
   const id = await paidFix(W);
-  const q = W.g.sends();
-  assert.equal(q.length, 1);
-  assert.equal(q[0].messageClass, C.ONBOARDING_CLASS);
-  assert.ok(q[0].body.includes(HOSTING_QUESTION_DE) && q[0].body.includes(HOSTING_NO_PW_DE), "exakte Frage + kein Passwort per Mail");
-  assert.ok(!/access\.html|#t=/.test(q[0].body), "kein sicherer Link vor geklärter Plattform");
-  assert.doesNotMatch(q[0].body, ASKS_PASSWORD_BY_MAIL);
-  assert.doesNotMatch(q[0].body, /Benutzername|Passwort:/);
-  assert.match(q[0].body, /Gibt es neben den von uns gefundenen technischen Fehlern noch Inhalte/, "Inhaltsfrage im selben ersten Schreiben");
-  assert.equal(JSON.parse(W.c.blobs.dump()).length, 0, "keine Link-Registrierung (kein Credential-Request) vor der Plattform");
-  assert.equal(W.order(id).state, "WAITING_FOR_HOSTING_INFO");
-  assert.equal(W.exp(id).access_status, "HOSTING_INFO_MISSING");
-  assert.equal(W.exp(id).platform.access_flow, "WAITING_FOR_HOSTING_INFO");
-  assert.equal(W.rec(id).thread_id, q[0].threadId, "Thread durch die Frage gebunden");
-  assert.equal(C.publicOnboarding(W.rec(id), W.exp(id)).state, "WAITING_FOR_CUSTOMER_INFO");
+  const sent = W.g.sends();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].messageClass, "CUSTOMER_ACCESS_REQUEST");
+  assert.ok(!sent[0].body.includes(HOSTING_QUESTION_DE));
+  assert.ok(/access\.html#t=/.test(sent[0].body));
+  assert.ok(sent[0].body.includes(C.NO_PASSWORD_DE));
+  assert.doesNotMatch(sent[0].body, ASKS_PASSWORD_BY_MAIL);
+  assert.equal(W.order(id).payment.required_chf, 480);
+  assert.equal(W.order(id).platform.access_type, "UNIVERSAL_ACCESS");
+  const link = linkOf(sent[0].body);
+  const info = await W.c.call({ op: "info", token: tokenOf(link) });
+  assert.equal(info.body.provider_profile.id, "CUSTOM");
+  assert.ok(info.body.access_types.includes("oauth_connection"));
+  assert.equal((await W.submit(link, { access_type: "api_access", provider: { provider_id: "CUSTOM", provider_name: "Synthetischer Spezialanbieter" } })).status, 200);
   await W.tick(2);
-  assert.equal(W.g.sends().length, 1, "keine zweite Frage, kein Link ohne Antwort");
-  // Kunde antwortet.
-  W.reply(id, "Guten Tag\n\nWordPress bei Hostpoint.\n\nFreundliche Grüsse\nAnna Muster");
-  await W.mailTick();
-  assert.equal(W.extract.calls.length, 0, "deterministisch, keine KI");
-  assert.equal(W.g.sends().length, 1, "keine eigene Antwort – der Link folgt");
-  assert.deepEqual([W.rec(id).platform.cms_platform, W.rec(id).platform.hosting_provider], ["WORDPRESS", "HOSTPOINT"]);
-  await W.tick();
-  const o = W.order(id);
-  assert.deepEqual([o.state, o.platform.cms_platform, o.platform.hosting_provider, o.platform.access_type, o.platform.detection_source], ["ACCESS_REQUESTED", "WORDPRESS", "HOSTPOINT", "WORDPRESS_ADMIN", "customer"]);
-  const acc = W.g.sends()[1];
-  assert.equal(acc.messageClass, "CUSTOMER_ACCESS_REQUEST");
-  assert.equal(acc.threadId, q[0].threadId, "Link im bestehenden Auftrags-Thread");
-  assert.ok(acc.inReplyTo, "In-Reply-To gesetzt");
-  assert.match(acc.body, /vielen Dank für Ihre Angaben/);
-  assert.match(acc.body, /Ihre Website läuft mit WordPress/);
-  assert.ok(!/Gibt es neben den von uns gefundenen technischen Fehlern/.test(acc.body), "Inhaltsfrage nicht wiederholt");
-  const link = linkOf(acc.body);
-  assert.equal((await W.c.call({ op: "info", token: tokenOf(link) })).body.access_kind, "WORDPRESS_ADMIN", "korrektes Formular");
-  assert.equal(W.exp(id).platform.access_flow, "WAITING_FOR_SECURE_ACCESS");
-  // Zugang + «Nein» (keine Inhaltsänderungen) → Validierung → Reparatur → Abschluss.
-  assert.equal((await W.submit(link, { access_type: "wordpress_cms" })).status, 200);
-  await W.tick();
-  W.reply(id, "Nein, sonst nichts.");
-  await W.tick(3);
-  const done = W.order(id);
-  assert.ok(["COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS"].includes(done.state), done.state);
-  assert.equal(completionGate(done).missing.includes("platform"), false);
-  assert.equal(done.access_validation.status, "ACCESS_VALIDATED");
-  assert.equal(W.detections.length, 1, "Erkennung genau einmal");
+  assert.equal(W.order(id).state, "MANUAL_REVIEW_REQUIRED");
+  assert.equal(W.order(id).access_intake.provider.provider_name, "Synthetischer Spezialanbieter");
+  assert.ok(!W.allFiles().includes(GOOD), "Zugangsdaten bleiben ausserhalb des Tresors verschlüsselt");
 });
 
 test("TF-071 §13 CHECK-Auftrag: kein Hosting-/Zugangs-Flow, keine Erkennung", async () => {
@@ -370,33 +344,32 @@ test("TF-071 §13 CHECK-Auftrag: kein Hosting-/Zugangs-Flow, keine Erkennung", a
 test("TF-071 §9 Passwort per Mail während der Hosting-Frage: nichts gespeichert/geloggt/an die KI, Hinweis ohne Verweis auf einen (noch nicht existierenden) Link, Plattform nicht aus dieser Mail übernommen", async () => {
   const W = world({ detect: "unknown" });
   const id = await paidFix(W);
+  const platformBeforeReply = structuredClone(W.rec(id).platform);
   W.reply(id, "Hallo, WordPress bei Hostpoint. Benutzer: admin\nPasswort: Geheim-TF71-xyz!\nGruss");
   await W.mailTick();
   const hint = W.lastSend();
   assert.equal(hint.messageClass, C.ONBOARDING_CLASS);
-  assert.ok(hint.body.includes(C.SENSITIVE_NOLINK_DE));
-  assert.ok(hint.body.includes(HOSTING_QUESTION_DE), "Plattform erneut erfragt (ohne Zugangsdaten)");
-  assert.ok(!hint.body.includes("vorherigen Nachricht"), "kein Verweis auf einen Link, den es noch nicht gibt");
+  assert.ok(hint.body.includes(C.SENSITIVE_DE));
+  assert.ok(/sicheren Zugangslink/i.test(hint.body), "Hinweis verweist auf den bereits gesendeten universellen Link");
   assert.ok(!hint.body.includes("Geheim-TF71"));
   assert.equal(W.extract.calls.length, 0, "nie an die KI");
-  assert.equal(W.rec(id).platform, undefined, "nichts aus der Passwort-Mail übernommen");
+  assert.deepEqual(W.rec(id).platform, platformBeforeReply, "Anbietererkennung wird nicht aus der Passwort-Mail übernommen");
   assert.ok(!W.allFiles().includes("Geheim-TF71"), "nicht gespeichert (Brief, Export, Outbox, Zustand)");
   assert.ok(!W.logs.join("\n").includes("Geheim-TF71") && !JSON.stringify(W.notes).includes("Geheim-TF71"), "nicht geloggt");
   assert.ok(!JSON.stringify(W.onb.publicByOrder()).includes("Geheim-TF71"), "nicht im CRM");
   // Danach saubere Antwort → Flow läuft normal weiter.
   W.reply(id, "WordPress bei Hostpoint");
   await W.tick();
-  assert.equal(W.order(id).platform.access_type, "WORDPRESS_ADMIN");
-  // Reminder vor Antwort wiederholt die Plattform-Frage (eigene Welt).
+  assert.equal(W.order(id).platform.access_type, "UNIVERSAL_ACCESS", "E-Mail-Antwort ändert die unverbindliche Vorauswahl nicht");
+  // Wiederholter Lauf erstellt keinen zweiten Zugangstresor-Link.
   const R = world({ detect: "unknown" });
   const rid = await paidFix(R);
   R.reply(rid, "Nein");
   await R.mailTick();
-  assert.ok(R.lastSend().body.includes(HOSTING_QUESTION_DE), "«Nein» zur Inhaltsfrage → Bestätigung + Plattform-Frage");
+  const firstMailCount = R.g.sends().filter((m) => /access\.html#t=/.test(m.body)).length;
   R.advance(25 * H);
   await R.tick();
-  assert.ok(R.lastSend().body.includes(HOSTING_QUESTION_DE), "Erinnerung fragt nach der Plattform");
-  assert.ok(!/access\.html|#t=/.test(R.lastSend().body));
+  assert.ok(R.g.sends().filter((m) => /access\.html#t=/.test(m.body)).length <= firstMailCount, "kein zweiter Zugangstresor-Link");
 });
 
 test("TF-071 §10 ACCESS_VALIDATION_FAILED: ungültiger Zugang → zerstört, nie erneut versucht, neuer Link im Auftrags-Thread; gültiger Zugang → ACCESS_VALIDATED; dreimal ungültig → Chris", async () => {
@@ -419,7 +392,7 @@ test("TF-071 §10 ACCESS_VALIDATION_FAILED: ungültiger Zugang → zerstört, ni
   const link2 = linkOf(re[1].body);
   assert.notEqual(link2, link1);
   assert.equal((await W.c.call({ op: "info", token: tokenOf(link1) })).status, 404, "alter Link tot");
-  assert.equal((await W.c.call({ op: "info", token: tokenOf(link2) })).body.access_kind, "WORDPRESS_ADMIN");
+  assert.ok((await W.c.call({ op: "info", token: tokenOf(link2) })).body.access_types.includes("wordpress_cms"));
   assert.ok(!W.allFiles().includes(BAD), "ungültiges Secret nirgends im Klartext");
   // Gültiger Zugang → validiert.
   assert.equal((await W.submit(link2, { access_type: "wordpress_cms", secret: GOOD })).status, 200);
@@ -440,24 +413,18 @@ test("TF-071 §10 ACCESS_VALIDATION_FAILED: ungültiger Zugang → zerstört, ni
   assert.ok(X.order(xid).alerts.some((a) => a.kind === "access_validation_failed"), "Chris informiert");
 });
 
-test("TF-071 §13/§55 VN: unbekannte Plattform → vietnamesische Hosting-Frage, «WordPress ở Mắt Bão» → vietnamesischer Link mit WordPress-Anleitung", async () => {
+test("TF-071/032 §13/§55 VN: universeller vietnamesischer Zugang bleibt verfügbar", async () => {
   const W = world({ detect: "unknown", site: VN_SITE });
   const o = createRepairOrder(W.store, { domain: VN_DOMAIN, website: VN_SITE, company: "Quán Cà Phê", delivery_email: VN_EMAIL, contact_name: "chị Lan", offer_class: "VN_REPAIR_FIX",
     vn: { lead_id: VN_DOMAIN, seller_id: "Kudoshin", confirmed_by: "Kudoshin", confirmed_at: T0.toISOString(), source: "vn_sales_confirmed", request_id: "00000000-0000-0000-0000-000000000071" }, now: T0 });
   recordPayment(W.store, { order_id: o.order_id, amount: 1950000, currency: "VND", reference: `TF71-${o.order_id}`, now: T0 });
   await W.tick();
-  const q = W.g.sends()[0];
-  assert.ok(q.body.includes(HOSTING_QUESTION_VI) && q.body.includes(HOSTING_NO_PW_VI));
-  assertVn(q.body, "VN Hosting-Frage");
-  assertVn(q.subject, "VN Betreff");
-  W.reply(o.order_id, "WordPress ở Mắt Bão");
-  await W.tick(2);
-  const acc = W.g.sends()[1];
+  const acc = W.g.sends()[0];
   assert.equal(acc.messageClass, "CUSTOMER_ACCESS_REQUEST");
   assertVn(acc.body, "VN Zugangs-Mail");
-  assert.match(acc.body, /Website của anh\/chị dùng WordPress/);
+  assert.doesNotMatch(acc.body, ASKS_PASSWORD_BY_MAIL);
   assert.ok(/&l=vi/.test(linkOf(acc.body)));
-  assert.equal(W.order(o.order_id).platform.hosting_provider, "MATBAO");
+  assert.equal(W.order(o.order_id).platform.access_type, "UNIVERSAL_ACCESS");
   assert.equal(W.order(o.order_id).seller_id, "Kudoshin", "Verkäuferzuordnung unverändert");
 });
 
@@ -469,7 +436,7 @@ test("TF-071 §11/§14 CRM + Sicherheit: nur feste Wörter, nie Zugangsdaten; Ve
   await W.tick();
   const pub = W.onb.publicByOrder()[id];
   assert.equal(pub.platform.cms_platform, "WORDPRESS");
-  assert.equal(pub.platform.access_type, "WORDPRESS_ADMIN");
+  assert.equal(pub.platform.access_type, "UNIVERSAL_ACCESS");
   const snapRepair = cleanRepair(attachOnboarding({ orders: [{ order_id: id, domain: DOMAIN, state: W.order(id).state }] }, { [id]: { ...pub, platform: { ...pub.platform, password: GOOD, username: "jarvis-temp", host: SITE } } }));
   const s = JSON.stringify(snapRepair);
   for (const bad of [GOOD, "jarvis-temp", "password", "wp-admin", "#t="]) assert.ok(!s.includes(bad), `CRM-Snapshot enthält nie ${bad}`);
@@ -478,7 +445,7 @@ test("TF-071 §11/§14 CRM + Sicherheit: nur feste Wörter, nie Zugangsdaten; Ve
   // Anzeige (DE/VI): Hosting, CMS, Zugangsart, Erkennung, Zugangsstatus.
   const rows = platformRows(pub.platform, onboardingTexts("de-CH"));
   assert.deepEqual(rows.map((r) => r[0]), ["Hosting", "CMS", "Zugangsart", "Erkennung", "Zugangsstatus"]);
-  assert.deepEqual(rows.slice(0, 3).map((r) => r[1]), ["Hostpoint", "WordPress", "Temporärer WordPress-Admin"]);
+  assert.deepEqual(rows.slice(0, 3).map((r) => r[1]), ["Hostpoint", "WordPress", "Universeller Zugangsweg"]);
   // Verkäufer/Chris über die API: Plattform-Wörter sichtbar (eigener Bereich), Zugangsdaten nie.
   const t = await salesSetup();
   const mar = (await t.json(await t.crm(makeReq("/api/crm", { cookie: t.cookies.mario })))).body.leads.find((l) => l.domain);
@@ -488,7 +455,7 @@ test("TF-071 §11/§14 CRM + Sicherheit: nur feste Wörter, nie Zugangsdaten; Ve
     const r = await t.json(await t.sales(makeReq("/api/sales?view=onboarding", { cookie: t.cookies[u] })));
     assert.equal(r.status, 200, u);
     assert.ok(!JSON.stringify(r.body).includes(GOOD), `${u}: nie Klartext`);
-    if (u === "chris" || u === "mario") assert.equal(r.body.orders[0].onboarding.platform.access_type, "WORDPRESS_ADMIN", u);
+    if (u === "chris" || u === "mario") assert.equal(r.body.orders[0].onboarding.platform.access_type, "UNIVERSAL_ACCESS", u);
     else assert.equal(r.body.orders.length, 0, `${u}: fremder Kunde nie sichtbar`);
   }
   // Abholung der Einreichungen nur mit Worker-Token – Verkäufer-Sitzung/ohne Token → 401, keine Chiffrate.
