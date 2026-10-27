@@ -8,6 +8,7 @@ Zuletzt aktualisiert: 2026-10-27 (TF-JARVIS-032: PDF-Quittung für CHF-480-Absch
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
 - TF-JARVIS-024 Phase 3: Offer-Intent-Bundle, verifizierte Auswahl/Materialisierung, CHF-480-Tresoraktivierung über den bestehenden Access-Intake und bestehende Zahlungs-/Completion-Gates lokal implementiert und gezielt getestet; lokaler Commit vorhanden, nicht deployed.
 - TF-JARVIS-024 Direct-Mail: Button „Mail senden“ im Leadpanel, exakt freigegebene Erstmail mit auftragsgebundenem One-Time-Access-Link und ausschliesslichen Stripe-Sandbox-Links, serverseitige Sandbox-/Synthetic-Gates, Queue-Idempotenz und Worker-Prüfung implementiert; direkte Tests 5/5, relevante Regressionen 38/38 und isolierter Browsernachweis 1/1 (Desktop, Mobile, Reload, genau ein Auftrag) grün; kein echter Versand.
+- TF-JARVIS-033: gemeinsamer Adaptervertrag und fail-closed Provider-Erkennung implementiert; Commit `5c0c226`, Full-Check 1'213/1'201/0/12 mit Exit 0, Abschlussbericht unter `reports/TF-JARVIS-033-ABSCHLUSSBERICHT.md`; Docker-Labs und Produktionsfreigabe bleiben BLOCKED.
 - TF-JARVIS-031: CRM-Refresh-/Pointer-DOM-Race in `public/crm.js` minimal behoben; synthetische Regressionstests N2/N3 ergänzt; N/N2/N3 sowie der vollständige `crm-browser-053`-Lauf und TF-024 Phase 5 grün; abschließender Full-Check 1199/1187/0/12 mit Exit 0. Docker-Labs bleiben wegen des blockierten read-only Docker-Aufrufs offen.
 - TF-JARVIS-025 Produktionsprüfung: tatsächlicher Worker-Status überschreibt im CRM keinen veralteten lokalen Queue-Hinweis mehr; `vn-order-064` übernimmt die `lead_id` auch beim CHF-150-Check-Auftrag. Browser-, Direkt-, Sicherheits- und E2E-Regressionsprüfungen sind mit vorhandenem Chromium grün; vier isolierte Screenshots liegen unter `reports/TF-JARVIS-025/screenshots/`. Der Produktionsversand bleibt bis zur ausdrücklichen Freigabe gesperrt.
 - P0-Sicherheitsstufe und Entfernung der autonomen LiveKit-Agententelefonie im lokalen Codex-Worktree: CRM-Anruflisten, Historie, Status, Rückrufe und Vertriebs-/Zahlungs-/Provisionspfade bleiben erhalten; nicht deployt.
@@ -32,7 +33,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 |---|---|---|
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
-| Codex | `agent-codex/tf033` / `Jarvis-tf033` | TF-033 gemeinsamer Adaptervertrag und fail-closed Provider-Erkennung; Docker-Labs und Full-Check offen; kein Push, Merge oder Deployment |
+| Codex | `agent-codex/tf033` / `Jarvis-tf033` | – (fertig; kein Push, Merge oder Deployment) |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -178,4 +179,4 @@ Siehe Abschnitt am Ende dieser Datei (wird bei der Einrichtung und bei Änderung
 
 ### In Arbeit
 
-- Lokaler TF-033-Commit nach dem finalen Precheck.
+- Keine weiteren TF-033-Änderungen im Worktree; kein Push, Merge oder Deployment.
