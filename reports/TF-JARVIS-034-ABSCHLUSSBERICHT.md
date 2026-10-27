@@ -59,4 +59,4 @@ Erforderlich für einen separaten kontrollierten Lauf: freigegebener read-only D
 
 ## Commit
 
-Commit: wird nach dem Quick-Check im lokalen Branch `agent-codex/tf034` ergänzt; kein Push, Merge oder Deployment.
+Commit der geprüften TF-034-Dokumentation: `b6b9eab`; Branch `agent-codex/tf034`; kein Push, Merge oder Deployment.
