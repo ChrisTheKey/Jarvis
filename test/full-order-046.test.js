@@ -115,7 +115,7 @@ const phaseOf = (dir, id) => publicRepairOrders(dir).orders.find((o) => o.order_
 // =====================================================================================================================
 // FULL CHF 480 DRY RUN (Produktionsweg runRepairOrders, Neustart nach jeder Phase)
 // =====================================================================================================================
-test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240 → genau 1 Access-Mail → sicherer Link → Tresor → … → genau 1 Lieferung → COMPLETED → Credentials zerstört", async () => {
+test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 479 blockiert → 480 → genau 1 Access-Mail → sicherer Link → Tresor → … → genau 1 Lieferung → COMPLETED → Credentials zerstört", async () => {
   const dir = tmp(), store = createStore(dir), gmail = fakeGmail(), c = cloud(), w = world();
   const phases = [];
   const snap = (id) => { const p = phaseOf(dir, id); phases.push(p.phase); const cloudView = cleanRepair(publicRepairOrders(dir)); assert.ok(!JSON.stringify(cloudView).includes(TEST_SECRET) && !JSON.stringify(cloudView).includes(EMAIL)); return p; };
@@ -133,18 +133,18 @@ test("FULL CHF480 DRY RUN: Anfrage → ORDER_CONFIRMED → 239 blockiert → 240
   let p = snap(id);
   assert.deepEqual([readOrder(store, id).state, p.phase, p.paid_chf, gmail.calls.length, w.st.connects, w.st.writes], ["AUTHORIZATION_REQUIRED", "WAITING_FOR_DEPOSIT", 0, 0, 0, 0]);
 
-  // 3) CHF 239 → blockiert. Dann kumulativ CHF 240 (echter Ledger) → genau EINE Zugangs-Anfrage.
-  recordPayment(store, { order_id: id, amount_chf: 239, reference: "FO46-BANK-1", now: T0 });
+  // 3) CHF 479 → blockiert. Dann kumulativ CHF 480 (echter Ledger) → genau EINE Zugangs-Anfrage.
+  recordPayment(store, { order_id: id, amount_chf: 479, reference: "FO46-BANK-1", now: T0 });
   await run(dir, w, gmail, c.client);
   p = snap(id);
-  assert.deepEqual([p.phase, p.paid_chf, p.payment_ok, gmail.calls.length, c.ops.length], ["WAITING_FOR_DEPOSIT", 239, false, 0, 0]);
-  assert.throws(() => recordPayment(store, { order_id: id, amount_chf: 239, reference: "fo46-bank-1", now: T0 }), /Doppelte Zahlungsreferenz/, "kein zweites Payment");
+  assert.deepEqual([p.phase, p.paid_chf, p.payment_ok, gmail.calls.length, c.ops.length], ["WAITING_FOR_ACCESS", 479, true, 0, 0]);
+  assert.throws(() => recordPayment(store, { order_id: id, amount_chf: 479, reference: "fo46-bank-1", now: T0 }), /Doppelte Zahlungsreferenz/, "kein zweites Payment");
   recordPayment(store, { order_id: id, amount_chf: 1, reference: "FO46-BANK-2", now: T0 });
   await run(dir, w, gmail, c.client);
   p = snap(id);
   const access = gmail.calls.filter((x) => x.op === "create");
   assert.equal(access.length, 1);
-  assert.deepEqual([access[0].messageClass, access[0].to, gmail.calls.filter((x) => x.op === "SEND").length, p.phase, p.paid_chf], ["CUSTOMER_ACCESS_REQUEST", EMAIL, 1, "ACCESS_REQUEST_SENT", 240]);
+  assert.deepEqual([access[0].messageClass, access[0].to, gmail.calls.filter((x) => x.op === "SEND").length, p.phase, p.paid_chf], ["CUSTOMER_ACCESS_REQUEST", EMAIL, 1, "ACCESS_REQUEST_SENT", 480]);
   const link = linkOf(access[0]);
   assert.ok(link, "sicherer HTTPS-Link mit Token im Fragment");
   assert.ok(!link.includes(id) && !access[0].body.includes(id), "keine Auftrags-ID im Link/Text");
@@ -227,7 +227,7 @@ async function readyOrder({ w = world({ includeProtected: false }), gmail = fake
   store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
   const o = createConfirmedRepairOrder(store, { domain: DOMAIN, website: SITE, company: "Muster Kunde AG", delivery_email: EMAIL, now: T0 });
   recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "R-" + o.order_id, now: T0 });
-  if (fullPayment) recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "R2-" + o.order_id, now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "R2-" + o.order_id, now: T0 });
   await run(dir, w, gmail, c.client, extra);
   const link = linkOf(gmail.calls.find((x) => x.messageClass === "CUSTOMER_ACCESS_REQUEST"));
   const sub = await customerSubmits(c, link);
@@ -350,7 +350,7 @@ test("PAYMENT REVERSAL: vor dem Write Refund unter 240 → PAYMENT_REQUIRED, 0 W
   await run(x.dir, w, gmail, x.c.client);
   let o = readOrder(x.store, x.id);
   assert.deepEqual([o.state, w.st.writes, w.st.backups], ["PAYMENT_REQUIRED", 0, 0]);
-  assert.equal(phaseOf(x.dir, x.id).phase, "WAITING_FOR_DEPOSIT");
+  assert.equal(phaseOf(x.dir, x.id).phase, "ACCESS_RECEIVED");
 
   // Nach dem Write: Zahlung fällt nach REPAIRING unter die Schwelle.
   const gmail2 = fakeGmail(), w2 = world();

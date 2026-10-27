@@ -60,7 +60,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { WORKER_DIR, createStore, createLogger, acquireLock, releaseLock } from "./mail-worker.js";
 import { OFFERS, isVoidedSale, recordDirectSale } from "./sales.js";
-import { fullPaymentGateForOrder, paymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText, withLivePayment } from "./payments.js";
+import { fullPaymentGateForOrder, paymentSummary, paymentThresholdChf, gatePaid, gateText, amountText, withLivePayment } from "./payments.js";
 import { offerInfo, isFixOffer, SELLER_COMMISSION_BPS, FIX_ORDER_ID_RE } from "./pricing.js";
 import { isVnOrder, buildVnAccessRequestMail, buildVnHostingQuestionMail, buildVnHostKeyConfirmationMail, buildVnRepairReport, buildVnRepairDeliveryMail, vnReportSubject } from "./vn-customer-texts.js";
 import { ACCESS_AUTH_SOURCE, ACCESS_REQUEST_CLASS, accessKeys, accessLink, newIntakeToken, openAccessCredential, destroyAccessSecret,
@@ -524,12 +524,15 @@ export function createRepairEngine({ dir = WORKER_DIR, store = createStore(dir),
   gmail = null, intake = null, router = null, preflight = null, alert = null, browserValidator = null, requireBrowser = false, autoDeliver = false,
   onboardingDir = null, platformDetector = null, e2e = e2eConfig(), browserAuditor = null, now = () => new Date(), log = () => {} } = {}) {
   // TF-JARVIS-PRAXIS-002: browserAuditor = Browser-Audit (Sprungmarken, abgeschnittene Bereiche, Laufzeitfehler) zusätzlich zum HTTP-Audit.
-  // Zahlungs-Gate: bei internen Admin-Testaufträgen gilt der protokollierte Erlass (internalTestWaiverOk) – LIVE-Aufträge unverändert.
+  // Zahlungs-Gate: jeder Reparaturpfad verlangt den vollständig bestätigten Festpreis.
+  // Das CHF-150-Gate bleibt im separaten Check-Workflow; Anzahlungen dürfen hier weder
+  // den Zugang noch den Reparaturworkflow freischalten. Interne, explizit markierte
+  // Testaufträge behalten ausschliesslich den protokollierten Test-Erlass.
   // Der neue Universal-Onboarding-Pfad (eigene Onboarding-Outbox) beginnt erst
   // nach vollständiger CHF-480-Zahlung. Legacy-Reparaturpfade behalten ihr
   // bestehendes Anzahlungs-Gate; TF-032 darf diese Verträge nicht global ändern.
   const gateFor = (order) => {
-    const g = onboardingDir ? fullPaymentGateForOrder(store, order) : paymentGateForOrder(store, order);
+    const g = fullPaymentGateForOrder(store, order);
     return !g.satisfied && internalTestWaiverOk(order, e2e) ? { ...g, satisfied: true, waived: INTERNAL_TEST_KIND } : g;
   };
   // TF-080: e2e (e2e-test.js) – Test-Aufträge laufen nur mit aktivem E2E-Modus UND Domain aus JARVIS_E2E_TEST_DOMAINS (vor jedem Schritt geprüft).

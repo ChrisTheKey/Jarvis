@@ -34,8 +34,25 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
 | Codex | `agent-codex/tf033` / `Jarvis-tf033` | – (fertig; kein Push, Merge oder Deployment) |
+| Codex | `agent-codex/tf034` / `Jarvis-tf034` | Zahlungs-Gate vereinheitlicht; Readiness-Prüfung und Docker-Lab-Freigabe offen |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
+
+## TF-JARVIS-034 (2026-10-27)
+
+### Erledigt
+- Alle Reparaturpfade verwenden für CHF 480 das Vollzahlungs-Gate; CHF 240 bleibt blockiert.
+- CHF-150-Check, CHF-330-Upgrade-Gutschrift, Idempotenz und Refund-Regressionen testgetrieben geprüft.
+- Synthetische Reparatur-Fixtures für WordPress, GitHub/Netlify und SFTP/SSH auf CHF 480 aktualisiert.
+- Bericht: `reports/TF-JARVIS-034-ABSCHLUSSBERICHT.md`.
+
+### Offen / Blockiert
+- 12 Docker-Labs bleiben NOT RUN/BLOCKED, weil der read-only Docker-Aufruf vom Sicherheits-Guard mit `Rejected: Keine Container ohne Freigabe.` abgewiesen wurde.
+- Ein Playwright-MCP war in der aktuellen Sitzung nicht exponiert; lokale `playwright-core`-Fixtures wurden mit vorhandenem Chromium ausgeführt.
+- Produktionsfreigabe bleibt BLOCKED; kein Push, Merge oder Deployment.
+
+### Testergebnis
+- TF-034: 1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen.
 
 Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und waren vor TF-025 mit `origin/agent-codex/main` synchronisiert. TF-025 ist lokal committed; der Hash steht im aktuellen Git-Log. Bestehende uncommittete Dateien (`test/crm-fixture.js` und `reports/TF-JARVIS-024/phase5-screenshots/`) wurden nicht verändert oder gestaged.
 

@@ -190,7 +190,7 @@ function e2e({ failMobile = false, state = {} } = {}) {
   mapMuster(store);
   const o = createRepairOrder(store, { domain: "muster.ch", website: HOME, company: "Muster AG", now: T0 });
   authorizeRepair(store, o.order_id, { authorized_domain: "muster.ch", source: "customer_order_form", reference: "Bestellung 2026-10-12", now: T0 });
-  recordPayment(store, { order_id: o.order_id, amount_chf: 240, now: T0 }); // Zahlungsschwelle CHF 240 (TF-041)
+  recordPayment(store, { order_id: o.order_id, amount_chf: 480, now: T0 }); // TF-034: Reparatur erst nach vollständiger Zahlung
   const f = mkFetch(state);
   const adapter = githubNetlifyAdapter({ store, env: ENV, fetchFn: f.fetchFn, sleep: async () => {}, pollMs: 0, buildTimeoutMs: 500, now: () => T0 });
   const issue = { type: "broken_link", url: "https://muster.ch/team-alt", page: HOME, label: "Unser Team",

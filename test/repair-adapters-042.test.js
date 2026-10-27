@@ -613,7 +613,7 @@ const gateEngine = (store, spy, auditor = wpWorld().auditor) => createRepairEngi
   adapters: { wordpress: bridgeAdapter("wordpress", spy.adapter), sftp: bridgeAdapter("sftp", spy.adapter) },
   router: { route: () => ({ adapter: "sftp", label: "SFTP", state: null, reason: "test" }), capabilitiesOf: () => [] } });
 
-test("Payment/Auth: CHF 239 → 0 Adapter-Aufrufe; Anzahlung ohne Zugang → 0 Repair; Freigabe ohne Zugang → 0 Repair", async () => {
+test("Payment/Auth: CHF 239 + CHF 241 bleiben ohne Zugang sicher blockiert", async () => {
   const dir = tmp(), store = createStore(dir), spy = spyContract();
   const o = createRepairOrder(store, { domain: "muster.ch", website: "https://muster.ch/", now: T0 });
   authorizeRepair(store, o.order_id, { authorized_domain: "muster.ch", source: "customer_reply_email", reference: "Mail", now: T0 });
@@ -622,7 +622,7 @@ test("Payment/Auth: CHF 239 → 0 Adapter-Aufrufe; Anzahlung ohne Zugang → 0 R
   await eng.processAll();
   assert.equal(readOrder(store, o.order_id).state, "PAYMENT_REQUIRED");
   assert.deepEqual(spy.calls, []);
-  recordPayment(store, { order_id: o.order_id, amount_chf: 1, reference: "R2", now: T0 }); // CHF 240, Freigabe ja, aber kein sicherer Zugang
+  recordPayment(store, { order_id: o.order_id, amount_chf: 241, reference: "R2", now: T0 }); // CHF 480, Freigabe ja, aber kein sicherer Zugang
   await eng.processAll();
   assert.equal(readOrder(store, o.order_id).state, "BLOCKED_NO_ACCESS");
   assert.deepEqual(spy.calls, [], "ohne Zugang: kein Login, keine Reparatur");

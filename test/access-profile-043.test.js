@@ -118,7 +118,7 @@ function world({ files = SITE, symlinks = {}, served = WEBROOT, presented = PRES
 // Auftrag mit sicher übermitteltem Zugang (echter Tresor, echte Prüfung von access-intake.js).
 function orderWithAccess(store, dir, { access_type = "sftp", payload = PAYLOAD() } = {}) {
   const o = createRepairOrder(store, { domain: "muster.ch", website: "https://muster.ch/", company: "Muster AG", delivery_email: "kunde@muster.ch", contact_name: "Frau Muster", now: T0 });
-  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: `Test-${o.order_id}`, now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 480, reference: `Test-${o.order_id}`, now: T0 });
   const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });
   const token = "t".repeat(43);
   Object.assign(data.orders[o.order_id], { state: "ACCESS_REQUESTED", access_request: { token_hash: tokenHash(token), expires_at: new Date(+T0 + 72 * 3600e3).toISOString(), sent_at: T0.toISOString(), draft_id: "d1" } });
@@ -460,7 +460,7 @@ test("WAITING_FOR_ACCESS_PROFILE: mehrdeutiger Webroot → wartet + Chris inform
   assert.deepEqual([o.access_profile.webroot_source, o.access_profile.host_key_source], ["chris_profile", "customer_form"]);
 });
 
-test("Gates: Preflight erst nach Zahlung ≥ CHF 240 + Freigabe + Zugang + Domain-Bindung – sonst 0 Probes, 0 Verbindungen", async () => {
+test("Gates: Preflight erst nach vollständiger Zahlung CHF 480 + Freigabe + Zugang + Domain-Bindung – sonst 0 Probes, 0 Verbindungen", async () => {
   const dir = tmp(), store = createStore(dir), w = world();
   const id = orderWithAccess(store, dir, { payload: PAYLOAD({ ssh_host_key_sha256: PRESENTED }) });
   voidPayment(store, paymentsForOrder(store, id)[0].payment_id, { reason: "Test: Zahlung storniert" });

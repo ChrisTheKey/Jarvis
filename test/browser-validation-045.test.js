@@ -147,7 +147,7 @@ function setup() {
   const dir = tmp(), store = createStore(dir);
   const o = createRepairOrder(store, { domain: "muster.ch", website: "https://muster.ch/", company: "Muster AG", now: T0 });
   authorizeRepair(store, o.order_id, { authorized_domain: "muster.ch", source: "customer_reply_email", now: T0 });
-  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: "Test-Ledger", now: T0 });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 480, reference: "Test-Ledger", now: T0 });
   return { dir, store, id: o.order_id };
 }
 const engineOf = (store, w, over = {}) => createRepairEngine({ store, adapters: { static: w.adapter }, auditor: w.auditor, browserValidator: w.browserValidator, requireBrowser: true, now: () => T0, ...over });

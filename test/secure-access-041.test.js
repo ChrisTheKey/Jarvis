@@ -67,16 +67,16 @@ const plainFiles = () => fs.readdirSync(dir, { recursive: true }).map(String)
   .filter((f) => !f.startsWith(ACCESS_VAULT_DIR) && f !== ACCESS_KEY_FILE && fs.statSync(path.join(dir, f)).isFile())
   .map((f) => [f, fs.readFileSync(path.join(dir, f), "utf8")]);
 
-test("CHF-480 E2E: 239 → nichts; 240 → genau EINE CUSTOMER_ACCESS_REQUEST; Zugang+Freigabe über den Link → bestehender Repair-Workflow startet", async () => {
+test("CHF-480 E2E: 479 → nichts; 480 → genau EINE CUSTOMER_ACCESS_REQUEST; Zugang+Freigabe über den Link → bestehender Repair-Workflow startet", async () => {
   const c = cloud(), gmail = fakeGmail(), adapter = fakeAdapter(), logs = [];
   const o = newOrder();
-  pay(o.order_id, 239, "Bank 1");
+  pay(o.order_id, 479, "Bank 1");
   const eng = engine(c, gmail, { static: adapter }, logs);
   await eng.processAll(); await eng.processAll();
   assert.equal(readRF(o.order_id).state, "AUTHORIZATION_REQUIRED");
   assert.deepEqual([gmail.calls.length, adapter.calls.checkAccess, adapter.calls.backup, adapter.calls.applyFix, (await c.blobs.list("t/")).length], [0, 0, 0, 0, 0],
-    "vor CHF 240: keine Anfrage, kein Login, kein Intake, keine Reparatur");
-  pay(o.order_id, 1, "Bank 2"); // kumulativ 240
+    "vor CHF 480: keine Anfrage, kein Login, kein Intake, keine Reparatur");
+  pay(o.order_id, 1, "Bank 2"); // kumulativ 480
   await eng.processAll();
   let saved = readRF(o.order_id);
   assert.equal(saved.state, "ACCESS_REQUESTED");
@@ -147,7 +147,7 @@ test("CHF-480 E2E: 239 → nichts; 240 → genau EINE CUSTOMER_ACCESS_REQUEST; Z
   for (const blob of [JSON.stringify(pub), JSON.stringify(cleanRepair(pub)), JSON.stringify(snap), JSON.stringify(buildCustomerReport(saved))]) {
     for (const v of [SECRET, token, tokenHash(token), "jarvis-temp", "wp-admin", "kunde@muster.ch", "Bank 1"]) assert.ok(!blob.includes(v), `Sicht enthält "${v}"`);
   }
-  assert.deepEqual([pub.orders[0].access_received, pub.orders[0].access_type, pub.orders[0].payment_status, pub.orders[0].rest_to_deposit_chf], [true, "wordpress_cms", "DEPOSIT_MET", 0]);
+  assert.deepEqual([pub.orders[0].access_received, pub.orders[0].access_type, pub.orders[0].payment_status, pub.orders[0].rest_to_deposit_chf], [true, "wordpress_cms", "PAID_FULL", 0]);
   // State-Backup erfasst weder Tresor noch Private Key.
   const sec = path.dirname(dir); // stateFiles erwartet <secrets>/mail_worker – hier direkt prüfen, dass nur *.json direkt im Worker zählen
   assert.ok(!stateFiles(sec).some((f) => f.includes(ACCESS_VAULT_DIR) || f.endsWith(".pem")));
@@ -162,7 +162,7 @@ test("CHF-480 E2E: 239 → nichts; 240 → genau EINE CUSTOMER_ACCESS_REQUEST; Z
 test("Abgelaufener Link → ungültig; falsche Order / falscher Token → blockiert; Domain-Mismatch und fehlende Freigabe am VPS → blockiert", async () => {
   const c = cloud(), gmail = fakeGmail();
   const a = newOrder();
-  pay(a.order_id, 240);
+  pay(a.order_id, 480);
   await engine(c, gmail).processAll();
   const token = tokenFrom(gmail);
   // Ablauf: 72 h + 1 s später ist der Link tot (Cloud).
@@ -181,7 +181,7 @@ test("Abgelaufener Link → ungültig; falsche Order / falscher Token → blocki
     ...over, submission: { submitted_at: T0.toISOString(), access_type: "sftp", access_domain: "muster.ch", consent: true, consent_text: consentText("muster.ch"), envelope: env, ...subOver } });
   // Zweiter Auftrag einer anderen Firma: Token von A darf nie B freischalten.
   const b = createRepairOrder(store, { domain: "andere.ch", website: "https://andere.ch/", delivery_email: "x@andere.ch", now: T0 });
-  pay(b.order_id, 240);
+  pay(b.order_id, 480);
   await engine(c, fakeGmail()).processAll();
   const cases = [
     [sub({ order_id: b.order_id, domain: "andere.ch" }, { access_domain: "andere.ch", consent_text: consentText("andere.ch") }), /Token passt nicht/],
@@ -213,7 +213,7 @@ test("Freigabe ohne Zugang → 0 Reparatur; Zugang ohne Freigabe → 0 Reparatur
   const c = cloud(), gmail = fakeGmail(), adapter = fakeAdapter({ ok: false });
   const o = newOrder();
   authorizeRepair(store, o.order_id, { authorized_domain: "muster.ch", source: "customer_order_form", now: T0 });
-  pay(o.order_id, 240);
+  pay(o.order_id, 480);
   await engine(c, gmail, { static: adapter }).processAll();
   assert.equal(readRF(o.order_id).state, "ACCESS_REQUESTED");
   assert.deepEqual([adapter.calls.backup, adapter.calls.applyFix], [0, 0]);
@@ -232,7 +232,7 @@ test("Zahlung fällt nach Start: vor Änderung → PAYMENT_REQUIRED (wartet); na
   const mk = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-acc-p-")); const s = createStore(d);
     const o = createRepairOrder(s, { domain: "muster.ch", website: HOME, delivery_email: "kunde@muster.ch", now: T0 });
     authorizeRepair(s, o.order_id, { authorized_domain: "muster.ch", source: "customer_order_form", now: T0 });
-    const p = recordPayment(s, { order_id: o.order_id, amount_chf: 240, now: T0 });
+    const p = recordPayment(s, { order_id: o.order_id, amount_chf: 480, now: T0 });
     return { s, o, p }; };
   // a) Backup erstellt, noch nichts verändert.
   let { s, o, p } = mk();
@@ -256,7 +256,7 @@ test("Zahlung fällt nach Start: vor Änderung → PAYMENT_REQUIRED (wartet); na
 test("Send-Idempotenz Zugangs-Anfrage + Storno zerstört Zugangsdaten; Worker holt nur bei wartenden Aufträgen ab", async () => {
   const c = cloud(), gmail = fakeGmail();
   const o = newOrder();
-  pay(o.order_id, 240);
+  pay(o.order_id, 480);
   // Absturz mitten im Versand simulieren: Versuch markiert, kein sent_at → nie eine zweite Mail.
   const crash = { ...gmail, sendDraft: async () => { throw new Error("Prozess beendet"); } };
   const d = store.read(REPAIR_ORDERS_FILE, { orders: {} });
