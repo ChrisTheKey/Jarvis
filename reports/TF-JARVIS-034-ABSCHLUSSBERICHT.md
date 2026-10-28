@@ -65,4 +65,4 @@ Es wurde kein Live-System geprüft oder verändert. Produktionskonfiguration, re
 
 ## Git
 
-Geprüfter Branch: `agent-codex/tf034`. Die finalen lokalen Commit-Hashes werden nach dem Dokumentationscommit ergänzt. Kein Push, Merge oder Deployment.
+Geprüfter Branch: `agent-codex/tf034`. Code-/Test-/Dokumentationscommit: `dd466d4`. Kein Push, Merge oder Deployment.
