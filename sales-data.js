@@ -25,7 +25,11 @@ export function createSalesData({ getViewStore, getVnViewStore = null, getSalesS
     // Ein Lead im Scope des Akteurs – sonst 403 (existiert, aber fremd) bzw. 403 auch für Unbekanntes (kein Existenz-Orakel für Verkäufer).
     async resolveLead(actor, leadId) {
       if (typeof leadId !== "string" || !/^[a-z0-9][a-z0-9.@_+-]{2,252}$/.test(leadId)) return { status: 400, code: "BAD_PARAMS" };
-      const [all, asg] = await Promise.all([leads(), assignments()]);
+      // Synthetische TEST-Leads sind aus Verkäuferkennzahlen und Verkäuferlisten
+      // ausgeschlossen, müssen aber für den ausdrücklich freigegebenen Owner-
+      // E2E-Verkaufsbutton serverseitig auflösbar bleiben. Verkäufer behalten
+      // ihren normalen, testdatenfreien Scope.
+      const [all, asg] = await Promise.all([actor.role === "OWNER" ? allLeads() : leads(), assignments()]);
       const l = all.find((x) => x.lead_id === leadId);
       if (!l) return { status: actor.role === "OWNER" ? 404 : 403, code: actor.role === "OWNER" ? "UNKNOWN_LEAD" : "OUT_OF_SCOPE" };
       return canSeeLead(actor, l, asg) ? { lead: l } : { status: 403, code: "OUT_OF_SCOPE" };
