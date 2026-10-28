@@ -48,7 +48,8 @@ Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), w
 
 ### Offen / Blockiert
 - Keine offenen lokalen TF-034-Testfehler. Die separate manuelle externe E2E-Abnahme (`reports/TF-JARVIS-MANUAL-E2E-150-480.md`) bleibt `BLOCKED`, weil kein autorisiert erreichbarer JARVIS-API-/Mail-Worker-/Repair-Endpunkt mit Testauthentifizierung vorlag; es wurden 0 Mails und 0 Zahlungen ausgelöst. Produktionsfreigabe, Push, Merge und Deployment wurden nicht ausgeführt und benötigen weiterhin separate menschliche Freigabe.
-- Playwright-MCP war nicht exponiert; die lokalen `playwright-core`-Fixtures liefen mit vorhandenem Chromium grün.
+- Sales-Access-Recovery (`reports/TF-JARVIS-SALES-ACCESS-RECOVERY.md`) bleibt BLOCKED: geschützte APIs antworteten ohne Session korrekt mit 401; lokale synthetische Rollen-/Scope-/Fairnessprüfung 45/45 grün, reale Konten und CRM-Zuweisungen unverändert.
+- Playwright-MCP war für die öffentliche Baseline verfügbar; geschützte Verkäuferflows wurden ohne Session nicht ausgeführt.
 
 ### Testergebnis
 - TF-034: Full-Check 1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen; Exit 0 / `CHECK OK`. Die 12 Docker-Tests wurden separat in fünf isolierten Gruppen ausgeführt: 49/49 bestanden, 0 fehlgeschlagen, 0 übersprungen; Cleanup jeweils ohne verbleibende eigene Container, Volumes oder Netzwerke. Abschlussbericht: `reports/TF-JARVIS-034-ABSCHLUSSBERICHT.md`, Status `READY_FOR_DEPLOY_APPROVAL`.
