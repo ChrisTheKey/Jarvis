@@ -1,0 +1,23 @@
+{
+  "title": "Praxis Kälin Psychiatry",
+  "missingAnchors": [
+    "kontakt"
+  ],
+  "images": [
+    {
+      "complete": true,
+      "naturalWidth": 1024
+    },
+    {
+      "complete": true,
+      "naturalWidth": 1024
+    }
+  ],
+  "overflow": false,
+  "viewport": {
+    "w": 1440,
+    "h": 900
+  },
+  "form": true,
+  "formAction": "https://praxis-kaelin.netlify.app/"
+}

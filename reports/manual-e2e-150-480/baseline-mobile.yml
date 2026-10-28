@@ -1,0 +1,195 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e7]: "In psychischen Notfällen:"
+      - link "Krisen- und Notfallnummern" [ref=e8] [cursor=pointer]:
+        - /url: "#emergency"
+    - generic [ref=e10]:
+      - link "Dr. med. Andrea Kälin Fachärztin FMH für Psychiatrie und Psychotherapie" [ref=e11] [cursor=pointer]:
+        - /url: "#"
+        - generic [ref=e16]:
+          - generic [ref=e17]: Dr. med. Andrea Kälin
+          - generic [ref=e18]: Fachärztin FMH für Psychiatrie und Psychotherapie
+      - button [ref=e381] [cursor=pointer]
+  - generic [ref=e26]:
+    - generic [ref=e27]:
+      - heading "Psychiatrische & Psychotherapeutische Praxis" [level=1] [ref=e29]
+      - paragraph [ref=e30]: Ich begleite erwachsene Menschen in belastenden Lebensphasen – mit Empathie, medizinischer Kompetenz und Respekt vor ihrer Geschichte.
+      - generic [ref=e31]:
+        - strong [ref=e32]: "Abwesenheitshinweis:"
+        - text: Die Praxis bleibt vom XX.XX.XXXX bis XX.XX.XXXX geschlossen. In dringenden Fällen wenden Sie sich bitte an die untenstehenden Notfallnummern.
+      - link "Notfallnummern" [ref=e34] [cursor=pointer]:
+        - /url: "#emergency"
+      - generic [ref=e37]: Anerkannt durch die Invalidenversicherung (IV)
+    - img "Professional female psychiatrist in calm consultation room with soft natural light conveying expertise empathy and clinical competence" [ref=e44]
+  - generic [ref=e47]:
+    - generic [ref=e53]:
+      - heading "Notfall- und Krisenhilfe" [level=2] [ref=e54]
+      - paragraph [ref=e55]: "Ausserhalb meiner Sprechzeiten stehe ich Ihnen für akute psychiatrische Notfälle nicht zur Verfügung. In dringenden Krisensituationen oder bei akuter Selbst- oder Fremdgefährdung wenden Sie sich bitte unverzüglich an die nachfolgend aufgeführten Fachstellen:"
+    - generic [ref=e56]:
+      - generic [ref=e57]:
+        - heading "Sanitätsnotruf" [level=3] [ref=e64]
+        - link "144" [ref=e65] [cursor=pointer]:
+          - /url: tel:144
+      - generic [ref=e66]:
+        - heading "Ärztefon" [level=3] [ref=e72]
+        - paragraph [ref=e73]: Ärztlicher Notfalldienst
+      - generic [ref=e74]:
+        - heading "Krisenintervention" [level=3] [ref=e80]
+        - paragraph [ref=e81]: Psychiatrische Akutdienste Zürich und Winterthur
+      - generic [ref=e82]:
+        - heading "Die Dargebotene Hand" [level=3] [ref=e86]
+        - link "143" [ref=e87] [cursor=pointer]:
+          - /url: tel:143
+      - generic [ref=e88]:
+        - heading "Telefonseelsorge" [level=3] [ref=e93]
+        - link "142" [ref=e94] [cursor=pointer]:
+          - /url: tel:142
+  - generic [ref=e96]:
+    - generic [ref=e97]:
+      - generic [ref=e98]: Fachärztliches Leistungsspektrum
+      - heading "Psychiatrisch-psychotherapeutische Versorgung auf höchstem Niveau" [level=2] [ref=e99]
+      - paragraph [ref=e100]: Als Fachärztin für Psychiatrie und Psychotherapie biete ich Ihnen eine evidenzbasierte, leitliniengerechte Behandlung – verbunden mit einer wertschätzenden therapeutischen Beziehung.
+    - generic [ref=e101]:
+      - generic [ref=e102]:
+        - heading "Diagnostik & Psychotherapie" [level=3] [ref=e115]
+        - paragraph [ref=e116]: Strukturierte fachärztliche Diagnostik nach ICD-11 sowie indikationsgerechte Psychotherapie bei Depressionen, Angst- und Belastungsstörungen.
+      - generic [ref=e117]:
+        - heading "Pharmakotherapie" [level=3] [ref=e122]
+        - paragraph [ref=e123]: Differenzierte psychopharmakologische Behandlung, sorgfältige Medikamenteneinstellung und engmaschige Verlaufskontrolle nach aktuellen Therapiestandards.
+      - generic [ref=e124]:
+        - heading "Sozialmedizinische Beratung" [level=3] [ref=e129]
+        - paragraph [ref=e130]: Kompetente Zusammenarbeit mit Invalidenversicherung (IV), Unfall- und Krankentaggeldversicherungen einschliesslich fachärztlicher Stellungnahmen und Berichte.
+      - generic [ref=e131]:
+        - heading "Fachärztliche Gutachten" [level=3] [ref=e137]
+        - paragraph [ref=e138]: In begrenztem Umfang erstelle ich fachärztliche Beurteilungen zur Indikationsstellung und Kostengutsprache delegierter psychologischer Psychotherapie.
+  - generic [ref=e141]:
+    - img "Serene misty forest lake at dawn symbolizing mental healing tranquility and inner peace" [ref=e145]
+    - generic [ref=e146]:
+      - generic [ref=e147]: med. pract. Andrea Kälin
+      - generic [ref=e148]: Fachärztin für Psychiatrie und Psychotherapie FMH
+      - heading "Indikationsspektrum meiner fachärztlichen Tätigkeit" [level=2] [ref=e149]
+      - paragraph [ref=e150]: Als Fachärztin für Psychiatrie und Psychotherapie biete ich eine evidenzbasierte Diagnostik und individuell abgestimmte Behandlung psychischer Erkrankungen. In einem vertraulichen, professionellen Rahmen begleite ich meine Patientinnen und Patienten mit dem Ziel einer nachhaltigen Stabilisierung und Verbesserung der Lebensqualität.
+      - list [ref=e151]:
+        - listitem [ref=e152]:
+          - generic [ref=e156]:
+            - heading "Affektive Störungen" [level=4] [ref=e157]
+            - paragraph [ref=e158]: Differenzierte Diagnostik und leitliniengerechte Behandlung depressiver Episoden, rezidivierender und bipolarer affektiver Störungen.
+        - listitem [ref=e159]:
+          - generic [ref=e163]:
+            - heading "Angst- und Panikstörungen" [level=4] [ref=e164]
+            - paragraph [ref=e165]: Psychotherapeutische und gegebenenfalls pharmakologische Behandlung von generalisierten Angststörungen, Panikstörungen, sozialen Phobien sowie spezifischen Phobien.
+        - listitem [ref=e166]:
+          - generic [ref=e170]:
+            - heading "Belastungs- und Anpassungsstörungen" [level=4] [ref=e171]
+            - paragraph [ref=e172]: Fachärztliche Begleitung bei Burnout-Syndromen, akuten Belastungsreaktionen sowie bei beruflichen und biografischen Krisensituationen.
+        - listitem [ref=e173]:
+          - generic [ref=e177]:
+            - heading "Zwangs- und Traumafolgestörungen" [level=4] [ref=e178]
+            - paragraph [ref=e179]: Spezialisierte Therapieverfahren bei Zwangsstörungen, posttraumatischer Belastungsstörung (PTBS) sowie komplexen Traumafolgestörungen.
+  - generic [ref=e181]:
+    - generic [ref=e182]:
+      - generic [ref=e183]: Diagnostik & Behandlung
+      - heading "Evidenzbasierte psychiatrische Behandlung" [level=2] [ref=e184]
+      - paragraph [ref=e185]: Als Fachärztin für Psychiatrie und Psychotherapie biete ich eine fundierte, leitliniengerechte Diagnostik und Behandlung psychischer Erkrankungen – stets unter Berücksichtigung der individuellen Lebenssituation meiner Patientinnen und Patienten.
+    - generic [ref=e186]:
+      - generic [ref=e192]:
+        - heading "Psychiatrische Diagnostik" [level=3] [ref=e193]
+        - paragraph [ref=e194]: Eine sorgfältige differentialdiagnostische Abklärung bildet die Grundlage jeder Behandlung. Anhand standardisierter Verfahren nach ICD-11 erstelle ich eine fundierte Diagnose als Basis für Ihren individuellen Therapieplan.
+      - generic [ref=e200]:
+        - heading "Pharmakotherapie" [level=3] [ref=e201]
+        - paragraph [ref=e202]: Eine leitliniengerechte medikamentöse Therapie bei Depressionen, Angststörungen, bipolaren Erkrankungen und weiteren Indikationen – mit engmaschiger Verlaufskontrolle und transparenter Aufklärung über Wirkung und Nebenwirkungen.
+      - generic [ref=e213]:
+        - heading "Kognitive Verhaltenstherapie" [level=3] [ref=e214]
+        - paragraph [ref=e215]: Ein wissenschaftlich anerkanntes Psychotherapieverfahren zur Behandlung von Depressionen, Angst- und Zwangsstörungen. Gemeinsam identifizieren wir dysfunktionale Denkmuster und entwickeln konkrete Bewältigungsstrategien.
+      - generic [ref=e221]:
+        - heading "Krisenintervention" [level=3] [ref=e222]
+        - paragraph [ref=e223]: In akuten psychischen Belastungssituationen biete ich eine zeitnahe, professionelle Unterstützung. Ziel ist die rasche Stabilisierung sowie die Erarbeitung tragfähiger Perspektiven für die weitere Behandlung.
+  - generic [ref=e225]:
+    - generic [ref=e226]:
+      - generic [ref=e227]: Zur Person
+      - heading "Dr. med. Andrea Kälin" [level=2] [ref=e228]
+      - paragraph [ref=e229]: Fachärztin für Psychiatrie und Psychotherapie FMH
+    - generic [ref=e230]:
+      - paragraph [ref=e231]: Als Fachärztin für Psychiatrie und Psychotherapie führe ich meine Praxis nach höchsten medizinischen und ethischen Standards. Eine fundierte Diagnostik, eine evidenzbasierte Behandlung sowie ein vertrauensvolles therapeutisches Bündnis bilden die Grundpfeiler meiner Tätigkeit.
+      - paragraph [ref=e232]: Nach dem Medizinstudium und der mehrjährigen Facharztausbildung an renommierten psychiatrischen Kliniken habe ich meine Expertise in verschiedenen therapeutischen Verfahren – insbesondere in der kognitiven Verhaltenstherapie, der tiefenpsychologisch fundierten Psychotherapie sowie in der Psychopharmakologie – kontinuierlich vertieft. Regelmässige Fort- und Weiterbildungen sowie Supervisionen sichern die Qualität meiner Arbeit nach den aktuellen wissenschaftlichen Erkenntnissen.
+      - paragraph [ref=e233]: Mein integrativer Behandlungsansatz verbindet medizinisch-psychiatrische Fachkompetenz mit einer empathischen, an Ihrer individuellen Lebenssituation orientierten Therapieführung. Selbstverständlich unterliegt jede Behandlung der ärztlichen Schweigepflicht.
+      - generic [ref=e234]:
+        - heading "Meine fachlichen Grundsätze:" [level=4] [ref=e235]
+        - list [ref=e236]:
+          - listitem [ref=e237]: Evidenzbasierte Diagnostik und leitliniengerechte Behandlung
+          - listitem [ref=e240]: Strikte Wahrung der ärztlichen Schweigepflicht und Diskretion
+          - listitem [ref=e243]: Individuelle Therapieplanung mit transparenter Aufklärung
+          - listitem [ref=e246]: Interdisziplinäre Zusammenarbeit mit Hausärzten und Fachkollegen
+  - generic [ref=e254]:
+    - generic [ref=e255]:
+      - generic [ref=e256]:
+        - heading "Kontaktaufnahme & Sprechstundentermin" [level=2] [ref=e257]
+        - paragraph [ref=e258]: Für eine Erstanfrage oder die Vereinbarung eines Sprechstundentermins bitte ich Sie, das nachfolgende Formular zu verwenden. Eine vertrauliche Rückmeldung erfolgt in der Regel innerhalb von zwei Werktagen zur Abklärung des weiteren diagnostischen und therapeutischen Vorgehens.
+      - generic [ref=e259]:
+        - generic [ref=e265]:
+          - heading "Dr. med. Andrea Kälin" [level=4] [ref=e266]
+          - paragraph [ref=e267]: Fachärztin für Psychiatrie und Psychotherapie FMHPraxis für Psychiatrie und PsychotherapieBahnhofstrasse 12, 8001 Zürich
+        - generic [ref=e272]:
+          - heading "Praxistelefon" [level=4] [ref=e273]
+          - paragraph [ref=e274]: "+41 44 123 45 67Sekretariat: Mo–Fr, 08:30–12:00 Uhr"
+        - generic [ref=e280]:
+          - heading "Elektronische Korrespondenz" [level=4] [ref=e281]
+          - paragraph [ref=e282]: sekretariat@praxis-kaelin.ch
+    - generic [ref=e286]:
+      - generic [ref=e287]:
+        - generic [ref=e288]:
+          - text: Vollständiger Name
+          - textbox "Vollständiger Name" [ref=e289]:
+            - /placeholder: Vorname Nachname
+        - generic [ref=e290]:
+          - text: E-Mail-Adresse
+          - textbox "E-Mail-Adresse" [ref=e291]:
+            - /placeholder: ihre@email.ch
+      - generic [ref=e292]:
+        - text: Anliegen und Überweisungsgrund
+        - textbox "Anliegen und Überweisungsgrund" [ref=e293]:
+          - /placeholder: Bitte schildern Sie kurz Ihr Anliegen sowie ggf. eine Überweisung durch den Hausarzt.
+      - button "Anfrage vertraulich übermitteln" [ref=e295] [cursor=pointer]
+      - paragraph [ref=e300]
+      - paragraph [ref=e301]: Sämtliche Angaben unterliegen der ärztlichen Schweigepflicht gemäss Art. 321 StGB sowie den Bestimmungen des Schweizerischen Datenschutzgesetzes (DSG).
+  - contentinfo [ref=e302]:
+    - generic [ref=e303]:
+      - generic [ref=e304]:
+        - generic [ref=e305]:
+          - link "Dr. med. Andrea Kälin Fachärztin FMH für Psychiatrie und Psychotherapie" [ref=e306] [cursor=pointer]:
+            - /url: "#"
+            - heading "Dr. med. Andrea Kälin" [level=3] [ref=e307]
+            - paragraph [ref=e308]: Fachärztin FMH für Psychiatrie und Psychotherapie
+          - paragraph [ref=e309]: Spezialisierte psychiatrisch-psychotherapeutische Behandlung für Erwachsene. Evidenzbasierte Diagnostik und Therapie in einem vertraulichen, professionellen Rahmen.
+          - generic [ref=e310]:
+            - link [ref=e311] [cursor=pointer]:
+              - /url: "#"
+            - link [ref=e316] [cursor=pointer]:
+              - /url: "#"
+        - generic [ref=e320]:
+          - heading "Navigation" [level=4] [ref=e321]
+          - list [ref=e322]:
+            - listitem [ref=e323]
+            - listitem [ref=e327]
+            - listitem [ref=e331]
+            - listitem [ref=e335]
+            - listitem [ref=e339]
+        - generic [ref=e343]:
+          - heading "Praxis" [level=4] [ref=e344]
+          - list [ref=e345]:
+            - listitem [ref=e346]
+            - listitem [ref=e351]
+            - listitem [ref=e355]
+        - generic [ref=e360]:
+          - heading "Psychiatrische Notfälle" [level=4] [ref=e361]
+          - generic [ref=e364]:
+            - paragraph [ref=e365]: "Bei akuten psychischen Krisen ausserhalb der Sprechzeiten kontaktieren Sie bitte umgehend folgende Stellen:"
+            - list [ref=e366]
+      - generic [ref=e376]:
+        - paragraph [ref=e377]: © Dr. med. Andrea Kälin – Fachärztin FMH für Psychiatrie und Psychotherapie. Alle Rechte vorbehalten.
+        - generic [ref=e378]:
+          - link "Impressum" [ref=e379] [cursor=pointer]:
+            - /url: "#"
+          - link "Datenschutz & Schweigepflicht" [ref=e380] [cursor=pointer]:
+            - /url: "#"

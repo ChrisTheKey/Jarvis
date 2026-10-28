@@ -47,7 +47,7 @@ Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), w
 - Bericht: `reports/TF-JARVIS-034-ABSCHLUSSBERICHT.md`.
 
 ### Offen / Blockiert
-- Keine offenen lokalen TF-034-Testfehler. Produktionsfreigabe, Push, Merge und Deployment wurden nicht ausgeführt und benötigen weiterhin separate menschliche Freigabe.
+- Keine offenen lokalen TF-034-Testfehler. Die separate manuelle externe E2E-Abnahme (`reports/TF-JARVIS-MANUAL-E2E-150-480.md`) bleibt `BLOCKED`, weil kein autorisiert erreichbarer JARVIS-API-/Mail-Worker-/Repair-Endpunkt mit Testauthentifizierung vorlag; es wurden 0 Mails und 0 Zahlungen ausgelöst. Produktionsfreigabe, Push, Merge und Deployment wurden nicht ausgeführt und benötigen weiterhin separate menschliche Freigabe.
 - Playwright-MCP war nicht exponiert; die lokalen `playwright-core`-Fixtures liefen mit vorhandenem Chromium grün.
 
 ### Testergebnis

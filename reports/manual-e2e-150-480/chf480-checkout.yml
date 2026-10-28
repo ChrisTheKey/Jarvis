@@ -1,0 +1,76 @@
+- generic [ref=f28e4]:
+  - generic [ref=f28e5]:
+    - banner [ref=f28e6]:
+      - generic [ref=f28e8]:
+        - img "Helvetic Webdesign logo" [ref=f28e11]
+        - generic [ref=f28e12]: Sandbox
+    - generic [ref=f28e15]:
+      - generic [ref=f28e17]:
+        - heading "Pay Helvetic Webdesign" [level=2] [ref=f28e18]
+        - generic [ref=f28e19]: CHF 480.00
+      - generic [ref=f28e25]:
+        - list [ref=f28e26]:
+          - listitem [ref=f28e27]:
+            - generic [ref=f28e29]
+        - generic [ref=f28e38]:
+          - generic [ref=f28e39]:
+            - generic [ref=f28e40]: Subtotal
+            - generic [ref=f28e41]: CHF 480.00
+          - generic [ref=f28e45]:
+            - generic [ref=f28e48]
+            - generic [ref=f28e52]: CHF 0.00
+          - generic [ref=f28e54]:
+            - generic [ref=f28e55]: Total due
+            - generic [ref=f28e56]: CHF 480.00
+  - generic [ref=f28e58]:
+    - main [ref=f28e59]:
+      - generic [ref=f28e64]:
+        - generic [ref=f28e65]:
+          - iframe [ref=f28e71]:
+            - generic [ref=f32e6]:
+              - iframe [ref=f32e11]:
+                - button "Apple Pay" [ref=f40e5] [cursor=pointer]:
+                  - img [ref=f40e7]:
+                    - img "Apple Logo" [ref=f40e8]
+              - button "Pay securely with Link" [ref=f32e14] [cursor=pointer]:
+                - generic [ref=f32e15]: Pay with
+              - iframe [ref=f32e28]:
+                - button "Amazon Pay - Use your Amazon Pay Sandbox test account" [ref=f41e3]:
+                  - img "Amazon Pay" [ref=f41e7] [cursor=pointer]
+          - paragraph [ref=f28e73]: Or
+        - heading "Contact information" [level=2] [ref=f28e74]
+      - generic [ref=f28e78]:
+        - generic [ref=f28e79]:
+          - generic [ref=f28e81]:
+            - generic [ref=f28e82]: Email
+            - textbox "Email" [ref=f28e91]:
+              - /placeholder: email@example.com
+          - heading "Payment method" [level=2] [ref=f28e93]
+        - generic [ref=f28e94]:
+          - generic [ref=f28e95]:
+            - generic [ref=f28e109]
+            - generic [ref=f28e131]
+            - generic [ref=f28e152]
+          - generic [ref=f28e172]:
+            - checkbox "Save my information for faster checkout" [ref=f28e174] [cursor=pointer]
+            - generic [ref=f28e175]
+        - generic [ref=f28e182]:
+          - generic [ref=f28e187]:
+            - text: By placing your order, you agree to our
+            - link "Terms of Service" [ref=f28e188] [cursor=pointer]:
+              - /url: https://helvetic-webdesign-reperatur.netlify.app/agb
+            - text: and
+            - link "Privacy Policy" [ref=f28e189] [cursor=pointer]:
+              - /url: https://helvetic-webdesign-reperatur.netlify.app/datenschutz
+            - text: .
+          - button "Pay" [ref=f28e192] [cursor=pointer]:
+            - generic
+      - textbox [ref=f28e207]
+    - contentinfo [ref=f28e209]:
+      - link "Powered by Stripe" [ref=f28e211] [cursor=pointer]:
+        - /url: https://stripe.com
+        - generic [ref=f28e212]:
+          - text: Powered by
+          - img "Stripe" [ref=f28e214]
+      - button "Legal" [ref=f28e216] [cursor=pointer]
+      - button "Contact" [ref=f28e219] [cursor=pointer]
