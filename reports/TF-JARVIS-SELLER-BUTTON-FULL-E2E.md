@@ -1,15 +1,15 @@
 # JARVIS – Verkäuferbutton und vollständiger E2E-Nachweis
 
-Stand: 2026-10-28  ·  Branch: `agent-codex/tf034`  ·  Commit: `968389cbabeb59d31438a2c2131750981859dadd`
+Stand: 2026-10-28  ·  Branch: `agent-codex/tf034`  ·  Build-Fix lokal: `b2dad22` · Owner-Test-Lead-Fix lokal: `826e418c4bf41722f822a59123bd2729914f9097`
 
 ## Ergebnis
 
-Die freigegebene lokale Erweiterung ist implementiert und gezielt geprüft. Der GitHub-Remote-Branch steht inzwischen auf `fb21bd04606ebeb095ff8ee17e8406527a7103cd`. Der Live-Deployment-Schritt ist weiterhin BLOCKED: Netlify liefert trotz dieses Remote-Commits noch den alten Frontendstand aus; das JARVIS-Dashboard zeigt als letzten Deploy `692420d · 2026-10-24 20:57 UTC`. Es wurden keine Test-E-Mails, Stripe-Testzahlungen oder Reparaturen ausgelöst.
+Der Build-Fix `b2dad22` wurde erfolgreich veröffentlicht. Playwright MCP bestätigte `crm.js` HTTP 200, Länge 64522, mit `CHF150`, `CHF480`, `sales_intake_send` und `SALES_BUTTONS`; `/api/cloud` antwortete HTTP 200 mit `configured:true`. Owner-Session und TEST-Lead waren gültig. Der tatsächliche CHF-150-Klick erreichte den Backend-Gate, wurde aber mit `UNKNOWN_LEAD` abgewiesen, weil die Owner-TEST-Lead-Auflösung noch fehlte. Der Folgefix `826e418` ist lokal getestet, aber noch nicht veröffentlicht.
 
 | Schritt | CHF 150 | CHF 480 |
 |---|---|---|
-| Verkäuferbutton sichtbar (Live) | BLOCKED | BLOCKED |
-| Verkäuferbutton gedrückt (Playwright MCP) | BLOCKED | BLOCKED |
+| Verkäuferbutton sichtbar (Live) | PASS | PASS |
+| Verkäuferbutton gedrückt (Playwright MCP) | FAIL – `UNKNOWN_LEAD`, folgenlos | BLOCKED |
 | Erst-Mail versendet | BLOCKED – 0 | BLOCKED – 0 |
 | Stripe-Testzahlung bestätigt | BLOCKED – 0 | BLOCKED – 0 |
 | Leistung ausgeführt | BLOCKED | BLOCKED |
@@ -35,9 +35,9 @@ Die bestehende `sales_intake_send`-Strecke wurde erweitert, keine parallele Vers
 
 ## Deployment- und Live-Nachweis
 
-Die Projektdokumentation beschreibt Netlify als GitHub-Autodeploy vom Branch `claude/jarvis-voice-dashboard-9phl5w`. `git ls-remote` bestätigt dort HEAD `fb21bd0`. `netlify` CLI und `.netlify/state.json` sind im Worktree nicht vorhanden. Ein Deployment aus dem Netlify-Dashboard ist ebenfalls nicht möglich, weil die Playwright-Prüfung nur die Netlify-Loginseite zeigt und keine bestehende Netlify-Session vorhanden ist.
+Die Projektdokumentation beschreibt Netlify als GitHub-Autodeploy vom Branch `claude/jarvis-voice-dashboard-9phl5w`. Der Deploy für `b2dad22` war erfolgreich. Der Folgecommit `826e418` ist noch nicht auf dem Veröffentlichungsbranch; der Push wird lokal mit `Push nur durch Chris` blockiert.
 
-Playwright MCP wurde danach für den Live-Read-only-Check verwendet. Der ausgelieferte Download von `https://chrisjarvis.netlify.app/crm.js?probe=<timestamp>` antwortete HTTP 200, Länge 56955; die Strings `CHF150`, `CHF480`, `sales_intake_send` und `SALES_BUTTONS` waren nicht enthalten. Im CRM-Leaddrawer des synthetischen TEST-Leads waren die neuen Aktionen nicht sichtbar. Deployment-ID: nicht vorhanden. Die Live-Seite zeigte 88 reproduzierte Konsolenfehler im aktuellen MCP-Fenster.
+Playwright MCP verifizierte die sichtbaren Buttons `CHF 150 – ERST-MAIL SENDEN` und `CHF 480 – ERST-MAIL SENDEN`. Der CHF-150-Netzwerkrequest enthielt `{op:"sales_intake_send", lead_id:"praxis-kaelin.netlify.app", offer:"CHF150"}`; Antwort `404`, Body `{"error":"Dieser Lead gehört nicht zu Ihrem Bereich.","code":"UNKNOWN_LEAD"}`. Es entstand kein Outbox-Auftrag.
 
 ## Mail, Zahlung, Autorisierung, Reparatur
 
@@ -45,4 +45,4 @@ Es gab keinen Live-Buttonklick, daher auch keine neue Outbox-Annahme oder Provid
 
 ## Erforderlicher nächster Schritt
 
-Ein berechtigter Benutzer muss im Netlify-Dashboard den Production-Deploy für `fb21bd0` auslösen oder die bestehende Netlify-Integration prüfen. Danach können die beiden sichtbaren Live-Buttons mit Playwright MCP geklickt und die E2E-Schritte ausschließlich mit TEST-Zahlungen und dem Empfänger `helvetic.webdesign@proton.me` fortgesetzt werden.
+Ein berechtigter Benutzer muss `826e418` auf `claude/jarvis-voice-dashboard-9phl5w` pushen. Danach kann der CHF-150-/CHF-480-E2E-Test fortgesetzt werden. Bis dahin: 0 E-Mails, 0 Stripe-TEST-Zahlungen, 0 Autorisierungen und 0 Reparaturen.
