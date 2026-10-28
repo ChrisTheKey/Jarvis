@@ -2,7 +2,7 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-28 (TF-JARVIS-034: finale lokale Docker-Abnahme und Full-Check grün; kein produktiver Versand/Deployment)
+Zuletzt aktualisiert: 2026-10-28 (TF-JARVIS-034: Gmail-OAuth wiederhergestellt; gezielter CRM-Fix lokal geprüft; Live-Versand folgt nach Deploy)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
@@ -45,9 +45,11 @@ Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), w
 - CHF-150-Check, CHF-330-Upgrade-Gutschrift, Idempotenz und Refund-Regressionen testgetrieben geprüft.
 - Synthetische Reparatur-Fixtures für WordPress, GitHub/Netlify und SFTP/SSH auf CHF 480 aktualisiert.
 - Bericht: `reports/TF-JARVIS-034-ABSCHLUSSBERICHT.md`.
+- MANUAL_TEST-Sales-View-Korrektur: Die ausschliesslich serverseitig erzeugte, an `helvetic.webdesign@proton.me` gebundene Testanfragegrundlage übersteht die CRM-View-Bereinigung nur für den exakt autorisierten synthetischen Lead. Normale/manipulierte Leads bleiben ohne Anfragegrundlage; 21 gezielte Tests grün. Die gespeicherte `manual`-Struktur wird dabei erst durch `buildCrmLead()` um abgeleitete TEST-Felder ergänzt. Der lokale Agent-Pull/Blob/GET-Transport ist ebenfalls nachgewiesen; Live-Blob bleibt ohne Produktionszugriff offen. Bericht: `reports/TF-JARVIS-MANUAL-TEST-CONTACT-PERMISSION-FIX.md`. Kein Deployment, Versand oder Neustart.
+- Live-CRM-Folgekorrektur 2026-10-28: Der autorisierte `MANUAL_TEST`-Lead ohne gespeichertes Website-Feld wurde im Live-Builder mit `MISSING_WEBSITE` abgewiesen, obwohl die Kontaktberechtigung korrekt war. Eine eng begrenzte, serverseitig validierte Ableitung von `https://praxis-kaelin.netlify.app/` für genau diesen synthetischen Lead ergänzt den Mail-Builder; generische fehlende Websites bleiben fail-closed. Regression plus relevante CRM-/Mail-Tests: 21/21 grün. Netlify-Deploy und anschliessender kontrollierter Versand ausstehend.
 
 ### Offen / Blockiert
-- Keine offenen lokalen TF-034-Testfehler. Die separate manuelle externe E2E-Abnahme (`reports/TF-JARVIS-MANUAL-E2E-150-480.md`) bleibt `BLOCKED`, weil kein autorisiert erreichbarer JARVIS-API-/Mail-Worker-/Repair-Endpunkt mit Testauthentifizierung vorlag; es wurden 0 Mails und 0 Zahlungen ausgelöst. Produktionsfreigabe, Push, Merge und Deployment wurden nicht ausgeführt und benötigen weiterhin separate menschliche Freigabe.
+- Keine offenen lokalen TF-034-Testfehler. Der kontrollierte externe Versand bleibt bis zum Live-Deploy und Provider-Nachweis offen; es wurden seit der OAuth-Erneuerung noch keine neuen Mails oder Zahlungen ausgelöst.
 - Sales-Access-Recovery (`reports/TF-JARVIS-SALES-ACCESS-RECOVERY.md`) bleibt BLOCKED: Owner-Session und geschützte APIs sind erreichbar, Damiano/Giuliano sind aktiv mit gesetztem Passwort; im CRM-Snapshot sind jedoch nur 194/200 Damiano- und 196/200 Mario-Leads sichtbar. Die zehn veralteten Assignment-IDs sind über die öffentliche API nicht verfügbar, und ein sicherer Cleanup/Rebuild-Endpunkt fehlt. Keine Konten, Zuweisungen, Mails oder Zahlungen wurden verändert.
 - Playwright-MCP war für die öffentliche Baseline verfügbar; geschützte Verkäuferflows wurden ohne Session nicht ausgeführt.
 - Wiederaufnahme 2026-10-28: Playwright-MCP nach Neustart verfügbar; bestehende Owner-Session `/api/auth/me` HTTP 200. Damiano/Giuliano aktiv mit gesetztem Passwort und erwarteten Rollen. Assignment-/CRM-/Order-/Onboarding-Sichten read-only erneut geprüft: Damiano 194 sichtbar bei persistierten 200, 0 Orders/Onboarding-Aufträge. Keine Schreibaktion, keine Passwörter, keine Mails/Zahlungen/Reparaturen. Verkäufer-Login und Datentrennung bleiben bis zur persönlichen Passwort-Eingabe BLOCKED.

@@ -172,6 +172,31 @@ test("TF-024 direct: fehlende oder abgelaufene dynamische Werte blockieren fail-
   assert.equal(salesIntakeEligibility({ ...LEAD, request: undefined }, { now: NOW }).code, "NO_CONTACT_PERMISSION");
 });
 
+test("TF-034 direct: autorisierter MANUAL_TEST-Lead darf die synthetische Website aus seiner Domain ableiten", () => {
+  const lead = {
+    ...LEAD,
+    lead_id: "praxis-kaelin.netlify.app",
+    domain: "praxis-kaelin.netlify.app",
+    email: "helvetic.webdesign@proton.me",
+    website: null,
+    environment: "TEST",
+    manual_test: { source: "MANUAL_TEST" },
+    request: {
+      basis: "requested_contact",
+      request_source: "synthetic_e2e_authorization",
+      request_date: "2026-10-25T09:00:00.000Z",
+      request_scope: "Website-Analyse und Website-Reparatur",
+      request_evidence: "Ausdrückliche synthetische E2E-Testanfrage für JARVIS; keine Kundenkontaktaufnahme.",
+      response_scope: "Website-Analyse und Website-Reparatur",
+      recipient_or_submission_channel: "helvetic.webdesign@proton.me",
+      request_confidence: "HIGH",
+    },
+  };
+  const r = buildSalesIntakeMail({ lead, ...refs, accessToken: TOKEN, accessExpiresAt: EXPIRES, accessOrigin: ENV.JARVIS_WEB_ORIGIN, sandbox: true, now: NOW });
+  assert.equal(r.ok, true);
+  assert.match(r.mail.body, /https:\/\/praxis-kaelin\.netlify\.app\//);
+});
+
 test("TF-024 direct: Browserpfad enthält den neuen Button ohne Vorschau-/Bestätigungsdialog", () => {
   const source = fs.readFileSync(new URL("../public/crm.js", import.meta.url), "utf8");
   assert.match(source, /crm-mail-send/);
