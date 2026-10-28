@@ -146,27 +146,35 @@ async function sendPrepared(l) {
   if (S.sel === l.lead_id) renderDrawer();
 }
 // TF-JARVIS-024: direkte Erstmail nur über den serverseitig gebundenen Sandbox-/Queue-Pfad.
-async function sendSalesIntake(l) {
-  if (S.salesBusy[l.lead_id]) return;
-  S.salesBusy[l.lead_id] = true; delete S.salesErr[l.lead_id]; renderDrawer();
+const SALES_BUTTONS = Object.freeze([
+  Object.freeze({ offer: "CHF150", label: "CHF 150", packageName: "Check & Anleitung", price: 150 }),
+  Object.freeze({ offer: "CHF480", label: "CHF 480", packageName: "Check & Reparatur", price: 480 }),
+]);
+const salesKey = (leadId, offer) => `${leadId}:${offer}`;
+async function sendSalesIntake(l, offer) {
+  const key = salesKey(l.lead_id, offer);
+  if (S.salesBusy[key]) return;
+  S.salesBusy[key] = true; delete S.salesErr[key]; renderDrawer();
   try {
-    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_send", lead_id: l.lead_id }) });
+    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_send", lead_id: l.lead_id, offer }) });
     const j = await r.json().catch(() => null);
     if (!r.ok || !j?.request) throw new Error(j?.error || t("sales.sendFailed"));
-    S.salesRequests = [...S.salesRequests.filter((x) => x.lead_id !== l.lead_id), { ...j.request, lead_id: l.lead_id, sales_intake_direct: true }];
-    S.salesErr[l.lead_id] = j.duplicate ? t("sales.duplicate") : t("sales.queued");
-  } catch (e) { S.salesErr[l.lead_id] = e.message || t("sales.sendFailed"); }
-  finally { delete S.salesBusy[l.lead_id]; if (S.sel === l.lead_id) renderDrawer(); }
+    S.salesRequests = [...S.salesRequests.filter((x) => !(x.lead_id === l.lead_id && x.offer === offer)), { ...j.request, lead_id: l.lead_id, offer, sales_intake_direct: true }];
+    S.salesErr[key] = j.duplicate ? t("sales.duplicate") : t("sales.queued");
+  } catch (e) { S.salesErr[key] = e.message || t("sales.sendFailed"); }
+  finally { delete S.salesBusy[key]; if (S.sel === l.lead_id) renderDrawer(); }
 }
 function salesBox(l) {
-  const busy = !!S.salesBusy[l.lead_id];
-  const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.sales_intake_direct === true).sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
-  const status = queued?.status;
-  const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
-  const stateText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : "";
-  const visibleText = stateText || S.salesErr[l.lead_id] || "";
-  return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-mail-send", disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l); } }, busy ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send")),
-    visibleText ? el("span", { class: `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`, "aria-live": "polite" }, visibleText) : "");
+  const rows = SALES_BUTTONS.map(({ offer, label, packageName, price }) => {
+    const key = salesKey(l.lead_id, offer), busy = !!S.salesBusy[key];
+    const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.offer === offer && x.sales_intake_direct === true).sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
+    const status = queued?.status, locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
+    const stateText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : S.salesErr[key] || "";
+    return el("div", { class: "crm-sales-offer", "data-offer": offer }, el("span", { class: "crm-sales-package" }, `${label} – ${packageName} · CHF ${price}.–`), " ",
+      el("button", { type: "button", class: "crm-btn primary crm-mail-send", "data-offer": offer, disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l, offer); } }, busy ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : `${label} – ${t("sales.send")}`),
+      stateText ? el("span", { class: `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`, "aria-live": "polite" }, stateText) : "");
+  });
+  return el("span", { class: "crm-salesbox" }, el("p", { class: "crm-note" }, t("sales.start")), rows);
 }
 // TF-028: read-only completion/upgrade status. This component never starts a
 // mail, payment or repair action; it only renders the server-side allowlist.
@@ -263,21 +271,21 @@ function drawerOpen() {
 function syncSalesBox() {
   const l = S.leads.find((x) => x.lead_id === S.sel), box = $("crmDrawer")?.querySelector(".crm-salesbox");
   if (!l || !box) return;
-  const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.sales_intake_direct === true)
-    .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
-  const status = queued?.status;
-  const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
-  const visibleText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : S.salesErr[l.lead_id] || "";
-  const button = box.querySelector("button.crm-mail-send");
-  if (button) {
-    button.disabled = !!S.salesBusy[l.lead_id] || locked || !S.online;
-    button.textContent = S.salesBusy[l.lead_id] ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send");
+  for (const { offer } of SALES_BUTTONS) {
+    const row = box.querySelector(`[data-offer="${offer}"]`), button = row?.querySelector("button.crm-mail-send");
+    if (!row || !button) continue;
+    const key = salesKey(l.lead_id, offer), queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.offer === offer && x.sales_intake_direct === true)
+      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1), status = queued?.status;
+    const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
+    const visibleText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : S.salesErr[key] || "";
+    button.disabled = !!S.salesBusy[key] || locked || !S.online;
+    button.textContent = S.salesBusy[key] ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : `${offer === "CHF150" ? "CHF 150" : "CHF 480"} – ${t("sales.send")}`;
+    let msg = row.querySelector(".crm-sales-msg");
+    if (!visibleText) { msg?.remove(); continue; }
+    if (!msg) { msg = el("span", { class: "crm-status crm-sales-msg", "aria-live": "polite" }); row.append(" ", msg); }
+    msg.textContent = visibleText;
+    msg.className = `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`;
   }
-  let msg = box.querySelector(".crm-sales-msg");
-  if (!visibleText) { msg?.remove(); return; }
-  if (!msg) { msg = el("span", { class: "crm-status crm-sales-msg", "aria-live": "polite" }); box.append(" ", msg); }
-  msg.textContent = visibleText;
-  msg.className = `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`;
 }
 function render({ preserveDrawer = false } = {}) {
   const now = new Date(), st = crmStats(S.leads, now);

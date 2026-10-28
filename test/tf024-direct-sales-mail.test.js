@@ -176,5 +176,39 @@ test("TF-024 direct: Browserpfad enthält den neuen Button ohne Vorschau-/Bestä
   const source = fs.readFileSync(new URL("../public/crm.js", import.meta.url), "utf8");
   assert.match(source, /crm-mail-send/);
   assert.match(source, /sales_intake_send/);
+  assert.match(source, /CHF150/);
+  assert.match(source, /CHF480/);
+  assert.match(source, /data-offer/);
   assert.doesNotMatch(source, /window\.confirm\(/, "der direkte Button darf keine zusätzliche Bestätigung öffnen");
+});
+
+test("TF-034 direct: CHF150 und CHF480 erzeugen getrennte, paketgebundene Outbox-Aufträge", async () => {
+  const check = setup();
+  const checkResponse = await check.call({ op: "sales_intake_send", lead_id: LEAD.lead_id, offer: "CHF150" });
+  assert.equal(checkResponse.status, 201);
+  const checkBody = await checkResponse.json();
+  const checkRequest = (await check.store.get()).state.requests[0];
+  assert.equal(checkRequest.meta.offer, "CHF150");
+  assert.match(checkRequest.meta.order_id, /^CA150-/);
+  assert.match(checkRequest.body, /Check & Anleitung/);
+  assert.match(checkRequest.body, /CA150-20261026-[0-9a-f]{6}/);
+  assert.doesNotMatch(checkRequest.body, /RF480-20261026-/);
+  const checkDuplicate = await check.call({ op: "sales_intake_send", lead_id: LEAD.lead_id, offer: "CHF150" });
+  assert.equal(checkDuplicate.status, 200);
+  assert.equal((await checkDuplicate.json()).duplicate, true);
+  assert.equal((await check.store.get()).state.requests.length, 1);
+  assert.ok(checkBody.request.request_id);
+
+  const repair = setup();
+  const repairResponse = await repair.call({ op: "sales_intake_send", lead_id: LEAD.lead_id, offer: "CHF480" });
+  assert.equal(repairResponse.status, 201);
+  const repairRequest = (await repair.store.get()).state.requests[0];
+  assert.equal(repairRequest.meta.offer, "CHF480");
+  assert.match(repairRequest.meta.order_id, /^RF480-/);
+  assert.match(repairRequest.body, /Check & Reparatur/);
+  assert.match(repairRequest.body, /RF480-20261026-[0-9a-f]{6}/);
+  assert.doesNotMatch(repairRequest.body, /CA150-20261026-/);
+  const crossOffer = await repair.call({ op: "sales_intake_send", lead_id: LEAD.lead_id, offer: "bad" });
+  assert.equal(crossOffer.status, 400);
+  assert.equal((await crossOffer.json()).code, "UNSUPPORTED_OFFER");
 });

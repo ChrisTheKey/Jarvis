@@ -1,0 +1,278 @@
+diff --git a/docs/STATUS.md b/docs/STATUS.md
+index d5647e8..cab76b4 100644
+--- a/docs/STATUS.md
++++ b/docs/STATUS.md
+@@ -34,7 +34,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
+ | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
+ | Claude | `agent-claude/main` | – (frei) |
+ | Codex | `agent-codex/tf033` / `Jarvis-tf033` | – (fertig; kein Push, Merge oder Deployment) |
+-| Codex | `agent-codex/tf034` / `Jarvis-tf034` | TF-034 lokal abgenommen; fünf isolierte Docker-Gruppen und Full-Check grün; kein Push/Merge/Deployment |
++| Codex | `agent-codex/tf034` / `Jarvis-tf034` | TF-034 Verkäuferbutton: paketgetrennte CHF-150-/CHF-480-Erstmail lokal implementiert und gezielt geprüft; Live-Deployment/E2E offen |
+ 
+ Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
+ 
+@@ -50,6 +50,9 @@ Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), w
+ - Keine offenen lokalen TF-034-Testfehler. Die separate manuelle externe E2E-Abnahme (`reports/TF-JARVIS-MANUAL-E2E-150-480.md`) bleibt `BLOCKED`, weil kein autorisiert erreichbarer JARVIS-API-/Mail-Worker-/Repair-Endpunkt mit Testauthentifizierung vorlag; es wurden 0 Mails und 0 Zahlungen ausgelöst. Produktionsfreigabe, Push, Merge und Deployment wurden nicht ausgeführt und benötigen weiterhin separate menschliche Freigabe.
+ - Sales-Access-Recovery (`reports/TF-JARVIS-SALES-ACCESS-RECOVERY.md`) bleibt BLOCKED: Owner-Session und geschützte APIs sind erreichbar, Damiano/Giuliano sind aktiv mit gesetztem Passwort; im CRM-Snapshot sind jedoch nur 194/200 Damiano- und 196/200 Mario-Leads sichtbar. Die zehn veralteten Assignment-IDs sind über die öffentliche API nicht verfügbar, und ein sicherer Cleanup/Rebuild-Endpunkt fehlt. Keine Konten, Zuweisungen, Mails oder Zahlungen wurden verändert.
+ - Playwright-MCP war für die öffentliche Baseline verfügbar; geschützte Verkäuferflows wurden ohne Session nicht ausgeführt.
++- Wiederaufnahme 2026-10-28: Playwright-MCP nach Neustart verfügbar; bestehende Owner-Session `/api/auth/me` HTTP 200. Damiano/Giuliano aktiv mit gesetztem Passwort und erwarteten Rollen. Assignment-/CRM-/Order-/Onboarding-Sichten read-only erneut geprüft: Damiano 194 sichtbar bei persistierten 200, 0 Orders/Onboarding-Aufträge. Keine Schreibaktion, keine Passwörter, keine Mails/Zahlungen/Reparaturen. Verkäufer-Login und Datentrennung bleiben bis zur persönlichen Passwort-Eingabe BLOCKED.
++- Finaler manueller E2E-Versuch 2026-10-28: Playwright-MCP-Baseline und Abschlussprüfung erstellt. TEST-Lead `Praxis Kälin` über den vorhandenen Manual-Test-Button angelegt/aktualisiert; im ausgelieferten CRM fehlt jedoch der erwartete Verkaufs-/Erstmailbutton (`crm.js` enthält live weder `salesBox` noch `sales_intake_send`). Daher 0 Orders, 0 Mails, 0 Stripe-TEST-Zahlungen, 0 Reparaturen; CHF-150 und CHF-480 BLOCKED. Website unverändert, kein verifizierbares Backup für einen Write vorhanden. Bericht: `reports/TF-JARVIS-FINAL-E2E-150-480.md`.
++- Verkäuferbutton-Erweiterung 2026-10-28: lokale bestehende `sales_intake_send`-Strecke um strikt getrennte `CHF150`-/`CHF480`-Aktionen, paketgebundene Test-Payment-Links/Order-IDs, offer-spezifische Idempotenz und Seller-Statusanzeige erweitert. Gezielte Regressionen inkl. Auth/Scope/Mail: 29/29 grün; `node scripts/dev-check.mjs` bestand Syntax-/Secret-Scan, blieb danach ohne Ausgabe hängen und wurde beendet. Live-Deployment und Playwright-Klick bleiben bis zur verifizierten Veröffentlichung offen.
+ 
+ ### Testergebnis
+ - TF-034: Full-Check 1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen; Exit 0 / `CHECK OK`. Die 12 Docker-Tests wurden separat in fünf isolierten Gruppen ausgeführt: 49/49 bestanden, 0 fehlgeschlagen, 0 übersprungen; Cleanup jeweils ohne verbleibende eigene Container, Volumes oder Netzwerke. Abschlussbericht: `reports/TF-JARVIS-034-ABSCHLUSSBERICHT.md`, Status `READY_FOR_DEPLOY_APPROVAL`.
+diff --git a/mail-requests.js b/mail-requests.js
+index 7c6c30f..48ba56a 100644
+--- a/mail-requests.js
++++ b/mail-requests.js
+@@ -12,7 +12,7 @@ export { MANUAL_TEST_MAIL, isManualTestMail };
+ import { cleanCore } from "./cloud-core.js";
+ import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
+ import { mailAccessFor, draftRefOf, DRAFT_REF_RE, SELLER_SEND_DAILY_LIMIT } from "./mail-access.js";
+-import { buildSalesIntakeMail, buildSalesIntakePreview, newIntakeToken, salesOrderRefs, salesVaultLink } from "./sales-intake.js";
++import { buildSalesIntakeMail, buildSalesIntakePreview, newIntakeToken, salesOrderRefs, salesVaultLink, SALES_DIRECT_OFFERS } from "./sales-intake.js";
+ import { salesBundleId } from "./sales-intake-bundle.js";
+ 
+ export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
+@@ -54,6 +54,8 @@ export function cleanMeta(m) {
+         sales_intake_direct: true, sales_sandbox: m.sales_sandbox === true, synthetic_test: m.synthetic_test === true,
+         idempotency_key: typeof m.idempotency_key === "string" && /^[a-f0-9]{64}$/.test(m.idempotency_key) ? m.idempotency_key : null,
+         access_expires_at: typeof m.access_expires_at === "string" && Number.isFinite(Date.parse(m.access_expires_at)) ? new Date(m.access_expires_at).toISOString() : null,
++        ...(SALES_DIRECT_OFFERS[m.offer] && /^(?:CA150|RF480)-\d{8}-[0-9a-f]{6}$/.test(String(m.order_id || ""))
++          ? { offer: m.offer, offer_class: SALES_DIRECT_OFFERS[m.offer].offer_class, price: SALES_DIRECT_OFFERS[m.offer].price, order_id: m.order_id } : {}),
+       } : {}) } : {};
+   return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id, ...sales } : null;
+ }
+@@ -262,7 +264,7 @@ export const publicView = (r) => ({ request_id: r.request_id, created_at: r.crea
+ // TF-077B: Sicht eines Verkäufers auf seine eigenen Aufträge – ohne Empfängeradresse und Text.
+ const sellerView = (r) => ({ request_id: r.request_id, created_at: r.created_at, delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at,
+   lead_id: r.meta?.lead_id || null, ...(r.delivery === "send_prepared" ? { draft_ref: r.draft_ref || null } : {}),
+-  ...(r.delivery === "sales_intake" ? { sales_intake_direct: r.meta?.sales_intake_direct === true } : {}) });
++  ...(r.delivery === "sales_intake" ? { sales_intake_direct: r.meta?.sales_intake_direct === true, offer: r.meta?.offer || null, order_id: r.meta?.order_id || null } : {}) });
+ 
+ // Ein Blob { requests, locks, workers } mit bedingtem Schreiben (ETag) – gleichzeitige Worker überholen sich nie.
+ export function createMailQueue(store, { now = () => new Date(), dedicated = false } = {}) {
+@@ -439,7 +441,8 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
+   async function salesSend(queue, body, actor) {
+     const mail = mailAccessFor(actor);
+     if (!mail.send_prepared && actor.role !== "OWNER") return reply(403, { error: "Keine Berechtigung für den Erstmail-Versand.", code: "FORBIDDEN" });
+-    if (Object.keys(body).some((k) => !["op", "lead_id"].includes(k)) || typeof body.lead_id !== "string") return reply(400, { error: "Nur lead_id ist erlaubt.", code: "BAD_PARAMS" });
++    if (Object.keys(body).some((k) => !["op", "lead_id", "offer"].includes(k)) || typeof body.lead_id !== "string") return reply(400, { error: "Nur lead_id und optional offer sind erlaubt.", code: "BAD_PARAMS" });
++    if (body.offer !== undefined && (typeof body.offer !== "string" || !SALES_DIRECT_OFFERS[body.offer])) return reply(400, { error: "Ein zulässiges Paket (CHF150 oder CHF480) ist erforderlich.", code: "UNSUPPORTED_OFFER" });
+     if (!resolveLead) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
+     const found = await resolveLead(actor, body.lead_id);
+     if (!found?.lead) return reply(found?.status || 403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: found?.code || "OUT_OF_SCOPE" });
+@@ -449,12 +452,12 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
+     if (env("JARVIS_SALES_SANDBOX_MODE") !== "true") return reply(403, { error: "Direkter Erstmail-Versand ist bis zur Produktionsfreigabe gesperrt.", code: "SANDBOX_ONLY" });
+     if (lead.is_test !== true) return reply(403, { error: "Direkter Erstmail-Versand ist nur für synthetische Leads zulässig.", code: "SYNTHETIC_ONLY" });
+     const t = now(), refs = salesOrderRefs(lead.lead_id, t), token = newIntakeToken({ now: t });
+-    const result = buildSalesIntakeMail({ lead, ...refs, accessToken: token.token, accessExpiresAt: token.expires_at, accessOrigin: env("JARVIS_WEB_ORIGIN"), sandbox: true, now: t });
++    const result = buildSalesIntakeMail({ lead, ...refs, offer: body.offer, accessToken: token.token, accessExpiresAt: token.expires_at, accessOrigin: env("JARVIS_WEB_ORIGIN"), sandbox: true, now: t });
+     if (!result.ok) return reply(result.code === "NO_CONTACT_PERMISSION" ? 403 : 409, { error: result.reason, code: result.code });
+-    const idempotency_key = crypto.createHash("sha256").update(`sales_intake_direct:${lead.lead_id}:${t.toISOString().slice(0, 10)}`).digest("hex");
++    const idempotency_key = crypto.createHash("sha256").update(`sales_intake_direct:${lead.lead_id}:${body.offer || "bundle"}:${t.toISOString().slice(0, 10)}`).digest("hex");
+     const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id, sales_intake: true, sales_intake_direct: true,
+       sales_sandbox: true, synthetic_test: true, idempotency_key, preview_ref: result.preview_ref, access_expires_at: result.mail.access_expires_at,
+-      order150_id: refs.order150Id, order480_id: refs.order480Id };
++      ...(result.mail.offer ? { offer: result.mail.offer, offer_class: result.mail.offer_class, price: result.mail.price, order_id: result.mail.order_id } : { order150_id: refs.order150Id, order480_id: refs.order480Id }) };
+     const r = await queue.create({ recipient: result.mail.recipient, subject: result.mail.subject, body: result.mail.body, intent: "sales", delivery: "sales_intake" }, actor.user_id, meta);
+     if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
+     return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
+diff --git a/public/crm.js b/public/crm.js
+index f9d1ebd..fb4dcb4 100644
+--- a/public/crm.js
++++ b/public/crm.js
+@@ -146,27 +146,35 @@ async function sendPrepared(l) {
+   if (S.sel === l.lead_id) renderDrawer();
+ }
+ // TF-JARVIS-024: direkte Erstmail nur über den serverseitig gebundenen Sandbox-/Queue-Pfad.
+-async function sendSalesIntake(l) {
+-  if (S.salesBusy[l.lead_id]) return;
+-  S.salesBusy[l.lead_id] = true; delete S.salesErr[l.lead_id]; renderDrawer();
++const SALES_BUTTONS = Object.freeze([
++  Object.freeze({ offer: "CHF150", label: "CHF 150", packageName: "Check & Anleitung", price: 150 }),
++  Object.freeze({ offer: "CHF480", label: "CHF 480", packageName: "Check & Reparatur", price: 480 }),
++]);
++const salesKey = (leadId, offer) => `${leadId}:${offer}`;
++async function sendSalesIntake(l, offer) {
++  const key = salesKey(l.lead_id, offer);
++  if (S.salesBusy[key]) return;
++  S.salesBusy[key] = true; delete S.salesErr[key]; renderDrawer();
+   try {
+-    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_send", lead_id: l.lead_id }) });
++    const r = await fetch("/api/mail-requests", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "sales_intake_send", lead_id: l.lead_id, offer }) });
+     const j = await r.json().catch(() => null);
+     if (!r.ok || !j?.request) throw new Error(j?.error || t("sales.sendFailed"));
+-    S.salesRequests = [...S.salesRequests.filter((x) => x.lead_id !== l.lead_id), { ...j.request, lead_id: l.lead_id, sales_intake_direct: true }];
+-    S.salesErr[l.lead_id] = j.duplicate ? t("sales.duplicate") : t("sales.queued");
+-  } catch (e) { S.salesErr[l.lead_id] = e.message || t("sales.sendFailed"); }
+-  finally { delete S.salesBusy[l.lead_id]; if (S.sel === l.lead_id) renderDrawer(); }
++    S.salesRequests = [...S.salesRequests.filter((x) => !(x.lead_id === l.lead_id && x.offer === offer)), { ...j.request, lead_id: l.lead_id, offer, sales_intake_direct: true }];
++    S.salesErr[key] = j.duplicate ? t("sales.duplicate") : t("sales.queued");
++  } catch (e) { S.salesErr[key] = e.message || t("sales.sendFailed"); }
++  finally { delete S.salesBusy[key]; if (S.sel === l.lead_id) renderDrawer(); }
+ }
+ function salesBox(l) {
+-  const busy = !!S.salesBusy[l.lead_id];
+-  const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.sales_intake_direct === true).sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
+-  const status = queued?.status;
+-  const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
+-  const stateText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : "";
+-  const visibleText = stateText || S.salesErr[l.lead_id] || "";
+-  return el("span", { class: "crm-salesbox" }, el("button", { type: "button", class: "crm-btn primary crm-mail-send", disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l); } }, busy ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send")),
+-    visibleText ? el("span", { class: `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`, "aria-live": "polite" }, visibleText) : "");
++  const rows = SALES_BUTTONS.map(({ offer, label, packageName, price }) => {
++    const key = salesKey(l.lead_id, offer), busy = !!S.salesBusy[key];
++    const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.offer === offer && x.sales_intake_direct === true).sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
++    const status = queued?.status, locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
++    const stateText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : S.salesErr[key] || "";
++    return el("div", { class: "crm-sales-offer", "data-offer": offer }, el("span", { class: "crm-sales-package" }, `${label} – ${packageName} · CHF ${price}.–`), " ",
++      el("button", { type: "button", class: "crm-btn primary crm-mail-send", "data-offer": offer, disabled: busy || locked || !S.online, onclick: (e) => { e.stopPropagation(); sendSalesIntake(l, offer); } }, busy ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : `${label} – ${t("sales.send")}`),
++      stateText ? el("span", { class: `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`, "aria-live": "polite" }, stateText) : "");
++  });
++  return el("span", { class: "crm-salesbox" }, el("p", { class: "crm-note" }, t("sales.start")), rows);
+ }
+ // TF-028: read-only completion/upgrade status. This component never starts a
+ // mail, payment or repair action; it only renders the server-side allowlist.
+@@ -263,21 +271,21 @@ function drawerOpen() {
+ function syncSalesBox() {
+   const l = S.leads.find((x) => x.lead_id === S.sel), box = $("crmDrawer")?.querySelector(".crm-salesbox");
+   if (!l || !box) return;
+-  const queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.sales_intake_direct === true)
+-    .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1);
+-  const status = queued?.status;
+-  const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
+-  const visibleText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : S.salesErr[l.lead_id] || "";
+-  const button = box.querySelector("button.crm-mail-send");
+-  if (button) {
+-    button.disabled = !!S.salesBusy[l.lead_id] || locked || !S.online;
+-    button.textContent = S.salesBusy[l.lead_id] ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : t("sales.send");
++  for (const { offer } of SALES_BUTTONS) {
++    const row = box.querySelector(`[data-offer="${offer}"]`), button = row?.querySelector("button.crm-mail-send");
++    if (!row || !button) continue;
++    const key = salesKey(l.lead_id, offer), queued = S.salesRequests.filter((x) => x.lead_id === l.lead_id && x.offer === offer && x.sales_intake_direct === true)
++      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).at(-1), status = queued?.status;
++    const locked = ["pending", "processing", "accepted_local", "sent"].includes(status);
++    const visibleText = status === "sent" ? t("sales.sent") : status === "failed" ? t("sales.sendFailed") : ["blocked", "expired"].includes(status) ? t("sales.blocked") : locked ? t("sales.queued") : S.salesErr[key] || "";
++    button.disabled = !!S.salesBusy[key] || locked || !S.online;
++    button.textContent = S.salesBusy[key] ? t("sales.loading") : status === "sent" ? t("sales.sent") : locked ? t("sales.queued") : `${offer === "CHF150" ? "CHF 150" : "CHF 480"} – ${t("sales.send")}`;
++    let msg = row.querySelector(".crm-sales-msg");
++    if (!visibleText) { msg?.remove(); continue; }
++    if (!msg) { msg = el("span", { class: "crm-status crm-sales-msg", "aria-live": "polite" }); row.append(" ", msg); }
++    msg.textContent = visibleText;
++    msg.className = `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`;
+   }
+-  let msg = box.querySelector(".crm-sales-msg");
+-  if (!visibleText) { msg?.remove(); return; }
+-  if (!msg) { msg = el("span", { class: "crm-status crm-sales-msg", "aria-live": "polite" }); box.append(" ", msg); }
+-  msg.textContent = visibleText;
+-  msg.className = `crm-status crm-sales-msg${status === "sent" ? " ok" : ["failed", "blocked", "expired"].includes(status) ? " bad" : ""}`;
+ }
+ function render({ preserveDrawer = false } = {}) {
+   const now = new Date(), st = crmStats(S.leads, now);
+diff --git a/public/i18n.js b/public/i18n.js
+index 2b7d2d3..3ed25ac 100644
+--- a/public/i18n.js
++++ b/public/i18n.js
+@@ -148,7 +148,7 @@ const DE = {
+   "mail.mailbox": "Postfach", "mail.connected": "verbunden", "mail.notConnected": "Postfach nicht verbunden – keine Jarvis-Entwürfe", "mail.disabled": "Mail-Aktionen sind für dieses Konto deaktiviert.",
+   // TF-077B: genau eine Mail-Aktion für Giuliano/Mario/Damiano – der vorbereitete Jarvis-Entwurf wird serverseitig gesendet.
+   "mail.send": "E-Mail lossenden", "mail.sending": "E-Mail wird gesendet …", "mail.sent": "E-Mail gesendet", "mail.sendFailed": "E-Mail konnte nicht gesendet werden",
+-  "sales.start": "Erstmail senden & Auftrag starten", "sales.send": "Mail senden", "sales.loading": "Mail wird eingereiht …", "sales.sent": "Erstmail gesendet", "sales.previewFailed": "Erstmail-Vorschau konnte nicht erstellt werden.", "sales.sendFailed": "Erstmail konnte nicht in Auftrag gegeben werden.", "sales.blocked": "Versand gesperrt", "sales.queued": "Erstmail zur sicheren Zustellung eingereiht.", "sales.duplicate": "Erstmail war bereits eingereiht – kein Doppelversand.", "sales.recipient": "Empfänger", "sales.subject": "Betreff", "sales.links": "Drei gebundene Links", "sales.vault": "Kundentresor",
++  "sales.start": "Verkaufsaktion – Erstmail senden", "sales.send": "ERST-MAIL SENDEN", "sales.loading": "Mail wird eingereiht …", "sales.sent": "Erstmail gesendet", "sales.previewFailed": "Erstmail-Vorschau konnte nicht erstellt werden.", "sales.sendFailed": "Erstmail konnte nicht in Auftrag gegeben werden.", "sales.blocked": "Versand gesperrt", "sales.queued": "Erstmail zur sicheren Zustellung eingereiht.", "sales.duplicate": "Erstmail war bereits eingereiht – kein Doppelversand.", "sales.recipient": "Empfänger", "sales.subject": "Betreff", "sales.links": "Gebundene Links", "sales.vault": "Kundentresor",
+   "service.heading": "Auftragsstatus", "service.check": "CHF-150-Prüfauftrag", "service.receipt": "Quittung", "service.upgrade": "CHF-330-Upgrade", "service.repair": "CHF-480-Reparatur", "service.mail": "Abschlussmail", "service.open": "Offene Punkte",
+   "service.status.READY": "Bereit", "service.status.SENT": "Gesendet", "service.status.OPEN": "Offen", "service.status.PAYMENT_PROCESSING": "Zahlung wird verarbeitet", "service.status.PAID": "Bezahlt", "service.status.MANUAL_REVIEW_REQUIRED": "MANUAL_REVIEW_REQUIRED", "service.status.COMPLETED": "Abgeschlossen", "service.status.READY_FOR_DELIVERY": "Abschluss bereit", "service.status.AUTHORIZATION_REQUIRED": "Reparatur gesperrt – Freigabe fehlt", "service.status.BLOCKED_NO_ACCESS": "Reparatur gesperrt – Zugang fehlt", "service.status.BROWSER_GATE_REQUIRED": "Reparatur gesperrt – Browser-Freigabe fehlt", "service.status.PAYMENT_REQUIRED": "Zahlung offen", "service.status.PAYMENT_REVIEW_REQUIRED": "Zahlung wird geprüft",
+   "mail.retry": "Erneut versuchen", "mail.noDraft": "Kein vorbereiteter Entwurf", "mail.sendHint": "Sendet den vorbereiteten Jarvis-Entwurf an die E-Mail-Adresse dieses Leads.",
+diff --git a/sales-intake.js b/sales-intake.js
+index c2ff48b..48e3818 100644
+--- a/sales-intake.js
++++ b/sales-intake.js
+@@ -16,6 +16,10 @@ const SALES_TEST_PAYMENT_LINKS = Object.freeze({
+   payment150: "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00",
+   payment480: "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01",
+ });
++export const SALES_DIRECT_OFFERS = Object.freeze({
++  CHF150: Object.freeze({ offer: "CHF150", kind: "CHECK", offer_class: "REPAIR_CHECK_150", price: 150, order_key: "order150Id", payment_key: "payment150", label: "Check & Anleitung" }),
++  CHF480: Object.freeze({ offer: "CHF480", kind: "FIX", offer_class: "REPAIR_FIX_500", price: 480, order_key: "order480Id", payment_key: "payment480", label: "Check & Reparatur" }),
++});
+ const clean = (v) => String(v ?? "").trim();
+ const domainOf = (lead) => clean(lead.domain || lead.website).replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+ const findingsOf = (lead) => (Array.isArray(lead.errors?.items) ? lead.errors.items : Array.isArray(lead.websiteIssues) ? lead.websiteIssues : [])
+@@ -53,7 +57,7 @@ export function salesIntakeEligibility(lead, { now = new Date() } = {}) {
+ // TF-JARVIS-024: Direkter, bis zur separaten Produktionsfreigabe ausschliesslich synthetischer Sandbox-Versand.
+ // Der Token kommt aus dem bestehenden Access-Intake-Mechanismus. Im Bundle wird später nur sein Hash persistiert;
+ // der Klartext bleibt im URL-Fragment der Mail und wird von HTTP nie übertragen.
+-export function buildSalesIntakeMail({ lead, order150Id, order480Id, accessToken, accessExpiresAt, accessOrigin, sandbox = false, now = new Date() } = {}) {
++export function buildSalesIntakeMail({ lead, order150Id, order480Id, offer = null, accessToken, accessExpiresAt, accessOrigin, sandbox = false, now = new Date() } = {}) {
+   const eligible = salesIntakeEligibility(lead, { now });
+   if (!eligible.ok) return eligible;
+   if (!sandbox) return { ok: false, code: "SANDBOX_ONLY", reason: "Der direkte Erstmail-Versand ist bis zur Produktionsfreigabe nur im Sandbox-Modus zulässig." };
+@@ -68,6 +72,24 @@ export function buildSalesIntakeMail({ lead, order150Id, order480Id, accessToken
+   const link150 = testPaymentLinkUrl(SALES_TEST_PAYMENT_LINKS.payment150, { orderId: order150Id, email: eligible.email });
+   const link480 = testPaymentLinkUrl(SALES_TEST_PAYMENT_LINKS.payment480, { orderId: order480Id, email: eligible.email });
+   if (!link150 || !link480 || !access) return { ok: false, code: "LINKS_UNAVAILABLE", reason: "Sandbox-Zahlungs- oder Zugangstresorlink konnte nicht sicher erzeugt werden." };
++  const selected = offer && SALES_DIRECT_OFFERS[offer];
++  if (offer && !selected) return { ok: false, code: "UNSUPPORTED_OFFER", reason: "Das ausgewählte Paket ist nicht zulässig." };
++  if (selected) {
++    const orderId = selected.order_key === "order150Id" ? order150Id : order480Id;
++    const payment = selected.payment_key === "payment150" ? link150 : link480;
++    const body = [
++      "Guten Tag", "", "Vielen Dank für Ihr Vertrauen.", "",
++      `Wie besprochen wurde das Paket ${selected.label} für CHF ${selected.price}.– für Ihre Website ${website} vorbereitet.`, "",
++      "Für die sichere Abwicklung verwenden Sie bitte den folgenden Stripe-Sandbox-Testlink (keine echte Zahlung):", "", payment, "",
++      "Für den technischen Zugang verwenden Sie bitte ausschliesslich den folgenden temporären, sicheren Link (keine Passwörter per E-Mail):", "", access, "",
++      `Die Auftragsreferenz lautet ${orderId}.`, "",
++      "Freundliche Grüsse", "", "Christoph Kälin", "", "Helvetic Webdesign",
++    ].join("\n");
++    const mail = { recipient: eligible.email, subject: SALES_INTAKE_SUBJECT, body, links: { payment, access }, lead_id: lead.lead_id,
++      offer: selected.offer, offer_class: selected.offer_class, price: selected.price, order_id: orderId, access_expires_at: expiresAt, legal_basis: eligible.permission.legal_basis };
++    const preview_ref = crypto.createHash("sha256").update(JSON.stringify(mail)).digest("hex");
++    return { ok: true, preview_ref, mail };
++  }
+   const body = [
+     "Guten Tag",
+     "",
+diff --git a/test/tf024-direct-sales-mail.test.js b/test/tf024-direct-sales-mail.test.js
+index 7f60c1e..0c444e9 100644
+--- a/test/tf024-direct-sales-mail.test.js
++++ b/test/tf024-direct-sales-mail.test.js
+@@ -176,5 +176,39 @@ test("TF-024 direct: Browserpfad enthält den neuen Button ohne Vorschau-/Bestä
+   const source = fs.readFileSync(new URL("../public/crm.js", import.meta.url), "utf8");
+   assert.match(source, /crm-mail-send/);
+   assert.match(source, /sales_intake_send/);
++  assert.match(source, /CHF150/);
++  assert.match(source, /CHF480/);
++  assert.match(source, /data-offer/);
+   assert.doesNotMatch(source, /window\.confirm\(/, "der direkte Button darf keine zusätzliche Bestätigung öffnen");
+ });
++
++test("TF-034 direct: CHF150 und CHF480 erzeugen getrennte, paketgebundene Outbox-Aufträge", async () => {
++  const check = setup();
++  const checkResponse = await check.call({ op: "sales_intake_send", lead_id: LEAD.lead_id, offer: "CHF150" });
++  assert.equal(checkResponse.status, 201);
++  const checkBody = await checkResponse.json();
++  const checkRequest = (await check.store.get()).state.requests[0];
++  assert.equal(checkRequest.meta.offer, "CHF150");
++  assert.match(checkRequest.meta.order_id, /^CA150-/);
++  assert.match(checkRequest.body, /Check & Anleitung/);
++  assert.match(checkRequest.body, /CA150-20261026-[0-9a-f]{6}/);
++  assert.doesNotMatch(checkRequest.body, /RF480-20261026-/);
++  const checkDuplicate = await check.call({ op: "sales_intake_send", lead_id: LEAD.lead_id, offer: "CHF150" });
++  assert.equal(checkDuplicate.status, 200);
++  assert.equal((await checkDuplicate.json()).duplicate, true);
++  assert.equal((await check.store.get()).state.requests.length, 1);
++  assert.ok(checkBody.request.request_id);
++
++  const repair = setup();
++  const repairResponse = await repair.call({ op: "sales_intake_send", lead_id: LEAD.lead_id, offer: "CHF480" });
++  assert.equal(repairResponse.status, 201);
++  const repairRequest = (await repair.store.get()).state.requests[0];
++  assert.equal(repairRequest.meta.offer, "CHF480");
++  assert.match(repairRequest.meta.order_id, /^RF480-/);
++  assert.match(repairRequest.body, /Check & Reparatur/);
++  assert.match(repairRequest.body, /RF480-20261026-[0-9a-f]{6}/);
++  assert.doesNotMatch(repairRequest.body, /CA150-20261026-/);
++  const crossOffer = await repair.call({ op: "sales_intake_send", lead_id: LEAD.lead_id, offer: "bad" });
++  assert.equal(crossOffer.status, 400);
++  assert.equal((await crossOffer.json()).code, "UNSUPPORTED_OFFER");
++});

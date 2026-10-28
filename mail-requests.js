@@ -12,7 +12,7 @@ export { MANUAL_TEST_MAIL, isManualTestMail };
 import { cleanCore } from "./cloud-core.js";
 import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identity.js";
 import { mailAccessFor, draftRefOf, DRAFT_REF_RE, SELLER_SEND_DAILY_LIMIT } from "./mail-access.js";
-import { buildSalesIntakeMail, buildSalesIntakePreview, newIntakeToken, salesOrderRefs, salesVaultLink } from "./sales-intake.js";
+import { buildSalesIntakeMail, buildSalesIntakePreview, newIntakeToken, salesOrderRefs, salesVaultLink, SALES_DIRECT_OFFERS } from "./sales-intake.js";
 import { salesBundleId } from "./sales-intake-bundle.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
@@ -54,6 +54,8 @@ export function cleanMeta(m) {
         sales_intake_direct: true, sales_sandbox: m.sales_sandbox === true, synthetic_test: m.synthetic_test === true,
         idempotency_key: typeof m.idempotency_key === "string" && /^[a-f0-9]{64}$/.test(m.idempotency_key) ? m.idempotency_key : null,
         access_expires_at: typeof m.access_expires_at === "string" && Number.isFinite(Date.parse(m.access_expires_at)) ? new Date(m.access_expires_at).toISOString() : null,
+        ...(SALES_DIRECT_OFFERS[m.offer] && /^(?:CA150|RF480)-\d{8}-[0-9a-f]{6}$/.test(String(m.order_id || ""))
+          ? { offer: m.offer, offer_class: SALES_DIRECT_OFFERS[m.offer].offer_class, price: SALES_DIRECT_OFFERS[m.offer].price, order_id: m.order_id } : {}),
       } : {}) } : {};
   return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id, ...sales } : null;
 }
@@ -262,7 +264,7 @@ export const publicView = (r) => ({ request_id: r.request_id, created_at: r.crea
 // TF-077B: Sicht eines Verkäufers auf seine eigenen Aufträge – ohne Empfängeradresse und Text.
 const sellerView = (r) => ({ request_id: r.request_id, created_at: r.created_at, delivery: r.delivery || "send", status: r.status, reason: r.reason, updated_at: r.updated_at,
   lead_id: r.meta?.lead_id || null, ...(r.delivery === "send_prepared" ? { draft_ref: r.draft_ref || null } : {}),
-  ...(r.delivery === "sales_intake" ? { sales_intake_direct: r.meta?.sales_intake_direct === true } : {}) });
+  ...(r.delivery === "sales_intake" ? { sales_intake_direct: r.meta?.sales_intake_direct === true, offer: r.meta?.offer || null, order_id: r.meta?.order_id || null } : {}) });
 
 // Ein Blob { requests, locks, workers } mit bedingtem Schreiben (ETag) – gleichzeitige Worker überholen sich nie.
 export function createMailQueue(store, { now = () => new Date(), dedicated = false } = {}) {
@@ -439,7 +441,8 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
   async function salesSend(queue, body, actor) {
     const mail = mailAccessFor(actor);
     if (!mail.send_prepared && actor.role !== "OWNER") return reply(403, { error: "Keine Berechtigung für den Erstmail-Versand.", code: "FORBIDDEN" });
-    if (Object.keys(body).some((k) => !["op", "lead_id"].includes(k)) || typeof body.lead_id !== "string") return reply(400, { error: "Nur lead_id ist erlaubt.", code: "BAD_PARAMS" });
+    if (Object.keys(body).some((k) => !["op", "lead_id", "offer"].includes(k)) || typeof body.lead_id !== "string") return reply(400, { error: "Nur lead_id und optional offer sind erlaubt.", code: "BAD_PARAMS" });
+    if (body.offer !== undefined && (typeof body.offer !== "string" || !SALES_DIRECT_OFFERS[body.offer])) return reply(400, { error: "Ein zulässiges Paket (CHF150 oder CHF480) ist erforderlich.", code: "UNSUPPORTED_OFFER" });
     if (!resolveLead) return reply(403, { error: "Keine Berechtigung.", code: "FORBIDDEN" });
     const found = await resolveLead(actor, body.lead_id);
     if (!found?.lead) return reply(found?.status || 403, { error: "Dieser Lead gehört nicht zu Ihrem Bereich.", code: found?.code || "OUT_OF_SCOPE" });
@@ -449,12 +452,12 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     if (env("JARVIS_SALES_SANDBOX_MODE") !== "true") return reply(403, { error: "Direkter Erstmail-Versand ist bis zur Produktionsfreigabe gesperrt.", code: "SANDBOX_ONLY" });
     if (lead.is_test !== true) return reply(403, { error: "Direkter Erstmail-Versand ist nur für synthetische Leads zulässig.", code: "SYNTHETIC_ONLY" });
     const t = now(), refs = salesOrderRefs(lead.lead_id, t), token = newIntakeToken({ now: t });
-    const result = buildSalesIntakeMail({ lead, ...refs, accessToken: token.token, accessExpiresAt: token.expires_at, accessOrigin: env("JARVIS_WEB_ORIGIN"), sandbox: true, now: t });
+    const result = buildSalesIntakeMail({ lead, ...refs, offer: body.offer, accessToken: token.token, accessExpiresAt: token.expires_at, accessOrigin: env("JARVIS_WEB_ORIGIN"), sandbox: true, now: t });
     if (!result.ok) return reply(result.code === "NO_CONTACT_PERMISSION" ? 403 : 409, { error: result.reason, code: result.code });
-    const idempotency_key = crypto.createHash("sha256").update(`sales_intake_direct:${lead.lead_id}:${t.toISOString().slice(0, 10)}`).digest("hex");
+    const idempotency_key = crypto.createHash("sha256").update(`sales_intake_direct:${lead.lead_id}:${body.offer || "bundle"}:${t.toISOString().slice(0, 10)}`).digest("hex");
     const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id, sales_intake: true, sales_intake_direct: true,
       sales_sandbox: true, synthetic_test: true, idempotency_key, preview_ref: result.preview_ref, access_expires_at: result.mail.access_expires_at,
-      order150_id: refs.order150Id, order480_id: refs.order480Id };
+      ...(result.mail.offer ? { offer: result.mail.offer, offer_class: result.mail.offer_class, price: result.mail.price, order_id: result.mail.order_id } : { order150_id: refs.order150Id, order480_id: refs.order480Id }) };
     const r = await queue.create({ recipient: result.mail.recipient, subject: result.mail.subject, body: result.mail.body, intent: "sales", delivery: "sales_intake" }, actor.user_id, meta);
     if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
     return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });

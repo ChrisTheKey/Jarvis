@@ -16,6 +16,10 @@ const SALES_TEST_PAYMENT_LINKS = Object.freeze({
   payment150: "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00",
   payment480: "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01",
 });
+export const SALES_DIRECT_OFFERS = Object.freeze({
+  CHF150: Object.freeze({ offer: "CHF150", kind: "CHECK", offer_class: "REPAIR_CHECK_150", price: 150, order_key: "order150Id", payment_key: "payment150", label: "Check & Anleitung" }),
+  CHF480: Object.freeze({ offer: "CHF480", kind: "FIX", offer_class: "REPAIR_FIX_500", price: 480, order_key: "order480Id", payment_key: "payment480", label: "Check & Reparatur" }),
+});
 const clean = (v) => String(v ?? "").trim();
 const domainOf = (lead) => clean(lead.domain || lead.website).replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
 const findingsOf = (lead) => (Array.isArray(lead.errors?.items) ? lead.errors.items : Array.isArray(lead.websiteIssues) ? lead.websiteIssues : [])
@@ -53,7 +57,7 @@ export function salesIntakeEligibility(lead, { now = new Date() } = {}) {
 // TF-JARVIS-024: Direkter, bis zur separaten Produktionsfreigabe ausschliesslich synthetischer Sandbox-Versand.
 // Der Token kommt aus dem bestehenden Access-Intake-Mechanismus. Im Bundle wird später nur sein Hash persistiert;
 // der Klartext bleibt im URL-Fragment der Mail und wird von HTTP nie übertragen.
-export function buildSalesIntakeMail({ lead, order150Id, order480Id, accessToken, accessExpiresAt, accessOrigin, sandbox = false, now = new Date() } = {}) {
+export function buildSalesIntakeMail({ lead, order150Id, order480Id, offer = null, accessToken, accessExpiresAt, accessOrigin, sandbox = false, now = new Date() } = {}) {
   const eligible = salesIntakeEligibility(lead, { now });
   if (!eligible.ok) return eligible;
   if (!sandbox) return { ok: false, code: "SANDBOX_ONLY", reason: "Der direkte Erstmail-Versand ist bis zur Produktionsfreigabe nur im Sandbox-Modus zulässig." };
@@ -68,6 +72,24 @@ export function buildSalesIntakeMail({ lead, order150Id, order480Id, accessToken
   const link150 = testPaymentLinkUrl(SALES_TEST_PAYMENT_LINKS.payment150, { orderId: order150Id, email: eligible.email });
   const link480 = testPaymentLinkUrl(SALES_TEST_PAYMENT_LINKS.payment480, { orderId: order480Id, email: eligible.email });
   if (!link150 || !link480 || !access) return { ok: false, code: "LINKS_UNAVAILABLE", reason: "Sandbox-Zahlungs- oder Zugangstresorlink konnte nicht sicher erzeugt werden." };
+  const selected = offer && SALES_DIRECT_OFFERS[offer];
+  if (offer && !selected) return { ok: false, code: "UNSUPPORTED_OFFER", reason: "Das ausgewählte Paket ist nicht zulässig." };
+  if (selected) {
+    const orderId = selected.order_key === "order150Id" ? order150Id : order480Id;
+    const payment = selected.payment_key === "payment150" ? link150 : link480;
+    const body = [
+      "Guten Tag", "", "Vielen Dank für Ihr Vertrauen.", "",
+      `Wie besprochen wurde das Paket ${selected.label} für CHF ${selected.price}.– für Ihre Website ${website} vorbereitet.`, "",
+      "Für die sichere Abwicklung verwenden Sie bitte den folgenden Stripe-Sandbox-Testlink (keine echte Zahlung):", "", payment, "",
+      "Für den technischen Zugang verwenden Sie bitte ausschliesslich den folgenden temporären, sicheren Link (keine Passwörter per E-Mail):", "", access, "",
+      `Die Auftragsreferenz lautet ${orderId}.`, "",
+      "Freundliche Grüsse", "", "Christoph Kälin", "", "Helvetic Webdesign",
+    ].join("\n");
+    const mail = { recipient: eligible.email, subject: SALES_INTAKE_SUBJECT, body, links: { payment, access }, lead_id: lead.lead_id,
+      offer: selected.offer, offer_class: selected.offer_class, price: selected.price, order_id: orderId, access_expires_at: expiresAt, legal_basis: eligible.permission.legal_basis };
+    const preview_ref = crypto.createHash("sha256").update(JSON.stringify(mail)).digest("hex");
+    return { ok: true, preview_ref, mail };
+  }
   const body = [
     "Guten Tag",
     "",
