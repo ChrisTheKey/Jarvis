@@ -17,8 +17,8 @@ import { createStore } from "../../../mail-worker.js";
 import { recordDirectSale } from "../../../sales.js";
 import { recordPayment, refundPayment, paymentsForOrder } from "../../../payments.js";
 import { REPAIR_ORDERS_FILE, FULFILLMENT_CLASS, PUBLIC_REPAIR_FIELDS, createConfirmedRepairOrder, createRepairEngine, runRepairOrders, cancelRepairOrder,
-  publicRepairOrders, reportUnsafe } from "../../../repair-workflow.js";
-import { CHECK150_ORDERS_FILE, createCheck150Order, runCheck150Orders } from "../../../check-150-workflow.js";
+  publicRepairOrders, completeOrder, reportUnsafe } from "../../../repair-workflow.js";
+import { CHECK150_ORDERS_FILE, createCheck150Order, createCheck150Engine } from "../../../check-150-workflow.js";
 import { createAccessIntakeHandler, memoryIntakeStore } from "../../../access-intake-api.js";
 import { intakeClient, syncAccessIntake, sealEnvelope, ACCESS_VAULT_DIR } from "../../../access-intake.js";
 import { sftpAdapter } from "../../../repair-adapters/sftp.js";
@@ -99,7 +99,7 @@ async function startCustomerBrowser() {
   const b = await chromiumLauncher()({ home });
   return { b, home, close: async () => { await b.close().catch(() => {}); fs.rmSync(home, { recursive: true, force: true }); } };
 }
-async function customerForm(link, { type, host, user, secret, root = null, hostKey = null, consent = true }) {
+async function customerForm(link, { type, host, user, secret, root = null, hostKey = null, consent = true, provider = null }) {
   const ctx = await customer.b.newContext({ viewport: { width: 390, height: 844 }, isMobile: true });
   try {
     const page = await ctx.newPage();
@@ -107,14 +107,22 @@ async function customerForm(link, { type, host, user, secret, root = null, hostK
     await page.waitForSelector("#form:not([hidden])", { timeout: 20_000 });
     assert.ok(!page.url().includes("#t="), "Token sofort aus der Adresszeile entfernt");
     const shown = await page.textContent("#domain");
+    await page.selectOption("#providerProfile", provider || (type === "wordpress_cms" ? "WORDPRESS" : "SFTP_HOSTING"));
     await page.selectOption("#type", type);
     await page.fill("#host", host); await page.fill("#user", user); await page.fill("#secret", secret);
+    const providerName = page.locator("#providerName");
+    if (await providerName.isVisible()) await providerName.fill("Synthetischer TF-034-Testanbieter");
     if (root) await page.fill("#root", root);
     if (hostKey) await page.fill("#hostKey", hostKey);
     if (consent) await page.check("#consent");
     await page.click("#send");
     if (!consent) { await page.waitForSelector("#formErr:not([hidden])", { timeout: 10_000 }); return { ok: false, shown, error: await page.textContent("#formErr") }; }
-    await page.waitForSelector("#done:not([hidden])", { timeout: 30_000 });
+    try {
+      await page.waitForSelector("#done:not([hidden])", { timeout: 30_000 });
+    } catch (error) {
+      const message = await page.textContent("#formErr").catch(() => "");
+      throw new Error(`Kundenformular nicht übermittelt: ${message || "unbekannter Fehler"}`, { cause: error });
+    }
     return { ok: true, shown, cleared: (await page.inputValue("#secret")) === "" };
   } finally { await ctx.close(); }
 }
@@ -157,7 +165,9 @@ async function depsFor(ctx) {
 }
 function newCtx({ domain, hooks = {} } = {}) {
   const dir = tmp();
-  return { dir, store: createStore(dir), gmail: fakeGmail(), counts: { log: [], writes: 0, injected: false }, hooks, alerts: [], logs: [], domain };
+  const store = createStore(dir);
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
+  return { dir, store, gmail: fakeGmail(), counts: { log: [], writes: 0, injected: false }, hooks, alerts: [], logs: [], domain };
 }
 const logFn = (ctx) => (level, event, data) => ctx.logs.push(JSON.stringify({ level, event, data }));
 // Produktiver Worker-Lauf (eigener Prozesszustand je Aufruf = Neustart).
@@ -178,10 +188,10 @@ async function resetWp46() {
     { env: ["-e", `START_ID=${lab.wp.start}`, "-e", `START_HTML=${START46}`, "-e", `POST_ID=${lab.wp.post}`, "-e", `POST_HTML=${WP_BROKEN.post}`] });
 }
 
-// Bis Zugang + Freigabe eingegangen sind: bestätigter Auftrag → CHF 240 → Zugangs-Mail → Kundenformular im Browser → Pull.
+// Bis Zugang + Freigabe eingegangen sind: bestätigter Auftrag → CHF 480 → Zugangs-Mail → Kundenformular im Browser → Pull.
 async function orderWithSecureAccess(ctx, { domain, form }) {
   const o = createConfirmedRepairOrder(ctx.store, { domain, website: `https://${domain}/`, company: COMPANY, delivery_email: EMAIL, contact_name: "Frau Muster" });
-  recordPayment(ctx.store, { order_id: o.order_id, amount_chf: 240, reference: `FO46-${o.order_id}`, source: "test_ledger" });
+  recordPayment(ctx.store, { order_id: o.order_id, amount_chf: 480, reference: `FO46-${o.order_id}`, source: "test_ledger" });
   await runWorker(ctx);
   const link = linkIn(ctx.gmail.sentOf("CUSTOMER_ACCESS_REQUEST")[0]);
   assert.ok(link, "Zugangs-Mail mit sicherem Link");
@@ -249,20 +259,24 @@ if (!ENABLED) {
     let p = snap(id);
     assert.deepEqual([readOrder(ctx.store, id).state, p.phase, p.paid_chf, ctx.gmail.calls.length, ctx.counts.log.length, authCalls() - auth0], ["AUTHORIZATION_REQUIRED", "WAITING_FOR_DEPOSIT", 0, 0, 0, 0]);
 
-    // (3) CHF 239 → blockiert; kumulativ CHF 240 → genau EINE Zugangs-Anfrage (Neustart dazwischen und danach).
+    // (3) CHF 239/479 → blockiert; kumulativ CHF 480 → genau EINE Zugangs-Anfrage (Neustart dazwischen und danach).
     recordPayment(ctx.store, { order_id: id, amount_chf: 239, reference: "FO46-WP-1", source: "test_ledger" });
     await runWorker(ctx);
     p = snap(id);
     assert.deepEqual([p.phase, p.paid_chf, p.payment_ok, ctx.gmail.calls.length, intake.ops.length], ["WAITING_FOR_DEPOSIT", 239, false, 0, 0]);
     assert.throws(() => recordPayment(ctx.store, { order_id: id, amount_chf: 239, reference: "fo46-wp-1" }), /Doppelte Zahlungsreferenz/);
     await runWorker(ctx); // Neustart nach Payment: unverändert
-    recordPayment(ctx.store, { order_id: id, amount_chf: 1, reference: "FO46-WP-2", source: "test_ledger" });
+    recordPayment(ctx.store, { order_id: id, amount_chf: 240, reference: "FO46-WP-2", source: "test_ledger" });
+    await runWorker(ctx);
+    p = snap(id);
+    assert.deepEqual([p.phase, p.paid_chf, p.payment_ok, ctx.gmail.calls.length, intake.ops.length], ["WAITING_FOR_ACCESS", 479, true, 0, 0]);
+    recordPayment(ctx.store, { order_id: id, amount_chf: 1, reference: "FO46-WP-3", source: "test_ledger" });
     await runWorker(ctx);
     p = snap(id);
     const accessMails = ctx.gmail.sentOf("CUSTOMER_ACCESS_REQUEST");
     assert.equal(accessMails.length, 1);
     const mail = accessMails[0], link = linkIn(mail);
-    assert.deepEqual([mail.to, p.phase, p.paid_chf, p.access_requested], [EMAIL, "ACCESS_REQUEST_SENT", 240, true]);
+    assert.deepEqual([mail.to, p.phase, p.paid_chf, p.access_requested], [EMAIL, "ACCESS_REQUEST_SENT", 480, true]);
     assert.ok(link && link.startsWith(intake.origin + "/access.html#t="), "One-Time-Link (Token nur im Fragment)");
     assert.match(mail.body, /KEINE Passwörter per E-Mail/);
     assert.ok(mail.body.includes(domain) && mail.subject.includes(domain) && !mail.body.includes(id) && !link.includes(id), "domaingebunden, keine Auftrags-ID");
@@ -318,9 +332,10 @@ if (!ENABLED) {
       if (o.state === "FULL_AUDIT" && writesAtBackup == null) { writesAtBackup = wpWrites() - w0; assert.ok(o.backup?.rollback_point && o.backup?.backup_ref, "Backup + Rollback-Punkt vor jeder Änderung"); }
       if (["COMPLETED", "COMPLETED_WITH_MANUAL_ITEMS", "REPAIR_FAILED", "MANUAL_REVIEW_REQUIRED", "VALIDATION_FAILED", "BLOCKED_NO_ACCESS", "BLOCKED_NO_AUTHORIZATION", "PAYMENT_REVIEW_REQUIRED"].includes(o.state)) break;
     }
-    // TF-055: der geschützte AGB-Link auf dem Impressum bleibt bewusst offen → abgeschlossen MIT manuellem Punkt, nie «COMPLETED».
-    assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS", `${states.join(" → ")} · ${o.blocked_reason} · ${JSON.stringify(o.delivery)} · ${JSON.stringify(o.browser_validation?.codes)}`);
-    assert.ok(inOrder(states, ["ACCESS_CHECK", "ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY", "COMPLETED_WITH_MANUAL_ITEMS"]), states.join(" → "));
+    // TF-055: der geschützte AGB-Link auf dem Impressum bleibt bewusst offen → READY_FOR_DELIVERY.
+    // Die Abschlussmail wird wegen des offenen Befunds sicher zurückgehalten; Chris bestätigt den manuellen Abschluss.
+    assert.equal(o.state, "READY_FOR_DELIVERY", `${states.join(" → ")} · ${o.blocked_reason} · ${JSON.stringify(o.delivery)} · ${JSON.stringify(o.browser_validation?.codes)}`);
+    assert.ok(inOrder(states, ["ACCESS_CHECK", "ACCESS_PROFILE_PREFLIGHT", "ACCESS_CHECK", "BACKUP", "FULL_AUDIT", "REPAIR_PLAN", "REPAIRING", "VALIDATION", "RETEST", "READY_FOR_DELIVERY"]), states.join(" → "));
     assert.match(o.report.body, /Die automatisch reparierbaren Probleme wurden behoben\. Weitere Punkte erfordern eine manuelle Prüfung\./);
 
     // Profil automatisch (kein Chris-Schritt).
@@ -357,29 +372,32 @@ if (!ENABLED) {
       assert.ok(v.findings.every((f) => f.ok === true), `${pg} ${vp}: ${JSON.stringify(v.findings)}`);
     }
     assert.ok(o.browser_baseline.pages["/"].desktop.findings[0].present && o.browser_baseline.pages["/lab-news/"].desktop.findings[0].present, "VORHER im Browser sichtbar");
-    // Kundenbericht + Lieferung (genau 1 CUSTOMER_ORDER_FULFILLMENT).
+    // Kundenbericht + sichere Liefer-Sperre: offener geschützter Befund darf keine Abschlussmail auslösen.
     const deliveries = ctx.gmail.sentOf(FULFILLMENT_CLASS);
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].to, EMAIL);
-    const body = deliveries[0].body;
+    assert.equal(deliveries.length, 0);
+    assert.equal(o.delivery.status, "failed");
+    assert.match(o.delivery.handover_reason, /nicht vollständig repariert/);
+    const body = o.report.body;
     for (const must of ["Gefundene relevante Punkte: 3", "Behoben wurden:", "Nicht automatisch repariert", "Desktop geprüft: Ja", "Mobile geprüft: Ja", "Retest", "erfolgreich", "temporären Zugang"])
       assert.ok(body.includes(must), `Bericht: ${must}`);
     assert.equal(reportUnsafe(body, o), null);
     for (const bad of ["https://", "127.0.0.1", "/home/", "public_html", "wp-json", id, ...bk.entries.map((e) => e.backup_id), o.backup.production_ref, "Bearer", "console"]) assert.ok(!body.includes(bad), `Bericht enthält ${bad}`);
     assertNoSecrets("Bericht", body);
-    assert.deepEqual([o.delivery.status, o.delivery.message_class], ["sent", FULFILLMENT_CLASS]);
+    completeOrder(ctx.store, id);
+    o = readOrder(ctx.store, id);
+    assert.equal(o.state, "COMPLETED_WITH_MANUAL_ITEMS");
     // Credential Cleanup.
     assert.equal(fs.existsSync(vault), false, "Tresor-Eintrag zerstört");
-    assert.deepEqual(Object.keys(o.access_intake).sort(), ["access_domain", "connector_type", "destroyed_at", "received_at", "revoked_required", "status"]);
+    assert.deepEqual(Object.keys(o.access_intake).sort(), ["access_domain", "connector_type", "destroyed_at", "provider", "received_at", "revoked_required", "status"]);
     assert.deepEqual([o.access_intake.status, o.access_intake.revoked_required, !!o.access_intake.destroyed_at], ["DESTROYED", true, true]);
     assert.ok(o.access_profile.cleared_at && !("host_key_sha256" in o.access_profile));
     // Neustart nach der Lieferung (Produktionsweg): nichts mehr – keine Mail, kein Write, keine Zahlung.
     await runWorker(ctx);
-    assert.deepEqual([ctx.gmail.sentOf().length, wpWrites() - w0, paymentsForOrder(ctx.store, id).length], [2, 2, 2]);
+    assert.deepEqual([ctx.gmail.sentOf().length, wpWrites() - w0, paymentsForOrder(ctx.store, id).length], [1, 2, 3]);
     // Dashboard-Phasen (feste Wörter, keine Secrets).
     p = snap(id);
     assert.deepEqual([p.phase, p.payment_ok, p.access_received, p.authorized, p.profile_status, p.backup_ok, p.repaired, p.browser_desktop, p.browser_mobile, p.browser_regression, p.delivery_status],
-      ["COMPLETED_WITH_MANUAL_ITEMS", true, true, true, "PROFILE_READY", true, 2, "JA", "JA", "KEINE", "sent"]);
+      ["COMPLETED_WITH_MANUAL_ITEMS", true, true, true, "PROFILE_READY", true, 2, "JA", "JA", "KEINE", "manual"]);
     assert.ok(inOrder(phases, ["WAITING_FOR_DEPOSIT", "ACCESS_REQUEST_SENT", "ACCESS_RECEIVED", "ACCESS_PROFILE_PREFLIGHT", "BACKUP", "REPAIRING", "VALIDATING", "LIVE_RETEST", "READY_FOR_DELIVERY", "COMPLETED_WITH_MANUAL_ITEMS"]), phases.join(" → "));
     assert.deepEqual(Object.keys(p).sort(), [...PUBLIC_REPAIR_FIELDS].sort());
     for (const [f, text] of filesOf(ctx.dir)) assertNoSecrets(f, text);
@@ -512,7 +530,7 @@ if (!ENABLED) {
     await restartStep(ctx, id);
     assert.deepEqual([readOrder(ctx.store, id).state, ctx.counts.writes, wpWrites() - w0], ["PAYMENT_REQUIRED", 0, 0]);
     assert.equal(pubOf(ctx, id).phase, "WAITING_FOR_DEPOSIT");
-    recordPayment(ctx.store, { order_id: id, amount_chf: 240, reference: `FO46-REPAY-${id}`, source: "test_ledger" });
+    recordPayment(ctx.store, { order_id: id, amount_chf: 480, reference: `FO46-REPAY-${id}`, source: "test_ledger" });
     for (let i = 0; i < 12 && readOrder(ctx.store, id).state !== "VALIDATION"; i++) await restartStep(ctx, id);
     assert.equal(readOrder(ctx.store, id).state, "VALIDATION");
     assert.equal(ctx.counts.writes, 2);
@@ -553,17 +571,21 @@ if (!ENABLED) {
   test("CHF150 DRY RUN: bestätigt → CHF 74 nichts (kein Audit) → CHF 75 echter Audit → Anleitung → Bericht → genau 1 CUSTOMER_ORDER_FULFILLMENT; Neustart kein Doppelversand", async () => {
     await resetSite(lab, { fixture: FX, files: { "css/site.css": CLEAN_CSS() } });
     const dir = tmp(), store = createStore(dir), gmail = fakeGmail();
+    store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
     const domain = DOMAINS.site;
-    store.write("sales.json", { records: recordDirectSale({}, { domain, offer: "REPAIR_CHECK_150", delivery_email: EMAIL, company: COMPANY }) });
-    const o = createCheck150Order(store, { domain, website: `https://${domain}/`, company: COMPANY, delivery_email: EMAIL, contact_name: "Frau Muster" });
+    const leadId = "tf034-static-lab-lead";
+    store.write("sales.json", { records: recordDirectSale({}, { domain, offer: "REPAIR_CHECK_150", delivery_email: EMAIL, company: COMPANY, lead: { lead_id: leadId } }) });
+    const o = createCheck150Order(store, { domain, website: `https://${domain}/`, company: COMPANY, delivery_email: EMAIL, contact_name: "Frau Muster", lead_id: leadId });
     const r150 = () => store.read(CHECK150_ORDERS_FILE, { orders: {} }).orders[o.order_id];
     const siteCalls = () => lab.fetch.calls.filter((c) => c.host === domain).length;
-    const run150 = () => runCheck150Orders({ dir, gmail, auditor: labAuditor(lab.fetch), log: () => {} });
+    const run150 = () => createCheck150Engine({ dir, gmail, auditor: labAuditor(lab.fetch), log: () => {}, upgradeCheckout: async () => ({
+      status: "OPEN", checkout_session_id: "cs_tf034_synthetic_150", checkout_url: "https://checkout.stripe.com/cs_tf034_synthetic_150",
+    }) }).processAll();
     recordPayment(store, { order_id: o.order_id, amount_chf: 74, reference: "FO46-150-74", source: "test_ledger" });
     const c0 = siteCalls();
     await run150();
     assert.deepEqual([r150().state, siteCalls() - c0, gmail.calls.length], ["BLOCKED_PAYMENT_NOT_RECEIVED", 0, 0], "CHF 74 → nichts");
-    recordPayment(store, { order_id: o.order_id, amount_chf: 1, reference: "FO46-150-75", source: "test_ledger" });
+    recordPayment(store, { order_id: o.order_id, amount_chf: 76, reference: "FO46-150-150", source: "test_ledger" });
     await run150();
     const done = r150();
     assert.equal(done.state, "COMPLETED", done.blocked_reason);
@@ -572,7 +594,7 @@ if (!ENABLED) {
     const sent = gmail.sentOf("CUSTOMER_ORDER_FULFILLMENT");
     assert.equal(sent.length, 1);
     assert.equal(sent[0].to, EMAIL);
-    for (const must of ["Schritte:", "Danach prüfen:", "Webseiten-Check"]) assert.ok(sent[0].body.includes(must), must);
+    for (const must of ["Schritt-für-Schritt-Anleitung:", "Danach prüfen:", "Webseiten-Check"]) assert.ok(sent[0].body.includes(must), must);
     for (const bad of ["127.0.0.1", "/home/", "public_html", o.order_id]) assert.ok(!sent[0].body.includes(bad), bad);
     await run150();
     assert.equal(gmail.sentOf().length, 1, "Neustart: kein Doppelversand");

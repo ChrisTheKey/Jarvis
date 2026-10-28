@@ -2,62 +2,67 @@
 
 Stand: 2026-10-28
 Branch: `agent-codex/tf034`  
-Basis: TF-033 `fda4094`  
+Ausgangscommit: `c45b2d2`
 Deployment: nicht ausgeführt; kein Push und kein Merge.
 
 ## Ergebnis
 
-**Status: BLOCKED**
+**Status: READY_FOR_DEPLOY_APPROVAL**
 
-Die lokale Zahlungs- und Reparaturlogik sowie die lokalen Browserprüfungen sind grün. Produktionsbereitschaft bleibt BLOCKED, weil die zwölf Docker-Labs nicht ausgeführt werden durften. Ein Playwright-MCP war nicht exponiert; die vorhandenen lokalen Playwright-Core-Tests liefen mit Chromium vollständig grün.
+Die verpflichtenden lokalen Prüfungen sind mit synthetischen Daten erfolgreich abgeschlossen. Produktionsfreigabe, Push, Merge und Deployment bleiben getrennte menschliche Entscheidungen.
 
-## Änderungen
+## Ursachen und Korrekturen
 
-- `createRepairEngine` verwendet nun in allen Reparaturpfaden `fullPaymentGateForOrder`. CHF 240 schaltet weder Zugang noch Reparatur frei.
-- CHF 150 bleibt im getrennten Check-/Anleitungs-Workflow ohne automatische Website-Reparatur.
-- CHF 150 plus verifiziertes CHF-330-Upgrade ergibt über die bestehende Quellauftrags-Gutschrift genau CHF 480; doppelte Zahlungsreferenzen und Rückerstattungen bleiben fail closed.
-- Historische synthetische Reparatur-Fixtures wurden auf die Vollzahlungsregel angepasst.
-- Zwei TF-034-Regressionstests decken Legacy-Blockierung, Upgrade-Zuordnung, Idempotenz und Rückerstattung ab.
+- Veraltete Repair- und Full-Order-Fixtures erwarteten CHF 240 als ausreichende Reparaturzahlung. Sie verwenden jetzt die verbindliche CHF-480-Vollzahlung; CHF 0, CHF 150, CHF 239, CHF 240 und CHF 479 bleiben blockiert.
+- Die CHF-150-Fixture schliesst den Check mit CHF 150 ab und bleibt reparaturfrei; ein optionales CHF-330-Upgrade ist synthetisch gebunden und ergibt nur bei korrekter Zuordnung CHF 480.
+- Der sichere Kundenpfad benötigte ein deklaratives `SFTP_HOSTING`-Providerprofil für SFTP/SSH. Domain-, Zahlungs-, Zugangs-, Host-Key- und Adapter-Gates bleiben aktiv.
+- Full-Order-Fixtures erhielten synthetische Geschäftsadressdaten und aktuelle Erwartungen für manuelle Restpunkte, Quittung und Abschlussbericht.
+- Das Separation-Lab parametrisiert Zahlungsdateipfad und Besitzer nur für sein temporäres Lab; Produktionsdefaults bleiben `/opt/jarvis-payment` und `root:root`.
+- Die gemeldete TLS-Fehlermeldung `EPROTO` wurde im finalen Lauf nicht reproduziert. SNI-, Hostname-, Zertifikats- und Domain-Bindungstests bestanden; die TLS-Prüfung wurde nicht abgeschwächt.
 
-## Tests
+## Geänderte Dateien
 
-- Ausgangsstand TF-033 verifiziert: 1'213 Tests, 1'201 bestanden, 0 fehlgeschlagen, 12 übersprungen; Commit `fda4094`.
-- TF-034 nach Änderung: **1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen**, Exit 0 / `CHECK OK`.
-- `node scripts/dev-check.mjs --full` am 2026-10-28: bestanden; Secret-Scan ohne Treffer.
-- Gezielte Browser-/Onboarding-/Zugangssuite mit Chromium: **31/31 bestanden**, 0 fehlgeschlagen, 0 übersprungen.
-- Der erste gezielte Browserlauf ohne gesetzten Chromium-Pfad hatte 7 Umgebungsfehler; mit dem vorhandenen `chromium-1248`-Binary wurde derselbe Lauf vollständig grün wiederholt. Kein Produktionscode wurde dafür geändert.
-- Finaler Full-Check nach der Docker-Abnahme am 2026-10-28: **1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen**, Exit 0 / `CHECK OK`.
-- Lokales Chromium für Browser-Fixtures vorhanden und mit `JARVIS_CHROMIUM_PATH`/`CHROME_PATH` verwendet.
-- Synthetische E2E-Nachweise: CHF 150, CHF 480, CHF 330-Upgrade, CHF 479 blockiert, CHF 480 freigeschaltet, Refund/Chargeback-relevante Gates, sicherer Zugang, WordPress, GitHub/Netlify, SFTP/SSH, Backup, Rollback, Geheimnisschutz und idempotente Verarbeitung.
+- `access-provider-registry.js`
+- `deploy/vps/repair/docker-compose.yml`
+- `deploy/vps/repair-remote.sh`
+- `test/integration/repair-lab/repair-lab.integration.test.js`
+- `test/integration/repair-lab/browser-validation.integration.test.js`
+- `test/integration/full-order-046/full-order.integration.test.js`
+- `test/integration/repair-quality-054/repair-quality.integration.test.js`
+- `test/integration/service-separation-047/separation.integration.test.js`
+- `test/tf088.test.js`
+- `docs/STATUS.md`
 
-## Docker-Labs
+## Tatsächlich ausgeführte Tests
 
-Die statische Prüfung bestätigt eigene Lab-Labels, eigene Netzwerke und Volumes, loopback-gebundene Ports, synthetische Laufzeitdaten, keine Produktions-Mounts sowie label-beschränkte Cleanup-Routinen. Die zwölf Docker-Tests wurden anhand ihrer fünf Integrationsdateien und sieben TF-047-Separation-Tests identifiziert.
+Alle fünf freigegebenen Docker-Testgruppen liefen lokal mit `JARVIS_REPAIR_LAB=1`, synthetischen Daten und dedizierten Lab-Ressourcen:
 
-Der read-only-Aufruf `docker context show` / `docker version --format '{{.Server.Version}}'` wurde vor Ausführung vom Sicherheits-Guard abgewiesen: `Rejected: Keine Container ohne Freigabe.` Es wurden keine Container, Netzwerke oder Volumes verändert. Die zwölf Labs sind daher **BLOCKED / NOT RUN**, nicht bestanden.
+| Testgruppe | Ergebnis | Exit |
+|---|---:|---:|
+| `npm run test:repair-integration` | 18 bestanden, 0 fehlgeschlagen, 0 übersprungen | 0 |
+| `npm run test:browser-integration` | 10 bestanden, 0 fehlgeschlagen, 0 übersprungen | 0 |
+| `npm run test:full-order-integration` | 8 bestanden, 0 fehlgeschlagen, 0 übersprungen | 0 |
+| `npm run test:separation-integration` | 8 bestanden, 0 fehlgeschlagen, 0 übersprungen | 0 |
+| `npm run test:repair-quality-integration` | 5 bestanden, 0 fehlgeschlagen, 0 übersprungen | 0 |
 
-Für die finale Docker-Abnahme wurde die ausdrücklich lokale Freigabe erteilt. Die übergeordnete Ausführungsrichtlinie verweigerte dennoch bereits `docker context show` mit `Rejected: Keine Container ohne Freigabe.`; auch der read-only Inventuraufruf wurde nicht ausgeführt. Der Guard wurde nicht umgangen, daher wurden keine Testressourcen gestartet, verändert oder bereinigt. Die zwölf Docker-Labs bleiben BLOCKED / NOT RUN. Erforderlich bleibt eine übergeordnete Freigabe, die den read-only Docker-Daemon und danach ausschließlich die isolierte lokale Lab-Suite erlaubt.
+Docker-Summe: **49 bestanden, 0 fehlgeschlagen, 0 übersprungen**. Nach jeder Gruppe meldete das label-beschränkte Cleanup `containers: 0`, `volumes: 0`, `networks: 0`.
 
-## Anbieterstatus
+Der vollständige Projektcheck `node scripts/dev-check.mjs --full` lief danach ohne Lab-Umgebungsvariable und bestand mit **1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen**, Exit 0, `CHECK OK`. Die 12 Übersprungenen sind die separat ausgeführten Docker-Lab-Tests und wurden nicht als Full-Check-Pass gezählt. Secret-Scan: 416 Dateien, 0 bekannte Secretwerte, 0 Treffer.
 
-| Anbieter | Status | Automatisch verifizierte Reparaturen |
-|---|---|---|
-| WordPress / WooCommerce | AUTO_REPAIR_VERIFIED | ausgewählte defekte Links und einfache, klar lokalisierte HTML-/Content-Fixes; Backup, Validierung und Rollback |
-| GitHub / Netlify | AUTO_REPAIR_VERIFIED | gemappte Repository-/Site-Reparatur, ausgewählte Link-/Asset-Fixes, isolierter Branch/Preview, Retest und Rollback |
-| SFTP / SSH | AUTO_REPAIR_VERIFIED | allowlist-basierte statische HTML-/CSS-/JS-Dateifixes mit sicherem Pfad, atomarem Backup/Rollback und allowlist Health-Checks |
-| Shopify | VAULT_ONLY | Zugangserfassung; keine als sicher verifizierte automatische Änderung |
-| Webflow | VAULT_ONLY | Zugangserfassung; sichere Automatisierung nicht nachgewiesen |
-| Wix | VAULT_ONLY | Zugangserfassung; sichere Automatisierung nicht nachgewiesen |
-| unbekannter Anbieter | MANUAL_REVIEW_REQUIRED | keine automatische Reparatur, keine erratene Adapterwahl |
+Der gezielte lokale Browserlauf `test/crm-browser-053.test.js` bestand 6/6. Die zuvor einmal unter Last aufgetretene DNC-Drawer-Wartezeit wurde nicht als fachlicher Fehler reproduziert.
 
-## Sicherheitsnachweise und offene Punkte
+## Fachliche und Sicherheitsabdeckung
 
-- Keine Reparatur ohne vollständige bestätigte Zahlung, Kundenautorisierung, gültigen Zugang, Backup und Rollback.
-- Stripe-Zuordnung bleibt an die bestehende verifizierte Order-/Webhook-Zuordnung gebunden; Browser-Rückleitungen oder freie Parameter schalten nichts frei.
-- Keine Secrets in Logs, Berichten oder öffentlichen Snapshots; keine echten Kundenwebsites, Zahlungen oder E-Mails verwendet.
-- Playwright-MCP war in dieser Sitzung nicht verfügbar. Die lokalen `playwright-core`-Fixtures liefen mit vorhandenem Chromium und deckten Formularschutz, Token-Ablauf/Einmalverwendung, Kundenautorisierung und Fehlerbehandlung ab; sie sind kein kontrollierter externer MCP-Nachweis.
-- Kein produktives Deployment und keine Produktionsfreigabe erteilt.
+Nachgewiesen wurden insbesondere CHF 150 als Check/Anleitung ohne Reparatur, CHF 480 erst nach Vollzahlung und gültiger Kundenautorisierung, korrekt gebundenes CHF-330-Upgrade, Zahlungszuordnung, Refund/Chargeback-Gates, Kundenautorisierung, sichere Einmal-Links mit Ablauf, WordPress, GitHub/Netlify, SFTP/SSH, Host-Key-Verifikation, Backup/Rollback, Idempotenz gegen doppelte Reparaturen, sichere Mail-Outbox, Service-Isolation, Geheimnisschutz und Fehlerbehandlung.
 
-## Commit
+Die Tests verwendeten ausschliesslich synthetische Domains, Testzahlungen, temporäre Zugangsdaten, eigene Lab-Netzwerke/Volumes/Container und loopback-gebundene Testports. Keine privilegierten Container, produktiven Mounts, Produktionszugangsdaten, echten Zahlungen, echten E-Mails, Kundenwebsites oder produktiven Container wurden verwendet oder verändert.
 
-Commit der geprüften TF-034-Dokumentation: `b6b9eab`; Branch `agent-codex/tf034`; kein Push, Merge oder Deployment.
+Playwright-MCP war in dieser Sitzung nicht verfügbar. Die vorhandenen lokalen `playwright-core`-Tests liefen mit dem vorhandenen Chromium; Browser-/Sicherheitsabdeckung bestand im gezielten Lauf und im Full-Check.
+
+## Verbleibende Risiken
+
+Es wurde kein Live-System geprüft oder verändert. Produktionskonfiguration, reale OAuth-/Stripe-Live-Zustellung und ein Deployment benötigen weiterhin separate Freigabe und menschliche Prüfung. Das ist kein offener lokaler TF-034-Testfehler.
+
+## Git
+
+Geprüfter Branch: `agent-codex/tf034`. Die finalen lokalen Commit-Hashes werden nach dem Dokumentationscommit ergänzt. Kein Push, Merge oder Deployment.

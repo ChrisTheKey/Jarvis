@@ -59,7 +59,7 @@ const filesOf = (dir) => fs.readdirSync(dir, { recursive: true }).map(String).fi
 function fakeGmail() { const calls = []; return { calls, createDraft: async (x) => { calls.push({ op: "create", to: x.to }); return { draftId: "dr" + calls.length }; }, sendDraft: async (id) => { calls.push({ op: "SEND", id }); return { messageId: "m" }; } }; }
 
 // Auftrag mit sicher übermitteltem Zugang (echter Tresor, echte Prüfung von access-intake.js) + Test-Ledger-Zahlung.
-function orderWithAccess(store, dir, { domain, access_type, payload, paid = 240 }) {
+function orderWithAccess(store, dir, { domain, access_type, payload, paid = 480 }) {
   const now = new Date();
   const o = createRepairOrder(store, { domain, website: `https://${domain}/`, company: "Lab Test AG", delivery_email: `kunde@${domain}`, contact_name: "Lab Kunde", now });
   if (paid) recordPayment(store, { order_id: o.order_id, amount_chf: paid, reference: `Lab-${o.order_id}`, now });
@@ -387,7 +387,7 @@ if (!ENABLED) {
   // ===================================================================================================================
   // Vollständige CHF-480-Aufträge (Engine) gegen die echten Testsysteme
   // ===================================================================================================================
-  test("FULL WORDPRESS ORDER E2E: CHF240 → Secure Access → Authorization → Profil → Access → Backup → Audit → Plan → Fix → Validation → Retest → COMPLETED", async () => {
+  test("FULL WORDPRESS ORDER E2E: CHF480 → Secure Access → Authorization → Profil → Access → Backup → Audit → Plan → Fix → Validation → Retest → COMPLETED", async () => {
     await resetWp(lab);
     const guard = await wpGuardSnapshot(lab);
     const dir = tmp(), store = createStore(dir);
@@ -414,7 +414,7 @@ if (!ENABLED) {
     assert.equal(await wpGuardSnapshot(lab), guard, "kein Plugin/Theme/User/Setting geändert");
   });
 
-  test("FULL SFTP ORDER E2E: CHF240 → Access → Authorization → Host-Key (RSA, Server bevorzugt Ed25519) → Profil → Login → … → Atomic Replace → COMPLETED", async () => {
+  test("FULL SFTP ORDER E2E: CHF480 → Access → Authorization → Host-Key (RSA, Server bevorzugt Ed25519) → Profil → Login → … → Atomic Replace → COMPLETED", async () => {
     await resetSite(lab);
     const outBefore = await outsideSnapshot(lab);
     const dir = tmp(), store = createStore(dir);
@@ -518,12 +518,12 @@ if (!ENABLED) {
     await docker(["rm", "-f", "-v", rot], { allowFail: true });
   });
 
-  test("Payment-/Authorization-Gate (echte Testsysteme): CHF239 → 0 Adapter-Verbindung; CHF240 → Preflight; Freigabe=false → 0 Write", async () => {
+  test("Payment-/Authorization-Gate (echte Testsysteme): CHF239/240/479 → blockiert; CHF480 + Freigabe → Preflight; Freigabe=false → 0 Write", async () => {
     await resetSite(lab);
     const webBefore = await webrootSnapshot(lab);
     const payload = { host: `sftp://${lab.ssh.host}:${lab.ssh.port}`, username: "labuser", secret: lab.secrets.labuser_password, remote_root: "public_html", ssh_host_key_sha256: lab.hostKeys.ed25519 };
     // CHF 239: keine einzige Verbindung (auch keine Host-Key-Probe), keine HTTPS-Abfrage mit Zugangsdaten. (Der Zugang selbst wird
-    // erst ab CHF 240 angenommen – hier fällt die Zahlung danach per Storno + Neubuchung auf CHF 239.)
+    // Erst ab CHF 480 angenommen – hier fällt die Zahlung danach per Storno + Neubuchung auf CHF 239.)
     const dir = tmp(), store = createStore(dir);
     const id = orderWithAccess(store, dir, { domain: DOMAINS.site, access_type: "sftp", payload });
     const ledger = store.read("payments.json", { payments: {} });
@@ -538,16 +538,29 @@ if (!ENABLED) {
     assert.equal(readOrder(store, id).state, "PAYMENT_REQUIRED");
     assert.ok(!/Connection from/.test(await logSince(lab.names.sshd, mark)), "0 Adapter-Verbindung bei CHF 239");
     assert.ok(!lab.fetch.calls.slice(n).some((x) => x.authorization));
-    // +CHF 1 → CHF 240: Preflight erlaubt (Host-Key ohne Login, dann gepinnter Login).
-    recordPayment(store, { order_id: id, amount_chf: 1, reference: `Lab-${id}-2` });
+    // +CHF 1 → CHF 240 bleibt blockiert; auch CHF 479 darf keinen Preflight starten.
+    recordPayment(store, { order_id: id, amount_chf: 1, reference: `Lab-${id}-240` });
     mark = await logMark(lab.names.sshd);
     await engine.processAll();
-    const o = readOrder(store, id);
+    let o = readOrder(store, id);
+    assert.equal(o.state, "PAYMENT_REQUIRED");
+    assert.ok(!/Connection from/.test(await logSince(lab.names.sshd, mark)), "0 Adapter-Verbindung bei CHF 240");
+    recordPayment(store, { order_id: id, amount_chf: 239, reference: `Lab-${id}-479` });
+    mark = await logMark(lab.names.sshd);
+    await engine.processAll();
+    o = readOrder(store, id);
+    assert.equal(o.state, "PAYMENT_REQUIRED");
+    assert.ok(!/Connection from/.test(await logSince(lab.names.sshd, mark)), "0 Adapter-Verbindung bei CHF 479");
+    // +CHF 1 → CHF 480: Vollzahlungs-Gate erlaubt Preflight (Host-Key ohne Login, dann gepinnter Login).
+    recordPayment(store, { order_id: id, amount_chf: 1, reference: `Lab-${id}-480` });
+    mark = await logMark(lab.names.sshd);
+    await engine.processAll();
+    o = readOrder(store, id);
     assert.ok(pathOf(o).includes("ACCESS_PROFILE_PREFLIGHT"), pathOf(o).join(" → "));
     assert.equal(o.access_profile.profile_status, "PROFILE_READY");
     assert.equal(o.state, "READY_FOR_DELIVERY", o.blocked_reason);
     assert.match(await logSince(lab.names.sshd, mark), /Accepted password for labuser/);
-    // CHF 240 + Zugang, aber customer_authorized_repair=false → 0 Write, 0 Login.
+    // CHF 480 + Zugang, aber customer_authorized_repair=false → 0 Write, 0 Login.
     await resetSite(lab);
     const dir2 = tmp(), store2 = createStore(dir2);
     const id2 = orderWithAccess(store2, dir2, { domain: DOMAINS.site, access_type: "sftp", payload });

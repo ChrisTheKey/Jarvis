@@ -45,7 +45,7 @@ const pathOf = (o) => o.state_history.map((h) => h.to);
 function orderWithAccess(store, dir, { domain, access_type, payload }) {
   const now = new Date();
   const o = createRepairOrder(store, { domain, website: `https://${domain}/`, company: "Lab Test AG", delivery_email: `kunde@${domain}`, contact_name: "Lab Kunde", now });
-  recordPayment(store, { order_id: o.order_id, amount_chf: 240, reference: `Lab-${o.order_id}`, now });
+  recordPayment(store, { order_id: o.order_id, amount_chf: 480, reference: `Lab-${o.order_id}`, now });
   const data = store.read(REPAIR_ORDERS_FILE, { orders: {} });
   const token = crypto.randomBytes(32).toString("base64url");
   Object.assign(data.orders[o.order_id], { state: "ACCESS_REQUESTED", access_request: { token_hash: tokenHash(token), expires_at: new Date(+now + 72 * 3600e3).toISOString(), sent_at: now.toISOString(), draft_id: "d1" } });

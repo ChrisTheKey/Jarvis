@@ -1,6 +1,6 @@
 // REPAIR QUALITY REVALIDATION (TF-054) – beweist gegen das isolierte TF-044-Docker-Lab (OpenSSH/SFTP + Caddy-HTTPS) mit echtem Chromium,
 // dass Jarvis den tatsächlichen Defekt repariert: Baseline (echter site-auditor + echter Browser-Validator, Desktop 1440×900 + Mobile
-// 390×844) → produktiver Pfad (bestätigter CHF-480-Auftrag, Test-Ledger CHF 240, sicherer Zugang über das echte Kundenformular, Tresor,
+// 390×844) → produktiver Pfad (bestätigter CHF-480-Auftrag, Test-Ledger CHF 480, sicherer Zugang über das echte Kundenformular, Tresor,
 // Freigabe, PROFILE_READY, echtes Objekt-Backup, echter SFTP-Adapter locate/apply/validate, Browser-Gate, Abschluss-Gate, Lieferung an
 // Fake-Gmail) → unabhängiger HTTP- + Browser-Retest. Negativfälle: Regression → Rollback → Baseline; Teilreparatur; geschützter Bereich;
 // Neustart/Absturz mitten in REPAIRING. Nur Lab-Domains (*.test), zur Laufzeit erzeugte Test-Zugangsdaten, keine echte Mail/Zahlung.
@@ -118,6 +118,7 @@ async function customerForm(link, { type, host, user, secret, root, hostKey }) {
     const page = await ctx.newPage();
     await page.goto(link, { waitUntil: "load" });
     await page.waitForSelector("#form:not([hidden])", { timeout: 20_000 });
+    await page.selectOption("#providerProfile", "SFTP_HOSTING");
     await page.selectOption("#type", type);
     await page.fill("#host", host); await page.fill("#user", user); await page.fill("#secret", secret);
     await page.fill("#root", root); await page.fill("#hostKey", hostKey);
@@ -153,7 +154,9 @@ async function depsFor(ctx) {
 }
 function newCtx(hooks = {}) {
   const dir = tmp();
-  return { dir, store: createStore(dir), gmail: fakeGmail(), log: [], writes: [], hooks, alerts: [], logs: [] };
+  const store = createStore(dir);
+  store.write("config.json", { business_profile: { address: { street: "Teststrasse 1", postal_code: "3000", city: "Bern", country: "CH" } } });
+  return { dir, store, gmail: fakeGmail(), log: [], writes: [], hooks, alerts: [], logs: [] };
 }
 const logFn = (ctx) => (level, event, data) => ctx.logs.push(JSON.stringify({ level, event, data }));
 const runWorker = async (ctx) => runRepairOrders({ dir: ctx.dir, ...(await depsFor(ctx)), requireBrowser: true, autoDeliver: true, gmail: ctx.gmail, intake: intake.client,
@@ -165,10 +168,10 @@ async function restartStep(ctx, id) {
     alert: async (a) => ctx.alerts.push(a.kind), log: logFn(ctx) });
   return engine.step(structuredClone(readOrder(store, id)));
 }
-// Bestätigter CHF-480-Testauftrag → Test-Ledger CHF 240 → 1 Zugangs-Mail → Kundenformular im Browser (SFTP, remote_root, Host-Key) → Pull/Tresor.
+// Bestätigter CHF-480-Testauftrag → Test-Ledger CHF 480 → 1 Zugangs-Mail → Kundenformular im Browser (SFTP, remote_root, Host-Key) → Pull/Tresor.
 async function orderWithSecureAccess(ctx) {
   const o = createConfirmedRepairOrder(ctx.store, { domain: DOMAIN, website: `${ORIGIN}/`, company: "Muster Kunde AG", delivery_email: EMAIL, contact_name: "Frau Muster" });
-  recordPayment(ctx.store, { order_id: o.order_id, amount_chf: 240, reference: `Q54-${o.order_id}`, source: "test_ledger" });
+  recordPayment(ctx.store, { order_id: o.order_id, amount_chf: 480, reference: `Q54-${o.order_id}`, source: "test_ledger" });
   await runWorker(ctx);
   const link = linkIn(ctx.gmail.sentOf("CUSTOMER_ACCESS_REQUEST")[0]);
   assert.ok(link, "Zugangs-Mail mit sicherem Link");
@@ -329,7 +332,7 @@ if (!ENABLED) {
     const deliveries = ctx.gmail.sentOf(FULFILLMENT_CLASS);
     assert.equal(deliveries.length, 1);
     assert.equal(reportUnsafe(deliveries[0].body, o), null);
-    assert.ok(deliveries[0].body.includes("Behoben wurden:") && !/Nicht automatisch repariert/.test(deliveries[0].body), "Bericht: beide behoben, nichts offen");
+    assert.ok(deliveries[0].body.includes("So haben wir die zuvor präsenten Probleme gelöst:") && !/Nicht automatisch repariert/.test(deliveries[0].body), "Bericht: beide behoben, nichts offen");
     assert.equal(fs.existsSync(path.join(ctx.dir, ACCESS_VAULT_DIR, `${id}.json`)), false, "Credentials nach COMPLETED zerstört");
     for (const [f, text] of filesOf(ctx.dir)) assertNoSecrets(f, text);
     assertNoSecrets("Logs", ctx.logs.join("\n"));

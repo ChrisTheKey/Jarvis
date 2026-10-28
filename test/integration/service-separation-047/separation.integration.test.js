@@ -49,8 +49,8 @@ function snapshot(out, mutate = null) {
 }
 function remoteDeploy(env) {
   return new Promise((resolve) => {
-    execFile(lab.bash, [posix(path.join(ROOT, "deploy", "vps", "repair-remote.sh"))], { env: { ...process.env, SUDO: "", OWNER: "", HEALTH_TIMEOUT: "300",
-      R: posix(lab.repairRoot), MAIL_ROOT: posix(lab.mailRoot), MAIL_CONTAINER: MAIL, MAIL_PROJECT, REPAIR_PROJECT, REPAIR_CONTAINER: REPAIR,
+    execFile(lab.bash, [posix(path.join(ROOT, "deploy", "vps", "repair-remote.sh"))], { env: { ...process.env, SUDO: "", OWNER: "", PAYMENT_OWNER: "", HEALTH_TIMEOUT: "300",
+      R: posix(lab.repairRoot), MAIL_ROOT: posix(lab.mailRoot), PAYMENT_ROOT: posix(lab.paymentRoot), MAIL_CONTAINER: MAIL, MAIL_PROJECT, REPAIR_PROJECT, REPAIR_CONTAINER: REPAIR,
       COMPOSE_OVERRIDE: posix(lab.override), ...env }, maxBuffer: 64 * 1024 * 1024, timeout: 1_500_000, windowsHide: true },
     (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: String(stdout) + String(stderr) }));
   });
@@ -86,6 +86,9 @@ test("TF-047 Lab: Aufbau – Docker verfügbar, Lab-Mail-Worker (eigenes Projekt
   lab.bash = bashPath();
   lab.tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-lab047-"));
   for (const k of ["mailRoot", "repairRoot"]) { lab[k] = path.join(lab.tmp, k); fs.mkdirSync(lab[k]); }
+  lab.paymentRoot = path.join(lab.tmp, "payment"); fs.mkdirSync(lab.paymentRoot);
+  fs.writeFileSync(path.join(lab.paymentRoot, "stripe.env"), "# synthetic TF-047 Stripe TEST fixture\n");
+  fs.writeFileSync(path.join(lab.paymentRoot, "e2e.env"), "# synthetic TF-047 E2E fixture\n");
   lab.mailSecrets = path.join(lab.mailRoot, "secrets"); fs.mkdirSync(lab.mailSecrets);
   fs.mkdirSync(path.join(lab.repairRoot, "outbox"));
   fs.writeFileSync(path.join(lab.mailRoot, ".env"), "JARVIS_MAIL_WORKER_TOKEN=lab047-worker-token-not-real\nANTHROPIC_API_KEY=lab047-must-never-be-copied\nJARVIS_SYNC_URL=https://jarvis-lab047.invalid\n");

@@ -22,6 +22,8 @@ REPAIR_CONTAINER="${REPAIR_CONTAINER:-jarvis-repair-worker}"
 SUDO="${SUDO-sudo}"
 OWNER="${OWNER-1000:1000}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-240}"
+PAYMENT_ROOT="${PAYMENT_ROOT:-/opt/jarvis-payment}"
+PAYMENT_OWNER="${PAYMENT_OWNER-root:root}"
 SERVICE=repair-worker
 D() { $SUDO docker "$@"; }
 blocked() { echo "DEPLOY BLOCKED: $*"; exit 3; }
@@ -66,10 +68,10 @@ $SUDO cp "$R/app.new/deploy/vps/repair/docker-compose.yml" "$COMPOSE_NEW"
 OVR=(); [ -n "${COMPOSE_OVERRIDE:-}" ] && OVR=(-f "$COMPOSE_OVERRIDE")
 
 # TF-080: Stripe-/E2E-Konfiguration ausserhalb des Deploys (nur anlegen, wenn sie fehlt – nie überschreiben, nie lesen/ausgeben).
-$SUDO mkdir -p /opt/jarvis-payment && $SUDO chown root:root /opt/jarvis-payment && $SUDO chmod 700 /opt/jarvis-payment
-for f in stripe.env e2e.env; do [ -f "/opt/jarvis-payment/$f" ] || $SUDO sh -c "umask 077; : > /opt/jarvis-payment/$f"; $SUDO chown root:root "/opt/jarvis-payment/$f"; $SUDO chmod 600 "/opt/jarvis-payment/$f"; done
-$SUDO grep -qE '^(ANTHROPIC_API_KEY|JARVIS_SERVER_CONTROL_TOKEN|GMAIL)' /opt/jarvis-payment/stripe.env && blocked "stripe.env enthält Mail-Secrets."
-echo "Stripe-Konfiguration: LIVE $($SUDO grep -qE '^STRIPE_SECRET_KEY=.+' /opt/jarvis-payment/stripe.env && echo CONFIGURED || echo NOT_CONFIGURED) · TEST $($SUDO grep -qE '^STRIPE_TEST_SECRET_KEY=.+' /opt/jarvis-payment/stripe.env && echo CONFIGURED || echo NOT_CONFIGURED)"
+$SUDO mkdir -p "$PAYMENT_ROOT" && { [ -z "$PAYMENT_OWNER" ] || $SUDO chown "$PAYMENT_OWNER" "$PAYMENT_ROOT"; } && $SUDO chmod 700 "$PAYMENT_ROOT"
+for f in stripe.env e2e.env; do [ -f "$PAYMENT_ROOT/$f" ] || $SUDO sh -c "umask 077; : > '$PAYMENT_ROOT/$f'"; { [ -z "$PAYMENT_OWNER" ] || $SUDO chown "$PAYMENT_OWNER" "$PAYMENT_ROOT/$f"; }; $SUDO chmod 600 "$PAYMENT_ROOT/$f"; done
+$SUDO grep -qE '^(ANTHROPIC_API_KEY|JARVIS_SERVER_CONTROL_TOKEN|GMAIL)' "$PAYMENT_ROOT/stripe.env" && blocked "stripe.env enthält Mail-Secrets."
+echo "Stripe-Konfiguration: LIVE $($SUDO grep -qE '^STRIPE_SECRET_KEY=.+' "$PAYMENT_ROOT/stripe.env" && echo CONFIGURED || echo NOT_CONFIGURED) · TEST $($SUDO grep -qE '^STRIPE_TEST_SECRET_KEY=.+' "$PAYMENT_ROOT/stripe.env" && echo CONFIGURED || echo NOT_CONFIGURED)"
 
 # ---------- Ziel beweisen: genau EIN Service, eigenes Projekt, kein Mail-Mount, kein Docker-Socket ----------
 [ -f "$R/.env" ] || {

@@ -23,6 +23,7 @@ const adapter = (id, name, adapter_keys, access_types) => ({ id, name, access_ty
 export const PROVIDER_REGISTRY = Object.freeze({
   CUSTOM: manual("CUSTOM", "Individueller Anbieter"),
   WORDPRESS: adapter("WORDPRESS", "WordPress", ["wordpress"], ["wordpress_cms", "cms_admin", "sftp", "ssh", "hosting", "hosting_panel"]),
+  SFTP_HOSTING: adapter("SFTP_HOSTING", "SFTP-/SSH-Hosting", ["sftp", "ssh"], ["sftp", "ssh", "hosting"]),
   WOOCOMMERCE: adapter("WOOCOMMERCE", "WooCommerce", ["wordpress"], ["wordpress_cms", "cms_admin", "sftp", "ssh", "hosting", "hosting_panel"]),
   NETLIFY: adapter("NETLIFY", "Netlify", ["github_netlify"], ["github_netlify", "git_repository", "team_invitation"]),
   GITHUB: adapter("GITHUB", "GitHub", ["github_netlify"], ["github_netlify", "git_repository", "team_invitation"]),

@@ -2,7 +2,7 @@
 
 Kurzer, aktueller Stand für beide Werkzeuge. Lesen vor Beginn, aktualisieren im selben Commit wie die Arbeit. Details je Ticket: `PROJECT_STATE.md` (nicht hier duplizieren). Keine Secrets, keine Kundendaten.
 
-Zuletzt aktualisiert: 2026-10-28 (TF-JARVIS-034: finale Docker-Abnahme erneut durch übergeordneten Ausführungs-Guard blockiert; Full-Check lokal grün; kein produktiver Versand/Deployment)
+Zuletzt aktualisiert: 2026-10-28 (TF-JARVIS-034: finale lokale Docker-Abnahme und Full-Check grün; kein produktiver Versand/Deployment)
 
 ## Erledigt (Code fertig laut PROJECT_STATE.md, Produktionsstand siehe dort)
 - TF-JARVIS-024 Produktions-Image-Fix: `sales-intake-bundle.js` ist im Repair-Image enthalten; der isolierte Service-Separation-Gate-Test ist danach 9/9 gruen.
@@ -34,7 +34,7 @@ TF-JARVIS-028: Neue CHF-150-/CHF-480-Abschlussmailvorlagen, vollständige Quittu
 | Chris | `Jarvis` (Hauptordner) | uncommittete Änderungen: `crm-api.js`, `crm-service.js`, `stripe-payments.js`, Tests (CRM-Pagination u. a.), `.gitignore`, `package.json`. Nicht in den Worktrees enthalten. |
 | Claude | `agent-claude/main` | – (frei) |
 | Codex | `agent-codex/tf033` / `Jarvis-tf033` | – (fertig; kein Push, Merge oder Deployment) |
-| Codex | `agent-codex/tf034` / `Jarvis-tf034` | Zahlungs-Gate vereinheitlicht; Readiness-Prüfung und Docker-Lab-Freigabe offen |
+| Codex | `agent-codex/tf034` / `Jarvis-tf034` | TF-034 lokal abgenommen; fünf isolierte Docker-Gruppen und Full-Check grün; kein Push/Merge/Deployment |
 
 Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), wer fertig ist, verschiebt sie nach «Erledigt».
 
@@ -47,12 +47,11 @@ Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), w
 - Bericht: `reports/TF-JARVIS-034-ABSCHLUSSBERICHT.md`.
 
 ### Offen / Blockiert
-- 12 Docker-Labs bleiben NOT RUN/BLOCKED, weil der read-only Docker-Aufruf trotz projektspezifischer Freigabe vom übergeordneten Ausführungs-Guard mit `Rejected: Keine Container ohne Freigabe.` abgewiesen wurde; der Guard wurde nicht umgangen und es wurden keine Testressourcen gestartet.
-- Ein Playwright-MCP war in der aktuellen Sitzung nicht exponiert; die lokalen `playwright-core`-Fixtures liefen mit vorhandenem Chromium vollständig grün (31/31 gezielte Tests).
-- Produktionsfreigabe bleibt BLOCKED; kein Push, Merge oder Deployment.
+- Keine offenen lokalen TF-034-Testfehler. Produktionsfreigabe, Push, Merge und Deployment wurden nicht ausgeführt und benötigen weiterhin separate menschliche Freigabe.
+- Playwright-MCP war nicht exponiert; die lokalen `playwright-core`-Fixtures liefen mit vorhandenem Chromium grün.
 
 ### Testergebnis
-- TF-034: 1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen; finaler Full-Check 2026-10-28 Exit 0 / `CHECK OK`.
+- TF-034: Full-Check 1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen; Exit 0 / `CHECK OK`. Die 12 Docker-Tests wurden separat in fünf isolierten Gruppen ausgeführt: 49/49 bestanden, 0 fehlgeschlagen, 0 übersprungen; Cleanup jeweils ohne verbleibende eigene Container, Volumes oder Netzwerke. Abschlussbericht: `reports/TF-JARVIS-034-ABSCHLUSSBERICHT.md`, Status `READY_FOR_DEPLOY_APPROVAL`.
 
 Codex-Nachtrag 2026-10-26: `3d5efde` und `10bbf70` sind lokal vorhanden und waren vor TF-025 mit `origin/agent-codex/main` synchronisiert. TF-025 ist lokal committed; der Hash steht im aktuellen Git-Log. Bestehende uncommittete Dateien (`test/crm-fixture.js` und `reports/TF-JARVIS-024/phase5-screenshots/`) wurden nicht verändert oder gestaged.
 
