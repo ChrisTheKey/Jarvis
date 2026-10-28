@@ -26,6 +26,7 @@ Die lokale Zahlungs- und Reparaturlogik sowie die lokalen Browserprüfungen sind
 - `node scripts/dev-check.mjs --full` am 2026-10-28: bestanden; Secret-Scan ohne Treffer.
 - Gezielte Browser-/Onboarding-/Zugangssuite mit Chromium: **31/31 bestanden**, 0 fehlgeschlagen, 0 übersprungen.
 - Der erste gezielte Browserlauf ohne gesetzten Chromium-Pfad hatte 7 Umgebungsfehler; mit dem vorhandenen `chromium-1248`-Binary wurde derselbe Lauf vollständig grün wiederholt. Kein Produktionscode wurde dafür geändert.
+- Finaler Full-Check nach der Docker-Abnahme am 2026-10-28: **1'215 Tests, 1'203 bestanden, 0 fehlgeschlagen, 12 übersprungen**, Exit 0 / `CHECK OK`.
 - Lokales Chromium für Browser-Fixtures vorhanden und mit `JARVIS_CHROMIUM_PATH`/`CHROME_PATH` verwendet.
 - Synthetische E2E-Nachweise: CHF 150, CHF 480, CHF 330-Upgrade, CHF 479 blockiert, CHF 480 freigeschaltet, Refund/Chargeback-relevante Gates, sicherer Zugang, WordPress, GitHub/Netlify, SFTP/SSH, Backup, Rollback, Geheimnisschutz und idempotente Verarbeitung.
 
@@ -35,7 +36,7 @@ Die statische Prüfung bestätigt eigene Lab-Labels, eigene Netzwerke und Volume
 
 Der read-only-Aufruf `docker context show` / `docker version --format '{{.Server.Version}}'` wurde vor Ausführung vom Sicherheits-Guard abgewiesen: `Rejected: Keine Container ohne Freigabe.` Es wurden keine Container, Netzwerke oder Volumes verändert. Die zwölf Labs sind daher **BLOCKED / NOT RUN**, nicht bestanden.
 
-Erforderlich für einen separaten kontrollierten Lauf: freigegebener read-only Docker-Daemon sowie ausdrückliche Ausführungsfreigabe für die isolierte lokale Lab-Suite. Der aktuelle Guard verweigert den Aufruf vor Ausführung (`Rejected: Keine Container ohne Freigabe.`); er wurde nicht umgangen. Produktions-Contexts, Produktions-Mounts und produktive Secrets bleiben ausgeschlossen. Keine Testressourcen wurden gestartet oder bereinigt.
+Für die finale Docker-Abnahme wurde die ausdrücklich lokale Freigabe erteilt. Die übergeordnete Ausführungsrichtlinie verweigerte dennoch bereits `docker context show` mit `Rejected: Keine Container ohne Freigabe.`; auch der read-only Inventuraufruf wurde nicht ausgeführt. Der Guard wurde nicht umgangen, daher wurden keine Testressourcen gestartet, verändert oder bereinigt. Die zwölf Docker-Labs bleiben BLOCKED / NOT RUN. Erforderlich bleibt eine übergeordnete Freigabe, die den read-only Docker-Daemon und danach ausschließlich die isolierte lokale Lab-Suite erlaubt.
 
 ## Anbieterstatus
 
