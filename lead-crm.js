@@ -65,6 +65,16 @@ const oneOf = (v, list, d = null) => (list.includes(v) ? v : d);
 const maxIso = (...xs) => xs.filter((x) => typeof x === "string" && x).sort().at(-1) || null;
 const normDomain = (u = "") => { try { return new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; } };
 const httpUrl = (u, n = 300) => { if (typeof u !== "string" || u.length > n) return null; try { const x = new URL(u); return ["http:", "https:"].includes(x.protocol) && !/[<>"'\s]/.test(u) ? x.href : null; } catch { return null; } };
+const cleanManualTestRequest = (lead) => {
+  const manual = lead?.manual_test;
+  if (lead?.is_test !== true || lead?.environment !== "TEST" || lead?.email !== MANUAL_TEST_REQUEST.recipient_or_submission_channel
+    || manual?.source !== "MANUAL_TEST" || manual?.lead_type !== "WEBSITE_REPAIR" || manual?.environment !== "TEST"
+    || manual?.status !== "MANUAL_TEST_AUTHORIZED") return null;
+  const request = lead?.request;
+  if (!request || typeof request !== "object" || Object.keys(request).length !== Object.keys(MANUAL_TEST_REQUEST).length
+    || Object.entries(MANUAL_TEST_REQUEST).some(([key, value]) => request[key] !== value)) return null;
+  return { ...MANUAL_TEST_REQUEST };
+};
 export const telHref = (normalized) => (typeof normalized === "string" && /^\+41\d{9}$/.test(normalized) ? `tel:${normalized}` : null);
 // TF-063: Vietnam-Nummern (+84, 9–10 Ziffern nach der Landesvorwahl) – nur für VN-Leads.
 export const telHrefVn = (normalized) => (typeof normalized === "string" && /^\+84\d{9,10}$/.test(normalized) ? `tel:${normalized}` : null);
@@ -700,6 +710,7 @@ export function cleanCrmLead(l) {
   if (!l || typeof l !== "object" || !LEAD_ID_RE.test(String(l.lead_id || ""))) return null;
   const n = (v, lo, hi) => (Number.isInteger(v) ? Math.max(lo, Math.min(hi, v)) : 0);
   const pr = l.priority && typeof l.priority === "object" ? l.priority : {};
+  const manualTestRequest = cleanManualTestRequest(l);
   return {
     lead_id: l.lead_id, company: str(l.company, 120), domain: str(l.domain, 120) && /^[a-z0-9.-]{3,253}$/.test(l.domain) ? l.domain : null, website: httpUrl(l.website),
     email: typeof l.email === "string" && EMAIL_RE.test(l.email) && l.email.length <= 200 ? l.email : null,
@@ -732,6 +743,7 @@ export function cleanCrmLead(l) {
       reasons: (Array.isArray(pr.reasons) ? pr.reasons : []).slice(0, 10).map((r) => str(r, 60)).filter(Boolean) },
     ...(l.manual_test?.source === "MANUAL_TEST" ? { manual_test: { source: "MANUAL_TEST", lead_type: "WEBSITE_REPAIR", environment: "TEST", priority: "HIGH", status: "MANUAL_TEST_AUTHORIZED",
       checked_at: iso(l.manual_test.checked_at), findings_total: n(l.manual_test.findings_total, 0, 1000), repair_offer: l.manual_test.repair_offer && { ...MANUAL_TEST_OFFERS } } } : {}),
+    ...(manualTestRequest ? { request: manualTestRequest } : {}),
     follow_up: oneOf(l.follow_up, ["OVERDUE", "TODAY", "LATER"]), call_recommended: l.call_recommended === true && !isTestLead(l),
     ...(l.service_status && typeof l.service_status === "object" ? { service_status: {
       check150_state: safeServiceState(l.service_status.check150_state, SERVICE_STATE),
