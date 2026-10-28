@@ -360,6 +360,7 @@ export function createCrmHandler({ getQueueStore, getViewStore, getVnViewStore =
         ...(owner ? { vn_status: vn?.status || null, vn_total: activeLeads(vn?.leads).length } : {}) });
     }
 
+    if (body.action === "crm.createManualLead" && Object.hasOwn(body.params || {}, "test_request")) return reply(400, { error: "Manual-Lead: synthetische Anfragegrundlage wird serverseitig gesetzt.", code: "BAD_PARAMS" });
     const val = validateCrmAction(body, { now: now() });
     if (!val.ok) {
       await mutate((cur, t) => { cur.audit.push(auditEntry(t, { request_id: newId(), actor_user_id: actor.user_id, action: body?.action, outcome: "denied", code: val.code })); return { status: 200, body: {} }; });

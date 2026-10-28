@@ -640,7 +640,7 @@ function manualLeadPanel() {
   const field = (name, label, value, type = "text") => el("label", { class: "crm-manual-field" }, el("span", {}, label), el("input", { name, type, value, required: true, maxlength: name === "email" ? "200" : "253" }));
   const form = el("form", { class: "crm-form crm-manual-form", id: "crmManualForm", onsubmit: createManualLead });
   form.append(field("name", "Name", "Praxis Kälin"), field("domain", "Domain", MANUAL_TEST_DOMAIN), field("email", "Kontakt", "helvetic.webdesign@proton.me", "email"),
-    el("p", { class: "crm-note" }, "Quelle MANUAL_TEST · Typ WEBSITE_REPAIR · Environment TEST · Priorität HIGH · Status MANUAL_TEST_AUTHORIZED · 5 bestätigte Befunde"),
+    el("p", { class: "crm-note" }, "Quelle MANUAL_TEST · Typ WEBSITE_REPAIR · Environment TEST · Priorität HIGH · Status MANUAL_TEST_AUTHORIZED · synthetische E2E-Testanfrage nur für helvetic.webdesign@proton.me · 5 bestätigte Befunde"),
     el("button", { type: "submit", class: "crm-btn primary" }, "TEST-Lead anlegen / aktualisieren"), status);
   return el("section", { class: "crm-manual-panel", id: "crmManualPanel" }, el("h3", {}, "Manuellen TEST-Lead erfassen"), el("p", { class: "crm-note" }, "Nur OWNER. Serverseitig domain-dedupliziert und von Geschäftskennzahlen ausgeschlossen."), form);
 }

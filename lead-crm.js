@@ -42,6 +42,18 @@ export const MANUAL_TEST_OFFERS = Object.freeze({
   check_link: "https://buy.stripe.com/test_dRm3cw5A5fo3caR9ov7Re00",
   repair_link: "https://buy.stripe.com/test_7sY00k5A54JpcaR1W37Re01",
 });
+// Ausschliesslich serverseitige Kontaktgrundlage für den ausdrücklich freigegebenen
+// synthetischen E2E-Test. Browser-Felder können diese Rechtsgrundlage nicht setzen.
+export const MANUAL_TEST_REQUEST = Object.freeze({
+  basis: "requested_contact",
+  request_source: "synthetic_e2e_authorization",
+  request_date: "2026-10-28T12:00:00.000Z",
+  request_scope: "Website-Analyse und Website-Reparatur",
+  request_evidence: "Ausdrückliche synthetische E2E-Testanfrage für JARVIS; keine Kundenkontaktaufnahme.",
+  response_scope: "Website-Analyse und Website-Reparatur",
+  recipient_or_submission_channel: "helvetic.webdesign@proton.me",
+  request_confidence: "HIGH",
+});
 export const MANUAL_TEST_ACTION = "crm.createManualLead";
 
 // ---------- Hilfen ----------
@@ -78,8 +90,9 @@ export function cleanManualFindings(findings) {
 }
 
 function cleanManualParams(raw, now) {
-  const allowed = ["name", "domain", "email", "source", "lead_type", "environment", "priority", "status", "checked_at", "findings", "repair_offer"];
+  const allowed = ["name", "domain", "email", "source", "lead_type", "environment", "priority", "status", "checked_at", "findings", "repair_offer", "test_request"];
   if (Object.keys(raw).some((k) => !allowed.includes(k))) return { error: "BAD_PARAMS", message: "Manual-Lead: unbekanntes Feld." };
+  if (raw.test_request !== undefined && JSON.stringify(raw.test_request) !== JSON.stringify(MANUAL_TEST_REQUEST)) return { error: "BAD_PARAMS", message: "Manual-Lead: synthetische Anfragegrundlage ungültig." };
   const name = str(raw.name, 120), domain = typeof raw.domain === "string" ? raw.domain.trim().toLowerCase() : "";
   const email = typeof raw.email === "string" ? raw.email.trim().toLowerCase() : "";
   if (!name || !domain || !MANUAL_DOMAIN_RE.test(domain) || normDomain(domain) !== domain) return { error: "BAD_PARAMS", message: "Manual-Lead: Domain ungültig." };
@@ -95,7 +108,7 @@ function cleanManualParams(raw, now) {
     || offer.check_link !== MANUAL_TEST_OFFERS.check_link || offer.repair_link !== MANUAL_TEST_OFFERS.repair_link)
     return { error: "BAD_PARAMS", message: "Manual-Lead: TEST-Angebote oder Links stimmen nicht." };
   return { params: { name, domain, email, source: raw.source, lead_type: raw.lead_type, environment: raw.environment, priority: raw.priority,
-    status: raw.status, checked_at: raw.checked_at, findings, repair_offer: { ...MANUAL_TEST_OFFERS } } };
+    status: raw.status, checked_at: raw.checked_at, findings, repair_offer: { ...MANUAL_TEST_OFFERS }, test_request: { ...MANUAL_TEST_REQUEST } } };
 }
 
 function manualErrors(manual, findings, now) {
@@ -445,7 +458,8 @@ export function buildCrmLead(id, src = {}, now = new Date()) {
     do_not_contact_at: iso(crm?.do_not_contact_at), archived: !!crm?.archived,
     crm_created_at: iso(crm?.created_at),
     updated_at: maxIso(iso(crm?.updated_at), iso(dir?.contact_enriched_at), iso(reg?.last_updated_at), iso(rv?.updated_at), iso(dir?.first_seen_at), iso(hist?.updated_at)),
-    ...(manual?.source === "MANUAL_TEST" ? { manual_test: { source: "MANUAL_TEST", lead_type: "WEBSITE_REPAIR", environment: "TEST", priority: "HIGH", status: "MANUAL_TEST_AUTHORIZED",
+    ...(manual?.source === "MANUAL_TEST" ? { request: manual.test_request ? { ...manual.test_request } : null,
+      manual_test: { source: "MANUAL_TEST", lead_type: "WEBSITE_REPAIR", environment: "TEST", priority: "HIGH", status: "MANUAL_TEST_AUTHORIZED",
       checked_at: iso(manual.checked_at), findings_total: manualFindings.length, repair_offer: manual.repair_offer && { ...MANUAL_TEST_OFFERS } } } : {}),
   };
   const cf = cleanContactForm(cfSrc);
@@ -568,7 +582,7 @@ export function applyCrmAction(state, req, { now = new Date(), lookup, findByDom
     const t = now.toISOString();
     const e = structuredClone(prior || newCrmEntry(lead_id, now));
     e.manual = { name: p.name, domain: p.domain, email: p.email, source: p.source, lead_type: p.lead_type, environment: p.environment,
-      priority: p.priority, status: p.status, checked_at: p.checked_at, findings: p.findings, repair_offer: p.repair_offer };
+      priority: p.priority, status: p.status, checked_at: p.checked_at, findings: p.findings, repair_offer: p.repair_offer, test_request: p.test_request };
     e.updated_at = t;
     state.leads[lead_id] = e;
     if (rid) {
