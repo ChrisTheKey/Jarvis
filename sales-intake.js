@@ -1,11 +1,11 @@
 // TF-JARVIS-024: sichere, serverseitig gebundene Erstmail-Vorschau.
 // Dieses Modul erzeugt keinen Versand und führt keine Reparatur aus.
 import crypto from "node:crypto";
-import { accessLink } from "./access-intake.js";
+import { accessLink, newIntakeToken } from "./access-token.js";
 import { evaluateSwissEmailPermission } from "./email-permission.js";
 import { paymentLinkFor, testPaymentLinkUrl } from "./payment-links.js";
 
-export { newIntakeToken } from "./access-intake.js";
+export { newIntakeToken } from "./access-token.js";
 
 export const SALES_INTAKE_SUBJECT = "Ihre Webseite – festgestellte Probleme und mögliche Lösungen";
 export const SALES_INTAKE_SCOPE = "Website-Analyse und Website-Reparatur";

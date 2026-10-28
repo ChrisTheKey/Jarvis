@@ -28,8 +28,10 @@ import { safeEqual } from "./shared-state.js";
 import { ACCESS_TYPES, ACCESS_ENVELOPE_ALG, INTAKE_TTL_MS, ORDER_ID_RE, repairScope, INTAKE_PURPOSES, normDomain, tokenHash, consentText,
   hostKeyConfirmText, validEnvelope } from "./access-intake-api.js";
 import { PROVIDER_REGISTRY, providerProfileForDetection } from "./access-provider-registry.js";
+import { accessLink, newIntakeToken } from "./access-token.js";
 
 export { ACCESS_TYPES, INTAKE_TTL_MS, INTAKE_PURPOSES, tokenHash, consentText, hostKeyConfirmText };
+export { accessLink, newIntakeToken };
 export const ACCESS_KEY_FILE = "access_intake_private.pem";
 export const ACCESS_VAULT_DIR = "access_vault";
 export const ACCESS_AUTH_SOURCE = "secure_order_access_form";
@@ -53,16 +55,6 @@ export function accessKeys(workerDir = WORKER_DIR) {
   }
   return { privateKeyPem: pem, publicKeyPem: crypto.createPublicKey(pem).export({ type: "spki", format: "pem" }) };
 }
-
-// ---------- One-Time-Token ----------
-export function newIntakeToken({ now = new Date(), ttlMs = INTAKE_TTL_MS } = {}) {
-  const token = crypto.randomBytes(32).toString("base64url"); // 256 Bit – nur im Kundenlink, nie gespeichert
-  return { token, token_hash: tokenHash(token), expires_at: new Date(+now + ttlMs).toISOString() };
-}
-// Token im URL-FRAGMENT (#…): Browser senden Fragmente nie an Server – der Token landet in keinem Zugriffs-Log.
-// Der Link enthält NUR den Token (keine Auftrags-ID, keine internen Daten); die Cloud findet den Eintrag über sha256(token).
-// TF-064: VN-Aufträge bekommen zusätzlich &l=vi (Formular sofort auf Vietnamesisch; kein Bezug zum Token).
-export const accessLink = (origin, token, locale = "de-CH") => `${String(origin).replace(/\/+$/, "")}/access.html#t=${encodeURIComponent(token)}${locale === "vi-VN" ? "&l=vi" : ""}`;
 
 // ---------- Cloud-Client (nur ausgehend, Worker-Token) ----------
 export function intakeClient({ config, fetchFn = globalThis.fetch } = {}) {
