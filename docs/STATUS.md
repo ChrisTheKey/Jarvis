@@ -48,7 +48,7 @@ Regel: Wer eine Aufgabe beginnt, trägt sie hier ein (Wer / Branch / Aufgabe), w
 
 ### Offen / Blockiert
 - Keine offenen lokalen TF-034-Testfehler. Die separate manuelle externe E2E-Abnahme (`reports/TF-JARVIS-MANUAL-E2E-150-480.md`) bleibt `BLOCKED`, weil kein autorisiert erreichbarer JARVIS-API-/Mail-Worker-/Repair-Endpunkt mit Testauthentifizierung vorlag; es wurden 0 Mails und 0 Zahlungen ausgelöst. Produktionsfreigabe, Push, Merge und Deployment wurden nicht ausgeführt und benötigen weiterhin separate menschliche Freigabe.
-- Sales-Access-Recovery (`reports/TF-JARVIS-SALES-ACCESS-RECOVERY.md`) bleibt BLOCKED: geschützte APIs antworteten ohne Session korrekt mit 401; lokale synthetische Rollen-/Scope-/Fairnessprüfung 45/45 grün, reale Konten und CRM-Zuweisungen unverändert.
+- Sales-Access-Recovery (`reports/TF-JARVIS-SALES-ACCESS-RECOVERY.md`) bleibt BLOCKED: Owner-Session und geschützte APIs sind erreichbar, Damiano/Giuliano sind aktiv mit gesetztem Passwort; im CRM-Snapshot sind jedoch nur 194/200 Damiano- und 196/200 Mario-Leads sichtbar. Die zehn veralteten Assignment-IDs sind über die öffentliche API nicht verfügbar, und ein sicherer Cleanup/Rebuild-Endpunkt fehlt. Keine Konten, Zuweisungen, Mails oder Zahlungen wurden verändert.
 - Playwright-MCP war für die öffentliche Baseline verfügbar; geschützte Verkäuferflows wurden ohne Session nicht ausgeführt.
 
 ### Testergebnis

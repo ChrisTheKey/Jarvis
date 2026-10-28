@@ -2,83 +2,71 @@
 
 Stand: 2026-10-28  
 Branch: `agent-codex/tf034`  
-Ausgangsstand: `38419a8`
+Commit bei Prüfung: `48e596a8a8d0315e7259374897b41613e3ac3698`
 
 ## Status
 
 **BLOCKED**
 
-Die lokale Rollen-, Scope-, Provisions- und Fairnesslogik ist geprüft. Die reale Wiederherstellung von Damiano/Giuliano, eine verbindliche CRM-Zuweisung und der manuelle CHF-150-/CHF-480-E2E-Test wurden nicht ausgeführt, weil kein authentifizierter JARVIS-Zugriff mit bestehender Session oder interaktiv bereitgestellten Zugangsdaten vorlag. Es wurden keine Passwörter gelesen/erraten, keine Konten verändert, keine CRM-Daten verändert, keine Mails versendet und keine Zahlungen ausgelöst.
+Die geschützte JARVIS-Session ist nun nachweislich als Owner authentifiziert. Die Infrastruktur- und Rollenendpunkte antworteten erfolgreich; es wurden aber keine Passwörter gesetzt, keine Verkäufer-Logins simuliert, keine E-Mails versendet, keine Zahlungen ausgelöst und keine Reparaturen gestartet.
 
-## Infrastrukturprüfung
+## Infrastrukturprüfung (Playwright-MCP, read-only)
 
-Playwright-MCP erreichte `https://chrisjarvis.netlify.app/login.html` und zeigte den Login. Read-only-API-Prüfung ohne Session:
+| Prüfung | Ergebnis |
+|---|---|
+| `/api/auth/me` | HTTP 200, Owner-Session |
+| `/api/auth/admin/users` | HTTP 200, Benutzerverwaltung erreichbar |
+| `/api/sales?view=assignments` | HTTP 200, Assignment-Report erreichbar |
+| `/api/sales?view=commission` | HTTP 200, 6000 bps Verkäufer-Provision |
+| `/api/sales?view=sales_overview` | HTTP 200 |
+| `/api/crm` | HTTP 200, 2162 CRM-Leads in Owner-Sicht |
+| JARVIS-Dashboard | ONLINE; Mail Worker VPS ACTIVE laut Owner-Anzeige |
+| Docker CLI | BLOCKED durch übergeordneten Guard `Keine Container ohne Freigabe.`; kein Workaround |
 
-| Endpoint | Ergebnis |
-|---|---:|
-| `/api/auth/me` | 401 |
-| `/api/sales?view=summary` | 401 |
-| `/api/crm` | 401 |
-| `/api/health` | 404 |
-
-Der lokale Read-only-Aufruf `docker context show`/`docker version` wurde durch die übergeordnete Richtlinie mit `Rejected: Keine Container ohne Freigabe.` blockiert. Es wurde kein Docker-Workaround verwendet und keine Ressource verändert. Die erfolgreiche TF-034-Lab-Abnahme bleibt durch die vorherige Dokumentation nachgewiesen.
+Die Ursache des früheren Blockers war fehlende authentifizierte Session. Mit der vorhandenen Owner-Session ist die API erreichbar. Ein tatsächlicher Verkäufer-Login konnte nicht nachgewiesen werden, weil dafür die berechtigte direkte Eingabe des jeweiligen Passworts erforderlich wäre; Passwörter wurden weder gelesen noch ausgegeben.
 
 ## Verkäuferzugänge
 
-| Konto | Realer Login | Dashboard/Leads/Provision | Ergebnis |
-|---|---|---|---|
-| Damiano | nicht geprüft – Session fehlt | nicht geprüft | BLOCKED |
-| Giuliano | nicht geprüft – Session fehlt | nicht geprüft | BLOCKED |
+| Konto | Serverstatus | Rolle | Passwortstatus | Ergebnis |
+|---|---|---|---|---|
+| Damiano | AKTIV | `SALES_AGENT_CH` | gesetzt | Konto bereit; Login selbst nicht ausgeführt |
+| Giuliano | AKTIV | `SALES_AGENT_CH` | gesetzt | Konto bereit; Login selbst nicht ausgeführt |
 
-Es wurden keine Duplikatkonten angelegt und keine Rollen oder Passwörter geändert.
+Die Owner-Ansicht zeigte getrennte Identitäten und 60 % Provision. Das entspricht CHF 90 bei CHF 150 und CHF 288 bei CHF 480. Es wurden keine Duplikatkonten, Rollenänderungen oder Passwortänderungen vorgenommen.
 
 ## Damiano-Leads
 
-- Tatsächlich aus dem produktiven CRM gelesen: **0**.
-- Tatsächlich verbindlich zugewiesen: **0 / 200**.
-- Rechtlich kontaktierbar: **nicht bestimmbar ohne authentifizierten CRM-Datenbestand**.
-- Gesperrt: **nicht bestimmbar ohne authentifizierten CRM-Datenbestand**.
+Der serverseitige Assignment-Report meldete:
 
-Die lokale synthetische Prüfung `test/scope-063.test.js test/commission-063.test.js test/tf073.test.js test/tf077b.test.js` bestand mit **45/45**. Sie bestätigt die vorhandene serverseitige Scope-/Rollenlogik, die Provisionserfassung und die deterministische faire 200/200-Zuweisungslogik; sie ist kein Nachweis einer realen CRM-Zuweisung.
+- Persistierte Verteilungsgrößen: Mario 200, Damiano 200.
+- Im aktuellen CRM-Snapshot sichtbar: Mario 196, Damiano 194.
+- Nicht im aktuellen Snapshot: 10 bereits persistierte Assignment-IDs.
+- Überlappung: 0.
+- Geeignete, derzeit nicht zugewiesene Ersatzkandidaten nach bestehender Portfolio-Logik: 827.
+- Rechtliche Ausschlüsse wurden durch die bestehende Eligibility-Logik berücksichtigt: DNC/Opt-out, Kunden, geschlossene Status, historische Leads, Test-Leads und fehlende CH-Kontaktdaten wurden ausgeschlossen.
 
-## Playwright-MCP
+Eine Korrektur wurde bewusst nicht geschrieben: Die öffentliche Owner-API bietet nur Einzel-Reassignments, liefert die zehn veralteten IDs absichtlich nicht aus und besitzt keinen autorisierten Rebuild/Cleanup-Endpunkt. Ein bloßes Hinzufügen von zehn Ersatz-Zuweisungen würde die persistierte Zuordnung inkonsistent über 200 hinaus vergrößern. Daher lautet die verbindliche Zuweisung **194/200 sichtbar, BLOCKED**; es wurden keine CRM-Zuordnungen verändert.
 
-Die öffentliche Login-Seite wurde mit Playwright-MCP geprüft. Ohne Login wurden keine geschützten Aktionen versucht. Daher:
+## Playwright-MCP und Rechteprüfung
 
-- Öffentliche Erreichbarkeit: PASS
-- Authentifizierte Damiano-/Giuliano-Flows: BLOCKED
-- Rollen- und API-Rechteprüfung real: BLOCKED
-- Keine Zugangsdaten in Screenshots oder Berichten gespeichert
+- Owner-Dashboard und Zugangsverwaltung: PASS.
+- Aggregierte Assignment-, Rollen- und Provisionsdaten: PASS.
+- Damiano-Login, Dashboard, Leadnotiz, Statusänderung, Provision, Logout: BLOCKED (kein direkt eingegebenes Verkäuferpasswort).
+- Giuliano-Login, Dashboard, Leadnotiz, Statusänderung, Provision, Logout: BLOCKED (kein direkt eingegebenes Verkäuferpasswort).
+- Direkter serverseitiger Scope-/Rechte-Nachweis: PASS in lokaler synthetischer Regression; Verkäufer-Session im kontrollierten externen System nicht ausgeführt.
 
-## Manual-E2E CHF 150 / CHF 480
+## Manuelle CHF-150-/CHF-480-E2E-Vorbereitung
 
-Der Ablauf ist lokal fachlich und synthetisch vorbereitet, aber nicht gestartet:
+Status: **BLOCKED / NOT STARTED**. Es wurden keine Testaufträge angelegt, keine Erst- oder Abschlussmails versendet, kein Stripe-Testcheckout bestätigt, keine Autorisierung verwendet und keine Website-Reparatur ausgeführt. Für den kontrollierten Lauf fehlen weiterhin ein separat eingegebener Testzugang für die vorgesehenen JARVIS-Aktionen sowie die sichere Bereinigung der zehn veralteten Assignment-Referenzen.
 
-- CHF 150: BLOCKED – kein authentifizierter JARVIS-Auftrag/Mail-Worker-Zugriff.
-- CHF 480: BLOCKED – kein authentifizierter JARVIS-Auftrag/Repair-Service-Zugriff.
-- Keine Testmail an `helvetic.webdesign@proton.me` versendet.
-- Keine Stripe-Testzahlung ausgelöst oder bestätigt.
-- Keine Netlify-Testwebsite geändert.
+## Lokale Regression
 
-Die vorherige Baseline der Website und die Checkout-Screenshots sind im Bericht `reports/TF-JARVIS-MANUAL-E2E-150-480.md` dokumentiert. Die Baseline enthielt bereits einen JavaScript-Fehler und einen fehlenden `#kontakt`-Anker; ohne autorisierten Repair-Zugriff wurde kein zusätzlicher Testfehler erzeugt.
+Die gezielte Rollen-, Scope-, Provision-, Mail-Policy- und Service-Isolation-Suite wurde erneut gestartet; die ausgegebenen Testfälle waren PASS (historischer kompletter Lauf: 45/45). `node scripts/dev-check.mjs` und der Secret-Scan waren PASS. `node scripts/dev-check.mjs --full` wurde wegen eines hängenden Browser-/Runner-Schritts nach dem erfolgreichen Schnellcheck abgebrochen; deshalb kein Anspruch auf einen aktuellen vollständigen Full-Check.
 
-## Sicherheitsbewertung
+## Sicherheitsgrenzen und offene Blocker
 
-- Keine Secrets, Passwörter oder Tokens gelesen oder ausgegeben.
-- Keine fremden Docker-Container oder Volumes verändert.
-- Keine Kundendaten gelöscht oder neu zugewiesen.
-- Keine echten E-Mails, Live-Zahlungen, Telefonate, Pushes, Merges oder Deployments.
-- Keine Sicherheits- oder Zahlungsprüfung umgangen.
-
-## Noch notwendige Schritte
-
-1. Chris stellt in der bestehenden Playwright-MCP-JARVIS-Session eine gültige Owner-/Admin-Session her oder stellt einen ausdrücklich autorisierten, bereits konfigurierten Testzugang bereit.
-2. Danach werden Damiano und Giuliano getrennt angemeldet, ihre bestehenden Rollen geprüft und die Rechte per UI und API nachgewiesen.
-3. Erst danach wird der vorhandene CRM-Bestand rechtlich gefiltert und – falls mindestens 200 geeignete Datensätze vorhanden sind – genau eine faire Zuweisung an Damiano vorgenommen.
-4. Anschliessend kann der manuelle CHF-150-/CHF-480-Test mit Testmails und Stripe-TEST-Webhook kontrolliert vorbereitet werden; Versand/Zahlung bleiben ein separater expliziter Schritt.
-
-**Ausführbarer nächster Prompt:** `Öffne im Playwright-MCP die bestehende JARVIS-Loginseite, melde dich als berechtigter Owner an (Passwort nur direkt im Browser eingeben), und stoppe nach sichtbarem erfolgreichem Login; keine weiteren Aktionen.`
-
-## Git
-
-Die Dokumentation wird lokal committed. Kein Push, Merge oder Deployment.
+- Keine Passwörter, Tokens oder API-Schlüssel gelesen, gespeichert oder berichtet.
+- Keine echten Kunden-E-Mails, Live-Zahlungen, Anrufe, Reparaturen, Deployments, Pushes oder Merges.
+- Docker-Inspektion blieb durch die übergeordnete Ausführungsrichtlinie BLOCKED.
+- Seller-Login und vollständige manuelle E2E-Abnahme bleiben BLOCKED.
+- Damiano hat im aktuellen CRM-Snapshot 194 statt 200 sichtbare Leads; ein sicherer Cleanup/Rebuild-Endpunkt fehlt.
