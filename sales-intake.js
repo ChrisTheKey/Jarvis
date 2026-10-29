@@ -22,10 +22,14 @@ export const SALES_DIRECT_OFFERS = Object.freeze({
 });
 const clean = (v) => String(v ?? "").trim();
 const domainOf = (lead) => clean(lead.domain || lead.website).replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-const findingsOf = (lead) => (Array.isArray(lead.errors?.items) ? lead.errors.items : Array.isArray(lead.websiteIssues) ? lead.websiteIssues : [])
-  .filter((x) => x && typeof x === "object" && clean(x.text || x.description || x.message))
-  .slice(0, 3)
-  .map((x) => clean(x.text || x.description || x.message));
+const textOf = (x) => clean(x.text || x.description || x.message);
+const usable = (list) => list.filter((x) => x && typeof x === "object" && textOf(x));
+// Fallback auf lead.findings (CRM-Sicht, wenn errors.items fehlt): nur ausdrücklich bestätigte Audit-Befunde, nie historische.
+const confirmedFindings = (lead) => (lead.history_badge === "HISTORICAL" || !Array.isArray(lead.findings) ? [] : lead.findings.filter((x) => x?.confirmed === true && x.status === "BESTÄTIGT"));
+const findingsOf = (lead) => {
+  const primary = usable(Array.isArray(lead.errors?.items) ? lead.errors.items : Array.isArray(lead.websiteIssues) ? lead.websiteIssues : []);
+  return (primary.length ? primary : usable(confirmedFindings(lead))).slice(0, 3).map(textOf);
+};
 const surnameOf = (lead) => clean(lead.last_name || lead.lastName || lead.contact_last_name || lead.contact?.last_name);
 const syntheticManualWebsite = (lead) => {
   const domain = domainOf(lead);
@@ -77,15 +81,20 @@ export function buildSalesIntakeMail({ lead, order150Id, order480Id, offer = nul
   if (!sandbox) return { ok: false, code: "SANDBOX_ONLY", reason: "Der direkte Erstmail-Versand ist bis zur Produktionsfreigabe nur im Sandbox-Modus zulässig." };
   const website = clean(lead.website) || syntheticManualWebsite(lead);
   if (!/^https:\/\/[^\s]+$/i.test(website)) return { ok: false, code: "MISSING_WEBSITE", reason: "Für die Erstmail ist keine gültige Website des ausgewählten Leads vorhanden." };
-  const exp = Date.parse(String(accessExpiresAt || ""));
-  if (!TOKEN_RE.test(String(accessToken || "")) || !Number.isFinite(exp)) return { ok: false, code: "ACCESS_LINK_UNAVAILABLE", reason: "Der individuelle Zugangstresor-Link konnte nicht sicher erzeugt werden." };
-  if (exp <= +now) return { ok: false, code: "ACCESS_LINK_EXPIRED", reason: "Der individuelle Zugangstresor-Link ist abgelaufen." };
-  if (!/^https:\/\/[^\s]+$/i.test(String(accessOrigin || ""))) return { ok: false, code: "ACCESS_LINK_UNAVAILABLE", reason: "Die sichere Herkunft des Zugangstresor-Links fehlt." };
-  const expiresAt = new Date(exp).toISOString();
-  const access = accessLink(accessOrigin, accessToken, "de-CH");
+  // CHF 150 (Check & Anleitung) braucht laut check-150-workflow.js keinen technischen Zugang: kein Tresor-Link.
+  const needsAccess = offer !== "CHF150";
+  let access = null, expiresAt = null;
+  if (needsAccess) {
+    const exp = Date.parse(String(accessExpiresAt || ""));
+    if (!TOKEN_RE.test(String(accessToken || "")) || !Number.isFinite(exp)) return { ok: false, code: "ACCESS_LINK_UNAVAILABLE", reason: "Der individuelle Zugangstresor-Link konnte nicht sicher erzeugt werden." };
+    if (exp <= +now) return { ok: false, code: "ACCESS_LINK_EXPIRED", reason: "Der individuelle Zugangstresor-Link ist abgelaufen." };
+    if (!/^https:\/\/[^\s]+$/i.test(String(accessOrigin || ""))) return { ok: false, code: "ACCESS_LINK_UNAVAILABLE", reason: "Die sichere Herkunft des Zugangstresor-Links fehlt." };
+    expiresAt = new Date(exp).toISOString();
+    access = accessLink(accessOrigin, accessToken, "de-CH");
+  }
   const link150 = testPaymentLinkUrl(SALES_TEST_PAYMENT_LINKS.payment150, { orderId: order150Id, email: eligible.email });
   const link480 = testPaymentLinkUrl(SALES_TEST_PAYMENT_LINKS.payment480, { orderId: order480Id, email: eligible.email });
-  if (!link150 || !link480 || !access) return { ok: false, code: "LINKS_UNAVAILABLE", reason: "Sandbox-Zahlungs- oder Zugangstresorlink konnte nicht sicher erzeugt werden." };
+  if (!link150 || !link480 || (needsAccess && !access)) return { ok: false, code: "LINKS_UNAVAILABLE", reason: "Sandbox-Zahlungs- oder Zugangstresorlink konnte nicht sicher erzeugt werden." };
   const selected = offer && SALES_DIRECT_OFFERS[offer];
   if (offer && !selected) return { ok: false, code: "UNSUPPORTED_OFFER", reason: "Das ausgewählte Paket ist nicht zulässig." };
   if (selected) {
@@ -95,11 +104,12 @@ export function buildSalesIntakeMail({ lead, order150Id, order480Id, offer = nul
       "Guten Tag", "", "Vielen Dank für Ihr Vertrauen.", "",
       `Wie besprochen wurde das Paket ${selected.label} für CHF ${selected.price}.– für Ihre Website ${website} vorbereitet.`, "",
       "Für die sichere Abwicklung verwenden Sie bitte den folgenden Stripe-Sandbox-Testlink (keine echte Zahlung):", "", payment, "",
-      "Für den technischen Zugang verwenden Sie bitte ausschliesslich den folgenden temporären, sicheren Link (keine Passwörter per E-Mail):", "", access, "",
+      ...(needsAccess ? ["Für den technischen Zugang verwenden Sie bitte ausschliesslich den folgenden temporären, sicheren Link (keine Passwörter per E-Mail):", "", access, ""]
+        : ["Für dieses Paket benötige ich keinen technischen Zugang zu Ihrer Website.", ""]),
       `Die Auftragsreferenz lautet ${orderId}.`, "",
       "Freundliche Grüsse", "", "Christoph Kälin", "", "Helvetic Webdesign",
     ].join("\n");
-    const mail = { recipient: eligible.email, subject: SALES_INTAKE_SUBJECT, body, links: { payment, access }, lead_id: lead.lead_id,
+    const mail = { recipient: eligible.email, subject: SALES_INTAKE_SUBJECT, body, links: { payment, ...(access ? { access } : {}) }, lead_id: lead.lead_id,
       offer: selected.offer, offer_class: selected.offer_class, price: selected.price, order_id: orderId, access_expires_at: expiresAt, legal_basis: eligible.permission.legal_basis };
     const preview_ref = crypto.createHash("sha256").update(JSON.stringify(mail)).digest("hex");
     return { ok: true, preview_ref, mail };
@@ -109,29 +119,11 @@ export function buildSalesIntakeMail({ lead, order150Id, order480Id, offer = nul
     "",
     "Vielen Dank für Ihr Vertrauen.",
     "",
-    "Um die in Auftrag gegebene Dienstleistung zu bestätigen, folgen Sie dem temporären & sicheren Link zum Zugangsdaten-Tresor und zur Zahlungsabwicklung.",
-    "",
-    `Damit ich die Reparatur Ihrer Website ${website} sauber durchführen kann, brauche ich die folgenden zwei Dinge:`,
-    "",
-    `1. Einen temporären, sicheren Zugang über Ihren persönlichen, nur für diesen Auftrag gültigen Link (gültig bis ${expiresAt}, nur einmal verwendbar):`,
-    "",
-    access,
-    "",
-    "Bitte senden Sie keine Passwörter oder Zugangsdaten per E-Mail.",
-    "",
-    "Verwenden Sie dafür ausschliesslich den sicheren Link.",
-    "",
-    "Ihre Website läuft über [Name des Anbieters]. Bitte laden Sie mich mit dieser E-Mail-Adresse zu Ihrer Webseite bei Netlify ein, damit ich darauf zugreifen kann.",
-    "",
-    "Im Formular bestätigen Sie nur noch den Namen der Seite und die vereinbarte Dienstleistung.",
-    "",
-    "Vor der ersten Änderung erstelle ich eine vollständige Sicherung Ihrer Website; zum Abschluss erhalten Sie einen ausführlichen Bericht.",
-    "",
-    "2. Unsere zwei Angebote:",
+    "Für Ihre Website " + website + " habe ich zwei Pakete zur Auswahl vorbereitet.",
     "",
     "1. Webseiten-Check & Anleitung – CHF 150.–",
     "",
-    "Technische Prüfung mit Problemübersicht und Anleitung zur Behebung.",
+    "Technische Prüfung mit Problemübersicht und Anleitung zur Behebung. Dafür benötige ich keinen technischen Zugang zu Ihrer Website.",
     "",
     "Stripe-Sandbox-Testlink (keine echte Zahlung):",
     "",
@@ -139,11 +131,19 @@ export function buildSalesIntakeMail({ lead, order150Id, order480Id, offer = nul
     "",
     "2. Webseiten-Check & Reparatur – CHF 480.–",
     "",
-    "Technische Prüfung und Behebung der Probleme.",
+    "Technische Prüfung und Behebung der Probleme. Nur für dieses Paket kann ein technischer Zugang zu Ihrer Website erforderlich sein.",
     "",
     "Stripe-Sandbox-Testlink (keine echte Zahlung):",
     "",
     link480,
+    "",
+    "Falls Sie das Reparaturpaket wählen, verwenden Sie für den technischen Zugang bitte ausschliesslich diesen persönlichen, nur für diesen Auftrag gültigen Link (gültig bis " + expiresAt + ", nur einmal verwendbar):",
+    "",
+    access,
+    "",
+    "Bitte senden Sie mir niemals Passwörter oder Zugangsdaten per E-Mail.",
+    "",
+    "Vor der ersten Änderung erstelle ich eine vollständige Sicherung Ihrer Website; zum Abschluss erhalten Sie einen ausführlichen Bericht.",
     "",
     "Freundliche Grüsse",
     "",

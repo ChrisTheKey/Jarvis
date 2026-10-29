@@ -55,8 +55,7 @@ export function cleanMeta(m) {
         idempotency_key: typeof m.idempotency_key === "string" && /^[a-f0-9]{64}$/.test(m.idempotency_key) ? m.idempotency_key : null,
         access_expires_at: typeof m.access_expires_at === "string" && Number.isFinite(Date.parse(m.access_expires_at)) ? new Date(m.access_expires_at).toISOString() : null,
         ...(SALES_DIRECT_OFFERS[m.offer] && /^(?:CA150|RF480)-\d{8}-[0-9a-f]{6}$/.test(String(m.order_id || ""))
-          ? { offer: m.offer, offer_class: SALES_DIRECT_OFFERS[m.offer].offer_class, price: SALES_DIRECT_OFFERS[m.offer].price, order_id: m.order_id } : {}),
-      } : {}) } : {};
+          ? { offer: m.offer, offer_class: SALES_DIRECT_OFFERS[m.offer].offer_class, price: SALES_DIRECT_OFFERS[m.offer].price, order_id: m.order_id } : {}),      } : {}) } : {};
   return actor && market && locale && lead_id ? { actor_user_id: actor, market, locale, lead_id, ...sales } : null;
 }
 
@@ -457,7 +456,8 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     const idempotency_key = crypto.createHash("sha256").update(`sales_intake_direct:${lead.lead_id}:${body.offer || "bundle"}:${t.toISOString().slice(0, 10)}`).digest("hex");
     const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id, sales_intake: true, sales_intake_direct: true,
       sales_sandbox: true, synthetic_test: true, idempotency_key, preview_ref: result.preview_ref, access_expires_at: result.mail.access_expires_at,
-      ...(result.mail.offer ? { offer: result.mail.offer, offer_class: result.mail.offer_class, price: result.mail.price, order_id: result.mail.order_id } : { order150_id: refs.order150Id, order480_id: refs.order480Id }) };
+      ...(result.mail.offer ? { offer: result.mail.offer, offer_class: result.mail.offer_class, price: result.mail.price, order_id: result.mail.order_id,
+        [result.mail.offer === "CHF150" ? "order150_id" : "order480_id"]: result.mail.order_id } : { order150_id: refs.order150Id, order480_id: refs.order480Id }) };
     const r = await queue.create({ recipient: result.mail.recipient, subject: result.mail.subject, body: result.mail.body, intent: "sales", delivery: "sales_intake" }, actor.user_id, meta);
     if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
     return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
