@@ -280,7 +280,7 @@ export function createMailQueue(store, { now = () => new Date(), dedicated = fal
     return { status: 409, error: "Gleichzeitige Änderung – bitte erneut versuchen." };
   }
   return {
-    create: (input, requestedBy = "chris", meta = null) => mutate(({ requests }) => addRequest(requests, input, { now: now(), requestedBy, meta })),
+    create: (input, requestedBy = "chris", meta = null, at = now()) => mutate(({ requests }) => addRequest(requests, input, { now: at, requestedBy, meta })),
     result: (res) => mutate(({ requests }) => applyResult(expireRequests(requests, now()), res, now())),
     claim: (owner) => mutate(({ requests }) => claimRequests(expireRequests(requests, now()), owner, now())),
     lock: (x) => mutate(({ locks }) => acquireSendLock(locks, x, now())),
@@ -443,9 +443,11 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     const secret = env("JARVIS_MAIL_WORKER_TOKEN");
     if (!secret) return reply(503, { error: "CRM-Versand ist nicht eingerichtet.", code: "CRM_CLICK_UNAVAILABLE" });
     const input = { ...mail, request_id: newId(), intent: "sales", delivery: "sales_intake" };
-    const { request, error } = sanitizeMailRequest(input, { now: now(), requestedBy: actor.user_id, meta });
+    // TF-047: Der Beleg bindet expires_at, deshalb signieren und speichern mit demselben Zeitpunkt.
+    const at = now();
+    const { request, error } = sanitizeMailRequest(input, { now: at, requestedBy: actor.user_id, meta });
     if (error) return reply(400, { error, code: "QUEUE_ERROR" });
-    const r = await queue.create(input, actor.user_id, { ...meta, click_attestation: signCrmClick(secret, request) });
+    const r = await queue.create(input, actor.user_id, { ...meta, click_attestation: signCrmClick(secret, request) }, at);
     if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
     return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
   }
