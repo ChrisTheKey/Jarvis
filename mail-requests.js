@@ -14,6 +14,7 @@ import { migrateMailQueue, migrateStoreDoc, migrateOnce } from "./seller-identit
 import { mailAccessFor, draftRefOf, DRAFT_REF_RE, SELLER_SEND_DAILY_LIMIT } from "./mail-access.js";
 import { buildSalesIntakeMail, buildSalesIntakePreview, newIntakeToken, salesOrderRefs, salesVaultLink, SALES_DIRECT_OFFERS } from "./sales-intake.js";
 import { salesBundleId } from "./sales-intake-bundle.js";
+import { signCrmClick, CRM_CLICK_RE, SALES_SEND_FAILED_REASON } from "./security-capabilities.js";
 
 export const MAIL_REQUEST_LIMITS = { recipientChars: 254, subjectChars: 200, bodyChars: 5000, reasonChars: 200, queue: 100, pending: 25,
   ttlHours: 24, maxTtlHours: 72, duplicateHours: 24, bodyBytes: 16_000 };
@@ -50,6 +51,7 @@ export function cleanMeta(m) {
   const lead_id = typeof m.lead_id === "string" && META_LEAD_RE.test(m.lead_id) ? m.lead_id : null;
   const sales = m.sales_intake === true && typeof m.preview_ref === "string" && /^[a-f0-9]{64}$/.test(m.preview_ref)
     ? { sales_intake: true, preview_ref: m.preview_ref, bundle_id: salesBundleId(m.preview_ref), order150_id: m.order150_id, order480_id: m.order480_id,
+      ...(CRM_CLICK_RE.test(String(m.click_attestation || "")) ? { click_attestation: m.click_attestation } : {}),
       ...(m.sales_intake_direct === true ? {
         sales_intake_direct: true, sales_sandbox: m.sales_sandbox === true, synthetic_test: m.synthetic_test === true,
         idempotency_key: typeof m.idempotency_key === "string" && /^[a-f0-9]{64}$/.test(m.idempotency_key) ? m.idempotency_key : null,
@@ -432,7 +434,18 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     const result = buildSalesIntakePreview({ lead, ...refs, vaultLink: vault, now: now() });
     if (!result.ok || result.preview_ref !== body.preview_ref) return reply(409, { error: "Die Vorschau ist abgelaufen oder wurde geändert. Bitte neu laden.", code: "PREVIEW_CHANGED" });
     const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id, sales_intake: true, preview_ref: result.preview_ref, order150_id: refs.order150Id, order480_id: refs.order480Id };
-    const r = await queue.create({ recipient: result.preview.recipient, subject: result.preview.subject, body: result.preview.body, intent: "sales", delivery: "sales_intake" }, actor.user_id, meta);
+    return queueCrmClick(queue, { recipient: result.preview.recipient, subject: result.preview.subject, body: result.preview.body }, actor, meta, lead);
+  }
+
+  // TF-040: Nur diese beiden CRM-Klick-Wege (nach Session, Recht und Lead-Bereich) stellen einen Klick-Beleg aus. Signiert wird der bereinigte Auftrag,
+  // also genau das, was der Mail-Worker später erhält. Ein Doppelklick liefert über den Duplikat-Schutz den ersten Auftrag zurück.
+  async function queueCrmClick(queue, mail, actor, meta, lead) {
+    const secret = env("JARVIS_MAIL_WORKER_TOKEN");
+    if (!secret) return reply(503, { error: "CRM-Versand ist nicht eingerichtet.", code: "CRM_CLICK_UNAVAILABLE" });
+    const input = { ...mail, request_id: newId(), intent: "sales", delivery: "sales_intake" };
+    const { request, error } = sanitizeMailRequest(input, { now: now(), requestedBy: actor.user_id, meta });
+    if (error) return reply(400, { error, code: "QUEUE_ERROR" });
+    const r = await queue.create(input, actor.user_id, { ...meta, click_attestation: signCrmClick(secret, request) });
     if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
     return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
   }
@@ -450,17 +463,24 @@ export function createMailRequestHandler({ getStore, env, now = () => new Date()
     // Der neue direkte Weg darf bis zur separaten Produktionsfreigabe niemals einen realen Empfänger erreichen.
     if (env("JARVIS_SALES_SANDBOX_MODE") !== "true") return reply(403, { error: "Direkter Erstmail-Versand ist bis zur Produktionsfreigabe gesperrt.", code: "SANDBOX_ONLY" });
     if (lead.is_test !== true) return reply(403, { error: "Direkter Erstmail-Versand ist nur für synthetische Leads zulässig.", code: "SYNTHETIC_ONLY" });
-    const t = now(), refs = salesOrderRefs(lead.lead_id, t), token = newIntakeToken({ now: t });
+    const t = now();
+    // TF-044: Nur CHF 150 des autorisierten Test-Leads: Jeder eindeutig fehlgeschlagene Versuch des Tages ergibt beim nächsten Klick neue Auftrags- und Bundle-IDs.
+    let attempt = 0;
+    if (body.offer === "CHF150" && lead.lead_id === MANUAL_TEST_MAIL.lead_id) {
+      const dayPrefix = `CA150-${t.toISOString().slice(0, 10).replace(/-/g, "")}-`;
+      const failed = (await queue.list()).filter((r) => r.delivery === "sales_intake" && r.status === "failed" && r.meta?.sales_intake_direct === true && r.meta.lead_id === lead.lead_id && r.meta.offer === "CHF150" && String(r.meta.order_id).startsWith(dayPrefix));
+      if (failed.some((r) => r.reason !== SALES_SEND_FAILED_REASON)) return reply(409, { error: "Versandstatus unklar – kein neuer Versuch, Chris prüft.", code: "SEND_STATUS_UNCLEAR" });
+      attempt = failed.length;
+    }
+    const refs = salesOrderRefs(attempt ? `${lead.lead_id}#${attempt}` : lead.lead_id, t), token = newIntakeToken({ now: t });
     const result = buildSalesIntakeMail({ lead, ...refs, offer: body.offer, accessToken: token.token, accessExpiresAt: token.expires_at, accessOrigin: env("JARVIS_WEB_ORIGIN"), sandbox: true, now: t });
     if (!result.ok) return reply(result.code === "NO_CONTACT_PERMISSION" ? 403 : 409, { error: result.reason, code: result.code });
-    const idempotency_key = crypto.createHash("sha256").update(`sales_intake_direct:${lead.lead_id}:${body.offer || "bundle"}:${t.toISOString().slice(0, 10)}`).digest("hex");
+    const idempotency_key = crypto.createHash("sha256").update(`sales_intake_direct:${lead.lead_id}:${body.offer || "bundle"}:${t.toISOString().slice(0, 10)}${attempt ? `:${attempt}` : ""}`).digest("hex");
     const meta = { actor_user_id: actor.user_id, market: "CH", locale: "de-CH", lead_id: lead.lead_id, sales_intake: true, sales_intake_direct: true,
       sales_sandbox: true, synthetic_test: true, idempotency_key, preview_ref: result.preview_ref, access_expires_at: result.mail.access_expires_at,
       ...(result.mail.offer ? { offer: result.mail.offer, offer_class: result.mail.offer_class, price: result.mail.price, order_id: result.mail.order_id,
         [result.mail.offer === "CHF150" ? "order150_id" : "order480_id"]: result.mail.order_id } : { order150_id: refs.order150Id, order480_id: refs.order480Id }) };
-    const r = await queue.create({ recipient: result.mail.recipient, subject: result.mail.subject, body: result.mail.body, intent: "sales", delivery: "sales_intake" }, actor.user_id, meta);
-    if (r.status >= 400) return reply(r.status, { error: r.error, code: r.code || "QUEUE_ERROR" });
-    return reply(r.status, { request: { request_id: r.request.request_id, status: r.request.status, delivery: "sales_intake", lead_id: lead.lead_id }, duplicate: !!r.duplicate });
+    return queueCrmClick(queue, { recipient: result.mail.recipient, subject: result.mail.subject, body: result.mail.body }, actor, meta, lead);
   }
 
   // TF-077B «E-Mail lossenden» (SEND_PREPARED_LEAD_DRAFT): nur lead_id + draft_ref vom Browser. Geprüft: Recht (Giuliano/Mario/Damiano, Owner),

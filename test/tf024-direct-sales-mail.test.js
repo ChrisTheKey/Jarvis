@@ -13,6 +13,7 @@ const TOKEN = "A".repeat(43);
 const ENV = {
   JARVIS_WEB_ORIGIN: "https://synthetic.jarvis.test",
   JARVIS_SALES_SANDBOX_MODE: "true",
+  JARVIS_MAIL_WORKER_TOKEN: "synthetic-worker-token",
 };
 const LEAD = {
   lead_id: "synthetic-024.ch",
